@@ -35,7 +35,9 @@ namespace AnimeStudio.CLI
         public static WorkMode WorkMode { get; set; } = WorkMode.Export;
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static int MaxExportTasks { get; set; } = 1;
+        public static int BatchFiles { get; set; } = 2;
         public static bool ModelRootsOnly { get; set; }
+        private static int _exportsSinceCollect;
         private static readonly Regex[] ModelRootExcludePatterns =
         {
             new Regex(@"^Cs_", RegexOptions.IgnoreCase | RegexOptions.Compiled),
@@ -729,17 +731,51 @@ namespace AnimeStudio.CLI
                     if (exported)
                     {
                         exportedCount++;
+                        AppendExportManifest(savePath, asset, exportPath);
                     }
+                    CollectAfterModelExport();
                 }
                 catch (Exception ex)
                 {
                     Logger.Error(
                         $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
                     );
+                    CollectAfterModelExport();
                 }
             }
 
             Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s).");
+        }
+
+        private static void CollectAfterModelExport()
+        {
+            _exportsSinceCollect++;
+            if (_exportsSinceCollect < 4)
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
+                return;
+            }
+
+            _exportsSinceCollect = 0;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+        }
+
+        private static void AppendExportManifest(string savePath, AssetItem asset, string exportPath)
+        {
+            var manifestPath = Path.Combine(savePath, "export_manifest.jsonl");
+            var entry = new
+            {
+                exportedAt = DateTime.UtcNow.ToString("O"),
+                mode = WorkMode.ToString(),
+                type = asset.TypeString,
+                name = asset.Text,
+                container = asset.Container,
+                source = asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName,
+                pathId = asset.m_PathID,
+                output = exportPath,
+            };
+            File.AppendAllText(manifestPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
         }
 
         private static string GetExportPath(

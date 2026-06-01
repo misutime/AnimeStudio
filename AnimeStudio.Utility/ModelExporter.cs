@@ -6,5 +6,10 @@
         {
             Fbx.Exporter.Export(path, imported, exportOptions);
         }
+
+        public static void ExportGltf(string path, IImported imported, Gltf.ExportOptions exportOptions)
+        {
+            Gltf.Exporter.Export(path, imported, exportOptions);
+        }
     }
 }

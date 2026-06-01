@@ -23,6 +23,13 @@ namespace AnimeStudio.CLI
         All
     }
 
+    public enum ModelExportFormat
+    {
+        Gltf,
+        Glb,
+        Fbx
+    }
+
     public static class CommandLine
     {
         public static void Init(string[] args)
@@ -57,7 +64,9 @@ namespace AnimeStudio.CLI
                 optionsBinder.FbxScaleFactor,
                 optionsBinder.FbxBoneSize,
                 optionsBinder.FbxAnimationMode,
+                optionsBinder.ModelFormat,
                 optionsBinder.MaxExportTasks,
+                optionsBinder.BatchFiles,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -92,7 +101,9 @@ namespace AnimeStudio.CLI
         public float? FbxScaleFactor { get; set; }
         public int? FbxBoneSize { get; set; }
         public FbxAnimationMode FbxAnimationMode { get; set; }
+        public ModelExportFormat ModelFormat { get; set; }
         public int MaxExportTasks { get; set; }
+        public int BatchFiles { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -122,7 +133,9 @@ namespace AnimeStudio.CLI
         public readonly Option<float?> FbxScaleFactor;
         public readonly Option<int?> FbxBoneSize;
         public readonly Option<FbxAnimationMode> FbxAnimationMode;
+        public readonly Option<ModelExportFormat> ModelFormat;
         public readonly Option<int> MaxExportTasks;
+        public readonly Option<int> BatchFiles;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -150,7 +163,9 @@ namespace AnimeStudio.CLI
             FbxScaleFactor = new Option<float?>("--fbx_scale_factor", "Override FBX scale factor.");
             FbxBoneSize = new Option<int?>("--fbx_bone_size", "Override FBX bone size.");
             FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
+            ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
+            BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -186,7 +201,9 @@ namespace AnimeStudio.CLI
             AssetExportType.SetDefaultValue(ExportType.Convert);
             WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Export);
             FbxAnimationMode.SetDefaultValue(AnimeStudio.CLI.FbxAnimationMode.Skip);
+            ModelFormat.SetDefaultValue(AnimeStudio.CLI.ModelExportFormat.Gltf);
             MaxExportTasks.SetDefaultValue(1);
+            BatchFiles.SetDefaultValue(2);
             MapOp.SetDefaultValue(MapOpType.None);
             MapType.SetDefaultValue(ExportListType.XML);
         }
@@ -249,10 +266,12 @@ namespace AnimeStudio.CLI
             AIFile = bindingContext.ParseResult.GetValueForOption(AIFile),
             AIVersion = bindingContext.ParseResult.GetValueForOption(AIVersion),
             ModelRootsOnly = bindingContext.ParseResult.GetValueForOption(ModelRootsOnly),
-            FbxScaleFactor = bindingContext.ParseResult.GetValueForOption(FbxScaleFactor),
-            FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
-            FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
-            MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
+                FbxScaleFactor = bindingContext.ParseResult.GetValueForOption(FbxScaleFactor),
+                FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
+                FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
+                ModelFormat = bindingContext.ParseResult.GetValueForOption(ModelFormat),
+                MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
+                BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),
             DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)

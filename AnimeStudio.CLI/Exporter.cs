@@ -15,6 +15,7 @@ namespace AnimeStudio.CLI
         public static float? FbxScaleFactor { get; set; }
         public static int? FbxBoneSize { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
+        public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
         public static string OutputRoot { get; set; }
 
         public static bool ExportAnimations => FbxAnimationMode != FbxAnimationMode.Skip;
@@ -540,6 +541,7 @@ namespace AnimeStudio.CLI
         {
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;
+            var exportFilePath = Path.Combine(exportFullPath, FixFileName(item.Text) + GetModelExtension());
 
             var m_Animator = (Animator)item.Asset;
             var options = new ModelConverter.Options()
@@ -558,7 +560,7 @@ namespace AnimeStudio.CLI
                 ),
             };
             options.textureDataExists = (_, exportName) =>
-                ExportedTextureExists(exportFullPath, exportName);
+                ExportedTextureExists(exportFilePath, exportName);
             var convert =
                 animationList != null
                     ? new ModelConverter(
@@ -569,7 +571,7 @@ namespace AnimeStudio.CLI
                     : new ModelConverter(m_Animator, options);
             if (options.exportMaterials)
             {
-                var materialExportPath = Path.GetDirectoryName(exportFullPath);
+                var materialExportPath = exportFullPath;
                 Directory.CreateDirectory(materialExportPath);
                 foreach (var material in options.materials)
                 {
@@ -577,7 +579,7 @@ namespace AnimeStudio.CLI
                     ExportJSONFile(matItem, materialExportPath);
                 }
             }
-            ExportFbx(convert, exportFullPath);
+            ExportFbx(convert, exportFilePath);
             return true;
         }
 
@@ -609,7 +611,7 @@ namespace AnimeStudio.CLI
             List<AssetItem> animationList = null
         )
         {
-            var exportFullPath = exportPath + FixFileName(gameObject.m_Name) + ".fbx";
+            var exportFullPath = exportPath + FixFileName(gameObject.m_Name) + GetModelExtension();
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
@@ -663,6 +665,32 @@ namespace AnimeStudio.CLI
 
         private static void ExportFbx(IImported convert, string exportPath)
         {
+            switch (CliExportOptions.ModelFormat)
+            {
+                case ModelExportFormat.Fbx:
+                    ExportFbxModel(convert, exportPath);
+                    break;
+                case ModelExportFormat.Glb:
+                    ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".glb"), true);
+                    break;
+                default:
+                    ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".gltf"), false);
+                    break;
+            }
+        }
+
+        private static string GetModelExtension()
+        {
+            return CliExportOptions.ModelFormat switch
+            {
+                ModelExportFormat.Fbx => ".fbx",
+                ModelExportFormat.Glb => ".glb",
+                _ => ".gltf",
+            };
+        }
+
+        private static void ExportFbxModel(IImported convert, string exportPath)
+        {
             var exportOptions = new Fbx.ExportOptions()
             {
                 eulerFilter = Properties.Settings.Default.eulerFilter,
@@ -680,6 +708,18 @@ namespace AnimeStudio.CLI
                 localTextureDirectoryName = ".",
             };
             ModelExporter.ExportFbx(exportPath, convert, exportOptions);
+        }
+
+        private static void ExportGltfModel(IImported convert, string exportPath, bool binary)
+        {
+            var exportOptions = new Gltf.ExportOptions()
+            {
+                binary = binary,
+                exportSkins = Properties.Settings.Default.exportSkins || CliExportOptions.ExportAnimations,
+                exportAnimations = CliExportOptions.ExportAnimations,
+                textureDirectory = GetSharedTextureDirectory(exportPath),
+            };
+            ModelExporter.ExportGltf(exportPath, convert, exportOptions);
         }
 
         private static string GetSharedTextureDirectory(string exportPath)

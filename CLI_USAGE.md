@@ -96,7 +96,23 @@ auto_GI_3a1b2c4d5e6f
 --fbx_animation Skip
 ```
 
-模型模式按 GameObject 导出 FBX。默认会过滤：
+模型模式按 GameObject 导出模型。当前默认模型格式是 glTF：
+
+```powershell
+--model_format Gltf
+```
+
+可选：
+
+```powershell
+--model_format Gltf
+--model_format Glb
+--model_format Fbx
+```
+
+全量资源提取建议使用默认 `Gltf`。它会输出 `.gltf + .bin + 共享贴图`，比 FBX 更适合批量导出、恢复导出和贴图复用。FBX 只建议在需要兼容旧流程或特定 DCC 工具时使用。
+
+模型模式默认会过滤：
 
 - `ui`
 - `sound`
@@ -134,6 +150,24 @@ auto_GI_3a1b2c4d5e6f
 
 `All` 容易混入不相关动画，建议只在小目录测试。
 
+### 全量性能参数
+
+3D 模式默认启用受控批处理：
+
+```powershell
+--batch_files 2
+```
+
+`--batch_files` 表示每批加载多少个源资源文件及其依赖。数值越大，重复依赖加载越少，但内存峰值越高；数值越小，内存更稳但总耗时可能增加。大游戏全量导出优先保持默认值，内存充足时再调高。
+
+导出过程会写入：
+
+```text
+export_manifest.jsonl
+```
+
+每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
+
 ## 通用 3D 模型导出命令
 
 适合普通 Unity 游戏：
@@ -148,6 +182,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --mode SplitObjects `
   --model_roots_only `
   --group_assets ByContainer `
+  --model_format Gltf `
   --fbx_animation Skip
 ```
 
@@ -156,7 +191,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - `--mode SplitObjects`：按 GameObject 拆分导出模型。
 - `--model_roots_only`：尽量只导出模型根节点，减少子 mesh 零件重复导出。
 - `--group_assets ByContainer`：按资源容器路径组织输出。
-- `--fbx_animation Skip`：模型导出不附带动画。
+- `--model_format Gltf`：导出 `.gltf + .bin + 共享贴图`；这是默认值，可以省略。
+- `--fbx_animation Skip`：模型导出不附带动画。参数名仍沿用旧名，控制模型导出时是否收集动画数据。
 
 ## 通用动画导出命令
 
@@ -169,6 +205,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --game Normal `
   --mode Animator `
   --group_assets ByContainer `
+  --model_format Gltf `
   --fbx_animation Auto
 ```
 
@@ -206,10 +243,11 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --mode SplitObjects `
   --model_roots_only `
   --group_assets ByContainer `
+  --model_format Gltf `
   --fbx_animation Skip
 ```
 
-全量会比较慢，也会产生大量模型。实际分析建议优先按目录导出。
+全量会产生大量模型。默认 glTF + 共享贴图 + 批处理会优先保证可持续导出和较低内存峰值；如果机器内存充足，可以增加 `--batch_files`。
 
 ### Freedunk 全量动画
 
@@ -222,6 +260,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --game Normal `
   --mode Animator `
   --group_assets ByContainer `
+  --model_format Gltf `
   --fbx_animation Auto
 ```
 

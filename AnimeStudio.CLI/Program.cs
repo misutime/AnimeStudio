@@ -48,9 +48,11 @@ namespace AnimeStudio.CLI
                 Studio.WorkMode = o.WorkMode;
                 Studio.FbxAnimationMode = o.FbxAnimationMode;
                 Studio.MaxExportTasks = Math.Max(1, o.MaxExportTasks);
+                Studio.BatchFiles = Math.Max(1, o.BatchFiles);
                 CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
+                CliExportOptions.ModelFormat = o.ModelFormat;
                 CliExportOptions.OutputRoot = o.Output.FullName;
                 Logger.Default = new ConsoleLogger();
                 Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
@@ -245,9 +247,9 @@ namespace AnimeStudio.CLI
                     var toReadFile = ImportHelper.ProcessingSplitFiles(files.ToList());
 
                     var fileList = new List<string>(toReadFile);
-                    foreach (var file in fileList)
+                    foreach (var batch in ChunkFiles(fileList, GetEffectiveBatchSize(o.WorkMode)))
                     {
-                        assetsManager.LoadFiles(file);
+                        assetsManager.LoadFiles(batch.ToArray());
                         if (assetsManager.assetsFileList.Count > 0)
                         {
                             BuildAssetData(
@@ -375,6 +377,19 @@ namespace AnimeStudio.CLI
                 TypeFlags.SetType(ClassIDType.AnimatorController, true, false);
                 TypeFlags.SetType(ClassIDType.AnimatorOverrideController, true, false);
                 TypeFlags.SetType(ClassIDType.Avatar, true, false);
+            }
+        }
+
+        private static int GetEffectiveBatchSize(WorkMode workMode)
+        {
+            return workMode == WorkMode.Export ? 1 : Math.Max(1, Studio.BatchFiles);
+        }
+
+        private static IEnumerable<List<string>> ChunkFiles(List<string> files, int size)
+        {
+            for (var i = 0; i < files.Count; i += size)
+            {
+                yield return files.Skip(i).Take(size).ToList();
             }
         }
     }
