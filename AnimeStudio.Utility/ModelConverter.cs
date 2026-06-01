@@ -165,7 +165,7 @@ namespace AnimeStudio
                 ConvertMeshRenderer(m_GameObject.m_SkinnedMeshRenderer);
             }
 
-            if (m_GameObject.m_Animation != null)
+            if (options.exportAnimations && m_GameObject.m_Animation != null)
             {
                 foreach (var animation in m_GameObject.m_Animation.m_Animations)
                 {
@@ -851,6 +851,11 @@ namespace AnimeStudio
 
         private void ConvertAnimations()
         {
+            if (!options.exportAnimations)
+            {
+                return;
+            }
+
             foreach (var animationClip in animationClipHashSet)
             {
                 var iAnim = new ImportedKeyframedAnimation();
@@ -1239,6 +1244,7 @@ namespace AnimeStudio
             public ImageFormat imageFormat;
             public Game game;
             public bool collectAnimations;
+            public bool exportAnimations = true;
             public bool exportMaterials;
             public HashSet<Material> materials;
             public Dictionary<string, (bool, int)> uvs;

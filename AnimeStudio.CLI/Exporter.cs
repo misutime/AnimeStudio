@@ -549,6 +549,7 @@ namespace AnimeStudio.CLI
                 imageFormat = Properties.Settings.Default.convertType,
                 game = Studio.Game,
                 collectAnimations = CliExportOptions.CollectAnimations,
+                exportAnimations = CliExportOptions.ExportAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 useAnimatorHierarchy = true,
@@ -624,6 +625,7 @@ namespace AnimeStudio.CLI
                 imageFormat = Properties.Settings.Default.convertType,
                 game = Studio.Game,
                 collectAnimations = CliExportOptions.CollectAnimations,
+                exportAnimations = CliExportOptions.ExportAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 useAnimatorHierarchy =
