@@ -49,6 +49,7 @@ namespace AnimeStudio.CLI
                 Studio.FbxAnimationMode = o.FbxAnimationMode;
                 Studio.MaxExportTasks = Math.Max(1, o.MaxExportTasks);
                 Studio.BatchFiles = Math.Max(1, o.BatchFiles);
+                Studio.ModelGcInterval = Math.Max(0, o.ModelGcInterval);
                 CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;

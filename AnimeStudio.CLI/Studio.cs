@@ -35,7 +35,8 @@ namespace AnimeStudio.CLI
         public static WorkMode WorkMode { get; set; } = WorkMode.Export;
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static int MaxExportTasks { get; set; } = 1;
-        public static int BatchFiles { get; set; } = 2;
+        public static int BatchFiles { get; set; } = 4;
+        public static int ModelGcInterval { get; set; } = 32;
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
         private static readonly Regex[] ModelRootExcludePatterns =
@@ -750,9 +751,13 @@ namespace AnimeStudio.CLI
         private static void CollectAfterModelExport()
         {
             _exportsSinceCollect++;
-            if (_exportsSinceCollect < 4)
+            if (ModelGcInterval <= 0)
             {
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
+                return;
+            }
+
+            if (_exportsSinceCollect < ModelGcInterval)
+            {
                 return;
             }
 

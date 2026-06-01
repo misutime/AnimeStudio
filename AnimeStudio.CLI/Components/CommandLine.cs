@@ -67,6 +67,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.ModelFormat,
                 optionsBinder.MaxExportTasks,
                 optionsBinder.BatchFiles,
+                optionsBinder.ModelGcInterval,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -104,6 +105,7 @@ namespace AnimeStudio.CLI
         public ModelExportFormat ModelFormat { get; set; }
         public int MaxExportTasks { get; set; }
         public int BatchFiles { get; set; }
+        public int ModelGcInterval { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -136,6 +138,7 @@ namespace AnimeStudio.CLI
         public readonly Option<ModelExportFormat> ModelFormat;
         public readonly Option<int> MaxExportTasks;
         public readonly Option<int> BatchFiles;
+        public readonly Option<int> ModelGcInterval;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -166,6 +169,7 @@ namespace AnimeStudio.CLI
             ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
+            ModelGcInterval = new Option<int>("--model_gc_interval", "Run a full blocking GC after this many exported models in 3D modes. Use 0 to disable model-level full GC.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -203,7 +207,8 @@ namespace AnimeStudio.CLI
             FbxAnimationMode.SetDefaultValue(AnimeStudio.CLI.FbxAnimationMode.Skip);
             ModelFormat.SetDefaultValue(AnimeStudio.CLI.ModelExportFormat.Gltf);
             MaxExportTasks.SetDefaultValue(1);
-            BatchFiles.SetDefaultValue(2);
+            BatchFiles.SetDefaultValue(4);
+            ModelGcInterval.SetDefaultValue(32);
             MapOp.SetDefaultValue(MapOpType.None);
             MapType.SetDefaultValue(ExportListType.XML);
         }
@@ -272,6 +277,7 @@ namespace AnimeStudio.CLI
                 ModelFormat = bindingContext.ParseResult.GetValueForOption(ModelFormat),
                 MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
                 BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),
+                ModelGcInterval = bindingContext.ParseResult.GetValueForOption(ModelGcInterval),
             DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)
