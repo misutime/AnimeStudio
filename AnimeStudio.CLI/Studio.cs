@@ -762,8 +762,14 @@ namespace AnimeStudio.CLI
             }
 
             _exportsSinceCollect = 0;
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-            GC.WaitForPendingFinalizers();
+            using (ProfileLogger.Measure("model_gc", new Dictionary<string, object>
+            {
+                ["interval"] = ModelGcInterval,
+            }))
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+            }
         }
 
         private static void AppendExportManifest(string savePath, AssetItem asset, string exportPath)

@@ -60,6 +60,8 @@ namespace AnimeStudio.CLI
                 Logger.FileLogging = Settings.Default.enableFileLogging;
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);
+                o.Output.Create();
+                ProfileLogger.Initialize(o.Output.FullName, o.ProfileLog);
 
                 TypeFlags.SetTypes(JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Settings.Default.types));
 
@@ -139,8 +141,6 @@ namespace AnimeStudio.CLI
                 assetsManager.Silent = o.Silent;
                 assetsManager.Game = game;
                 assetsManager.SpecifyUnityVersion = o.UnityVersion;
-                o.Output.Create();
-
                 if (o.Key != default)
                 {
                     MiHoYoBinData.Encrypted = true;
@@ -202,11 +202,17 @@ namespace AnimeStudio.CLI
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
-                        AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
+                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = files.Length, ["mapName"] = mapName }))
+                        {
+                            AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
+                        }
                     }
                     else
                     {
-                        AssetsHelper.LoadCABMapInternal(mapName);
+                        using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
+                        {
+                            AssetsHelper.LoadCABMapInternal(mapName);
+                        }
                         assetsManager.ResolveDependencies = true;
                     }
                 }
@@ -227,12 +233,22 @@ namespace AnimeStudio.CLI
                 }
                 if (needsModelDependencies && o.MapOp.Equals(MapOpType.None))
                 {
-                    var cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
+                    bool cabMapLoaded;
+                    using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
+                    {
+                        cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
+                    }
                     if (!cabMapLoaded)
                     {
                         Logger.Info("Building CAB dependency map for model materials...");
-                        AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
-                        cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
+                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = files.Length, ["mapName"] = mapName }))
+                        {
+                            AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
+                        }
+                        using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
+                        {
+                            cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
+                        }
                     }
                     if (cabMapLoaded)
                     {
@@ -250,21 +266,48 @@ namespace AnimeStudio.CLI
                     var fileList = new List<string>(toReadFile);
                     foreach (var batch in ChunkFiles(fileList, GetEffectiveBatchSize(o.WorkMode)))
                     {
-                        assetsManager.LoadFiles(batch.ToArray());
+                        using (ProfileLogger.Measure("load_batch", new Dictionary<string, object>
+                        {
+                            ["batchSize"] = batch.Count,
+                            ["firstFile"] = batch.FirstOrDefault(),
+                        }))
+                        {
+                            assetsManager.LoadFiles(batch.ToArray());
+                        }
                         if (assetsManager.assetsFileList.Count > 0)
                         {
-                            BuildAssetData(
-                                classTypeFilter,
-                                o.NameFilter,
-                                o.ContainerFilter,
-                                nameExcludeFilters,
-                                containerExcludeFilters,
-                                ref i
-                            );
-                            ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
+                            using (ProfileLogger.Measure("build_asset_data", new Dictionary<string, object>
+                            {
+                                ["loadedAssetFiles"] = assetsManager.assetsFileList.Count,
+                                ["firstFile"] = batch.FirstOrDefault(),
+                            }))
+                            {
+                                BuildAssetData(
+                                    classTypeFilter,
+                                    o.NameFilter,
+                                    o.ContainerFilter,
+                                    nameExcludeFilters,
+                                    containerExcludeFilters,
+                                    ref i
+                                );
+                            }
+                            using (ProfileLogger.Measure("export_batch", new Dictionary<string, object>
+                            {
+                                ["exportableCount"] = exportableAssets.Count,
+                                ["firstFile"] = batch.FirstOrDefault(),
+                            }))
+                            {
+                                ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
+                            }
                         }
                         exportableAssets.Clear();
-                        assetsManager.Clear();
+                        using (ProfileLogger.Measure("clear_batch", new Dictionary<string, object>
+                        {
+                            ["firstFile"] = batch.FirstOrDefault(),
+                        }))
+                        {
+                            assetsManager.Clear();
+                        }
                     }
                 }
                 if (Properties.Settings.Default.scrapeMonos)

@@ -176,6 +176,24 @@ export_manifest.jsonl
 
 每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
 
+默认还会写入性能日志：
+
+```text
+export_profile.jsonl
+```
+
+它记录批次加载、资产数据构建、模型转换、材质导出、模型写出和 GC 的耗时及内存快照。觉得全量导出慢时，保留这个文件就能直接分析瓶颈。关闭日志：
+
+```powershell
+--profile_log off
+```
+
+指定日志路径：
+
+```powershell
+--profile_log "D:\misutime\FreedunkExport\profile.jsonl"
+```
+
 ## 通用 3D 模型导出命令
 
 适合普通 Unity 游戏：

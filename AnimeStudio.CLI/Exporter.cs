@@ -561,25 +561,32 @@ namespace AnimeStudio.CLI
             };
             options.textureDataExists = (_, exportName) =>
                 ExportedTextureExists(exportFilePath, exportName);
-            var convert =
-                animationList != null
-                    ? new ModelConverter(
-                        m_Animator,
-                        options,
-                        animationList.Select(x => (AnimationClip)x.Asset).ToArray()
-                    )
-                    : new ModelConverter(m_Animator, options);
+            ModelConverter convert;
+            using (ProfileLogger.Measure("model_convert", GetModelProfileData(item, exportFilePath)))
+            {
+                convert =
+                    animationList != null
+                        ? new ModelConverter(
+                            m_Animator,
+                            options,
+                            animationList.Select(x => (AnimationClip)x.Asset).ToArray()
+                        )
+                        : new ModelConverter(m_Animator, options);
+            }
             if (options.exportMaterials)
             {
                 var materialExportPath = exportFullPath;
                 Directory.CreateDirectory(materialExportPath);
-                foreach (var material in options.materials)
+                using (ProfileLogger.Measure("material_json_export", GetModelProfileData(item, exportFilePath, options.materials.Count)))
                 {
-                    var matItem = new AssetItem(material);
-                    ExportJSONFile(matItem, materialExportPath);
+                    foreach (var material in options.materials)
+                    {
+                        var matItem = new AssetItem(material);
+                        ExportJSONFile(matItem, materialExportPath);
+                    }
                 }
             }
-            ExportFbx(convert, exportFilePath);
+            ExportFbx(convert, exportFilePath, item);
             return true;
         }
 
@@ -632,14 +639,18 @@ namespace AnimeStudio.CLI
             };
             options.textureDataExists = (_, exportName) =>
                 ExportedTextureExists(exportFullPath, exportName);
-            var convert =
-                animationList != null
-                    ? new ModelConverter(
-                        gameObject,
-                        options,
-                        animationList.Select(x => (AnimationClip)x.Asset).ToArray()
-                    )
-                    : new ModelConverter(gameObject, options);
+            ModelConverter convert;
+            using (ProfileLogger.Measure("model_convert", GetGameObjectProfileData(gameObject, exportFullPath)))
+            {
+                convert =
+                    animationList != null
+                        ? new ModelConverter(
+                            gameObject,
+                            options,
+                            animationList.Select(x => (AnimationClip)x.Asset).ToArray()
+                        )
+                        : new ModelConverter(gameObject, options);
+            }
 
             if (convert.MeshList.Count == 0)
             {
@@ -653,29 +664,35 @@ namespace AnimeStudio.CLI
             }
             if (options.exportMaterials)
             {
-                foreach (var material in options.materials)
+                using (ProfileLogger.Measure("material_json_export", GetGameObjectProfileData(gameObject, exportFullPath, options.materials.Count)))
                 {
-                    var matItem = new AssetItem(material);
-                    ExportJSONFile(matItem, exportPath);
+                    foreach (var material in options.materials)
+                    {
+                        var matItem = new AssetItem(material);
+                        ExportJSONFile(matItem, exportPath);
+                    }
                 }
             }
-            ExportFbx(convert, exportFullPath);
+            ExportFbx(convert, exportFullPath, gameObject);
             return true;
         }
 
-        private static void ExportFbx(IImported convert, string exportPath)
+        private static void ExportFbx(IImported convert, string exportPath, object source)
         {
-            switch (CliExportOptions.ModelFormat)
+            using (ProfileLogger.Measure("model_write", GetImportedProfileData(convert, exportPath, source)))
             {
-                case ModelExportFormat.Fbx:
-                    ExportFbxModel(convert, exportPath);
-                    break;
-                case ModelExportFormat.Glb:
-                    ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".glb"), true);
-                    break;
-                default:
-                    ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".gltf"), false);
-                    break;
+                switch (CliExportOptions.ModelFormat)
+                {
+                    case ModelExportFormat.Fbx:
+                        ExportFbxModel(convert, exportPath);
+                        break;
+                    case ModelExportFormat.Glb:
+                        ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".glb"), true);
+                        break;
+                    default:
+                        ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".gltf"), false);
+                        break;
+                }
             }
         }
 
@@ -790,6 +807,85 @@ namespace AnimeStudio.CLI
                 name = name.Replace(c, '_');
             }
             return name;
+        }
+
+        private static Dictionary<string, object> GetModelProfileData(
+            AssetItem item,
+            string exportPath,
+            int? materialCount = null
+        )
+        {
+            var data = new Dictionary<string, object>
+            {
+                ["type"] = item.TypeString,
+                ["name"] = item.Text,
+                ["container"] = item.Container,
+                ["source"] = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                ["pathId"] = item.m_PathID,
+                ["output"] = exportPath,
+                ["format"] = CliExportOptions.ModelFormat.ToString(),
+            };
+            if (materialCount.HasValue)
+            {
+                data["materialCount"] = materialCount.Value;
+            }
+            return data;
+        }
+
+        private static Dictionary<string, object> GetGameObjectProfileData(
+            GameObject gameObject,
+            string exportPath,
+            int? materialCount = null
+        )
+        {
+            var data = new Dictionary<string, object>
+            {
+                ["type"] = nameof(GameObject),
+                ["name"] = gameObject.m_Name,
+                ["source"] = gameObject.assetsFile?.originalPath ?? gameObject.assetsFile?.fileName,
+                ["pathId"] = gameObject.m_PathID,
+                ["output"] = exportPath,
+                ["format"] = CliExportOptions.ModelFormat.ToString(),
+            };
+            if (materialCount.HasValue)
+            {
+                data["materialCount"] = materialCount.Value;
+            }
+            return data;
+        }
+
+        private static Dictionary<string, object> GetImportedProfileData(
+            IImported imported,
+            string exportPath,
+            object source
+        )
+        {
+            var data = new Dictionary<string, object>
+            {
+                ["output"] = exportPath,
+                ["format"] = CliExportOptions.ModelFormat.ToString(),
+                ["meshCount"] = imported.MeshList?.Count ?? 0,
+                ["materialCount"] = imported.MaterialList?.Count ?? 0,
+                ["textureCount"] = imported.TextureList?.Count ?? 0,
+                ["animationCount"] = imported.AnimationList?.Count ?? 0,
+            };
+            switch (source)
+            {
+                case AssetItem item:
+                    data["type"] = item.TypeString;
+                    data["name"] = item.Text;
+                    data["container"] = item.Container;
+                    data["source"] = item.SourceFile?.originalPath ?? item.SourceFile?.fileName;
+                    data["pathId"] = item.m_PathID;
+                    break;
+                case GameObject gameObject:
+                    data["type"] = nameof(GameObject);
+                    data["name"] = gameObject.m_Name;
+                    data["source"] = gameObject.assetsFile?.originalPath ?? gameObject.assetsFile?.fileName;
+                    data["pathId"] = gameObject.m_PathID;
+                    break;
+            }
+            return data;
         }
 
         public static bool ExportDumpFile(AssetItem item, string exportPath)
