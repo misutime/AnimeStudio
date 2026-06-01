@@ -121,7 +121,7 @@ auto_GI_3a1b2c4d5e6f
 贴图模式：
 
 - `--texture_mode Raw`：默认值。导出 Unity 原始/压缩贴图数据为 `.rawtex`，旁边写 `.rawtex.json` 记录宽高、Unity TextureFormat、mip 数、源 asset/pathId、Unity 版本和平台；glTF 材质 `extras.unityTextures` 保留贴图引用。速度最快，适合全量提取和后续批量转换。
-- `--texture_mode Png`：解码并导出 `.png`，glTF 会直接引用 PNG。最兼容 Blender/预览器，但全量角色会明显变慢。
+- `--texture_mode Png`：解码并导出 `.png`，glTF 会直接引用 PNG。PNG 会先写入顶层共享目录 `Textures\_ModelDependencies`，再在模型目录的 `Textures` 子目录创建硬链接；这样模型目录便于单独查看，同时重复贴图不额外占用磁盘空间。最兼容 Blender/预览器，但全量角色会明显变慢。
 - `--texture_mode Reference`：只在 glTF 材质 `extras.unityTextures` 记录引用，不写贴图数据。最快，适合先扫模型结构。
 
 ### 贴图工作流和技术逻辑
@@ -518,6 +518,8 @@ D:\tmp\AnimeStudio_GI_Library\
 ```
 
 模型依赖贴图会统一写入顶层 `Textures\_ModelDependencies`。默认 `--texture_mode Raw` 会写 `.rawtex` 和 `.rawtex.json`；如果使用 `--texture_mode Png`，则会写 PNG。模型依赖的材质 JSON 会和模型放在同一目录，独立材质会进入顶层 `Materials`。
+
+`--texture_mode Png` 下，glTF 会优先引用模型目录旁边 `Textures` 子目录里的 PNG；这些 PNG 是从顶层 `Textures\_ModelDependencies` 创建的硬链接。硬链接失败时才会退回普通复制。
 
 ### 原神 Shader
 

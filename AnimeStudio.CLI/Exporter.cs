@@ -755,6 +755,7 @@ namespace AnimeStudio.CLI
                 exportSkins = Properties.Settings.Default.exportSkins || CliExportOptions.ExportAnimations,
                 exportAnimations = CliExportOptions.ExportAnimations,
                 textureDirectory = GetSharedTextureDirectory(exportPath),
+                localTextureDirectoryName = "Textures",
             };
             ModelExporter.ExportGltf(exportPath, convert, exportOptions);
         }

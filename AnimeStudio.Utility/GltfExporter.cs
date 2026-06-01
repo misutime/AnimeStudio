@@ -16,6 +16,7 @@ namespace AnimeStudio
             public bool binary;
             public bool exportSkins = true;
             public bool exportAnimations = true;
+            public string localTextureDirectoryName;
         }
 
         public static class Exporter
@@ -35,6 +36,7 @@ namespace AnimeStudio
         private readonly string _path;
         private readonly string _directory;
         private readonly string _binName;
+        private readonly string _localTextureDirectory;
         private readonly IImported _imported;
         private readonly Gltf.ExportOptions _options;
         private readonly MemoryStream _bin = new MemoryStream();
@@ -62,6 +64,9 @@ namespace AnimeStudio
             _binName = Path.GetFileNameWithoutExtension(path) + ".bin";
             _imported = imported;
             _options = options ?? new Gltf.ExportOptions();
+            _localTextureDirectory = string.IsNullOrWhiteSpace(_options.localTextureDirectoryName)
+                ? null
+                : Path.Combine(_directory, _options.localTextureDirectoryName);
             _writer = new BinaryWriter(_bin, Encoding.UTF8, leaveOpen: true);
         }
 
@@ -501,8 +506,42 @@ namespace AnimeStudio
                 File.WriteAllBytes(path, texture.Data);
                 WriteTextureMetadata(path, texture);
             }
-            return File.Exists(path) ? path : null;
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            return CreateLocalTextureLink(path, Path.GetFileName(path));
         }
+
+        private string CreateLocalTextureLink(string sharedPath, string fileName)
+        {
+            if (_localTextureDirectory == null)
+            {
+                return sharedPath;
+            }
+
+            Directory.CreateDirectory(_localTextureDirectory);
+            var linkPath = Path.Combine(_localTextureDirectory, fileName);
+            if (string.Equals(Path.GetFullPath(sharedPath), Path.GetFullPath(linkPath), StringComparison.OrdinalIgnoreCase))
+            {
+                return sharedPath;
+            }
+
+            if (File.Exists(linkPath))
+            {
+                return linkPath;
+            }
+
+            if (!CreateHardLink(linkPath, sharedPath, IntPtr.Zero))
+            {
+                File.Copy(sharedPath, linkPath, false);
+            }
+            return linkPath;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CreateHardLink(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
 
         private static bool IsGltfSupportedImagePath(string path)
         {
