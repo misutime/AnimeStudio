@@ -40,6 +40,8 @@ namespace AnimeStudio.CLI
                 optionsBinder.TypeFilter,
                 optionsBinder.NameFilter,
                 optionsBinder.ContainerFilter,
+                optionsBinder.NameExcludeFilter,
+                optionsBinder.ContainerExcludeFilter,
                 optionsBinder.WorkMode,
                 optionsBinder.GameName,
                 optionsBinder.MapOp,
@@ -73,6 +75,8 @@ namespace AnimeStudio.CLI
         public string[] TypeFilter { get; set; }
         public Regex[] NameFilter { get; set; }
         public Regex[] ContainerFilter { get; set; }
+        public Regex[] NameExcludeFilter { get; set; }
+        public Regex[] ContainerExcludeFilter { get; set; }
         public WorkMode WorkMode { get; set; }
         public string GameName { get; set; }
         public MapOpType MapOp { get; set; }
@@ -101,6 +105,8 @@ namespace AnimeStudio.CLI
         public readonly Option<string[]> TypeFilter;
         public readonly Option<Regex[]> NameFilter;
         public readonly Option<Regex[]> ContainerFilter;
+        public readonly Option<Regex[]> NameExcludeFilter;
+        public readonly Option<Regex[]> ContainerExcludeFilter;
         public readonly Option<WorkMode> WorkMode;
         public readonly Option<string> GameName;
         public readonly Option<MapOpType> MapOp;
@@ -126,68 +132,10 @@ namespace AnimeStudio.CLI
             Silent = new Option<bool>("--silent", "Hide log messages.");
             LoggerFlags = new Option<LoggerEvent[]>("--logger_flags", "Flags to control toggle log events.") { AllowMultipleArgumentsPerToken = true, ArgumentHelpName = "Verbose|Debug|Info|etc.." };
             TypeFilter = new Option<string[]>("--types", "Specify unity class type(s)") { AllowMultipleArgumentsPerToken = true, ArgumentHelpName = "Texture2D|Shader:Parse|Sprite:Both|etc.." };
-            NameFilter = new Option<Regex[]>("--names", result => 
-            {
-                var items = new List<Regex>();
-                var value = result.Tokens.Single().Value;
-                if (File.Exists(value))
-                {
-                    var lines = File.ReadLines(value);
-                    foreach (var line in lines)
-                    {
-                        if (string.IsNullOrWhiteSpace(line))
-                        {
-                            continue;
-                        }
-
-                        try
-                        {
-                            items.Add(new Regex(line, RegexOptions.IgnoreCase));
-                        }
-                        catch (ArgumentException e)
-                        {
-                            continue;
-                        }
-                    }
-                }
-                else
-                {
-                    items.AddRange(result.Tokens.Select(x => new Regex(x.Value, RegexOptions.IgnoreCase)).ToArray());
-                }
-
-                return items.ToArray();
-            }, false, "Specify name regex filter(s).") { AllowMultipleArgumentsPerToken = true };
-            ContainerFilter = new Option<Regex[]>("--containers", result =>
-            {
-                var items = new List<Regex>();
-                var value = result.Tokens.Single().Value;
-                if (File.Exists(value))
-                {
-                    var lines = File.ReadLines(value);
-                    foreach(var line in lines)
-                    {
-                        if (string.IsNullOrWhiteSpace(line))
-                        {
-                            continue;
-                        }
-
-                        try
-                        {
-                            items.Add(new Regex(line, RegexOptions.IgnoreCase));
-                        }
-                        catch (ArgumentException e)
-                        {
-                            continue;
-                        }
-                    }
-                }
-                else
-                {
-                    items.AddRange(result.Tokens.Select(x => new Regex(x.Value, RegexOptions.IgnoreCase)).ToArray());
-                }
-
-                return items.ToArray();
-            }, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
+            NameFilter = new Option<Regex[]>("--names", ParseRegexOption, false, "Specify name regex filter(s).") { AllowMultipleArgumentsPerToken = true };
+            ContainerFilter = new Option<Regex[]>("--containers", ParseRegexOption, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
+            NameExcludeFilter = new Option<Regex[]>("--names_exclude", ParseRegexOption, false, "Specify name regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
+            ContainerExcludeFilter = new Option<Regex[]>("--containers_exclude", ParseRegexOption, false, "Specify container/path regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
             WorkMode = new Option<WorkMode>("--mode", "Specify 3D export mode: Export, SplitObjects, or Animator.");
             GameName = new Option<string>("--game", $"Specify Game.") { IsRequired = true };
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
@@ -216,6 +164,8 @@ namespace AnimeStudio.CLI
             TypeFilter.AddValidator(FilterValidator);
             NameFilter.AddValidator(FilterValidator);
             ContainerFilter.AddValidator(FilterValidator);
+            NameExcludeFilter.AddValidator(FilterValidator);
+            ContainerExcludeFilter.AddValidator(FilterValidator);
             Key.AddValidator(result =>
             {
                 var value = result.Tokens.Single().Value;
@@ -285,6 +235,8 @@ namespace AnimeStudio.CLI
             TypeFilter = bindingContext.ParseResult.GetValueForOption(TypeFilter),
             NameFilter = bindingContext.ParseResult.GetValueForOption(NameFilter),
             ContainerFilter = bindingContext.ParseResult.GetValueForOption(ContainerFilter),
+            NameExcludeFilter = bindingContext.ParseResult.GetValueForOption(NameExcludeFilter),
+            ContainerExcludeFilter = bindingContext.ParseResult.GetValueForOption(ContainerExcludeFilter),
             WorkMode = bindingContext.ParseResult.GetValueForOption(WorkMode),
             GameName = bindingContext.ParseResult.GetValueForOption(GameName),
             MapOp = bindingContext.ParseResult.GetValueForOption(MapOp),
@@ -305,5 +257,37 @@ namespace AnimeStudio.CLI
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)
         };
+
+        private static Regex[] ParseRegexOption(ArgumentResult result)
+        {
+            var items = new List<Regex>();
+            var value = result.Tokens.Single().Value;
+            if (File.Exists(value))
+            {
+                var lines = File.ReadLines(value);
+                foreach (var line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        items.Add(new Regex(line, RegexOptions.IgnoreCase));
+                    }
+                    catch (ArgumentException)
+                    {
+                        continue;
+                    }
+                }
+            }
+            else
+            {
+                items.AddRange(result.Tokens.Select(x => new Regex(x.Value, RegexOptions.IgnoreCase)).ToArray());
+            }
+
+            return items.ToArray();
+        }
     }
 }

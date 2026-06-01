@@ -264,6 +264,8 @@ namespace AnimeStudio.CLI
             ClassIDType[] typeFilters,
             Regex[] nameFilters,
             Regex[] containerFilters,
+            Regex[] nameExcludeFilters,
+            Regex[] containerExcludeFilters,
             ref int i
         )
         {
@@ -332,7 +334,17 @@ namespace AnimeStudio.CLI
                     var isContainerMatch =
                         containerFilters.IsNullOrEmpty()
                         || containerFilters.Any(y => y.IsMatch(x.Container));
-                    return isMatchRegex && isFilteredType && isContainerMatch;
+                    var isNameExcluded =
+                        !nameExcludeFilters.IsNullOrEmpty()
+                        && nameExcludeFilters.Any(y => y.IsMatch(x.Text ?? string.Empty));
+                    var isContainerExcluded =
+                        !containerExcludeFilters.IsNullOrEmpty()
+                        && containerExcludeFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
+                    return isMatchRegex
+                        && isFilteredType
+                        && isContainerMatch
+                        && !isNameExcluded
+                        && !isContainerExcluded;
                 })
                 .ToArray();
             if (ModelRootsOnly)
@@ -342,6 +354,20 @@ namespace AnimeStudio.CLI
             }
             exportableAssets.Clear();
             exportableAssets.AddRange(matches);
+        }
+
+        private static string GetFilterableContainerText(AssetItem asset)
+        {
+            return string.Join(
+                "\n",
+                new[]
+                {
+                    asset.Container,
+                    asset.SourceFile?.originalPath,
+                    asset.SourceFile?.fileName,
+                    asset.Text,
+                }.Where(x => !string.IsNullOrWhiteSpace(x))
+            );
         }
 
         private static AssetItem[] FilterUsefulModelRoots(AssetItem[] assets)

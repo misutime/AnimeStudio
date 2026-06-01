@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using AnimeStudio.CLI.Properties;
 using Newtonsoft.Json;
@@ -172,7 +173,20 @@ namespace AnimeStudio.CLI
 
                 Logger.Info("Scanning for files...");
                 var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
+                var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.ContainerExcludeFilter);
+                var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.NameExcludeFilter);
+                if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
+                {
+                    var originalCount = files.Length;
+                    files = files.Where(x => !containerExcludeFilters.Any(y => y.IsMatch(x))).ToArray();
+                    Logger.Info($"Excluded {originalCount - files.Length} file(s) by 3D path filters.");
+                }
                 Logger.Info($"Found {files.Length} files");
+                if (files.Length == 0)
+                {
+                    Logger.Warning("No files left after applying filters.");
+                    return;
+                }
                 var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
                     ? o.Input.FullName
                     : Path.GetDirectoryName(o.Input.FullName);
@@ -235,7 +249,14 @@ namespace AnimeStudio.CLI
                         assetsManager.LoadFiles(file);
                         if (assetsManager.assetsFileList.Count > 0)
                         {
-                            BuildAssetData(classTypeFilter, o.NameFilter, o.ContainerFilter, ref i);
+                            BuildAssetData(
+                                classTypeFilter,
+                                o.NameFilter,
+                                o.ContainerFilter,
+                                nameExcludeFilters,
+                                containerExcludeFilters,
+                                ref i
+                            );
                             ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
                         }
                         exportableAssets.Clear();
@@ -269,6 +290,65 @@ namespace AnimeStudio.CLI
             var key = $"{game.Type}|{fullPath}".ToLowerInvariant();
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
             return $"auto_{game.Type}_{hash}";
+        }
+
+        private static Regex[] GetContainerExcludeFilters(
+            WorkMode workMode,
+            Regex[] userExcludeFilters
+        )
+        {
+            if (workMode == WorkMode.Export)
+            {
+                return userExcludeFilters ?? Array.Empty<Regex>();
+            }
+
+            var filters = new List<Regex>();
+            filters.Add(
+                new Regex(
+                    @"(^|[\\/])([^\\/]*(ui|emoji)[^\\/]*|sounds?|audio|videos?|camera)([\\/]|\.|$)",
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled
+                )
+            );
+
+            if (workMode == WorkMode.SplitObjects)
+            {
+                filters.Add(
+                    new Regex(
+                        @"(^|[\\/])animations?([\\/]|\.|$)",
+                        RegexOptions.IgnoreCase | RegexOptions.Compiled
+                    )
+                );
+            }
+
+            if (!userExcludeFilters.IsNullOrEmpty())
+            {
+                filters.AddRange(userExcludeFilters);
+            }
+
+            return filters.ToArray();
+        }
+
+        private static Regex[] GetNameExcludeFilters(WorkMode workMode, Regex[] userExcludeFilters)
+        {
+            if (workMode == WorkMode.Export)
+            {
+                return userExcludeFilters ?? Array.Empty<Regex>();
+            }
+
+            var filters = new List<Regex>
+            {
+                new Regex(
+                    @"camera|maincam|handycam|uicam",
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled
+                ),
+            };
+
+            if (!userExcludeFilters.IsNullOrEmpty())
+            {
+                filters.AddRange(userExcludeFilters);
+            }
+
+            return filters.ToArray();
         }
 
         private static void ConfigureWorkModeTypes(WorkMode workMode, FbxAnimationMode animationMode)
