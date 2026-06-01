@@ -16,6 +16,7 @@ namespace AnimeStudio.CLI
         public static int? FbxBoneSize { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
+        public static AnimeStudio.TextureExportMode TextureMode { get; set; } = AnimeStudio.TextureExportMode.Raw;
         public static string OutputRoot { get; set; }
 
         public static bool ExportAnimations => FbxAnimationMode != FbxAnimationMode.Skip;
@@ -552,6 +553,7 @@ namespace AnimeStudio.CLI
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
+                textureMode = CliExportOptions.TextureMode,
                 game = Studio.Game,
                 collectAnimations = CliExportOptions.CollectAnimations,
                 exportAnimations = CliExportOptions.ExportAnimations,
@@ -633,6 +635,7 @@ namespace AnimeStudio.CLI
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
+                textureMode = CliExportOptions.TextureMode,
                 game = Studio.Game,
                 collectAnimations = CliExportOptions.CollectAnimations,
                 exportAnimations = CliExportOptions.ExportAnimations,
@@ -841,6 +844,7 @@ namespace AnimeStudio.CLI
                 ["pathId"] = item.m_PathID,
                 ["output"] = exportPath,
                 ["format"] = CliExportOptions.ModelFormat.ToString(),
+                ["textureMode"] = CliExportOptions.TextureMode.ToString(),
             };
             if (materialCount.HasValue)
             {

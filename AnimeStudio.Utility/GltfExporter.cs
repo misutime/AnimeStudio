@@ -375,6 +375,7 @@ namespace AnimeStudio
                 ["roughnessFactor"] = 0.8f,
             };
             Dictionary<string, object> normalTexture = null;
+            List<Dictionary<string, object>> nonStandardTextures = null;
 
             foreach (var textureRef in material.Textures ?? Enumerable.Empty<ImportedMaterialTexture>())
             {
@@ -382,6 +383,21 @@ namespace AnimeStudio
                 if (texture == null)
                 {
                     continue;
+                }
+                if (texture.IsReferenceOnly || !IsGltfSupportedImageName(texture.ExportName ?? texture.Name))
+                {
+                    nonStandardTextures ??= new List<Dictionary<string, object>>();
+                    nonStandardTextures.Add(new Dictionary<string, object>
+                    {
+                        ["slot"] = textureRef.Dest,
+                        ["name"] = texture.Name,
+                        ["exportName"] = texture.ExportName ?? texture.Name,
+                        ["format"] = texture.SourceTextureFormat,
+                        ["width"] = texture.Width,
+                        ["height"] = texture.Height,
+                        ["mipCount"] = texture.MipCount,
+                        ["referenceOnly"] = texture.IsReferenceOnly,
+                    });
                 }
                 var textureIndex = GetTextureIndex(texture);
                 if (textureIndex < 0)
@@ -411,6 +427,13 @@ namespace AnimeStudio
             {
                 gltfMaterial["alphaMode"] = "BLEND";
             }
+            if (nonStandardTextures?.Count > 0)
+            {
+                gltfMaterial["extras"] = new Dictionary<string, object>
+                {
+                    ["unityTextures"] = nonStandardTextures,
+                };
+            }
 
             var index = _materials.Count;
             _materials.Add(gltfMaterial);
@@ -431,6 +454,10 @@ namespace AnimeStudio
             {
                 return -1;
             }
+            if (!IsGltfSupportedImagePath(imagePath))
+            {
+                return -1;
+            }
 
             var imageIndex = _images.Count;
             _images.Add(new Dictionary<string, object>
@@ -446,6 +473,11 @@ namespace AnimeStudio
 
         private string ExportTexture(ImportedTexture texture)
         {
+            if (texture.IsReferenceOnly)
+            {
+                return null;
+            }
+
             var textureDirectory = string.IsNullOrWhiteSpace(_options.textureDirectory)
                 ? _directory
                 : _options.textureDirectory;
@@ -461,8 +493,44 @@ namespace AnimeStudio
             if (!File.Exists(path) && texture.Data != null)
             {
                 File.WriteAllBytes(path, texture.Data);
+                WriteTextureMetadata(path, texture);
             }
             return File.Exists(path) ? path : null;
+        }
+
+        private static bool IsGltfSupportedImagePath(string path)
+        {
+            return IsGltfSupportedImageName(Path.GetFileName(path));
+        }
+
+        private static bool IsGltfSupportedImageName(string name)
+        {
+            var ext = Path.GetExtension(name);
+            return ext.Equals(".png", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".ktx2", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void WriteTextureMetadata(string path, ImportedTexture texture)
+        {
+            if (string.IsNullOrWhiteSpace(texture.SourceTextureFormat))
+            {
+                return;
+            }
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["name"] = texture.Name,
+                ["exportName"] = texture.ExportName ?? texture.Name,
+                ["format"] = texture.SourceTextureFormat,
+                ["width"] = texture.Width,
+                ["height"] = texture.Height,
+                ["mipCount"] = texture.MipCount,
+                ["dataFile"] = Path.GetFileName(path),
+            };
+            File.WriteAllText(path + ".json", JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }));
         }
 
         private int WriteVec2Accessor(IEnumerable<Vector2> values)

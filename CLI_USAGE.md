@@ -110,7 +110,19 @@ auto_GI_3a1b2c4d5e6f
 --model_format Fbx
 ```
 
-全量资源提取建议使用默认 `Gltf`。它会输出 `.gltf + .bin + 共享贴图`，比 FBX 更适合批量导出、恢复导出和贴图复用。FBX 只建议在需要兼容旧流程或特定 DCC 工具时使用。
+全量资源提取建议使用默认 `Gltf`。它会输出 `.gltf + .bin`，比 FBX 更适合批量导出、恢复导出和后处理。FBX 只建议在需要兼容旧流程或特定 DCC 工具时使用。
+
+模型依赖贴图默认使用 Raw 模式：
+
+```powershell
+--texture_mode Raw
+```
+
+贴图模式：
+
+- `--texture_mode Raw`：默认值。导出 Unity 原始/压缩贴图数据为 `.rawtex`，旁边写 `.rawtex.json` 记录宽高、Unity TextureFormat、mip 数；glTF 材质 `extras.unityTextures` 保留贴图引用。速度最快，适合全量提取和后续批量转换。
+- `--texture_mode Png`：解码并导出 `.png`，glTF 会直接引用 PNG。最兼容 Blender/预览器，但全量角色会明显变慢。
+- `--texture_mode Reference`：只在 glTF 材质 `extras.unityTextures` 记录引用，不写贴图数据。最快，适合先扫模型结构。
 
 模型模式默认会过滤：
 
@@ -182,7 +194,7 @@ export_manifest.jsonl
 export_profile.jsonl
 ```
 
-它记录批次加载、资产数据构建、模型转换、材质导出、模型写出和 GC 的耗时及内存快照。觉得全量导出慢时，保留这个文件就能直接分析瓶颈。关闭日志：
+它记录批次加载、资产数据构建、模型转换、`model_mesh`、`model_skin`、`model_material`、`model_texture`、`model_texture_raw`、模型写出和 GC 的耗时及内存快照。觉得全量导出慢时，保留这个文件就能直接分析瓶颈。关闭日志：
 
 ```powershell
 --profile_log off
@@ -209,6 +221,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --model_roots_only `
   --group_assets ByContainer `
   --model_format Gltf `
+  --texture_mode Raw `
   --fbx_animation Skip
 ```
 
@@ -217,7 +230,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - `--mode SplitObjects`：按 GameObject 拆分导出模型。
 - `--model_roots_only`：尽量只导出模型根节点，减少子 mesh 零件重复导出。
 - `--group_assets ByContainer`：按资源容器路径组织输出。
-- `--model_format Gltf`：导出 `.gltf + .bin + 共享贴图`；这是默认值，可以省略。
+- `--model_format Gltf`：导出 `.gltf + .bin`；这是默认值，可以省略。
+- `--texture_mode Raw`：导出原始贴图数据，避免 PNG 解码拖慢全量模型导出；这是默认值，可以省略。
 - `--fbx_animation Skip`：模型导出不附带动画。参数名仍沿用旧名，控制模型导出时是否收集动画数据。
 
 ## 通用动画导出命令
@@ -270,10 +284,11 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --model_roots_only `
   --group_assets ByContainer `
   --model_format Gltf `
+  --texture_mode Raw `
   --fbx_animation Skip
 ```
 
-全量会产生大量模型。默认 glTF + 共享贴图 + 批处理会优先保证可持续导出和较低内存峰值；如果机器内存充足，可以增加 `--batch_files`。
+全量会产生大量模型。默认 glTF + Raw 贴图 + 批处理会优先保证可持续导出和较低内存峰值；如果机器内存充足，可以增加 `--batch_files`。需要 Blender 直接显示贴图时，再改用 `--texture_mode Png` 或后续单独批量转贴图。
 
 ### Freedunk 全量动画
 
@@ -438,7 +453,7 @@ D:\tmp\AnimeStudio_GI_Library\
   Materials\
 ```
 
-模型依赖贴图会统一写入顶层 `Textures\_ModelDependencies`，模型目录中也会放同名 PNG 硬链接；模型依赖的材质 JSON 会和 FBX 放在同一目录，独立材质会进入顶层 `Materials`。
+模型依赖贴图会统一写入顶层 `Textures\_ModelDependencies`。默认 `--texture_mode Raw` 会写 `.rawtex` 和 `.rawtex.json`；如果使用 `--texture_mode Png`，则会写 PNG。模型依赖的材质 JSON 会和模型放在同一目录，独立材质会进入顶层 `Materials`。
 
 ### 原神 Shader
 
@@ -454,7 +469,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --group_assets ByLibrary
 ```
 
-Shader 导出是研究资料，不等于 Blender 可以直接使用。后续重建 Blender 材质时，应结合 `.shader`、材质 JSON、贴图 PNG 一起分析。
+Shader 导出是研究资料，不等于 Blender 可以直接使用。后续重建 Blender 材质时，应结合 `.shader`、材质 JSON、贴图文件一起分析。
 
 ## 原神目录恢复和 asset index
 

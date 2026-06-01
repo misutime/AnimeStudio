@@ -6,6 +6,13 @@ using System.Text;
 
 namespace AnimeStudio
 {
+    public enum TextureExportMode
+    {
+        Raw,
+        Png,
+        Reference
+    }
+
     public class ModelConverter : IImported
     {
         public ImportedFrame RootFrame { get; protected set; }
@@ -799,7 +806,7 @@ namespace AnimeStudio
 
                         texture.Dest = GetTextureDestination(texEnv.Key);
 
-                        var ext = $".{options.imageFormat.ToString().ToLower()}";
+                        var ext = GetTextureNameExtension();
                         if (textureNameDictionary.TryGetValue(m_Texture2D, out var textureName))
                         {
                             texture.Name = textureName;
@@ -904,6 +911,20 @@ namespace AnimeStudio
                 );
                 return;
             }
+
+            if (options.textureMode == TextureExportMode.Reference)
+            {
+                iTex = new ImportedTexture(name, exportName)
+                {
+                    IsReferenceOnly = true,
+                    SourceTextureFormat = m_Texture2D.m_TextureFormat.ToString(),
+                    Width = m_Texture2D.m_Width,
+                    Height = m_Texture2D.m_Height,
+                };
+                TextureList.Add(iTex);
+                return;
+            }
+
             if (options.textureDataExists?.Invoke(m_Texture2D, exportName) == true)
             {
                 iTex = new ImportedTexture(name, exportName);
@@ -912,26 +933,64 @@ namespace AnimeStudio
                 return;
             }
 
-            using (Measure("model_texture", new Dictionary<string, object>
+            var stage = options.textureMode == TextureExportMode.Raw
+                ? "model_texture_raw"
+                : "model_texture";
+            using (Measure(stage, new Dictionary<string, object>
             {
                 ["texture"] = m_Texture2D.m_Name,
                 ["source"] = m_Texture2D.assetsFile?.fullName,
                 ["pathId"] = m_Texture2D.m_PathID,
                 ["exportName"] = exportName,
+                ["textureMode"] = options.textureMode.ToString(),
+                ["textureFormat"] = m_Texture2D.m_TextureFormat.ToString(),
+                ["width"] = m_Texture2D.m_Width,
+                ["height"] = m_Texture2D.m_Height,
                 ["imageFormat"] = options.imageFormat.ToString(),
             }))
             {
-                var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
-                if (stream != null)
+                if (options.textureMode == TextureExportMode.Raw)
                 {
-                    using (stream)
+                    var data = m_Texture2D.image_data?.GetData();
+                    if (data != null)
                     {
-                        iTex = new ImportedTexture(stream, name);
+                        iTex = new ImportedTexture(data, name);
                         iTex.ExportName = exportName;
+                        iTex.SourceTextureFormat = m_Texture2D.m_TextureFormat.ToString();
+                        iTex.Width = m_Texture2D.m_Width;
+                        iTex.Height = m_Texture2D.m_Height;
+                        iTex.MipCount = m_Texture2D.m_MipCount;
                         TextureList.Add(iTex);
                     }
                 }
+                else
+                {
+                    var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
+                    if (stream != null)
+                    {
+                        using (stream)
+                        {
+                            iTex = new ImportedTexture(stream, name);
+                            iTex.ExportName = exportName;
+                            iTex.SourceTextureFormat = m_Texture2D.m_TextureFormat.ToString();
+                            iTex.Width = m_Texture2D.m_Width;
+                            iTex.Height = m_Texture2D.m_Height;
+                            iTex.MipCount = m_Texture2D.m_MipCount;
+                            TextureList.Add(iTex);
+                        }
+                    }
+                }
             }
+        }
+
+        private string GetTextureNameExtension()
+        {
+            return options.textureMode switch
+            {
+                TextureExportMode.Raw => ".rawtex",
+                TextureExportMode.Reference => ".reftex",
+                _ => $".{options.imageFormat.ToString().ToLower()}",
+            };
         }
 
         private static string GetTextureExportName(Texture2D texture, string name)
@@ -1436,6 +1495,7 @@ namespace AnimeStudio
         public record Options
         {
             public ImageFormat imageFormat;
+            public TextureExportMode textureMode;
             public Game game;
             public bool collectAnimations;
             public bool exportAnimations = true;

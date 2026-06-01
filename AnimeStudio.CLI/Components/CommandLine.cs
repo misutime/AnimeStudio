@@ -65,6 +65,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.FbxBoneSize,
                 optionsBinder.FbxAnimationMode,
                 optionsBinder.ModelFormat,
+                optionsBinder.TextureMode,
                 optionsBinder.MaxExportTasks,
                 optionsBinder.BatchFiles,
                 optionsBinder.ModelGcInterval,
@@ -104,6 +105,7 @@ namespace AnimeStudio.CLI
         public int? FbxBoneSize { get; set; }
         public FbxAnimationMode FbxAnimationMode { get; set; }
         public ModelExportFormat ModelFormat { get; set; }
+        public AnimeStudio.TextureExportMode TextureMode { get; set; }
         public int MaxExportTasks { get; set; }
         public int BatchFiles { get; set; }
         public int ModelGcInterval { get; set; }
@@ -138,6 +140,7 @@ namespace AnimeStudio.CLI
         public readonly Option<int?> FbxBoneSize;
         public readonly Option<FbxAnimationMode> FbxAnimationMode;
         public readonly Option<ModelExportFormat> ModelFormat;
+        public readonly Option<AnimeStudio.TextureExportMode> TextureMode;
         public readonly Option<int> MaxExportTasks;
         public readonly Option<int> BatchFiles;
         public readonly Option<int> ModelGcInterval;
@@ -170,6 +173,7 @@ namespace AnimeStudio.CLI
             FbxBoneSize = new Option<int?>("--fbx_bone_size", "Override FBX bone size.");
             FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
             ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
+            TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
             ModelGcInterval = new Option<int>("--model_gc_interval", "Run a full blocking GC after this many exported models in 3D modes. Use 0 to disable model-level full GC.");
@@ -210,6 +214,7 @@ namespace AnimeStudio.CLI
             WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Export);
             FbxAnimationMode.SetDefaultValue(AnimeStudio.CLI.FbxAnimationMode.Skip);
             ModelFormat.SetDefaultValue(AnimeStudio.CLI.ModelExportFormat.Gltf);
+            TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Raw);
             MaxExportTasks.SetDefaultValue(1);
             BatchFiles.SetDefaultValue(4);
             ModelGcInterval.SetDefaultValue(32);
@@ -280,6 +285,7 @@ namespace AnimeStudio.CLI
                 FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
                 FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
                 ModelFormat = bindingContext.ParseResult.GetValueForOption(ModelFormat),
+                TextureMode = bindingContext.ParseResult.GetValueForOption(TextureMode),
                 MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
                 BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),
                 ModelGcInterval = bindingContext.ParseResult.GetValueForOption(ModelGcInterval),
