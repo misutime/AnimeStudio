@@ -20,6 +20,34 @@ namespace AnimeStudio.CLI
         {
             try
             {
+                Logger.Default = new ConsoleLogger();
+                Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
+
+                if (o.ConvertModelTextures != null)
+                {
+                    TexturePostProcessor.ConvertModelTextures(
+                        o.ConvertModelTextures.FullName,
+                        o.ConvertTextureAssetRoot?.FullName,
+                        o.ConvertTextureOutput?.FullName,
+                        o.ConvertTextureFormat,
+                        o.UpdateGltfTextureRefs
+                    );
+                    return;
+                }
+
+                if (o.Input == null || o.Output == null)
+                {
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures for post-export texture conversion.");
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(o.GameName))
+                {
+                    Logger.Error("--game is required for export.");
+                    Console.WriteLine(GameManager.SupportedGames());
+                    return;
+                }
+
                 var game = GameManager.GetGame(o.GameName);
 
                 // See https://github.com/Eleiyas/Z3-Asset-Map 
@@ -56,8 +84,6 @@ namespace AnimeStudio.CLI
                 CliExportOptions.ModelFormat = o.ModelFormat;
                 CliExportOptions.TextureMode = o.TextureMode;
                 CliExportOptions.OutputRoot = o.Output.FullName;
-                Logger.Default = new ConsoleLogger();
-                Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
                 Logger.FileLogging = Settings.Default.enableFileLogging;
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
                 AssetsHelper.SetUnityVersion(o.UnityVersion);

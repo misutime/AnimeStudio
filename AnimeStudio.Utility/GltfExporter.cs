@@ -396,6 +396,12 @@ namespace AnimeStudio
                         ["width"] = texture.Width,
                         ["height"] = texture.Height,
                         ["mipCount"] = texture.MipCount,
+                        ["sourcePathId"] = texture.SourcePathId,
+                        ["sourceAssetPath"] = texture.SourceAssetPath,
+                        ["sourceFileName"] = texture.SourceFileName,
+                        ["unityVersion"] = texture.UnityVersion,
+                        ["platform"] = texture.Platform,
+                        ["rawDataSize"] = texture.RawDataSize,
                         ["referenceOnly"] = texture.IsReferenceOnly,
                     });
                 }
@@ -528,6 +534,12 @@ namespace AnimeStudio
                 ["width"] = texture.Width,
                 ["height"] = texture.Height,
                 ["mipCount"] = texture.MipCount,
+                ["sourcePathId"] = texture.SourcePathId,
+                ["sourceAssetPath"] = texture.SourceAssetPath,
+                ["sourceFileName"] = texture.SourceFileName,
+                ["unityVersion"] = texture.UnityVersion,
+                ["platform"] = texture.Platform,
+                ["rawDataSize"] = texture.RawDataSize,
                 ["dataFile"] = Path.GetFileName(path),
             };
             File.WriteAllText(path + ".json", JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }));

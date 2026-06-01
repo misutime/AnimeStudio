@@ -14,6 +14,7 @@ namespace AnimeStudio
         private int[] version;
         private BuildTarget platform;
         private int outPutSize;
+        private byte[] rawData;
 
         public Texture2DConverter(Texture2D m_Texture2D)
         {
@@ -26,17 +27,36 @@ namespace AnimeStudio
             outPutSize = m_Width * m_Height * 4;
         }
 
+        public Texture2DConverter(byte[] rawData, int width, int height, TextureFormat textureFormat, int[] version = null, BuildTarget platform = BuildTarget.NoTarget)
+        {
+            this.rawData = rawData ?? Array.Empty<byte>();
+            m_Width = width;
+            m_Height = height;
+            m_TextureFormat = textureFormat;
+            this.version = version ?? new[] { 2020, 1, 0 };
+            this.platform = platform;
+            outPutSize = m_Width * m_Height * 4;
+        }
+
         public bool DecodeTexture2D(byte[] bytes)
         {
-            if (reader.Size == 0 || m_Width == 0 || m_Height == 0)
+            var sourceSize = reader != null ? (int)reader.Size : rawData.Length;
+            if (sourceSize == 0 || m_Width == 0 || m_Height == 0)
             {
                 return false;
             }
             var flag = false;
-            var buff = ArrayPool<byte>.Shared.Rent(reader.Size);
+            var buff = ArrayPool<byte>.Shared.Rent(sourceSize);
             try
             {
-                reader.GetData(buff);
+                if (reader != null)
+                {
+                    reader.GetData(buff);
+                }
+                else
+                {
+                    Buffer.BlockCopy(rawData, 0, buff, 0, sourceSize);
+                }
                 switch (m_TextureFormat)
                 {
                     case TextureFormat.Alpha8: //test pass
@@ -232,7 +252,8 @@ namespace AnimeStudio
         {
             if (platform == BuildTarget.XBOX360)
             {
-                for (var i = 0; i < reader.Size / 2; i++)
+                var sourceSize = reader != null ? (int)reader.Size : rawData.Length;
+                for (var i = 0; i < sourceSize / 2; i++)
                 {
                     var b = image_data[i * 2];
                     image_data[i * 2] = image_data[i * 2 + 1];

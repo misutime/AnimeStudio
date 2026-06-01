@@ -120,7 +120,7 @@ auto_GI_3a1b2c4d5e6f
 
 贴图模式：
 
-- `--texture_mode Raw`：默认值。导出 Unity 原始/压缩贴图数据为 `.rawtex`，旁边写 `.rawtex.json` 记录宽高、Unity TextureFormat、mip 数；glTF 材质 `extras.unityTextures` 保留贴图引用。速度最快，适合全量提取和后续批量转换。
+- `--texture_mode Raw`：默认值。导出 Unity 原始/压缩贴图数据为 `.rawtex`，旁边写 `.rawtex.json` 记录宽高、Unity TextureFormat、mip 数、源 asset/pathId、Unity 版本和平台；glTF 材质 `extras.unityTextures` 保留贴图引用。速度最快，适合全量提取和后续批量转换。
 - `--texture_mode Png`：解码并导出 `.png`，glTF 会直接引用 PNG。最兼容 Blender/预览器，但全量角色会明显变慢。
 - `--texture_mode Reference`：只在 glTF 材质 `extras.unityTextures` 记录引用，不写贴图数据。最快，适合先扫模型结构。
 
@@ -130,8 +130,8 @@ auto_GI_3a1b2c4d5e6f
 
 1. 全量模型导出默认使用 `--texture_mode Raw`。
 2. 先用 `.gltf/.glb` 浏览模型结构、命名、骨骼、网格和材质槽。
-3. 看到值得保留的模型后，再根据该模型 glTF 材质里的 `extras.unityTextures` 和顶层 `Textures\_ModelDependencies` 中的 `.rawtex.json` 找到对应贴图。
-4. 后续可以单独把目标模型涉及的 `.rawtex` 批量转换成 PNG、KTX2、DDS 或其他标准格式。
+3. 看到值得保留的模型后，直接对该模型的 `.gltf` 执行 `--convert_model_textures`。
+4. CLI 会读取 glTF 材质里的 `extras.unityTextures`，到顶层 `Textures\_ModelDependencies` 找对应 `.rawtex/.rawtex.json`，只转换这个模型实际用到的贴图。
 
 这样做的原因：
 
@@ -154,9 +154,39 @@ Textures\_ModelDependencies\xxx.rawtex.json
 - `format`：Unity `TextureFormat`，例如 `DXT1Crunched`、`DXT5`、`BC7`、`ASTC_6x6`。
 - `width` / `height`：贴图尺寸。
 - `mipCount`：mip 数量。
+- `sourceAssetPath` / `sourceFileName` / `sourcePathId`：原始 Unity 资源来源，方便追踪重复贴图和问题贴图。
+- `unityVersion` / `platform`：后处理解码需要的 Unity 版本和平台信息。
+- `rawDataSize`：`.rawtex` 原始字节长度。
 - `dataFile`：对应 `.rawtex` 文件名。
 
-后续如果要做“选中模型后单独转贴图”，应优先基于这些信息实现转换器，而不是重新全量解码所有贴图。
+选中模型后单独转贴图：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --convert_model_textures "D:\Assets\Freedunk_Data_gltf\assets\ingame\prefabs\characters\Qiqi_03_00\Qiqi_03_00.gltf"
+```
+
+默认行为：
+
+- 自动从 glTF 路径向上查找导出根目录，直到发现 `Textures\_ModelDependencies`。
+- 输出到模型目录旁边的 `Textures` 子目录。
+- 默认转成 PNG。
+- 默认修改该 `.gltf` 的标准 `images/textures` 引用，让 Blender/预览器能直接加载贴图。
+
+可选参数：
+
+```powershell
+--texture_asset_root "D:\Assets\Freedunk_Data_gltf"
+--texture_output "D:\Assets\Freedunk_Data_gltf\assets\ingame\prefabs\characters\Qiqi_03_00\Textures"
+--texture_output_format Png
+--update_gltf_texture_refs false
+```
+
+如果只想测试转换、不想改原 glTF，可以加：
+
+```powershell
+--update_gltf_texture_refs false
+```
 
 模型模式默认会过滤：
 

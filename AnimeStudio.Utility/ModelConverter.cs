@@ -907,8 +907,10 @@ namespace AnimeStudio
                 && options.textureDataExists?.Invoke(m_Texture2D, cachedTexture.ExportName ?? exportName) == true
             )
             {
-                TextureList.Add(new ImportedTexture(name, cachedTexture.ExportName ?? exportName)
-                );
+                var cached = new ImportedTexture(name, cachedTexture.ExportName ?? exportName);
+                CopyTextureMetadata(cachedTexture, cached);
+                FillTextureMetadata(cached, m_Texture2D);
+                TextureList.Add(cached);
                 return;
             }
 
@@ -917,10 +919,8 @@ namespace AnimeStudio
                 iTex = new ImportedTexture(name, exportName)
                 {
                     IsReferenceOnly = true,
-                    SourceTextureFormat = m_Texture2D.m_TextureFormat.ToString(),
-                    Width = m_Texture2D.m_Width,
-                    Height = m_Texture2D.m_Height,
                 };
+                FillTextureMetadata(iTex, m_Texture2D);
                 TextureList.Add(iTex);
                 return;
             }
@@ -928,6 +928,7 @@ namespace AnimeStudio
             if (options.textureDataExists?.Invoke(m_Texture2D, exportName) == true)
             {
                 iTex = new ImportedTexture(name, exportName);
+                FillTextureMetadata(iTex, m_Texture2D);
                 TextureList.Add(iTex);
                 options.textureCache?.TryAdd(m_Texture2D, iTex);
                 return;
@@ -956,10 +957,7 @@ namespace AnimeStudio
                     {
                         iTex = new ImportedTexture(data, name);
                         iTex.ExportName = exportName;
-                        iTex.SourceTextureFormat = m_Texture2D.m_TextureFormat.ToString();
-                        iTex.Width = m_Texture2D.m_Width;
-                        iTex.Height = m_Texture2D.m_Height;
-                        iTex.MipCount = m_Texture2D.m_MipCount;
+                        FillTextureMetadata(iTex, m_Texture2D);
                         TextureList.Add(iTex);
                     }
                 }
@@ -972,15 +970,41 @@ namespace AnimeStudio
                         {
                             iTex = new ImportedTexture(stream, name);
                             iTex.ExportName = exportName;
-                            iTex.SourceTextureFormat = m_Texture2D.m_TextureFormat.ToString();
-                            iTex.Width = m_Texture2D.m_Width;
-                            iTex.Height = m_Texture2D.m_Height;
-                            iTex.MipCount = m_Texture2D.m_MipCount;
+                            FillTextureMetadata(iTex, m_Texture2D);
                             TextureList.Add(iTex);
                         }
                     }
                 }
             }
+        }
+
+        private static void FillTextureMetadata(ImportedTexture importedTexture, Texture2D texture)
+        {
+            importedTexture.SourceTextureFormat = texture.m_TextureFormat.ToString();
+            importedTexture.Width = texture.m_Width;
+            importedTexture.Height = texture.m_Height;
+            importedTexture.MipCount = texture.m_MipCount;
+            importedTexture.SourcePathId = texture.m_PathID;
+            importedTexture.SourceAssetPath = texture.assetsFile?.fullName;
+            importedTexture.SourceFileName = texture.assetsFile?.fileName;
+            importedTexture.UnityVersion = texture.version != null ? string.Join(".", texture.version) : null;
+            importedTexture.Platform = texture.platform.ToString();
+            importedTexture.RawDataSize = texture.image_data != null ? (int)texture.image_data.Size : 0;
+        }
+
+        private static void CopyTextureMetadata(ImportedTexture source, ImportedTexture destination)
+        {
+            destination.IsReferenceOnly = source.IsReferenceOnly;
+            destination.SourceTextureFormat = source.SourceTextureFormat;
+            destination.Width = source.Width;
+            destination.Height = source.Height;
+            destination.MipCount = source.MipCount;
+            destination.SourcePathId = source.SourcePathId;
+            destination.SourceAssetPath = source.SourceAssetPath;
+            destination.SourceFileName = source.SourceFileName;
+            destination.UnityVersion = source.UnityVersion;
+            destination.Platform = source.Platform;
+            destination.RawDataSize = source.RawDataSize;
         }
 
         private string GetTextureNameExtension()

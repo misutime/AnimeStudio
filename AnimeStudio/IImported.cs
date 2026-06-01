@@ -224,6 +224,12 @@ namespace AnimeStudio
         public int Width { get; set; }
         public int Height { get; set; }
         public int MipCount { get; set; }
+        public long SourcePathId { get; set; }
+        public string SourceAssetPath { get; set; }
+        public string SourceFileName { get; set; }
+        public string UnityVersion { get; set; }
+        public string Platform { get; set; }
+        public int RawDataSize { get; set; }
 
         public ImportedTexture(MemoryStream stream, string name)
         {

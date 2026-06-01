@@ -70,6 +70,11 @@ namespace AnimeStudio.CLI
                 optionsBinder.BatchFiles,
                 optionsBinder.ModelGcInterval,
                 optionsBinder.ProfileLog,
+                optionsBinder.ConvertModelTextures,
+                optionsBinder.ConvertTextureAssetRoot,
+                optionsBinder.ConvertTextureOutput,
+                optionsBinder.ConvertTextureFormat,
+                optionsBinder.UpdateGltfTextureRefs,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -110,6 +115,11 @@ namespace AnimeStudio.CLI
         public int BatchFiles { get; set; }
         public int ModelGcInterval { get; set; }
         public string ProfileLog { get; set; }
+        public FileInfo ConvertModelTextures { get; set; }
+        public DirectoryInfo ConvertTextureAssetRoot { get; set; }
+        public DirectoryInfo ConvertTextureOutput { get; set; }
+        public AnimeStudio.ImageFormat ConvertTextureFormat { get; set; }
+        public bool UpdateGltfTextureRefs { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -145,6 +155,11 @@ namespace AnimeStudio.CLI
         public readonly Option<int> BatchFiles;
         public readonly Option<int> ModelGcInterval;
         public readonly Option<string> ProfileLog;
+        public readonly Option<FileInfo> ConvertModelTextures;
+        public readonly Option<DirectoryInfo> ConvertTextureAssetRoot;
+        public readonly Option<DirectoryInfo> ConvertTextureOutput;
+        public readonly Option<AnimeStudio.ImageFormat> ConvertTextureFormat;
+        public readonly Option<bool> UpdateGltfTextureRefs;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -159,7 +174,7 @@ namespace AnimeStudio.CLI
             NameExcludeFilter = new Option<Regex[]>("--names_exclude", ParseRegexOption, false, "Specify name regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
             ContainerExcludeFilter = new Option<Regex[]>("--containers_exclude", ParseRegexOption, false, "Specify container/path regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
             WorkMode = new Option<WorkMode>("--mode", "Specify 3D export mode: Export, SplitObjects, or Animator.");
-            GameName = new Option<string>("--game", $"Specify Game.") { IsRequired = true };
+            GameName = new Option<string>("--game", $"Specify Game.");
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
             MapName = new Option<string>("--map_name", "Specify AssetMap file name. If omitted, a stable name is generated from game and input path.");
@@ -178,9 +193,16 @@ namespace AnimeStudio.CLI
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
             ModelGcInterval = new Option<int>("--model_gc_interval", "Run a full blocking GC after this many exported models in 3D modes. Use 0 to disable model-level full GC.");
             ProfileLog = new Option<string>("--profile_log", "Write JSONL performance profile events to the specified path. Use 'off' to disable.");
+            ConvertModelTextures = new Option<FileInfo>("--convert_model_textures", "Convert only the raw textures referenced by a previously exported glTF model. Does not require the original game folder.").LegalFilePathsOnly();
+            ConvertTextureAssetRoot = new Option<DirectoryInfo>("--texture_asset_root", "Root of a previous export. If omitted, it is inferred by walking up from the glTF until Textures/_ModelDependencies is found.").LegalFilePathsOnly();
+            ConvertTextureOutput = new Option<DirectoryInfo>("--texture_output", "Output folder for converted model textures. Defaults to a Textures folder next to the glTF.").LegalFilePathsOnly();
+            ConvertTextureFormat = new Option<AnimeStudio.ImageFormat>("--texture_output_format", "Output image format for --convert_model_textures.");
+            UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
+            Input.Arity = ArgumentArity.ZeroOrOne;
+            Output.Arity = ArgumentArity.ZeroOrOne;
 
             Key = new Option<byte>("--key", result =>
             {
@@ -219,6 +241,8 @@ namespace AnimeStudio.CLI
             BatchFiles.SetDefaultValue(4);
             ModelGcInterval.SetDefaultValue(32);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
+            ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
+            UpdateGltfTextureRefs.SetDefaultValue(true);
             MapOp.SetDefaultValue(MapOpType.None);
             MapType.SetDefaultValue(ExportListType.XML);
         }
@@ -290,6 +314,11 @@ namespace AnimeStudio.CLI
                 BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),
                 ModelGcInterval = bindingContext.ParseResult.GetValueForOption(ModelGcInterval),
                 ProfileLog = bindingContext.ParseResult.GetValueForOption(ProfileLog),
+                ConvertModelTextures = bindingContext.ParseResult.GetValueForOption(ConvertModelTextures),
+                ConvertTextureAssetRoot = bindingContext.ParseResult.GetValueForOption(ConvertTextureAssetRoot),
+                ConvertTextureOutput = bindingContext.ParseResult.GetValueForOption(ConvertTextureOutput),
+                ConvertTextureFormat = bindingContext.ParseResult.GetValueForOption(ConvertTextureFormat),
+                UpdateGltfTextureRefs = bindingContext.ParseResult.GetValueForOption(UpdateGltfTextureRefs),
             DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)
