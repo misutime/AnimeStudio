@@ -192,7 +192,7 @@ namespace AnimeStudio.CLI
             GameName = new Option<string>("--game", $"Specify Game.") { IsRequired = true };
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
-            MapName = new Option<string>("--map_name", () => "assets_map", "Specify AssetMap file name.");
+            MapName = new Option<string>("--map_name", "Specify AssetMap file name. If omitted, a stable name is generated from game and input path.");
             UnityVersion = new Option<string>("--unity_version", "Specify Unity version.");
             GroupAssetsType = new Option<AssetGroupOption>("--group_assets", "Specify how exported assets should be grouped. ByLibrary writes models, textures, materials, and data into separate library folders.");
             AssetExportType = new Option<ExportType>("--export_type", "Specify how assets should be exported.");

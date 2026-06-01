@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using AnimeStudio.CLI.Properties;
 using Newtonsoft.Json;
@@ -174,17 +176,19 @@ namespace AnimeStudio.CLI
                 var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
                     ? o.Input.FullName
                     : Path.GetDirectoryName(o.Input.FullName);
+                var mapName = ResolveMapName(o.MapName, game, inputBaseFolder);
+                Logger.Info($"Using map name {mapName}");
                 var needsModelDependencies = ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport();
 
                 if (o.MapOp.HasFlag(MapOpType.CABMap))
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
-                        AssetsHelper.BuildCABMap(files, o.MapName, inputBaseFolder, game);
+                        AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
                     }
                     else
                     {
-                        AssetsHelper.LoadCABMapInternal(o.MapName);
+                        AssetsHelper.LoadCABMapInternal(mapName);
                         assetsManager.ResolveDependencies = true;
                     }
                 }
@@ -192,25 +196,25 @@ namespace AnimeStudio.CLI
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
-                        files = AssetsHelper.ParseAssetMap(o.MapName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter);
+                        files = AssetsHelper.ParseAssetMap(mapName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter);
                     }
                     else
                     {
-                        Task.Run(() => AssetsHelper.BuildAssetMap(files, o.MapName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                        Task.Run(() => AssetsHelper.BuildAssetMap(files, mapName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                     }
                 }
                 if (o.MapOp.HasFlag(MapOpType.Both))
                 {
-                    Task.Run(() => AssetsHelper.BuildBoth(files, o.MapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                    Task.Run(() => AssetsHelper.BuildBoth(files, mapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                 }
                 if (needsModelDependencies && o.MapOp.Equals(MapOpType.None))
                 {
-                    var cabMapLoaded = AssetsHelper.LoadCABMapInternal(o.MapName);
+                    var cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
                     if (!cabMapLoaded)
                     {
                         Logger.Info("Building CAB dependency map for model materials...");
-                        AssetsHelper.BuildCABMap(files, o.MapName, inputBaseFolder, game);
-                        cabMapLoaded = AssetsHelper.LoadCABMapInternal(o.MapName);
+                        AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
+                        cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
                     }
                     if (cabMapLoaded)
                     {
@@ -249,6 +253,22 @@ namespace AnimeStudio.CLI
             {
                 Console.WriteLine(e);
             }
+        }
+
+        private static string ResolveMapName(string mapName, Game game, string inputBaseFolder)
+        {
+            if (!string.IsNullOrWhiteSpace(mapName))
+            {
+                return mapName;
+            }
+
+            var fullPath = Path.GetFullPath(inputBaseFolder).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar
+            );
+            var key = $"{game.Type}|{fullPath}".ToLowerInvariant();
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
+            return $"auto_{game.Type}_{hash}";
         }
 
         private static void ConfigureWorkModeTypes(WorkMode workMode, FbxAnimationMode animationMode)
