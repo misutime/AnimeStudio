@@ -204,8 +204,8 @@ namespace AnimeStudio.CLI
 
                 Logger.Info("Scanning for files...");
                 var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
-                var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.ContainerExcludeFilter);
-                var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.NameExcludeFilter);
+                var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.Profile3D, o.ContainerExcludeFilter);
+                var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.Profile3D, o.NameExcludeFilter);
                 if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
                 {
                     var originalCount = files.Length;
@@ -368,6 +368,7 @@ namespace AnimeStudio.CLI
 
         private static Regex[] GetContainerExcludeFilters(
             WorkMode workMode,
+            Model3DProfile profile3D,
             Regex[] userExcludeFilters
         )
         {
@@ -394,6 +395,22 @@ namespace AnimeStudio.CLI
                 );
             }
 
+            if (profile3D == Model3DProfile.Core)
+            {
+                filters.Add(
+                    new Regex(
+                        @"(^|[\\/])assets[\\/](outgame[\\/]res[\\/]effect|graphics[\\/]effect|ingame[\\/]prefabs[\\/](managers|datas)|stagetest|graphics[\\/]temp|graphics[\\/]stageoutgame[\\/]playerselect|graphics[\\/]character[\\/]pc[\\/]_common)([\\/]|\.|$)",
+                        RegexOptions.IgnoreCase | RegexOptions.Compiled
+                    )
+                );
+                filters.Add(
+                    new Regex(
+                        @"(^|[\\/])sphere([\\/]|\.|$)",
+                        RegexOptions.IgnoreCase | RegexOptions.Compiled
+                    )
+                );
+            }
+
             if (!userExcludeFilters.IsNullOrEmpty())
             {
                 filters.AddRange(userExcludeFilters);
@@ -402,7 +419,7 @@ namespace AnimeStudio.CLI
             return filters.ToArray();
         }
 
-        private static Regex[] GetNameExcludeFilters(WorkMode workMode, Regex[] userExcludeFilters)
+        private static Regex[] GetNameExcludeFilters(WorkMode workMode, Model3DProfile profile3D, Regex[] userExcludeFilters)
         {
             if (workMode == WorkMode.Export)
             {
@@ -416,6 +433,16 @@ namespace AnimeStudio.CLI
                     RegexOptions.IgnoreCase | RegexOptions.Compiled
                 ),
             };
+
+            if (profile3D == Model3DProfile.Core)
+            {
+                filters.Add(
+                    new Regex(
+                        @"(^|[_\-\s])(shadow|dummy)($|[_\-\s])|(?:^|[_\-\s])test$|^sphere$|^groundshadow$",
+                        RegexOptions.IgnoreCase | RegexOptions.Compiled
+                    )
+                );
+            }
 
             if (!userExcludeFilters.IsNullOrEmpty())
             {

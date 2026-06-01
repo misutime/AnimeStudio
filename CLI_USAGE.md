@@ -284,6 +284,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --mode SplitObjects `
   --model_roots_only `
   --group_assets ByContainer `
+  --profile_3d Core `
   --model_format Gltf `
   --texture_mode Raw `
   --fbx_animation Skip
@@ -294,6 +295,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - `--mode SplitObjects`：按 GameObject 拆分导出模型。
 - `--model_roots_only`：尽量只导出模型根节点，减少子 mesh 零件重复导出。
 - `--group_assets ByContainer`：按资源容器路径组织输出。
+- `--profile_3d Core`：默认值。保留角色、NPC、场景、道具、球等高相关 3D 模型，额外排除常见 effect 承载网格、manager/data 间接引用、stagetest/temp、shadow/dummy/test/sphere 等非核心模型。需要研究全部候选模型时改用 `--profile_3d All`。
 - `--model_format Gltf`：导出 `.gltf + .bin`；这是默认值，可以省略。
 - `--texture_mode Raw`：导出原始贴图数据，避免 PNG 解码拖慢全量模型导出；这是默认值，可以省略。
 - `--fbx_animation Skip`：模型导出不附带动画。参数名仍沿用旧名，控制模型导出时是否收集动画数据。
@@ -347,12 +349,13 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --mode SplitObjects `
   --model_roots_only `
   --group_assets ByContainer `
+  --profile_3d Core `
   --model_format Gltf `
   --texture_mode Raw `
   --fbx_animation Skip
 ```
 
-全量会产生大量模型。默认 glTF + Raw 贴图 + 批处理会优先保证可持续导出和较低内存峰值；如果机器内存充足，可以增加 `--batch_files`。需要 Blender 直接显示贴图时，再改用 `--texture_mode Png` 或后续单独批量转贴图。
+全量会产生大量模型。默认 `--profile_3d Core` 会过滤 Freedunk 里大量 effect、manager/data、stagetest/temp、shadow/dummy/test/sphere 等非核心模型；如果要保留所有候选模型用于排查，改用 `--profile_3d All`。默认 glTF + Raw 贴图 + 批处理会优先保证可持续导出和较低内存峰值；如果机器内存充足，可以增加 `--batch_files`。需要 Blender 直接显示贴图时，再改用 `--texture_mode Png` 或后续单独批量转贴图。
 
 ### Freedunk 全量动画
 
