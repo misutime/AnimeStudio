@@ -32,6 +32,9 @@ namespace AnimeStudio.CLI
         };
         public static AssemblyLoader assemblyLoader = new AssemblyLoader();
         public static List<AssetItem> exportableAssets = new List<AssetItem>();
+        public static WorkMode WorkMode { get; set; } = WorkMode.Export;
+        public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
+        public static int MaxExportTasks { get; set; } = 1;
         public static bool ModelRootsOnly { get; set; }
         private static readonly Regex[] ModelRootExcludePatterns =
         {
@@ -630,6 +633,119 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
+        }
+
+        public static void ExportCurrentAssets(
+            string savePath,
+            AssetGroupOption assetGroupOption,
+            ExportType exportType
+        )
+        {
+            switch (WorkMode)
+            {
+                case WorkMode.SplitObjects:
+                    ExportSplitObjects(savePath, assetGroupOption);
+                    break;
+                case WorkMode.Animator:
+                    ExportAnimators(savePath, assetGroupOption);
+                    break;
+                default:
+                    ExportAssets(savePath, exportableAssets, assetGroupOption, exportType);
+                    break;
+            }
+        }
+
+        public static void ExportSplitObjects(string savePath, AssetGroupOption assetGroupOption)
+        {
+            var animations = GetAnimationListForMode();
+            var models = exportableAssets.Where(x => x.Asset is GameObject).ToList();
+            ExportModelAssets(savePath, models, assetGroupOption, animations);
+        }
+
+        public static void ExportAnimators(string savePath, AssetGroupOption assetGroupOption)
+        {
+            var animations = GetAnimationListForMode();
+            var animators = exportableAssets.Where(x => x.Asset is Animator).ToList();
+            ExportModelAssets(savePath, animators, assetGroupOption, animations);
+        }
+
+        private static List<AssetItem> GetAnimationListForMode()
+        {
+            return FbxAnimationMode == FbxAnimationMode.All
+                ? exportableAssets.Where(x => x.Asset is AnimationClip).ToList()
+                : null;
+        }
+
+        private static void ExportModelAssets(
+            string savePath,
+            List<AssetItem> models,
+            AssetGroupOption assetGroupOption,
+            List<AssetItem> animations
+        )
+        {
+            var exportedCount = 0;
+            var toExportCount = models.Count;
+            Logger.Info($"Export mode {WorkMode} using max export tasks {MaxExportTasks}.");
+
+            foreach (var asset in models)
+            {
+                var exportPath = GetExportPath(savePath, assetGroupOption, asset);
+                Logger.Info($"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
+                try
+                {
+                    var exported = asset.Asset switch
+                    {
+                        GameObject => ExportGameObject(asset, exportPath, animations),
+                        Animator => ExportAnimator(asset, exportPath, animations),
+                        _ => false,
+                    };
+
+                    if (exported)
+                    {
+                        exportedCount++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(
+                        $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
+                    );
+                }
+            }
+
+            Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s).");
+        }
+
+        private static string GetExportPath(
+            string savePath,
+            AssetGroupOption assetGroupOption,
+            AssetItem asset
+        )
+        {
+            return assetGroupOption switch
+            {
+                AssetGroupOption.ByType =>
+                    Path.Combine(savePath, asset.TypeString) + Path.DirectorySeparatorChar,
+                AssetGroupOption.ByContainer when !string.IsNullOrEmpty(asset.Container) =>
+                    (
+                        Path.HasExtension(asset.Container)
+                            ? Path.Combine(savePath, Path.GetDirectoryName(asset.Container))
+                            : Path.Combine(savePath, asset.Container)
+                    ) + Path.DirectorySeparatorChar,
+                AssetGroupOption.ByContainer =>
+                    Path.Combine(savePath, asset.TypeString) + Path.DirectorySeparatorChar,
+                AssetGroupOption.ByLibrary =>
+                    GetLibraryExportPath(savePath, asset) + Path.DirectorySeparatorChar,
+                AssetGroupOption.BySource when string.IsNullOrEmpty(asset.SourceFile.originalPath) =>
+                    Path.Combine(savePath, asset.SourceFile.fileName + "_export") + Path.DirectorySeparatorChar,
+                AssetGroupOption.BySource =>
+                    Path.Combine(
+                        savePath,
+                        Path.GetFileName(asset.SourceFile.originalPath) + "_export",
+                        asset.SourceFile.fileName
+                    ) + Path.DirectorySeparatorChar,
+                _ => savePath + Path.DirectorySeparatorChar,
+            };
         }
 
         private static string GetLibraryExportPath(string savePath, AssetItem asset)

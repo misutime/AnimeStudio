@@ -9,6 +9,20 @@ using System.Collections.Generic;
 
 namespace AnimeStudio.CLI
 {
+    public enum WorkMode
+    {
+        Export,
+        SplitObjects,
+        Animator
+    }
+
+    public enum FbxAnimationMode
+    {
+        Skip,
+        Auto,
+        All
+    }
+
     public static class CommandLine
     {
         public static void Init(string[] args)
@@ -26,6 +40,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.TypeFilter,
                 optionsBinder.NameFilter,
                 optionsBinder.ContainerFilter,
+                optionsBinder.WorkMode,
                 optionsBinder.GameName,
                 optionsBinder.MapOp,
                 optionsBinder.MapType,
@@ -37,6 +52,10 @@ namespace AnimeStudio.CLI
                 optionsBinder.AIFile,
                 optionsBinder.AIVersion,
                 optionsBinder.ModelRootsOnly,
+                optionsBinder.FbxScaleFactor,
+                optionsBinder.FbxBoneSize,
+                optionsBinder.FbxAnimationMode,
+                optionsBinder.MaxExportTasks,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -54,6 +73,7 @@ namespace AnimeStudio.CLI
         public string[] TypeFilter { get; set; }
         public Regex[] NameFilter { get; set; }
         public Regex[] ContainerFilter { get; set; }
+        public WorkMode WorkMode { get; set; }
         public string GameName { get; set; }
         public MapOpType MapOp { get; set; }
         public ExportListType MapType { get; set; }
@@ -65,6 +85,10 @@ namespace AnimeStudio.CLI
         public FileInfo AIFile { get; set; }
         public string AIVersion { get; set; }
         public bool ModelRootsOnly { get; set; }
+        public float? FbxScaleFactor { get; set; }
+        public int? FbxBoneSize { get; set; }
+        public FbxAnimationMode FbxAnimationMode { get; set; }
+        public int MaxExportTasks { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -77,6 +101,7 @@ namespace AnimeStudio.CLI
         public readonly Option<string[]> TypeFilter;
         public readonly Option<Regex[]> NameFilter;
         public readonly Option<Regex[]> ContainerFilter;
+        public readonly Option<WorkMode> WorkMode;
         public readonly Option<string> GameName;
         public readonly Option<MapOpType> MapOp;
         public readonly Option<ExportListType> MapType;
@@ -88,6 +113,10 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> AIFile;
         public readonly Option<string> AIVersion;
         public readonly Option<bool> ModelRootsOnly;
+        public readonly Option<float?> FbxScaleFactor;
+        public readonly Option<int?> FbxBoneSize;
+        public readonly Option<FbxAnimationMode> FbxAnimationMode;
+        public readonly Option<int> MaxExportTasks;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -159,6 +188,7 @@ namespace AnimeStudio.CLI
 
                 return items.ToArray();
             }, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
+            WorkMode = new Option<WorkMode>("--mode", "Specify 3D export mode: Export, SplitObjects, or Animator.");
             GameName = new Option<string>("--game", $"Specify Game.") { IsRequired = true };
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
@@ -169,6 +199,10 @@ namespace AnimeStudio.CLI
             AIFile = new Option<FileInfo>("--ai_file", "Specify asset_index json file path (to recover GI containers).").LegalFilePathsOnly();
             AIVersion = new Option<string>("--ai_version", "Download and load asset_index for the specified GI version (for example 6.0).");
             ModelRootsOnly = new Option<bool>("--model_roots_only", "Export only top-level model GameObjects and skip child mesh parts when their parent model is also exportable.");
+            FbxScaleFactor = new Option<float?>("--fbx_scale_factor", "Override FBX scale factor.");
+            FbxBoneSize = new Option<int?>("--fbx_bone_size", "Override FBX bone size.");
+            FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
+            MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -200,6 +234,9 @@ namespace AnimeStudio.CLI
             LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Debug, LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
             GroupAssetsType.SetDefaultValue(AssetGroupOption.ByType);
             AssetExportType.SetDefaultValue(ExportType.Convert);
+            WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Export);
+            FbxAnimationMode.SetDefaultValue(AnimeStudio.CLI.FbxAnimationMode.Skip);
+            MaxExportTasks.SetDefaultValue(1);
             MapOp.SetDefaultValue(MapOpType.None);
             MapType.SetDefaultValue(ExportListType.XML);
         }
@@ -248,6 +285,7 @@ namespace AnimeStudio.CLI
             TypeFilter = bindingContext.ParseResult.GetValueForOption(TypeFilter),
             NameFilter = bindingContext.ParseResult.GetValueForOption(NameFilter),
             ContainerFilter = bindingContext.ParseResult.GetValueForOption(ContainerFilter),
+            WorkMode = bindingContext.ParseResult.GetValueForOption(WorkMode),
             GameName = bindingContext.ParseResult.GetValueForOption(GameName),
             MapOp = bindingContext.ParseResult.GetValueForOption(MapOp),
             MapType = bindingContext.ParseResult.GetValueForOption(MapType),
@@ -259,6 +297,10 @@ namespace AnimeStudio.CLI
             AIFile = bindingContext.ParseResult.GetValueForOption(AIFile),
             AIVersion = bindingContext.ParseResult.GetValueForOption(AIVersion),
             ModelRootsOnly = bindingContext.ParseResult.GetValueForOption(ModelRootsOnly),
+            FbxScaleFactor = bindingContext.ParseResult.GetValueForOption(FbxScaleFactor),
+            FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
+            FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
+            MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
             DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)

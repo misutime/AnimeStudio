@@ -10,6 +10,16 @@ using Newtonsoft.Json.Converters;
 
 namespace AnimeStudio.CLI
 {
+    internal static class CliExportOptions
+    {
+        public static float? FbxScaleFactor { get; set; }
+        public static int? FbxBoneSize { get; set; }
+        public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
+
+        public static bool ExportAnimations => FbxAnimationMode != FbxAnimationMode.Skip;
+        public static bool CollectAnimations => FbxAnimationMode == FbxAnimationMode.Auto;
+    }
+
     internal static class Exporter
     {
         public static bool ExportTexture2D(AssetItem item, string exportPath)
@@ -535,7 +545,7 @@ namespace AnimeStudio.CLI
             {
                 imageFormat = Properties.Settings.Default.convertType,
                 game = Studio.Game,
-                collectAnimations = Properties.Settings.Default.collectAnimations,
+                collectAnimations = CliExportOptions.CollectAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 useAnimatorHierarchy = true,
@@ -600,13 +610,13 @@ namespace AnimeStudio.CLI
             {
                 imageFormat = Properties.Settings.Default.convertType,
                 game = Studio.Game,
-                collectAnimations = Properties.Settings.Default.collectAnimations,
+                collectAnimations = CliExportOptions.CollectAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 useAnimatorHierarchy =
                     Properties.Settings.Default.exportSkins
-                    || Properties.Settings.Default.exportAnimations
-                    || Properties.Settings.Default.collectAnimations,
+                    || CliExportOptions.ExportAnimations
+                    || CliExportOptions.CollectAnimations,
                 uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(
                     Properties.Settings.Default.uvs
                 ),
@@ -654,11 +664,11 @@ namespace AnimeStudio.CLI
                 filterPrecision = (float)Properties.Settings.Default.filterPrecision,
                 exportAllNodes = Properties.Settings.Default.exportAllNodes,
                 exportSkins = Properties.Settings.Default.exportSkins,
-                exportAnimations = Properties.Settings.Default.exportAnimations,
+                exportAnimations = CliExportOptions.ExportAnimations,
                 exportBlendShape = Properties.Settings.Default.exportBlendShape,
                 castToBone = Properties.Settings.Default.castToBone,
-                boneSize = (int)Properties.Settings.Default.boneSize,
-                scaleFactor = (float)Properties.Settings.Default.scaleFactor,
+                boneSize = CliExportOptions.FbxBoneSize ?? (int)Properties.Settings.Default.boneSize,
+                scaleFactor = CliExportOptions.FbxScaleFactor ?? (float)Properties.Settings.Default.scaleFactor,
                 fbxVersion = Properties.Settings.Default.fbxVersion,
                 fbxFormat = Properties.Settings.Default.fbxFormat,
                 textureDirectory = GetSharedTextureDirectory(exportPath),

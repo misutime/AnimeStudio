@@ -42,6 +42,12 @@ namespace AnimeStudio.CLI
 
                 Studio.Game = game;
                 Studio.ModelRootsOnly = o.ModelRootsOnly;
+                Studio.WorkMode = o.WorkMode;
+                Studio.FbxAnimationMode = o.FbxAnimationMode;
+                Studio.MaxExportTasks = Math.Max(1, o.MaxExportTasks);
+                CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
+                CliExportOptions.FbxBoneSize = o.FbxBoneSize;
+                CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
                 Logger.Default = new ConsoleLogger();
                 Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
                 Logger.FileLogging = Settings.Default.enableFileLogging;
@@ -110,6 +116,11 @@ namespace AnimeStudio.CLI
                             TypeFlags.SetType(ClassIDType.GameObject, true, false);
                         }
                     }
+                }
+                ConfigureWorkModeTypes(o.WorkMode, o.FbxAnimationMode);
+                if (o.WorkMode != WorkMode.Export)
+                {
+                    classTypeFilter = Array.Empty<ClassIDType>();
                 }
 
                 if (o.GroupAssetsType == AssetGroupOption.ByContainer || o.ModelRootsOnly)
@@ -221,7 +232,7 @@ namespace AnimeStudio.CLI
                         if (assetsManager.assetsFileList.Count > 0)
                         {
                             BuildAssetData(classTypeFilter, o.NameFilter, o.ContainerFilter, ref i);
-                            ExportAssets(o.Output.FullName, exportableAssets, o.GroupAssetsType, o.AssetExportType);
+                            ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
                         }
                         exportableAssets.Clear();
                         assetsManager.Clear();
@@ -237,6 +248,32 @@ namespace AnimeStudio.CLI
             catch (Exception e)
             {
                 Console.WriteLine(e);
+            }
+        }
+
+        private static void ConfigureWorkModeTypes(WorkMode workMode, FbxAnimationMode animationMode)
+        {
+            if (workMode == WorkMode.Export)
+            {
+                return;
+            }
+
+            TypeFlags.SetType(ClassIDType.GameObject, true, workMode == WorkMode.SplitObjects);
+            TypeFlags.SetType(ClassIDType.Animator, true, workMode == WorkMode.Animator);
+            TypeFlags.SetType(ClassIDType.Transform, true, false);
+            TypeFlags.SetType(ClassIDType.MeshFilter, true, false);
+            TypeFlags.SetType(ClassIDType.MeshRenderer, true, false);
+            TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, true, false);
+            TypeFlags.SetType(ClassIDType.Mesh, true, false);
+            TypeFlags.SetType(ClassIDType.Material, true, false);
+            TypeFlags.SetType(ClassIDType.Texture2D, true, false);
+
+            if (animationMode != FbxAnimationMode.Skip)
+            {
+                TypeFlags.SetType(ClassIDType.AnimationClip, true, true);
+                TypeFlags.SetType(ClassIDType.AnimatorController, true, false);
+                TypeFlags.SetType(ClassIDType.AnimatorOverrideController, true, false);
+                TypeFlags.SetType(ClassIDType.Avatar, true, false);
             }
         }
     }
