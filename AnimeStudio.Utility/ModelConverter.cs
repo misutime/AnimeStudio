@@ -271,8 +271,17 @@ namespace AnimeStudio
             var mesh = GetMesh(meshR);
             if (mesh == null)
                 return;
-            var iMesh = new ImportedMesh();
             meshR.m_GameObject.TryGet(out var m_GameObject2);
+            using var meshProfile = Measure("model_mesh", new Dictionary<string, object>
+            {
+                ["mesh"] = mesh.m_Name,
+                ["renderer"] = m_GameObject2?.m_Name,
+                ["source"] = mesh.assetsFile?.fullName,
+                ["pathId"] = mesh.m_PathID,
+                ["vertexCount"] = mesh.m_VertexCount,
+                ["submeshCount"] = mesh.m_SubMeshes?.Count ?? 0,
+            });
+            var iMesh = new ImportedMesh();
             iMesh.Path = GetTransformPath(m_GameObject2.m_Transform);
             iMesh.SubmeshList = new List<ImportedSubmesh>();
             var subHashSet = new HashSet<int>();
@@ -355,213 +364,250 @@ namespace AnimeStudio
                 iMesh.SubmeshList.Add(iSubmesh);
             }
 
-            // Shared vertex list
-            iMesh.VertexList = new List<ImportedVertex>((int)mesh.m_VertexCount);
-            for (var j = 0; j < mesh.m_VertexCount; j++)
+            var meshVertexCacheKey = GetMeshVertexCacheKey(mesh, iMesh);
+            if (
+                options.meshVertexCache != null
+                && options.meshVertexCache.TryGetValue(meshVertexCacheKey, out var cachedVertexList)
+            )
             {
-                var iVertex = new ImportedVertex();
-                //Vertices
-                int c = 3;
-                if (mesh.m_Vertices.Length == mesh.m_VertexCount * 4)
+                using (Measure("model_mesh_cache_hit", new Dictionary<string, object>
                 {
-                    c = 4;
+                    ["mesh"] = mesh.m_Name,
+                    ["source"] = mesh.assetsFile?.fullName,
+                    ["pathId"] = mesh.m_PathID,
+                    ["vertexCount"] = mesh.m_VertexCount,
+                }))
+                {
+                    iMesh.VertexList = CloneVertexList(cachedVertexList);
                 }
-                iVertex.Vertex = new Vector3(-mesh.m_Vertices[j * c], mesh.m_Vertices[j * c + 1], mesh.m_Vertices[j * c + 2]);
-                //Normals
-                if (iMesh.hasNormal)
+            }
+            else
+            {
+                // Shared vertex list
+                iMesh.VertexList = new List<ImportedVertex>((int)mesh.m_VertexCount);
+                for (var j = 0; j < mesh.m_VertexCount; j++)
                 {
-                    if (mesh.m_Normals.Length == mesh.m_VertexCount * 3)
-                    {
-                        c = 3;
-                    }
-                    else if (mesh.m_Normals.Length == mesh.m_VertexCount * 4)
+                    var iVertex = new ImportedVertex();
+                    //Vertices
+                    int c = 3;
+                    if (mesh.m_Vertices.Length == mesh.m_VertexCount * 4)
                     {
                         c = 4;
                     }
-                    iVertex.Normal = new Vector3(-mesh.m_Normals[j * c], mesh.m_Normals[j * c + 1], mesh.m_Normals[j * c + 2]);
-                }
-                //UV
-                iVertex.UV = new float[8][];
-                for (int uv = 0; uv < 8; uv++)
-                {
-                    if (iMesh.hasUV[uv])
+                    iVertex.Vertex = new Vector3(-mesh.m_Vertices[j * c], mesh.m_Vertices[j * c + 1], mesh.m_Vertices[j * c + 2]);
+                    //Normals
+                    if (iMesh.hasNormal)
                     {
-                        c = 4;
-                        var m_UV = mesh.GetUV(uv);
-                        if (m_UV.Length == mesh.m_VertexCount * 2)
-                        {
-                            c = 2;
-                        }
-                        else if (m_UV.Length == mesh.m_VertexCount * 3)
+                        if (mesh.m_Normals.Length == mesh.m_VertexCount * 3)
                         {
                             c = 3;
                         }
-                        iVertex.UV[uv] = new[] { m_UV[j * c], m_UV[j * c + 1] };
+                        else if (mesh.m_Normals.Length == mesh.m_VertexCount * 4)
+                        {
+                            c = 4;
+                        }
+                        iVertex.Normal = new Vector3(-mesh.m_Normals[j * c], mesh.m_Normals[j * c + 1], mesh.m_Normals[j * c + 2]);
                     }
-                }
-                //Tangent
-                if (iMesh.hasTangent)
-                {
-                    iVertex.Tangent = new Vector4(-mesh.m_Tangents[j * 4], mesh.m_Tangents[j * 4 + 1], mesh.m_Tangents[j * 4 + 2], mesh.m_Tangents[j * 4 + 3]);
-                }
-                //Colors
-                if (iMesh.hasColor)
-                {
-                    if (mesh.m_Colors.Length == mesh.m_VertexCount * 3)
+                    //UV
+                    iVertex.UV = new float[8][];
+                    for (int uv = 0; uv < 8; uv++)
                     {
-                        iVertex.Color = new Color(mesh.m_Colors[j * 3], mesh.m_Colors[j * 3 + 1], mesh.m_Colors[j * 3 + 2], 1.0f);
+                        if (iMesh.hasUV[uv])
+                        {
+                            c = 4;
+                            var m_UV = mesh.GetUV(uv);
+                            if (m_UV.Length == mesh.m_VertexCount * 2)
+                            {
+                                c = 2;
+                            }
+                            else if (m_UV.Length == mesh.m_VertexCount * 3)
+                            {
+                                c = 3;
+                            }
+                            iVertex.UV[uv] = new[] { m_UV[j * c], m_UV[j * c + 1] };
+                        }
                     }
-                    else
+                    //Tangent
+                    if (iMesh.hasTangent)
                     {
-                        iVertex.Color = new Color(mesh.m_Colors[j * 4], mesh.m_Colors[j * 4 + 1], mesh.m_Colors[j * 4 + 2], mesh.m_Colors[j * 4 + 3]);
+                        iVertex.Tangent = new Vector4(-mesh.m_Tangents[j * 4], mesh.m_Tangents[j * 4 + 1], mesh.m_Tangents[j * 4 + 2], mesh.m_Tangents[j * 4 + 3]);
                     }
+                    //Colors
+                    if (iMesh.hasColor)
+                    {
+                        if (mesh.m_Colors.Length == mesh.m_VertexCount * 3)
+                        {
+                            iVertex.Color = new Color(mesh.m_Colors[j * 3], mesh.m_Colors[j * 3 + 1], mesh.m_Colors[j * 3 + 2], 1.0f);
+                        }
+                        else
+                        {
+                            iVertex.Color = new Color(mesh.m_Colors[j * 4], mesh.m_Colors[j * 4 + 1], mesh.m_Colors[j * 4 + 2], mesh.m_Colors[j * 4 + 3]);
+                        }
+                    }
+                    //BoneInfluence
+                    if (mesh.m_Skin?.Count > 0)
+                    {
+                        var inf = mesh.m_Skin[j];
+                        iVertex.BoneIndices = new int[4];
+                        iVertex.Weights = new float[4];
+                        for (var k = 0; k < 4; k++)
+                        {
+                            iVertex.BoneIndices[k] = inf.boneIndex[k];
+                            iVertex.Weights[k] = inf.weight[k];
+                        }
+                    }
+                    iMesh.VertexList.Add(iVertex);
                 }
-                //BoneInfluence
-                if (mesh.m_Skin?.Count > 0)
+
+                if (options.meshVertexCache != null && mesh.m_VertexCount <= options.maxCachedMeshVertices)
                 {
-                    var inf = mesh.m_Skin[j];
-                    iVertex.BoneIndices = new int[4];
-                    iVertex.Weights = new float[4];
-                    for (var k = 0; k < 4; k++)
-                    {
-                        iVertex.BoneIndices[k] = inf.boneIndex[k];
-                        iVertex.Weights[k] = inf.weight[k];
-                    }
+                    AddMeshVertexCache(meshVertexCacheKey, iMesh.VertexList);
                 }
-                iMesh.VertexList.Add(iVertex);
             }
 
             if (meshR is SkinnedMeshRenderer sMesh)
             {
-                //Bone
-                /*
-                 * 0 - None
-                 * 1 - m_Bones
-                 * 2 - m_BoneNameHashes
-                 */
-                var boneType = 0;
-                if (sMesh.m_Bones.Count > 0)
+                using (Measure("model_skin", new Dictionary<string, object>
                 {
-                    if (sMesh.m_Bones.Count == mesh.m_BindPose.Length)
+                    ["mesh"] = mesh.m_Name,
+                    ["renderer"] = m_GameObject2?.m_Name,
+                    ["source"] = mesh.assetsFile?.fullName,
+                    ["pathId"] = mesh.m_PathID,
+                    ["boneCount"] = sMesh.m_Bones?.Count ?? 0,
+                    ["bindPoseCount"] = mesh.m_BindPose?.Length ?? 0,
+                    ["morphChannelCount"] = mesh.m_Shapes?.channels?.Count ?? 0,
+                }))
+                {
+                    //Bone
+                    /*
+                     * 0 - None
+                     * 1 - m_Bones
+                     * 2 - m_BoneNameHashes
+                     */
+                    var boneType = 0;
+                    if (sMesh.m_Bones.Count > 0)
                     {
-                        var verifiedBoneCount = sMesh.m_Bones.Count(x => x.TryGet(out _));
-                        if (verifiedBoneCount > 0)
+                        if (sMesh.m_Bones.Count == mesh.m_BindPose.Length)
                         {
-                            boneType = 1;
-                        }
-                        if (verifiedBoneCount != sMesh.m_Bones.Count)
-                        {
-                            //尝试使用m_BoneNameHashes 4.3 and up
-                            if (mesh.m_BindPose.Length > 0 && (mesh.m_BindPose.Length == mesh.m_BoneNameHashes?.Length))
+                            var verifiedBoneCount = sMesh.m_Bones.Count(x => x.TryGet(out _));
+                            if (verifiedBoneCount > 0)
                             {
-                                //有效bone数量是否大于SkinnedMeshRenderer
-                                var verifiedBoneCount2 = mesh.m_BoneNameHashes.Count(x => FixBonePath(GetPathFromHash(x)) != null);
-                                if (verifiedBoneCount2 > verifiedBoneCount)
+                                boneType = 1;
+                            }
+                            if (verifiedBoneCount != sMesh.m_Bones.Count)
+                            {
+                                //尝试使用m_BoneNameHashes 4.3 and up
+                                if (mesh.m_BindPose.Length > 0 && (mesh.m_BindPose.Length == mesh.m_BoneNameHashes?.Length))
                                 {
-                                    boneType = 2;
+                                    //有效bone数量是否大于SkinnedMeshRenderer
+                                    var verifiedBoneCount2 = mesh.m_BoneNameHashes.Count(x => FixBonePath(GetPathFromHash(x)) != null);
+                                    if (verifiedBoneCount2 > verifiedBoneCount)
+                                    {
+                                        boneType = 2;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                if (boneType == 0)
-                {
-                    //尝试使用m_BoneNameHashes 4.3 and up
-                    if (mesh.m_BindPose.Length > 0 && (mesh.m_BindPose.Length == mesh.m_BoneNameHashes?.Length))
+                    if (boneType == 0)
                     {
-                        var verifiedBoneCount = mesh.m_BoneNameHashes.Count(x => FixBonePath(GetPathFromHash(x)) != null);
-                        if (verifiedBoneCount > 0)
+                        //尝试使用m_BoneNameHashes 4.3 and up
+                        if (mesh.m_BindPose.Length > 0 && (mesh.m_BindPose.Length == mesh.m_BoneNameHashes?.Length))
                         {
-                            boneType = 2;
-                        }
-                    }
-                }
-
-                if (boneType == 1)
-                {
-                    var boneCount = sMesh.m_Bones.Count;
-                    iMesh.BoneList = new List<ImportedBone>(boneCount);
-                    for (int i = 0; i < boneCount; i++)
-                    {
-                        var bone = new ImportedBone();
-                        if (sMesh.m_Bones[i].TryGet(out var m_Transform))
-                        {
-                            bone.Path = GetTransformPath(m_Transform);
-                        }
-                        var convert = Matrix4x4.Scale(new Vector3(-1, 1, 1));
-                        bone.Matrix = convert * mesh.m_BindPose[i] * convert;
-                        iMesh.BoneList.Add(bone);
-                    }
-                }
-                else if (boneType == 2)
-                {
-                    var boneCount = mesh.m_BindPose.Length;
-                    iMesh.BoneList = new List<ImportedBone>(boneCount);
-                    for (int i = 0; i < boneCount; i++)
-                    {
-                        var bone = new ImportedBone();
-                        var boneHash = mesh.m_BoneNameHashes[i];
-                        var path = GetPathFromHash(boneHash);
-                        bone.Path = FixBonePath(path);
-                        var convert = Matrix4x4.Scale(new Vector3(-1, 1, 1));
-                        bone.Matrix = convert * mesh.m_BindPose[i] * convert;
-                        iMesh.BoneList.Add(bone);
-                    }
-                }
-
-                //Morphs
-                if (mesh.m_Shapes?.channels?.Count > 0)
-                {
-                    var morph = new ImportedMorph();
-                    MorphList.Add(morph);
-                    morph.Path = iMesh.Path;
-                    morph.Channels = new List<ImportedMorphChannel>(mesh.m_Shapes.channels.Count);
-                    for (int i = 0; i < mesh.m_Shapes.channels.Count; i++)
-                    {
-                        var channel = new ImportedMorphChannel();
-                        morph.Channels.Add(channel);
-                        var shapeChannel = mesh.m_Shapes.channels[i];
-
-                        var blendShapeName = "blendShape." + shapeChannel.name;
-                        var crc = new SevenZip.CRC();
-                        var bytes = Encoding.UTF8.GetBytes(blendShapeName);
-                        crc.Update(bytes, 0, (uint)bytes.Length);
-                        morphChannelNames[crc.GetDigest()] = blendShapeName;
-
-                        morphChannelNames[shapeChannel.nameHash] = shapeChannel.name;
-
-                        channel.Name = shapeChannel.name.Split('.').Last();
-                        channel.KeyframeList = new List<ImportedMorphKeyframe>(shapeChannel.frameCount);
-                        var frameEnd = shapeChannel.frameIndex + shapeChannel.frameCount;
-                        for (int frameIdx = shapeChannel.frameIndex; frameIdx < frameEnd; frameIdx++)
-                        {
-                            var keyframe = new ImportedMorphKeyframe();
-                            channel.KeyframeList.Add(keyframe);
-                            keyframe.Weight = mesh.m_Shapes.fullWeights[frameIdx];
-                            var shape = mesh.m_Shapes.shapes[frameIdx];
-                            keyframe.hasNormals = shape.hasNormals;
-                            keyframe.hasTangents = shape.hasTangents;
-                            keyframe.VertexList = new List<ImportedMorphVertex>((int)shape.vertexCount);
-                            var vertexEnd = shape.firstVertex + shape.vertexCount;
-                            for (int j = (int)shape.firstVertex; j < vertexEnd; j++)
+                            var verifiedBoneCount = mesh.m_BoneNameHashes.Count(x => FixBonePath(GetPathFromHash(x)) != null);
+                            if (verifiedBoneCount > 0)
                             {
-                                var destVertex = new ImportedMorphVertex();
-                                keyframe.VertexList.Add(destVertex);
-                                var morphVertex = mesh.m_Shapes.vertices[j];
-                                destVertex.Index = morphVertex.index;
-                                var sourceVertex = iMesh.VertexList[(int)morphVertex.index];
-                                destVertex.Vertex = new ImportedVertex();
-                                var morphPos = morphVertex.vertex;
-                                destVertex.Vertex.Vertex = sourceVertex.Vertex + new Vector3(-morphPos.X, morphPos.Y, morphPos.Z);
-                                if (shape.hasNormals)
+                                boneType = 2;
+                            }
+                        }
+                    }
+
+                    if (boneType == 1)
+                    {
+                        var boneCount = sMesh.m_Bones.Count;
+                        iMesh.BoneList = new List<ImportedBone>(boneCount);
+                        for (int i = 0; i < boneCount; i++)
+                        {
+                            var bone = new ImportedBone();
+                            if (sMesh.m_Bones[i].TryGet(out var m_Transform))
+                            {
+                                bone.Path = GetTransformPath(m_Transform);
+                            }
+                            var convert = Matrix4x4.Scale(new Vector3(-1, 1, 1));
+                            bone.Matrix = convert * mesh.m_BindPose[i] * convert;
+                            iMesh.BoneList.Add(bone);
+                        }
+                    }
+                    else if (boneType == 2)
+                    {
+                        var boneCount = mesh.m_BindPose.Length;
+                        iMesh.BoneList = new List<ImportedBone>(boneCount);
+                        for (int i = 0; i < boneCount; i++)
+                        {
+                            var bone = new ImportedBone();
+                            var boneHash = mesh.m_BoneNameHashes[i];
+                            var path = GetPathFromHash(boneHash);
+                            bone.Path = FixBonePath(path);
+                            var convert = Matrix4x4.Scale(new Vector3(-1, 1, 1));
+                            bone.Matrix = convert * mesh.m_BindPose[i] * convert;
+                            iMesh.BoneList.Add(bone);
+                        }
+                    }
+
+                    //Morphs
+                    if (mesh.m_Shapes?.channels?.Count > 0)
+                    {
+                        var morph = new ImportedMorph();
+                        MorphList.Add(morph);
+                        morph.Path = iMesh.Path;
+                        morph.Channels = new List<ImportedMorphChannel>(mesh.m_Shapes.channels.Count);
+                        for (int i = 0; i < mesh.m_Shapes.channels.Count; i++)
+                        {
+                            var channel = new ImportedMorphChannel();
+                            morph.Channels.Add(channel);
+                            var shapeChannel = mesh.m_Shapes.channels[i];
+
+                            var blendShapeName = "blendShape." + shapeChannel.name;
+                            var crc = new SevenZip.CRC();
+                            var bytes = Encoding.UTF8.GetBytes(blendShapeName);
+                            crc.Update(bytes, 0, (uint)bytes.Length);
+                            morphChannelNames[crc.GetDigest()] = blendShapeName;
+
+                            morphChannelNames[shapeChannel.nameHash] = shapeChannel.name;
+
+                            channel.Name = shapeChannel.name.Split('.').Last();
+                            channel.KeyframeList = new List<ImportedMorphKeyframe>(shapeChannel.frameCount);
+                            var frameEnd = shapeChannel.frameIndex + shapeChannel.frameCount;
+                            for (int frameIdx = shapeChannel.frameIndex; frameIdx < frameEnd; frameIdx++)
+                            {
+                                var keyframe = new ImportedMorphKeyframe();
+                                channel.KeyframeList.Add(keyframe);
+                                keyframe.Weight = mesh.m_Shapes.fullWeights[frameIdx];
+                                var shape = mesh.m_Shapes.shapes[frameIdx];
+                                keyframe.hasNormals = shape.hasNormals;
+                                keyframe.hasTangents = shape.hasTangents;
+                                keyframe.VertexList = new List<ImportedMorphVertex>((int)shape.vertexCount);
+                                var vertexEnd = shape.firstVertex + shape.vertexCount;
+                                for (int j = (int)shape.firstVertex; j < vertexEnd; j++)
                                 {
-                                    var morphNormal = morphVertex.normal;
-                                    destVertex.Vertex.Normal = new Vector3(-morphNormal.X, morphNormal.Y, morphNormal.Z);
-                                }
-                                if (shape.hasTangents)
-                                {
-                                    var morphTangent = morphVertex.tangent;
-                                    destVertex.Vertex.Tangent = new Vector4(-morphTangent.X, morphTangent.Y, morphTangent.Z, 0);
+                                    var destVertex = new ImportedMorphVertex();
+                                    keyframe.VertexList.Add(destVertex);
+                                    var morphVertex = mesh.m_Shapes.vertices[j];
+                                    destVertex.Index = morphVertex.index;
+                                    var sourceVertex = iMesh.VertexList[(int)morphVertex.index];
+                                    destVertex.Vertex = new ImportedVertex();
+                                    var morphPos = morphVertex.vertex;
+                                    destVertex.Vertex.Vertex = sourceVertex.Vertex + new Vector3(-morphPos.X, morphPos.Y, morphPos.Z);
+                                    if (shape.hasNormals)
+                                    {
+                                        var morphNormal = morphVertex.normal;
+                                        destVertex.Vertex.Normal = new Vector3(-morphNormal.X, morphNormal.Y, morphNormal.Z);
+                                    }
+                                    if (shape.hasTangents)
+                                    {
+                                        var morphTangent = morphVertex.tangent;
+                                        destVertex.Vertex.Tangent = new Vector4(-morphTangent.X, morphTangent.Y, morphTangent.Z, 0);
+                                    }
                                 }
                             }
                         }
@@ -663,99 +709,128 @@ namespace AnimeStudio
                 {
                     return iMat;
                 }
-                iMat = new ImportedMaterial();
-                iMat.Name = mat.m_Name;
-                //default values
-                iMat.Diffuse = new Color(0.8f, 0.8f, 0.8f, 1);
-                iMat.Ambient = new Color(0.2f, 0.2f, 0.2f, 1);
-                iMat.Emissive = new Color(0, 0, 0, 1);
-                iMat.Specular = new Color(0.2f, 0.2f, 0.2f, 1);
-                iMat.Reflection = new Color(0, 0, 0, 1);
-                iMat.Shininess = 20f;
-                iMat.Transparency = 0f;
-                foreach (var col in mat.m_SavedProperties.m_Colors)
+                if (options.materialCache != null && options.materialCache.TryGetValue(mat, out var cachedMaterial))
                 {
-                    switch (col.Key)
+                    iMat = CloneMaterial(cachedMaterial);
+                    var textureIndex = 0;
+                    foreach (var texEnv in mat.m_SavedProperties.m_TexEnvs)
                     {
-                        case "_Color":
-                            iMat.Diffuse = col.Value;
-                            break;
-                        case "_SColor":
-                            iMat.Ambient = col.Value;
-                            break;
-                        case "_EmissionColor":
-                            iMat.Emissive = col.Value;
-                            break;
-                        case "_SpecularColor":
-                            iMat.Specular = col.Value;
-                            break;
-                        case "_ReflectColor":
-                            iMat.Reflection = col.Value;
-                            break;
-                    }
-                }
-
-                foreach (var flt in mat.m_SavedProperties.m_Floats)
-                {
-                    switch (flt.Key)
-                    {
-                        case "_Shininess":
-                            iMat.Shininess = flt.Value;
-                            break;
-                        case "_Transparency":
-                            iMat.Transparency = flt.Value;
-                            break;
-                    }
-                }
-
-                //textures
-                iMat.Textures = new List<ImportedMaterialTexture>();
-                foreach (var texEnv in mat.m_SavedProperties.m_TexEnvs)
-                {
-                    if (!texEnv.Value.m_Texture.TryGet<Texture2D>(out var m_Texture2D)) //TODO other Texture
-                    {
-                        if (!texEnv.Value.m_Texture.IsNull)
+                        if (!texEnv.Value.m_Texture.TryGet<Texture2D>(out var m_Texture2D))
                         {
-                            Logger.Warning($"Unable to resolve texture {texEnv.Key} for material {mat.m_Name}.");
+                            continue;
                         }
-                        continue;
-                    }
-
-                    var texture = new ImportedMaterialTexture();
-                    iMat.Textures.Add(texture);
-
-                    texture.Dest = GetTextureDestination(texEnv.Key);
-
-                    var ext = $".{options.imageFormat.ToString().ToLower()}";
-                    if (textureNameDictionary.TryGetValue(m_Texture2D, out var textureName))
-                    {
-                        texture.Name = textureName;
-                    }
-                    else if (ImportedHelpers.FindTexture(m_Texture2D.m_Name + ext, TextureList) != null) //已有相同名字的图片
-                    {
-                        for (int i = 1; ; i++)
+                        if (iMat.Textures != null && textureIndex < iMat.Textures.Count)
                         {
-                            var name = m_Texture2D.m_Name + $" ({i}){ext}";
-                            if (ImportedHelpers.FindTexture(name, TextureList) == null)
-                            {
-                                texture.Name = name;
-                                textureNameDictionary.Add(m_Texture2D, name);
+                            ConvertTexture2D(m_Texture2D, iMat.Textures[textureIndex].Name);
+                        }
+                        textureIndex++;
+                    }
+                    MaterialList.Add(iMat);
+                    return iMat;
+                }
+                using (Measure("model_material", new Dictionary<string, object>
+                {
+                    ["material"] = mat.m_Name,
+                    ["source"] = mat.assetsFile?.fullName,
+                    ["pathId"] = mat.m_PathID,
+                    ["textureSlotCount"] = mat.m_SavedProperties?.m_TexEnvs?.Count ?? 0,
+                }))
+                {
+                    iMat = new ImportedMaterial();
+                    iMat.Name = mat.m_Name;
+                    //default values
+                    iMat.Diffuse = new Color(0.8f, 0.8f, 0.8f, 1);
+                    iMat.Ambient = new Color(0.2f, 0.2f, 0.2f, 1);
+                    iMat.Emissive = new Color(0, 0, 0, 1);
+                    iMat.Specular = new Color(0.2f, 0.2f, 0.2f, 1);
+                    iMat.Reflection = new Color(0, 0, 0, 1);
+                    iMat.Shininess = 20f;
+                    iMat.Transparency = 0f;
+                    foreach (var col in mat.m_SavedProperties.m_Colors)
+                    {
+                        switch (col.Key)
+                        {
+                            case "_Color":
+                                iMat.Diffuse = col.Value;
                                 break;
+                            case "_SColor":
+                                iMat.Ambient = col.Value;
+                                break;
+                            case "_EmissionColor":
+                                iMat.Emissive = col.Value;
+                                break;
+                            case "_SpecularColor":
+                                iMat.Specular = col.Value;
+                                break;
+                            case "_ReflectColor":
+                                iMat.Reflection = col.Value;
+                                break;
+                        }
+                    }
+
+                    foreach (var flt in mat.m_SavedProperties.m_Floats)
+                    {
+                        switch (flt.Key)
+                        {
+                            case "_Shininess":
+                                iMat.Shininess = flt.Value;
+                                break;
+                            case "_Transparency":
+                                iMat.Transparency = flt.Value;
+                                break;
+                        }
+                    }
+
+                    //textures
+                    iMat.Textures = new List<ImportedMaterialTexture>();
+                    foreach (var texEnv in mat.m_SavedProperties.m_TexEnvs)
+                    {
+                        if (!texEnv.Value.m_Texture.TryGet<Texture2D>(out var m_Texture2D)) //TODO other Texture
+                        {
+                            if (!texEnv.Value.m_Texture.IsNull)
+                            {
+                                Logger.Warning($"Unable to resolve texture {texEnv.Key} for material {mat.m_Name}.");
+                            }
+                            continue;
+                        }
+
+                        var texture = new ImportedMaterialTexture();
+                        iMat.Textures.Add(texture);
+
+                        texture.Dest = GetTextureDestination(texEnv.Key);
+
+                        var ext = $".{options.imageFormat.ToString().ToLower()}";
+                        if (textureNameDictionary.TryGetValue(m_Texture2D, out var textureName))
+                        {
+                            texture.Name = textureName;
+                        }
+                        else if (ImportedHelpers.FindTexture(m_Texture2D.m_Name + ext, TextureList) != null) //已有相同名字的图片
+                        {
+                            for (int i = 1; ; i++)
+                            {
+                                var name = m_Texture2D.m_Name + $" ({i}){ext}";
+                                if (ImportedHelpers.FindTexture(name, TextureList) == null)
+                                {
+                                    texture.Name = name;
+                                    textureNameDictionary.Add(m_Texture2D, name);
+                                    break;
+                                }
                             }
                         }
-                    }
-                    else
-                    {
-                        texture.Name = m_Texture2D.m_Name + ext;
-                        textureNameDictionary.Add(m_Texture2D, texture.Name);
-                    }
+                        else
+                        {
+                            texture.Name = m_Texture2D.m_Name + ext;
+                            textureNameDictionary.Add(m_Texture2D, texture.Name);
+                        }
 
-                    texture.Offset = texEnv.Value.m_Offset;
-                    texture.Scale = texEnv.Value.m_Scale;
-                    ConvertTexture2D(m_Texture2D, texture.Name);
+                        texture.Offset = texEnv.Value.m_Offset;
+                        texture.Scale = texEnv.Value.m_Scale;
+                        ConvertTexture2D(m_Texture2D, texture.Name);
+                    }
                 }
 
                 MaterialList.Add(iMat);
+                options.materialCache?.TryAdd(mat, CloneMaterial(iMat));
             }
             else
             {
@@ -819,20 +894,42 @@ namespace AnimeStudio
             }
 
             var exportName = GetTextureExportName(m_Texture2D, name);
+            if (
+                options.textureCache != null
+                && options.textureCache.TryGetValue(m_Texture2D, out var cachedTexture)
+                && options.textureDataExists?.Invoke(m_Texture2D, cachedTexture.ExportName ?? exportName) == true
+            )
+            {
+                TextureList.Add(new ImportedTexture(name, cachedTexture.ExportName ?? exportName)
+                );
+                return;
+            }
             if (options.textureDataExists?.Invoke(m_Texture2D, exportName) == true)
             {
-                TextureList.Add(new ImportedTexture(name, exportName));
+                iTex = new ImportedTexture(name, exportName);
+                TextureList.Add(iTex);
+                options.textureCache?.TryAdd(m_Texture2D, iTex);
                 return;
             }
 
-            var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
-            if (stream != null)
+            using (Measure("model_texture", new Dictionary<string, object>
             {
-                using (stream)
+                ["texture"] = m_Texture2D.m_Name,
+                ["source"] = m_Texture2D.assetsFile?.fullName,
+                ["pathId"] = m_Texture2D.m_PathID,
+                ["exportName"] = exportName,
+                ["imageFormat"] = options.imageFormat.ToString(),
+            }))
+            {
+                var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
+                if (stream != null)
                 {
-                    iTex = new ImportedTexture(stream, name);
-                    iTex.ExportName = exportName;
-                    TextureList.Add(iTex);
+                    using (stream)
+                    {
+                        iTex = new ImportedTexture(stream, name);
+                        iTex.ExportName = exportName;
+                        TextureList.Add(iTex);
+                    }
                 }
             }
         }
@@ -849,6 +946,95 @@ namespace AnimeStudio
             return $"{rawName}_{texture.assetsFile.fileName}_{texture.m_PathID}{ext}";
         }
 
+        private IDisposable Measure(string stage, IDictionary<string, object> data)
+        {
+            return options.profileMeasure?.Invoke(stage, data) ?? NullScope.Instance;
+        }
+
+        private static ImportedMaterial CloneMaterial(ImportedMaterial material)
+        {
+            return new ImportedMaterial
+            {
+                Name = material.Name,
+                Diffuse = material.Diffuse,
+                Ambient = material.Ambient,
+                Specular = material.Specular,
+                Emissive = material.Emissive,
+                Reflection = material.Reflection,
+                Shininess = material.Shininess,
+                Transparency = material.Transparency,
+                Textures = material.Textures?.Select(x => new ImportedMaterialTexture
+                {
+                    Name = x.Name,
+                    Dest = x.Dest,
+                    Offset = x.Offset,
+                    Scale = x.Scale,
+                }).ToList(),
+            };
+        }
+
+        private string GetMeshVertexCacheKey(Mesh mesh, ImportedMesh importedMesh)
+        {
+            var uvFlags = string.Join("", importedMesh.hasUV.Select(x => x ? "1" : "0"));
+            var uvTypes = string.Join(",", importedMesh.uvType);
+            return string.Join("|",
+                mesh.assetsFile?.fullName,
+                mesh.m_PathID,
+                mesh.m_VertexCount,
+                importedMesh.hasNormal,
+                uvFlags,
+                uvTypes,
+                importedMesh.hasTangent,
+                importedMesh.hasColor,
+                mesh.m_Skin?.Count ?? 0);
+        }
+
+        private void AddMeshVertexCache(string key, List<ImportedVertex> vertices)
+        {
+            if (options.meshVertexCache.ContainsKey(key))
+            {
+                return;
+            }
+
+            if (
+                options.meshVertexCacheOrder != null
+                && options.maxMeshVertexCacheEntries > 0
+                && options.meshVertexCache.Count >= options.maxMeshVertexCacheEntries
+            )
+            {
+                var evictedKey = options.meshVertexCacheOrder.Dequeue();
+                options.meshVertexCache.Remove(evictedKey);
+            }
+
+            options.meshVertexCache[key] = CloneVertexList(vertices);
+            options.meshVertexCacheOrder?.Enqueue(key);
+        }
+
+        private static List<ImportedVertex> CloneVertexList(List<ImportedVertex> vertices)
+        {
+            return vertices.Select(CloneVertex).ToList();
+        }
+
+        private static ImportedVertex CloneVertex(ImportedVertex vertex)
+        {
+            return new ImportedVertex
+            {
+                Vertex = vertex.Vertex,
+                Normal = vertex.Normal,
+                UV = vertex.UV?.Select(x => x?.ToArray()).ToArray(),
+                Tangent = vertex.Tangent,
+                Color = vertex.Color,
+                Weights = vertex.Weights?.ToArray(),
+                BoneIndices = vertex.BoneIndices?.ToArray(),
+            };
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new NullScope();
+            public void Dispose() { }
+        }
+
         private void ConvertAnimations()
         {
             if (!options.exportAnimations)
@@ -858,6 +1044,14 @@ namespace AnimeStudio
 
             foreach (var animationClip in animationClipHashSet)
             {
+                using var animationProfile = Measure("model_animation", new Dictionary<string, object>
+                {
+                    ["animation"] = animationClip.m_Name,
+                    ["source"] = animationClip.assetsFile?.fullName,
+                    ["pathId"] = animationClip.m_PathID,
+                    ["sampleRate"] = animationClip.m_SampleRate,
+                    ["legacy"] = animationClip.m_Legacy,
+                });
                 var iAnim = new ImportedKeyframedAnimation();
                 var name = animationClip.m_Name;
                 if (AnimationList.Exists(x => x.Name == name))
@@ -1250,6 +1444,13 @@ namespace AnimeStudio
             public Dictionary<string, (bool, int)> uvs;
             public Dictionary<string, int> texs;
             public Func<Texture2D, string, bool> textureDataExists;
+            public Func<string, IDictionary<string, object>, IDisposable> profileMeasure;
+            public Dictionary<Material, ImportedMaterial> materialCache;
+            public Dictionary<Texture2D, ImportedTexture> textureCache;
+            public Dictionary<string, List<ImportedVertex>> meshVertexCache;
+            public Queue<string> meshVertexCacheOrder;
+            public int maxMeshVertexCacheEntries = 256;
+            public int maxCachedMeshVertices = 200000;
             public bool useAnimatorHierarchy = true;
         }
     }

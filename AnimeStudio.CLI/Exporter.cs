@@ -24,6 +24,11 @@ namespace AnimeStudio.CLI
 
     internal static class Exporter
     {
+        private static readonly Dictionary<Material, ImportedMaterial> SharedMaterialCache = new Dictionary<Material, ImportedMaterial>();
+        private static readonly Dictionary<Texture2D, ImportedTexture> SharedTextureCache = new Dictionary<Texture2D, ImportedTexture>();
+        private static readonly Dictionary<string, List<ImportedVertex>> SharedMeshVertexCache = new Dictionary<string, List<ImportedVertex>>();
+        private static readonly Queue<string> SharedMeshVertexCacheOrder = new Queue<string>();
+
         public static bool ExportTexture2D(AssetItem item, string exportPath)
         {
             var m_Texture2D = (Texture2D)item.Asset;
@@ -552,6 +557,11 @@ namespace AnimeStudio.CLI
                 exportAnimations = CliExportOptions.ExportAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
+                materialCache = SharedMaterialCache,
+                textureCache = SharedTextureCache,
+                meshVertexCache = SharedMeshVertexCache,
+                meshVertexCacheOrder = SharedMeshVertexCacheOrder,
+                profileMeasure = ProfileLogger.Measure,
                 useAnimatorHierarchy = true,
                 uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(
                     Properties.Settings.Default.uvs
@@ -628,6 +638,11 @@ namespace AnimeStudio.CLI
                 exportAnimations = CliExportOptions.ExportAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
+                materialCache = SharedMaterialCache,
+                textureCache = SharedTextureCache,
+                meshVertexCache = SharedMeshVertexCache,
+                meshVertexCacheOrder = SharedMeshVertexCacheOrder,
+                profileMeasure = ProfileLogger.Measure,
                 useAnimatorHierarchy =
                     Properties.Settings.Default.exportSkins
                     || CliExportOptions.ExportAnimations
