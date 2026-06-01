@@ -124,6 +124,40 @@ auto_GI_3a1b2c4d5e6f
 - `--texture_mode Png`：解码并导出 `.png`，glTF 会直接引用 PNG。最兼容 Blender/预览器，但全量角色会明显变慢。
 - `--texture_mode Reference`：只在 glTF 材质 `extras.unityTextures` 记录引用，不写贴图数据。最快，适合先扫模型结构。
 
+### 贴图工作流和技术逻辑
+
+当前推荐流程是先看模型，再按需处理贴图：
+
+1. 全量模型导出默认使用 `--texture_mode Raw`。
+2. 先用 `.gltf/.glb` 浏览模型结构、命名、骨骼、网格和材质槽。
+3. 看到值得保留的模型后，再根据该模型 glTF 材质里的 `extras.unityTextures` 和顶层 `Textures\_ModelDependencies` 中的 `.rawtex.json` 找到对应贴图。
+4. 后续可以单独把目标模型涉及的 `.rawtex` 批量转换成 PNG、KTX2、DDS 或其他标准格式。
+
+这样做的原因：
+
+- Unity 贴图常见格式是 DXT/BC/ETC/ASTC/Crunched 等 GPU 压缩或 Unity 原始数据。
+- 全量导出时把这些贴图全部解码成 PNG 会非常慢；角色模型尤其明显，很多耗时都集中在 normal/baseColor/mask 等贴图解码上。
+- Raw 模式只复制原始贴图数据，不做完整解码，因此模型导出速度和内存稳定性更好。
+- `.rawtex` 不是 glTF 标准图片格式，所以 glTF 不会把它写进标准 `images/textures` 通道；否则很多查看器会报错或误读。
+- Raw/Reference 模式会把贴图关系写入材质 `extras.unityTextures`，这是给后处理工具和人工排查用的保留信息。
+- `--texture_mode Png` 仍然保留，用于小范围导出、需要 Blender/查看器直接显示贴图、或确认材质效果的场景。
+
+Raw 模式输出文件：
+
+```text
+Textures\_ModelDependencies\xxx.rawtex
+Textures\_ModelDependencies\xxx.rawtex.json
+```
+
+`.rawtex.json` 会记录：
+
+- `format`：Unity `TextureFormat`，例如 `DXT1Crunched`、`DXT5`、`BC7`、`ASTC_6x6`。
+- `width` / `height`：贴图尺寸。
+- `mipCount`：mip 数量。
+- `dataFile`：对应 `.rawtex` 文件名。
+
+后续如果要做“选中模型后单独转贴图”，应优先基于这些信息实现转换器，而不是重新全量解码所有贴图。
+
 模型模式默认会过滤：
 
 - `ui`
@@ -563,10 +597,12 @@ CLI 的 FBX 导出目标是“Blender 可打开、基础材质可见”，不是
 ## 建议流程
 
 1. 先用小目录测试。
-2. 确认 FBX、贴图、材质能正常导出。
-3. 再扩大到角色、场景、道具等目录。
-4. 最后再考虑完整 `*_Data` 全量导出。
-5. 动画单独用 `--mode Animator --fbx_animation Auto` 跑。
+2. 全量或大目录模型导出优先使用默认 `--texture_mode Raw`，先快速浏览模型。
+3. 看到喜欢或需要保留的模型后，再单独转换该模型依赖的贴图。
+4. 如果需要查看器直接显示贴图，小范围重跑 `--texture_mode Png`。
+5. 再扩大到角色、场景、道具等目录。
+6. 最后再考虑完整 `*_Data` 全量导出。
+7. 动画单独用 `--mode Animator --fbx_animation Auto` 跑。
 
 全量导出会消耗较多内存和时间。CLI 会按文件逐个加载、导出、清理，但跨 bundle 依赖仍可能拉起大量资源，建议优先分目录导出。
 
