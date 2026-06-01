@@ -46,7 +46,7 @@ namespace AnimeStudio
         Oodle = 9,
     }
 
-    public class BundleFile
+    public class BundleFile : IDisposable
     {
         public class Header
         {
@@ -115,6 +115,7 @@ namespace AnimeStudio
         public Header m_Header;
         private List<Node> m_DirectoryInfo;
         private List<StorageBlock> m_BlocksInfo;
+        private readonly List<Stream> blocksStreams = new List<Stream>();
 
         public List<StreamFile> fileList;
         
@@ -136,11 +137,10 @@ namespace AnimeStudio
                         goto case "UnityFS";
                     }
                     ReadHeaderAndBlocksInfo(reader);
-                    using (var blocksStream = CreateBlocksStream(reader.FullPath))
-                    {
-                        ReadBlocksAndDirectory(reader, blocksStream);
-                        ReadFiles(blocksStream, reader.FullPath);
-                    }
+                    var blocksStream = CreateBlocksStream(reader.FullPath);
+                    blocksStreams.Add(blocksStream);
+                    ReadBlocksAndDirectory(reader, blocksStream);
+                    ReadFiles(blocksStream, reader.FullPath);
                     break;
                 case "UnityFS":
                 case "ENCR":
@@ -155,11 +155,10 @@ namespace AnimeStudio
                         ReadUnityCN(reader);
                     }
                     ReadBlocksInfoAndDirectory(reader);
-                    using (var blocksStream = CreateBlocksStream(reader.FullPath))
-                    {
-                        ReadBlocks(reader, blocksStream);
-                        ReadFiles(blocksStream, reader.FullPath);
-                    }
+                    var unityFsBlocksStream = CreateBlocksStream(reader.FullPath);
+                    blocksStreams.Add(unityFsBlocksStream);
+                    ReadBlocks(reader, unityFsBlocksStream);
+                    ReadFiles(unityFsBlocksStream, reader.FullPath);
                     break;
             }
         }
@@ -320,22 +319,17 @@ namespace AnimeStudio
                 fileList.Add(file);
                 file.path = node.path;
                 file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
-                {
-                    /*var memoryMappedFile = MemoryMappedFile.CreateNew(null, entryinfo_size);
-                    file.stream = memoryMappedFile.CreateViewStream();*/
-                    var extractPath = path + "_unpacked" + Path.DirectorySeparatorChar;
-                    Directory.CreateDirectory(extractPath);
-                    file.stream = new FileStream(extractPath + file.fileName, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-                }
-                else
-                {
-                    file.stream = new MemoryStream((int)node.size);
-                }
-                blocksStream.Position = node.offset;
-                blocksStream.CopyTo(file.stream, node.size);
-                file.stream.Position = 0;
+                file.stream = new OffsetStream(blocksStream, node.offset, node.size);
             }
+        }
+
+        public void Dispose()
+        {
+            foreach (var blocksStream in blocksStreams)
+            {
+                blocksStream.Dispose();
+            }
+            blocksStreams.Clear();
         }
 
         private void ReadHeader(FileReader reader)

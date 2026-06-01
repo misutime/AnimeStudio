@@ -28,7 +28,7 @@ namespace AnimeStudio
         {
             this.options = options;
 
-            if (m_GameObject.m_Animator != null)
+            if (m_GameObject.m_Animator != null && options.useAnimatorHierarchy)
             {
                 InitWithAnimator(m_GameObject.m_Animator);
                 if (animationList == null && this.options.collectAnimations)
@@ -324,9 +324,14 @@ namespace AnimeStudio
                 Material mat = null;
                 if (i - firstSubMesh < meshR.m_Materials.Count)
                 {
-                    if (meshR.m_Materials[i - firstSubMesh].TryGet(out var m_Material))
+                    var materialPtr = meshR.m_Materials[i - firstSubMesh];
+                    if (materialPtr.TryGet(out var m_Material))
                     {
                         mat = m_Material;
+                    }
+                    else if (!materialPtr.IsNull)
+                    {
+                        Logger.Warning($"Unable to resolve material for {m_GameObject2.m_Name} submesh {i}.");
                     }
                 }
                 ImportedMaterial iMat = ConvertMaterial(mat);
@@ -709,25 +714,17 @@ namespace AnimeStudio
                 {
                     if (!texEnv.Value.m_Texture.TryGet<Texture2D>(out var m_Texture2D)) //TODO other Texture
                     {
+                        if (!texEnv.Value.m_Texture.IsNull)
+                        {
+                            Logger.Warning($"Unable to resolve texture {texEnv.Key} for material {mat.m_Name}.");
+                        }
                         continue;
                     }
 
                     var texture = new ImportedMaterialTexture();
                     iMat.Textures.Add(texture);
 
-                    int dest = -1;
-                    if (options.texs.TryGetValue(texEnv.Key, out var target))
-                        dest = target;
-                    else if (texEnv.Key == "_MainTex")
-                        dest = 0;
-                    else if (texEnv.Key == "_BumpMap")
-                        dest = 3;
-                    else if (texEnv.Key.Contains("Specular"))
-                        dest = 2;
-                    else if (texEnv.Key.Contains("Normal"))
-                        dest = 1;
-
-                    texture.Dest = dest;
+                    texture.Dest = GetTextureDestination(texEnv.Key);
 
                     var ext = $".{options.imageFormat.ToString().ToLower()}";
                     if (textureNameDictionary.TryGetValue(m_Texture2D, out var textureName))
@@ -767,6 +764,52 @@ namespace AnimeStudio
             return iMat;
         }
 
+        private int GetTextureDestination(string key)
+        {
+            if (options.texs.TryGetValue(key, out var target))
+            {
+                return target;
+            }
+
+            if (
+                key == "_MainTex"
+                || key.Contains("Diffuse")
+                || key.Contains("Albedo")
+                || key.Contains("BaseMap")
+                || key.Contains("BaseColor")
+            )
+            {
+                return 0;
+            }
+
+            if (key == "_BumpMap")
+            {
+                return 3;
+            }
+
+            if (key.Contains("Normal"))
+            {
+                return 1;
+            }
+
+            if (key.Contains("Specular"))
+            {
+                return 2;
+            }
+
+            if (key.Contains("Emission") || key.Contains("Emissive"))
+            {
+                return 5;
+            }
+
+            if (key.Contains("Reflect"))
+            {
+                return 6;
+            }
+
+            return -1;
+        }
+
         private void ConvertTexture2D(Texture2D m_Texture2D, string name)
         {
             var iTex = ImportedHelpers.FindTexture(name, TextureList);
@@ -781,9 +824,22 @@ namespace AnimeStudio
                 using (stream)
                 {
                     iTex = new ImportedTexture(stream, name);
+                    iTex.ExportName = GetTextureExportName(m_Texture2D, name);
                     TextureList.Add(iTex);
                 }
             }
+        }
+
+        private static string GetTextureExportName(Texture2D texture, string name)
+        {
+            var ext = System.IO.Path.GetExtension(name);
+            if (string.IsNullOrEmpty(ext))
+            {
+                ext = ".png";
+            }
+
+            var rawName = System.IO.Path.GetFileNameWithoutExtension(name);
+            return $"{rawName}_{texture.assetsFile.fileName}_{texture.m_PathID}{ext}";
         }
 
         private void ConvertAnimations()
@@ -1179,7 +1235,8 @@ namespace AnimeStudio
             public bool exportMaterials;
             public HashSet<Material> materials;
             public Dictionary<string, (bool, int)> uvs;
-            public Dictionary<string, int> texs; 
+            public Dictionary<string, int> texs;
+            public bool useAnimatorHierarchy = true;
         }
     }
 }

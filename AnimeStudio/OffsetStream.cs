@@ -9,7 +9,9 @@ namespace AnimeStudio
     public class OffsetStream : Stream
     {
         private readonly Stream _baseStream;
+        private readonly long? _length;
         private long _offset;
+        private long _position;
 
         public override bool CanRead => _baseStream.CanRead;
         public override bool CanSeek => _baseStream.CanSeek;
@@ -25,16 +27,16 @@ namespace AnimeStudio
                     throw new IOException($"{nameof(Offset)} is out of stream bound");
                 }
                 _offset = value;
-                Seek(0, SeekOrigin.Begin);
+                _position = 0;
             }
         }
-        public long AbsolutePosition => _baseStream.Position;
+        public long AbsolutePosition => _offset + _position;
         public long Remaining => Length - Position;
 
-        public override long Length => _baseStream.Length - _offset;
+        public override long Length => _length ?? _baseStream.Length - _offset;
         public override long Position
         {
-            get => _baseStream.Position - _offset;
+            get => _position;
             set => Seek(value, SeekOrigin.Begin);
         }
 
@@ -45,25 +47,55 @@ namespace AnimeStudio
             Offset = offset;
         }
 
+        public OffsetStream(Stream stream, long offset, long length)
+        {
+            if (length < 0)
+            {
+                throw new IOException($"{nameof(length)} is out of stream bound");
+            }
+            if (offset < 0 || offset + length > stream.Length)
+            {
+                throw new IOException($"{nameof(Offset)} is out of stream bound");
+            }
+
+            _baseStream = stream;
+            _length = length;
+            Offset = offset;
+        }
+
         public override long Seek(long offset, SeekOrigin origin)
         {
-            if (offset > _baseStream.Length)
+            var target = origin switch
+            {
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => offset + _position,
+                SeekOrigin.End => offset + Length,
+                _ => throw new NotSupportedException()
+            };
+            if (target < 0 || target > Length)
             {
                 throw new IOException("Unable to seek beyond stream bound");
             }
 
-            var target = origin switch
-            {
-                SeekOrigin.Begin => offset + _offset,
-                SeekOrigin.Current => offset + Position,
-                SeekOrigin.End => offset + _baseStream.Length,
-                _ => throw new NotSupportedException()
-            };
-
-            _baseStream.Seek(target, SeekOrigin.Begin);
-            return Position;
+            _position = target;
+            return _position;
         }
-        public override int Read(byte[] buffer, int offset, int count) => _baseStream.Read(buffer, offset, count);
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var remaining = Remaining;
+            if (remaining <= 0)
+            {
+                return 0;
+            }
+            lock (_baseStream)
+            {
+                _baseStream.Position = _offset + _position;
+                var read = _baseStream.Read(buffer, offset, (int)Math.Min(count, remaining));
+                _position += read;
+                return read;
+            }
+        }
+
         public override void Write(byte[] buffer, int offset, int count) => throw new NotImplementedException();
         public override void SetLength(long value) => throw new NotImplementedException();
         public override void Flush() => throw new NotImplementedException();

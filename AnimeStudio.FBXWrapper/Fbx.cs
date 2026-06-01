@@ -65,6 +65,8 @@ namespace AnimeStudio
             public float scaleFactor;
             public int fbxVersion;
             public int fbxFormat;
+            public string textureDirectory;
+            public string localTextureDirectoryName;
         }
     }
 }

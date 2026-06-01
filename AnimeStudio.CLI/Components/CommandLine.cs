@@ -35,6 +35,8 @@ namespace AnimeStudio.CLI
                 optionsBinder.AssetExportType,
                 optionsBinder.Key,
                 optionsBinder.AIFile,
+                optionsBinder.AIVersion,
+                optionsBinder.ModelRootsOnly,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -61,6 +63,8 @@ namespace AnimeStudio.CLI
         public ExportType AssetExportType { get; set; }
         public byte Key { get; set; }
         public FileInfo AIFile { get; set; }
+        public string AIVersion { get; set; }
+        public bool ModelRootsOnly { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -82,6 +86,8 @@ namespace AnimeStudio.CLI
         public readonly Option<ExportType> AssetExportType;
         public readonly Option<byte> Key;
         public readonly Option<FileInfo> AIFile;
+        public readonly Option<string> AIVersion;
+        public readonly Option<bool> ModelRootsOnly;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -158,9 +164,11 @@ namespace AnimeStudio.CLI
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
             MapName = new Option<string>("--map_name", () => "assets_map", "Specify AssetMap file name.");
             UnityVersion = new Option<string>("--unity_version", "Specify Unity version.");
-            GroupAssetsType = new Option<AssetGroupOption>("--group_assets", "Specify how exported assets should be grouped.");
+            GroupAssetsType = new Option<AssetGroupOption>("--group_assets", "Specify how exported assets should be grouped. ByLibrary writes models, textures, materials, and data into separate library folders.");
             AssetExportType = new Option<ExportType>("--export_type", "Specify how assets should be exported.");
             AIFile = new Option<FileInfo>("--ai_file", "Specify asset_index json file path (to recover GI containers).").LegalFilePathsOnly();
+            AIVersion = new Option<string>("--ai_version", "Download and load asset_index for the specified GI version (for example 6.0).");
+            ModelRootsOnly = new Option<bool>("--model_roots_only", "Export only top-level model GameObjects and skip child mesh parts when their parent model is also exportable.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -249,6 +257,8 @@ namespace AnimeStudio.CLI
             AssetExportType = bindingContext.ParseResult.GetValueForOption(AssetExportType),
             Key = bindingContext.ParseResult.GetValueForOption(Key),
             AIFile = bindingContext.ParseResult.GetValueForOption(AIFile),
+            AIVersion = bindingContext.ParseResult.GetValueForOption(AIVersion),
+            ModelRootsOnly = bindingContext.ParseResult.GetValueForOption(ModelRootsOnly),
             DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)

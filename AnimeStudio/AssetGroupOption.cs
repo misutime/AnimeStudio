@@ -4,6 +4,7 @@
     {
         ByType,
         ByContainer,
+        ByLibrary,
         BySource,
         None
     }

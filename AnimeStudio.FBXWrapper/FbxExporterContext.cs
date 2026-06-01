@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace AnimeStudio.FbxInterop
 {
@@ -15,6 +16,8 @@ namespace AnimeStudio.FbxInterop
         private readonly Dictionary<string, IntPtr> _createdTextures;
         private readonly Fbx.ExportOptions _exportOptions;
         private readonly string _exportDirectory;
+        private readonly string _textureDirectory;
+        private readonly string _localTextureDirectory;
 
 
         public FbxExporterContext(Fbx.ExportOptions exportOptions, string exportDirectory)
@@ -26,6 +29,12 @@ namespace AnimeStudio.FbxInterop
             _createdTextures = new Dictionary<string, IntPtr>();
             _exportOptions = exportOptions;
             _exportDirectory = exportDirectory;
+            _textureDirectory = string.IsNullOrWhiteSpace(exportOptions.textureDirectory)
+                ? exportDirectory
+                : exportOptions.textureDirectory;
+            _localTextureDirectory = string.IsNullOrWhiteSpace(exportOptions.localTextureDirectoryName)
+                ? null
+                : Path.Combine(exportDirectory, exportOptions.localTextureDirectoryName);
         }
 
         ~FbxExporterContext()
@@ -206,25 +215,64 @@ namespace AnimeStudio.FbxInterop
                 return _createdTextures[texture.Name];
             }
 
-            var pTex = AsFbxCreateTexture(_pContext, texture.Name);
+            var rawName = Path.GetFileNameWithoutExtension(texture.ExportName ?? texture.Name);
+            var safeRaw = GetSafeFilename(rawName);
+            if (safeRaw.Length > 100)
+                safeRaw = safeRaw.Substring(0, 67) + "_" + safeRaw.Substring(safeRaw.Length - 32);
+            var safeName = $"{safeRaw}.png";
+            var fullPath = Path.Combine(_textureDirectory, safeName);
+            var texturePath = Path.GetRelativePath(_exportDirectory, GetTextureReferencePath(fullPath, safeName));
+            var pTex = AsFbxCreateTexture(_pContext, texturePath);
 
             _createdTextures.Add(texture.Name, pTex);
 
-            var rawName = Path.GetFileNameWithoutExtension(texture.Name);
-            var safeRaw = GetSafeFilename(rawName);
-            if (safeRaw.Length > 100)
-                safeRaw = safeRaw.Substring(0, 100);
-            var safeName = $"{safeRaw}.png";
-            var fullPath = Path.Combine(_exportDirectory, safeName);
-
             var file = new FileInfo(fullPath);
-            using (var writer = new BinaryWriter(file.Create()))
+            file.Directory?.Create();
+            if (!file.Exists)
             {
-                writer.Write(texture.Data);
+                using (var writer = new BinaryWriter(file.Create()))
+                {
+                    writer.Write(texture.Data);
+                }
             }
+            CreateLocalTextureLink(fullPath, safeName);
 
             return pTex;
         }
+
+        private string GetTextureReferencePath(string sharedPath, string safeName)
+        {
+            return _localTextureDirectory == null
+                ? sharedPath
+                : Path.Combine(_localTextureDirectory, safeName);
+        }
+
+        private void CreateLocalTextureLink(string sharedPath, string safeName)
+        {
+            if (_localTextureDirectory == null)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(_localTextureDirectory);
+            var linkPath = Path.Combine(_localTextureDirectory, safeName);
+            if (File.Exists(linkPath))
+            {
+                return;
+            }
+
+            if (!CreateHardLink(linkPath, sharedPath, IntPtr.Zero))
+            {
+                File.Copy(sharedPath, linkPath, false);
+            }
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateHardLink(
+            string lpFileName,
+            string lpExistingFileName,
+            IntPtr lpSecurityAttributes
+        );
 
         private void ExportMesh(ImportedFrame rootFrame, List<ImportedMaterial> materialList, List<ImportedTexture> textureList, IntPtr frameNode, ImportedMesh importedMesh)
         {

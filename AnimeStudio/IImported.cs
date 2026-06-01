@@ -217,11 +217,13 @@ namespace AnimeStudio
     public class ImportedTexture
     {
         public string Name { get; set; }
+        public string ExportName { get; set; }
         public byte[] Data { get; set; }
 
         public ImportedTexture(MemoryStream stream, string name)
         {
             Name = name;
+            ExportName = name;
             Data = stream.ToArray();
         }
     }

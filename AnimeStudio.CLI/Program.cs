@@ -41,6 +41,7 @@ namespace AnimeStudio.CLI
                 }
 
                 Studio.Game = game;
+                Studio.ModelRootsOnly = o.ModelRootsOnly;
                 Logger.Default = new ConsoleLogger();
                 Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
                 Logger.FileLogging = Settings.Default.enableFileLogging;
@@ -52,6 +53,7 @@ namespace AnimeStudio.CLI
                 var classTypeFilter = Array.Empty<ClassIDType>();
                 if (!o.TypeFilter.IsNullOrEmpty())
                 {
+                    TypeFlags.SetTypes(new Dictionary<ClassIDType, (bool, bool)>());
                     var exportTexture2D = false;
                     var exportMaterial = false;
                     var classTypeFilterList = new List<ClassIDType>();
@@ -103,20 +105,17 @@ namespace AnimeStudio.CLI
                         {
                             TypeFlags.SetType(ClassIDType.Material, true, exportMaterial);
                         }
-                        if (ClassIDType.GameObject.CanExport())
-                        {
-                            TypeFlags.SetType(ClassIDType.Animator, true, false);
-                        }
-                        else if(ClassIDType.Animator.CanExport())
+                        if (ClassIDType.Animator.CanExport())
                         {
                             TypeFlags.SetType(ClassIDType.GameObject, true, false);
                         }
                     }
                 }
 
-                if (o.GroupAssetsType == AssetGroupOption.ByContainer)
+                if (o.GroupAssetsType == AssetGroupOption.ByContainer || o.ModelRootsOnly)
                 {
                     TypeFlags.SetType(ClassIDType.AssetBundle, true, false);
+                    TypeFlags.SetType(ClassIDType.ResourceManager, true, false);
                 }
 
                 assetsManager.Silent = o.Silent;
@@ -130,9 +129,27 @@ namespace AnimeStudio.CLI
                     MiHoYoBinData.Key = o.Key;
                 }
 
-                if (o.AIFile != null && game.Type.IsGISubGroup())
+                if (game.Type.IsGISubGroup() && o.AIFile != null)
                 {
                     ResourceIndex.FromFile(o.AIFile.FullName);
+                }
+                else if (game.Type.IsGISubGroup() && !string.IsNullOrWhiteSpace(o.AIVersion))
+                {
+                    Logger.Info($"Loading AI v{o.AIVersion}");
+                    var aiPath = "";
+                    if (Task.Run(() => AIVersionManager.FetchVersions()).Result)
+                    {
+                        aiPath = Task.Run(() => AIVersionManager.FetchAI(o.AIVersion)).Result;
+                    }
+
+                    if (!string.IsNullOrEmpty(aiPath))
+                    {
+                        ResourceIndex.FromFile(aiPath);
+                    }
+                    else
+                    {
+                        Logger.Warning($"Could not load AI v{o.AIVersion}");
+                    }
                 }
 
                 if (o.DummyDllFolder != null)
@@ -143,12 +160,16 @@ namespace AnimeStudio.CLI
                 Logger.Info("Scanning for files...");
                 var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
                 Logger.Info($"Found {files.Length} files");
+                var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
+                    ? o.Input.FullName
+                    : Path.GetDirectoryName(o.Input.FullName);
+                var needsModelDependencies = ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport();
 
                 if (o.MapOp.HasFlag(MapOpType.CABMap))
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
-                        AssetsHelper.BuildCABMap(files, o.MapName, o.Input.FullName, game);
+                        AssetsHelper.BuildCABMap(files, o.MapName, inputBaseFolder, game);
                     }
                     else
                     {
@@ -169,7 +190,21 @@ namespace AnimeStudio.CLI
                 }
                 if (o.MapOp.HasFlag(MapOpType.Both))
                 {
-                    Task.Run(() => AssetsHelper.BuildBoth(files, o.MapName, o.Input.FullName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                    Task.Run(() => AssetsHelper.BuildBoth(files, o.MapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                }
+                if (needsModelDependencies && o.MapOp.Equals(MapOpType.None))
+                {
+                    var cabMapLoaded = AssetsHelper.LoadCABMapInternal(o.MapName);
+                    if (!cabMapLoaded)
+                    {
+                        Logger.Info("Building CAB dependency map for model materials...");
+                        AssetsHelper.BuildCABMap(files, o.MapName, inputBaseFolder, game);
+                        cabMapLoaded = AssetsHelper.LoadCABMapInternal(o.MapName);
+                    }
+                    if (cabMapLoaded)
+                    {
+                        assetsManager.ResolveDependencies = true;
+                    }
                 }
                 if (o.MapOp.Equals(MapOpType.None) || o.MapOp.HasFlag(MapOpType.Load))
                 {

@@ -1,12 +1,12 @@
-﻿using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
+﻿using System;
 using System.Buffers.Binary;
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
 
 namespace AnimeStudio.CLI
 {
@@ -18,7 +18,14 @@ namespace AnimeStudio.CLI
             if (Properties.Settings.Default.convertTexture)
             {
                 var type = Properties.Settings.Default.convertType;
-                if (!TryExportFile(exportPath, item, "." + type.ToString().ToLower(), out var exportFullPath))
+                if (
+                    !TryExportFile(
+                        exportPath,
+                        item,
+                        "." + type.ToString().ToLower(),
+                        out var exportFullPath
+                    )
+                )
                     return false;
                 var image = m_Texture2D.ConvertToImage(true);
                 if (image == null)
@@ -36,7 +43,7 @@ namespace AnimeStudio.CLI
             {
                 if (!TryExportFile(exportPath, item, ".tex", out var exportFullPath))
                     return false;
-                File.WriteAllBytes(exportFullPath, m_Texture2D.image_data.GetData());
+                m_Texture2D.image_data.WriteData(exportFullPath);
                 return true;
             }
         }
@@ -44,8 +51,7 @@ namespace AnimeStudio.CLI
         public static bool ExportAudioClip(AssetItem item, string exportPath)
         {
             var m_AudioClip = (AudioClip)item.Asset;
-            var m_AudioData = m_AudioClip.m_AudioData.GetData();
-            if (m_AudioData == null || m_AudioData.Length == 0)
+            if (m_AudioClip.m_AudioData.Size == 0)
                 return false;
             var converter = new AudioClipConverter(m_AudioClip);
             if (Properties.Settings.Default.convertAudio && converter.IsSupport)
@@ -59,9 +65,16 @@ namespace AnimeStudio.CLI
             }
             else
             {
-                if (!TryExportFile(exportPath, item, converter.GetExtensionName(), out var exportFullPath))
+                if (
+                    !TryExportFile(
+                        exportPath,
+                        item,
+                        converter.GetExtensionName(),
+                        out var exportFullPath
+                    )
+                )
                     return false;
-                File.WriteAllBytes(exportFullPath, m_AudioData);
+                m_AudioClip.m_AudioData.WriteData(exportFullPath);
             }
             return true;
         }
@@ -98,10 +111,13 @@ namespace AnimeStudio.CLI
             var option = new Options();
             var m_MonoBehaviour = (MonoBehaviour)item.Asset;
 
-            string folderPattern = $@"(?:Assets|UI|IconRole|Data|Scenes|OriginalResRepos|Comic|Weapon)(?:/[^\s"",]+)*";
-            string filePattern = $@"(?:Assets|UI|IconRole|Data|Scenes|OriginalResRepos|Comic|Weapon)/[^\s"",]+?\.(?:.*)";
+            string folderPattern =
+                $@"(?:Assets|UI|IconRole|Data|Scenes|OriginalResRepos|Comic|Weapon)(?:/[^\s"",]+)*";
+            string filePattern =
+                $@"(?:Assets|UI|IconRole|Data|Scenes|OriginalResRepos|Comic|Weapon)/[^\s"",]+?\.(?:.*)";
             string voPattern = @"(?:VO|Breath|Tips)_[^""\s;]+";
-            string eventPattern = @"(?:Ev|Play|Stop|StateGroup|State|VO|SFX)_[a-zA-Z0-9/_-\{\}]{2,}";
+            string eventPattern =
+                @"(?:Ev|Play|Stop|StateGroup|State|VO|SFX)_[a-zA-Z0-9/_-\{\}]{2,}";
 
             var folderRegex = new Regex(folderPattern, RegexOptions.IgnoreCase);
             var fileRegex = new Regex(filePattern, RegexOptions.IgnoreCase);
@@ -152,7 +168,8 @@ namespace AnimeStudio.CLI
                             if (subMatch.StartsWith("UI"))
                                 subMatch = $"Assets/NapResources/{subMatch}";
                             else if (subMatch.StartsWith("IconRole"))
-                                subMatch = $"Assets/NapResources/UI/Sprite/A1DynamicLoad/{subMatch}";
+                                subMatch =
+                                    $"Assets/NapResources/UI/Sprite/A1DynamicLoad/{subMatch}";
                             else if (subMatch.StartsWith("Data"))
                                 subMatch = $"Assets/NapResources/{subMatch}";
 
@@ -190,16 +207,29 @@ namespace AnimeStudio.CLI
                 File.WriteAllText(exportFullPath, str);
             }
 
-             return true;
+            return true;
         }
 
         private static int Search(byte[] bytes, int startIndex)
         {
-            string[] keys = { "Assets", "UI", "IconRole", "Data", "Scenes", "State_", "VO_", "Play_", "Stop_", "SFX_" };
+            string[] keys =
+            {
+                "Assets",
+                "UI",
+                "IconRole",
+                "Data",
+                "Scenes",
+                "State_",
+                "VO_",
+                "Play_",
+                "Stop_",
+                "SFX_",
+            };
             foreach (var key in keys)
             {
                 int idx = bytes.Search(key, startIndex);
-                if (idx != -1) return idx;
+                if (idx != -1)
+                    return idx;
             }
             return -1;
         }
@@ -251,7 +281,12 @@ namespace AnimeStudio.CLI
             if (m_Font.m_FontData != null)
             {
                 var extension = ".ttf";
-                if (m_Font.m_FontData[0] == 79 && m_Font.m_FontData[1] == 84 && m_Font.m_FontData[2] == 84 && m_Font.m_FontData[3] == 79)
+                if (
+                    m_Font.m_FontData[0] == 79
+                    && m_Font.m_FontData[1] == 84
+                    && m_Font.m_FontData[2] == 84
+                    && m_Font.m_FontData[3] == 79
+                )
                 {
                     extension = ".otf";
                 }
@@ -284,7 +319,12 @@ namespace AnimeStudio.CLI
             }
             for (int v = 0; v < m_Mesh.m_VertexCount; v++)
             {
-                sb.AppendFormat("v {0} {1} {2}\r\n", -m_Mesh.m_Vertices[v * c], m_Mesh.m_Vertices[v * c + 1], m_Mesh.m_Vertices[v * c + 2]);
+                sb.AppendFormat(
+                    "v {0} {1} {2}\r\n",
+                    -m_Mesh.m_Vertices[v * c],
+                    m_Mesh.m_Vertices[v * c + 1],
+                    m_Mesh.m_Vertices[v * c + 2]
+                );
             }
             #endregion
 
@@ -320,7 +360,12 @@ namespace AnimeStudio.CLI
                 }
                 for (int v = 0; v < m_Mesh.m_VertexCount; v++)
                 {
-                    sb.AppendFormat("vn {0} {1} {2}\r\n", -m_Mesh.m_Normals[v * c], m_Mesh.m_Normals[v * c + 1], m_Mesh.m_Normals[v * c + 2]);
+                    sb.AppendFormat(
+                        "vn {0} {1} {2}\r\n",
+                        -m_Mesh.m_Normals[v * c],
+                        m_Mesh.m_Normals[v * c + 1],
+                        m_Mesh.m_Normals[v * c + 2]
+                    );
                 }
             }
             #endregion
@@ -334,7 +379,12 @@ namespace AnimeStudio.CLI
                 var end = sum + indexCount / 3;
                 for (int f = sum; f < end; f++)
                 {
-                    sb.AppendFormat("f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}\r\n", m_Mesh.m_Indices[f * 3 + 2] + 1, m_Mesh.m_Indices[f * 3 + 1] + 1, m_Mesh.m_Indices[f * 3] + 1);
+                    sb.AppendFormat(
+                        "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}\r\n",
+                        m_Mesh.m_Indices[f * 3 + 2] + 1,
+                        m_Mesh.m_Indices[f * 3 + 1] + 1,
+                        m_Mesh.m_Indices[f * 3] + 1
+                    );
                 }
                 sum = end;
             }
@@ -350,7 +400,14 @@ namespace AnimeStudio.CLI
             var m_VideoClip = (VideoClip)item.Asset;
             if (m_VideoClip.m_ExternalResources.m_Size > 0)
             {
-                if (!TryExportFile(exportPath, item, Path.GetExtension(m_VideoClip.m_OriginalPath), out var exportFullPath))
+                if (
+                    !TryExportFile(
+                        exportPath,
+                        item,
+                        Path.GetExtension(m_VideoClip.m_OriginalPath),
+                        out var exportFullPath
+                    )
+                )
                     return false;
                 m_VideoClip.m_VideoData.WriteData(exportFullPath);
                 return true;
@@ -370,7 +427,14 @@ namespace AnimeStudio.CLI
         public static bool ExportSprite(AssetItem item, string exportPath)
         {
             var type = Properties.Settings.Default.convertType;
-            if (!TryExportFile(exportPath, item, "." + type.ToString().ToLower(), out var exportFullPath))
+            if (
+                !TryExportFile(
+                    exportPath,
+                    item,
+                    "." + type.ToString().ToLower(),
+                    out var exportFullPath
+                )
+            )
                 return false;
             var image = ((Sprite)item.Asset).GetImage();
             if (image != null)
@@ -395,7 +459,12 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        private static bool TryExportFile(string dir, AssetItem item, string extension, out string fullPath)
+        private static bool TryExportFile(
+            string dir,
+            AssetItem item,
+            string extension,
+            out string fullPath
+        )
         {
             var fileName = FixFileName(item.Text);
             fullPath = Path.Combine(dir, $"{fileName}{extension}");
@@ -446,13 +515,17 @@ namespace AnimeStudio.CLI
                 return false;
             var m_AnimationClip = (AnimationClip)item.Asset;
             var str = m_AnimationClip.Convert();
-            if (string.IsNullOrEmpty(str)) 
+            if (string.IsNullOrEmpty(str))
                 return false;
             File.WriteAllText(exportFullPath, str);
             return true;
         }
 
-        public static bool ExportAnimator(AssetItem item, string exportPath, List<AssetItem> animationList = null)
+        public static bool ExportAnimator(
+            AssetItem item,
+            string exportPath,
+            List<AssetItem> animationList = null
+        )
         {
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;
@@ -465,15 +538,25 @@ namespace AnimeStudio.CLI
                 collectAnimations = Properties.Settings.Default.collectAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
-                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(Properties.Settings.Default.uvs),
-                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(Properties.Settings.Default.texs),
+                useAnimatorHierarchy = true,
+                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(
+                    Properties.Settings.Default.uvs
+                ),
+                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(
+                    Properties.Settings.Default.texs
+                ),
             };
-            var convert = animationList != null
-                ? new ModelConverter(m_Animator, options, animationList.Select(x => (AnimationClip)x.Asset).ToArray())
-                : new ModelConverter(m_Animator, options);
+            var convert =
+                animationList != null
+                    ? new ModelConverter(
+                        m_Animator,
+                        options,
+                        animationList.Select(x => (AnimationClip)x.Asset).ToArray()
+                    )
+                    : new ModelConverter(m_Animator, options);
             if (options.exportMaterials)
             {
-                var materialExportPath = Path.Combine(Path.GetDirectoryName(exportFullPath), "Materials");
+                var materialExportPath = Path.GetDirectoryName(exportFullPath);
                 Directory.CreateDirectory(materialExportPath);
                 foreach (var material in options.materials)
                 {
@@ -485,16 +568,33 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        public static bool ExportGameObject(AssetItem item, string exportPath, List <AssetItem> animationList = null)
+        public static bool ExportGameObject(
+            AssetItem item,
+            string exportPath,
+            List<AssetItem> animationList = null
+        )
         {
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;
 
             var m_GameObject = (GameObject)item.Asset;
-            return ExportGameObject(m_GameObject, exportFullPath + Path.DirectorySeparatorChar, animationList);
+            if (m_GameObject.m_Transform == null)
+            {
+                Logger.Info($"GameObject {m_GameObject.m_Name} has no Transform, skipping...");
+                return false;
+            }
+            return ExportGameObject(
+                m_GameObject,
+                exportFullPath + Path.DirectorySeparatorChar,
+                animationList
+            );
         }
 
-        public static bool ExportGameObject(GameObject gameObject, string exportPath, List<AssetItem> animationList = null)
+        public static bool ExportGameObject(
+            GameObject gameObject,
+            string exportPath,
+            List<AssetItem> animationList = null
+        )
         {
             var options = new ModelConverter.Options()
             {
@@ -503,26 +603,42 @@ namespace AnimeStudio.CLI
                 collectAnimations = Properties.Settings.Default.collectAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
-                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(Properties.Settings.Default.uvs),
-                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(Properties.Settings.Default.texs),
+                useAnimatorHierarchy =
+                    Properties.Settings.Default.exportSkins
+                    || Properties.Settings.Default.exportAnimations
+                    || Properties.Settings.Default.collectAnimations,
+                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(
+                    Properties.Settings.Default.uvs
+                ),
+                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(
+                    Properties.Settings.Default.texs
+                ),
             };
-            var convert = animationList != null
-                ? new ModelConverter(gameObject, options, animationList.Select(x => (AnimationClip)x.Asset).ToArray())
-                : new ModelConverter(gameObject, options);
-            
+            var convert =
+                animationList != null
+                    ? new ModelConverter(
+                        gameObject,
+                        options,
+                        animationList.Select(x => (AnimationClip)x.Asset).ToArray()
+                    )
+                    : new ModelConverter(gameObject, options);
+
             if (convert.MeshList.Count == 0)
             {
                 Logger.Info($"GameObject {gameObject.m_Name} has no mesh, skipping...");
                 return false;
             }
+            if (options.exportMaterials && convert.MaterialList.Count == 0)
+            {
+                Logger.Warning($"GameObject {gameObject.m_Name} has no resolved materials, skipping FBX export.");
+                return false;
+            }
             if (options.exportMaterials)
             {
-                var materialExportPath = Path.Combine(exportPath, "Materials");
-                Directory.CreateDirectory(materialExportPath);
                 foreach (var material in options.materials)
                 {
                     var matItem = new AssetItem(material);
-                    ExportJSONFile(matItem, materialExportPath);
+                    ExportJSONFile(matItem, exportPath);
                 }
             }
             exportPath = exportPath + FixFileName(gameObject.m_Name) + ".fbx";
@@ -544,9 +660,27 @@ namespace AnimeStudio.CLI
                 boneSize = (int)Properties.Settings.Default.boneSize,
                 scaleFactor = (float)Properties.Settings.Default.scaleFactor,
                 fbxVersion = Properties.Settings.Default.fbxVersion,
-                fbxFormat = Properties.Settings.Default.fbxFormat
+                fbxFormat = Properties.Settings.Default.fbxFormat,
+                textureDirectory = GetSharedTextureDirectory(exportPath),
+                localTextureDirectoryName = ".",
             };
             ModelExporter.ExportFbx(exportPath, convert, exportOptions);
+        }
+
+        private static string GetSharedTextureDirectory(string exportPath)
+        {
+            var fullPath = Path.GetFullPath(
+                exportPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            );
+            var marker = $"{Path.DirectorySeparatorChar}Models{Path.DirectorySeparatorChar}";
+            var index = fullPath.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                return null;
+            }
+
+            var libraryRoot = fullPath.Substring(0, index);
+            return Path.Combine(libraryRoot, "Textures", "_ModelDependencies");
         }
 
         public static bool ExportDumpFile(AssetItem item, string exportPath)
@@ -615,8 +749,10 @@ namespace AnimeStudio.CLI
 
         public static string FixFileName(string str)
         {
-            if (str.Length >= 260) return Path.GetRandomFileName();
-            return Path.GetInvalidFileNameChars().Aggregate(str, (current, c) => current.Replace(c, '_'));
+            if (str.Length >= 260)
+                return Path.GetRandomFileName();
+            return Path.GetInvalidFileNameChars()
+                .Aggregate(str, (current, c) => current.Replace(c, '_'));
         }
     }
 }

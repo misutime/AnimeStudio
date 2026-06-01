@@ -1,13 +1,13 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
+using System.Xml;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
-using System.Collections.Generic;
-using System.Text.RegularExpressions;
 using static AnimeStudio.CLI.Exporter;
-using System.Globalization;
-using System.Xml;
 
 namespace AnimeStudio.CLI
 {
@@ -26,11 +26,25 @@ namespace AnimeStudio.CLI
     {
         public static Game Game;
         public static bool SkipContainer = false;
-        public static AssetsManager assetsManager = new AssetsManager() { ResolveDependencies = false };
+        public static AssetsManager assetsManager = new AssetsManager()
+        {
+            ResolveDependencies = false,
+        };
         public static AssemblyLoader assemblyLoader = new AssemblyLoader();
         public static List<AssetItem> exportableAssets = new List<AssetItem>();
+        public static bool ModelRootsOnly { get; set; }
+        private static readonly Regex[] ModelRootExcludePatterns =
+        {
+            new Regex(@"^Cs_", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"_Convert$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|_)Vo$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|_)(Col|Collider|Collision)$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"Collider|Collision", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|_)ShadowMesh$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        };
 
-        public static Dictionary<ulong, string> Paths {  get; set; } = new Dictionary<ulong, string>();
+        public static Dictionary<ulong, string> Paths { get; set; } =
+            new Dictionary<ulong, string>();
         public static List<string> PathStrings { get; set; } = new List<string>();
         public static List<string> VOStrings { get; set; } = new List<string>();
         public static List<string> EventStrings { get; set; } = new List<string>();
@@ -93,7 +107,9 @@ namespace AnimeStudio.CLI
             }
             catch (InvalidCastException)
             {
-                Logger.Error($"Game type mismatch, Expected {nameof(Mr0k)} but got {Game.Name} ({Game.GetType().Name}) !!");
+                Logger.Error(
+                    $"Game type mismatch, Expected {nameof(Mr0k)} but got {Game.Name} ({Game.GetType().Name}) !!"
+                );
             }
             return 0;
         }
@@ -121,7 +137,10 @@ namespace AnimeStudio.CLI
                 do
                 {
                     stream.Offset = stream.AbsolutePosition;
-                    var dummyPath = Path.Combine(reader.FullPath, stream.AbsolutePosition.ToString("X8"));
+                    var dummyPath = Path.Combine(
+                        reader.FullPath,
+                        stream.AbsolutePosition.ToString("X8")
+                    );
                     var subReader = new FileReader(dummyPath, stream, true);
                     var subSavePath = Path.Combine(savePath, reader.FileName + "_unpacked");
                     switch (subReader.FileType)
@@ -137,7 +156,9 @@ namespace AnimeStudio.CLI
             }
             catch (InvalidCastException)
             {
-                Logger.Error($"Game type mismatch, Expected {nameof(Blk)} but got {Game.Name} ({Game.GetType().Name}) !!");
+                Logger.Error(
+                    $"Game type mismatch, Expected {nameof(Blk)} but got {Game.Name} ({Game.GetType().Name}) !!"
+                );
             }
             return total;
         }
@@ -151,7 +172,10 @@ namespace AnimeStudio.CLI
             {
                 stream.Offset = stream.AbsolutePosition;
                 var subSavePath = Path.Combine(savePath, reader.FileName + "_unpacked");
-                var dummyPath = Path.Combine(reader.FullPath, stream.AbsolutePosition.ToString("X8"));
+                var dummyPath = Path.Combine(
+                    reader.FullPath,
+                    stream.AbsolutePosition.ToString("X8")
+                );
                 var subReader = new FileReader(dummyPath, stream, true);
                 total += ExtractBundleFile(subReader, subSavePath);
             } while (stream.Remaining > 0);
@@ -173,7 +197,9 @@ namespace AnimeStudio.CLI
             }
             catch (InvalidCastException)
             {
-                Logger.Error($"Game type mismatch, Expected {nameof(Mhy)} but got {Game.Name} ({Game.GetType().Name}) !!");
+                Logger.Error(
+                    $"Game type mismatch, Expected {nameof(Mhy)} but got {Game.Name} ({Game.GetType().Name}) !!"
+                );
             }
             return 0;
         }
@@ -231,16 +257,29 @@ namespace AnimeStudio.CLI
             }
         }
 
-        public static void BuildAssetData(ClassIDType[] typeFilters, Regex[] nameFilters, Regex[] containerFilters, ref int i)
+        public static void BuildAssetData(
+            ClassIDType[] typeFilters,
+            Regex[] nameFilters,
+            Regex[] containerFilters,
+            ref int i
+        )
         {
             var objectAssetItemDic = new Dictionary<Object, AssetItem>();
             var mihoyoBinDataNames = new List<(PPtr<Object>, string)>();
             var containers = new List<(PPtr<Object>, string)>();
+            var containerMainAssets = new HashSet<Object>();
             foreach (var assetsFile in assetsManager.assetsFileList)
             {
                 foreach (var asset in assetsFile.Objects)
                 {
-                    ProcessAssetData(asset, objectAssetItemDic, mihoyoBinDataNames, containers, ref i);
+                    ProcessAssetData(
+                        asset,
+                        objectAssetItemDic,
+                        mihoyoBinDataNames,
+                        containers,
+                        containerMainAssets,
+                        ref i
+                    );
                 }
             }
             foreach ((var pptr, var name) in mihoyoBinDataNames)
@@ -248,12 +287,20 @@ namespace AnimeStudio.CLI
                 if (pptr.TryGet<MiHoYoBinData>(out var obj))
                 {
                     var assetItem = objectAssetItemDic[obj];
-                    if (int.TryParse(name, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hash))
+                    if (
+                        int.TryParse(
+                            name,
+                            NumberStyles.HexNumber,
+                            CultureInfo.InvariantCulture,
+                            out var hash
+                        )
+                    )
                     {
                         assetItem.Text = name;
                         assetItem.Container = hash.ToString();
                     }
-                    else assetItem.Text = $"BinFile #{assetItem.m_PathID}";
+                    else
+                        assetItem.Text = $"BinFile #{assetItem.m_PathID}";
                 }
             }
             if (!SkipContainer)
@@ -272,18 +319,94 @@ namespace AnimeStudio.CLI
                 }
             }
 
-            var matches = exportableAssets.Where(x =>
+            var matches = exportableAssets
+                .Where(x =>
+                {
+                    var isMatchRegex =
+                        nameFilters.IsNullOrEmpty() || nameFilters.Any(y => y.IsMatch(x.Text));
+                    var isFilteredType =
+                        typeFilters.IsNullOrEmpty() || typeFilters.Contains(x.Type);
+                    var isContainerMatch =
+                        containerFilters.IsNullOrEmpty()
+                        || containerFilters.Any(y => y.IsMatch(x.Container));
+                    return isMatchRegex && isFilteredType && isContainerMatch;
+                })
+                .ToArray();
+            if (ModelRootsOnly)
             {
-                var isMatchRegex = nameFilters.IsNullOrEmpty() || nameFilters.Any(y => y.IsMatch(x.Text));
-                var isFilteredType = typeFilters.IsNullOrEmpty() || typeFilters.Contains(x.Type);
-                var isContainerMatch = containerFilters.IsNullOrEmpty() || containerFilters.Any(y => y.IsMatch(x.Container));
-                return isMatchRegex && isFilteredType && isContainerMatch;
-            }).ToArray();
+                matches = FilterModelRootsOnly(matches, containerMainAssets);
+                matches = FilterUsefulModelRoots(matches);
+            }
             exportableAssets.Clear();
             exportableAssets.AddRange(matches);
         }
 
-        public static void ProcessAssetData(Object asset, Dictionary<Object, AssetItem> objectAssetItemDic, List<(PPtr<Object>, string)> mihoyoBinDataNames, List<(PPtr<Object>, string)> containers, ref int i) 
+        private static AssetItem[] FilterUsefulModelRoots(AssetItem[] assets)
+        {
+            var skipped = 0;
+            var filtered = assets
+                .Where(x =>
+                {
+                    if (x.Asset is not GameObject)
+                    {
+                        return true;
+                    }
+
+                    var exclude = ModelRootExcludePatterns.Any(y => y.IsMatch(x.Text ?? string.Empty));
+                    if (exclude)
+                    {
+                        skipped++;
+                    }
+                    return !exclude;
+                })
+                .ToArray();
+
+            if (skipped > 0)
+            {
+                Logger.Info(
+                    $"--model_roots_only skipped {skipped} cutscene/helper/collision model root(s)."
+                );
+            }
+
+            return filtered;
+        }
+
+        private static AssetItem[] FilterModelRootsOnly(
+            AssetItem[] assets,
+            HashSet<Object> containerMainAssets
+        )
+        {
+            var containerModelAssets = assets
+                .Where(x => x.Asset is GameObject && containerMainAssets.Contains(x.Asset))
+                .Select(x => (GameObject)x.Asset)
+                .ToHashSet();
+            if (containerModelAssets.Count == 0)
+            {
+                var skippedModels = assets.Count(x => x.Asset is GameObject);
+                if (skippedModels > 0)
+                {
+                    Logger.Warning(
+                        $"--model_roots_only skipped {skippedModels} GameObject model(s) because no AssetBundle/ResourceManager main GameObject entries were found."
+                    );
+                }
+            }
+
+            return assets
+                .Where(x =>
+                    x.Asset is not GameObject gameObject
+                    || containerModelAssets.Contains(gameObject)
+                )
+                .ToArray();
+        }
+
+        public static void ProcessAssetData(
+            Object asset,
+            Dictionary<Object, AssetItem> objectAssetItemDic,
+            List<(PPtr<Object>, string)> mihoyoBinDataNames,
+            List<(PPtr<Object>, string)> containers,
+            HashSet<Object> containerMainAssets,
+            ref int i
+        )
         {
             var assetItem = new AssetItem(asset);
             objectAssetItemDic.Add(asset, assetItem);
@@ -306,7 +429,8 @@ namespace AnimeStudio.CLI
                     break;
                 case VideoClip m_VideoClip:
                     if (!string.IsNullOrEmpty(m_VideoClip.m_OriginalPath))
-                        assetItem.FullSize = asset.byteSize + m_VideoClip.m_ExternalResources.m_Size;
+                        assetItem.FullSize =
+                            asset.byteSize + m_VideoClip.m_ExternalResources.m_Size;
                     exportable = ClassIDType.VideoClip.CanExport();
                     break;
                 case MonoBehaviour m_MonoBehaviour:
@@ -317,7 +441,10 @@ namespace AnimeStudio.CLI
                     {
                         string container = m_Container.Key;
 
-                        if (ulong.TryParse(container, out var hash) && Paths.TryGetValue(hash, out var path))
+                        if (
+                            ulong.TryParse(container, out var hash)
+                            && Paths.TryGetValue(hash, out var path)
+                        )
                         {
                             container = path;
                         }
@@ -328,6 +455,11 @@ namespace AnimeStudio.CLI
                         else
                         {
                             container = null;
+                        }
+
+                        if (m_Container.Value.asset.TryGet(out var mainAsset))
+                        {
+                            containerMainAssets.Add(mainAsset);
                         }
 
                         var preloadIndex = m_Container.Value.preloadIndex;
@@ -353,14 +485,18 @@ namespace AnimeStudio.CLI
                     foreach (var m_Container in m_ResourceManager.m_Container)
                     {
                         containers.Add((m_Container.Value, m_Container.Key));
+                        if (m_Container.Value.TryGet(out var mainAsset))
+                        {
+                            containerMainAssets.Add(mainAsset);
+                        }
                     }
 
-                    exportable = ClassIDType.GameObject.CanExport();
+                    exportable = ClassIDType.ResourceManager.CanExport();
                     break;
                 case Mesh _ when ClassIDType.Mesh.CanExport():
                 case TextAsset _ when ClassIDType.TextAsset.CanExport():
-                case AnimationClip _ when ClassIDType.Font.CanExport():
-                case Font _ when ClassIDType.GameObject.CanExport():
+                case AnimationClip _ when ClassIDType.AnimationClip.CanExport():
+                case Font _ when ClassIDType.Font.CanExport():
                 case MovieTexture _ when ClassIDType.MovieTexture.CanExport():
                 case Sprite _ when ClassIDType.Sprite.CanExport():
                 case Material _ when ClassIDType.Material.CanExport():
@@ -387,7 +523,12 @@ namespace AnimeStudio.CLI
             }
         }
 
-        public static void ExportAssets(string savePath, List<AssetItem> toExportAssets, AssetGroupOption assetGroupOption, ExportType exportType)
+        public static void ExportAssets(
+            string savePath,
+            List<AssetItem> toExportAssets,
+            AssetGroupOption assetGroupOption,
+            ExportType exportType
+        )
         {
             int toExportCount = toExportAssets.Count;
             int exportedCount = 0;
@@ -402,21 +543,33 @@ namespace AnimeStudio.CLI
                     case AssetGroupOption.ByContainer: //container path
                         if (!string.IsNullOrEmpty(asset.Container))
                         {
-                            exportPath = Path.HasExtension(asset.Container) ? Path.Combine(savePath, Path.GetDirectoryName(asset.Container)) : Path.Combine(savePath, asset.Container);
+                            exportPath = Path.HasExtension(asset.Container)
+                                ? Path.Combine(savePath, Path.GetDirectoryName(asset.Container))
+                                : Path.Combine(savePath, asset.Container);
                         }
                         else
                         {
                             exportPath = Path.Combine(savePath, asset.TypeString);
                         }
                         break;
+                    case AssetGroupOption.ByLibrary:
+                        exportPath = GetLibraryExportPath(savePath, asset);
+                        break;
                     case AssetGroupOption.BySource: //source file
                         if (string.IsNullOrEmpty(asset.SourceFile.originalPath))
                         {
-                            exportPath = Path.Combine(savePath, asset.SourceFile.fileName + "_export");
+                            exportPath = Path.Combine(
+                                savePath,
+                                asset.SourceFile.fileName + "_export"
+                            );
                         }
                         else
                         {
-                            exportPath = Path.Combine(savePath, Path.GetFileName(asset.SourceFile.originalPath) + "_export", asset.SourceFile.fileName);
+                            exportPath = Path.Combine(
+                                savePath,
+                                Path.GetFileName(asset.SourceFile.originalPath) + "_export",
+                                asset.SourceFile.fileName
+                            );
                         }
                         break;
                     default:
@@ -424,7 +577,9 @@ namespace AnimeStudio.CLI
                         break;
                 }
                 exportPath += Path.DirectorySeparatorChar;
-                Logger.Info($"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
+                Logger.Info(
+                    $"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}"
+                );
                 try
                 {
                     switch (exportType)
@@ -457,21 +612,80 @@ namespace AnimeStudio.CLI
                 }
                 catch (Exception ex)
                 {
-                    Logger.Error($"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}");
+                    Logger.Error(
+                        $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
+                    );
                 }
             }
 
-            var statusText = exportedCount == 0 ? "Nothing exported." : $"Finished exporting {exportedCount} assets.";
+            var statusText =
+                exportedCount == 0
+                    ? "Nothing exported."
+                    : $"Finished exporting {exportedCount} assets.";
 
             if (toExportCount > exportedCount)
             {
-                statusText += $" {toExportCount - exportedCount} assets skipped (not extractable or files already exist)";
+                statusText +=
+                    $" {toExportCount - exportedCount} assets skipped (not extractable or files already exist)";
             }
 
             Logger.Info(statusText);
         }
 
-        public static void ExportAssetsMap(string savePath, List<AssetEntry> toExportAssets, string exportListName, ExportListType exportListType)
+        private static string GetLibraryExportPath(string savePath, AssetItem asset)
+        {
+            var libraryRoot = GetLibraryRoot(asset);
+            var subPath = GetLibrarySubPath(asset);
+            return string.IsNullOrEmpty(subPath)
+                ? Path.Combine(savePath, libraryRoot)
+                : Path.Combine(savePath, libraryRoot, subPath);
+        }
+
+        private static string GetLibraryRoot(AssetItem asset)
+        {
+            return asset.Type switch
+            {
+                ClassIDType.GameObject or ClassIDType.Animator => "Models",
+                ClassIDType.Texture2D or ClassIDType.Sprite => "Textures",
+                ClassIDType.Material => "Materials",
+                ClassIDType.Mesh => "Meshes",
+                ClassIDType.MiHoYoBinData
+                or ClassIDType.TextAsset
+                or ClassIDType.MonoBehaviour => "Data",
+                _ => asset.TypeString,
+            };
+        }
+
+        private static string GetLibrarySubPath(AssetItem asset)
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Container) && !int.TryParse(asset.Container, out _))
+            {
+                var container = Path.HasExtension(asset.Container)
+                    ? Path.GetDirectoryName(asset.Container)
+                    : asset.Container;
+                return string.IsNullOrWhiteSpace(container) ? string.Empty : container;
+            }
+
+            return GetAssetNameCategory(asset.Text);
+        }
+
+        private static string GetAssetNameCategory(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return string.Empty;
+            }
+
+            var match = Regex.Match(name, @"^[A-Za-z0-9]+");
+            return match.Success ? match.Value : string.Empty;
+        }
+
+        public static void ExportAssetsMap(
+            string savePath,
+            List<AssetEntry> toExportAssets,
+            string exportListName,
+            ExportListType exportListType
+        )
         {
             string filename;
             switch (exportListType)
@@ -506,7 +720,10 @@ namespace AnimeStudio.CLI
                     filename = Path.Combine(savePath, $"{exportListName}.json");
                     using (StreamWriter file = File.CreateText(filename))
                     {
-                        JsonSerializer serializer = new JsonSerializer() { Formatting = Newtonsoft.Json.Formatting.Indented };
+                        JsonSerializer serializer = new JsonSerializer()
+                        {
+                            Formatting = Newtonsoft.Json.Formatting.Indented,
+                        };
                         serializer.Converters.Add(new StringEnumConverter());
                         serializer.Serialize(file, toExportAssets);
                     }

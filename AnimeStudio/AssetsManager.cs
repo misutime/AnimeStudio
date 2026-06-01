@@ -22,6 +22,7 @@ namespace AnimeStudio
 
         internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
+        internal List<IDisposable> containerFiles = new List<IDisposable>();
 
         internal List<string> importFiles = new List<string>();
         internal HashSet<string> importFilesHash = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -457,7 +458,7 @@ namespace AnimeStudio
                     var total = stream.Length;
 
                     OffsetData.TryGetValue(reader.FileName, out var manualOffsets);
-                    bool isManualOffsets = (manualOffsets != null && manualOffsets.Count > 0) && Game.Type.IsArknightsEndfieldGroup();
+                    bool isManualOffsets = manualOffsets != null && manualOffsets.Count > 0;
                     IEnumerable<long> offsetsEnumerable = isManualOffsets
                         ? manualOffsets
                         : stream.GetOffsets(reader.FullPath);
@@ -525,6 +526,10 @@ namespace AnimeStudio
 
                 if (file == null)
                     throw new Exception("Unsupported game block file type");
+                if (file is IDisposable disposable)
+                {
+                    containerFiles.Add(disposable);
+                }
 
                 Logger.Verbose($"file total size: {file.m_Header.size:X8}");
                 foreach (var innerFile in file.fileList)
@@ -610,6 +615,12 @@ namespace AnimeStudio
                 resourceFileReader.Value.Close();
             }
             resourceFileReaders.Clear();
+
+            foreach (var containerFile in containerFiles)
+            {
+                containerFile.Dispose();
+            }
+            containerFiles.Clear();
 
             assetsFileIndexCache.Clear();
 
