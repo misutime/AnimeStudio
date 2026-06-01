@@ -191,7 +191,7 @@ export_profile.jsonl
 指定日志路径：
 
 ```powershell
---profile_log "D:\misutime\FreedunkExport\profile.jsonl"
+--profile_log "D:\Assets\profile.jsonl"
 ```
 
 ## 通用 3D 模型导出命令
@@ -264,7 +264,7 @@ cd D:\misutime\AnimeStudio
 
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\misutime\FreedunkExport\Freedunk_Data_models" `
+  "D:\Assets\Freedunk_Data_models" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -282,7 +282,7 @@ cd D:\misutime\AnimeStudio
 
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\misutime\FreedunkExport\Freedunk_Data_animators" `
+  "D:\Assets\Freedunk_Data_animators" `
   --game Normal `
   --mode Animator `
   --group_assets ByContainer `
@@ -297,7 +297,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\stage" `
-  "D:\misutime\FreedunkExport\stages" `
+  "D:\Assets\stages" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -310,7 +310,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\ball" `
-  "D:\misutime\FreedunkExport\balls" `
+  "D:\Assets\balls" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -323,7 +323,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\character\pc" `
-  "D:\misutime\FreedunkExport\characters_pc" `
+  "D:\Assets\characters_pc" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -336,7 +336,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\character\npc" `
-  "D:\misutime\FreedunkExport\characters_npc" `
+  "D:\Assets\characters_npc" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
