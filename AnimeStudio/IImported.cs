@@ -226,6 +226,12 @@ namespace AnimeStudio
             ExportName = name;
             Data = stream.ToArray();
         }
+
+        public ImportedTexture(string name, string exportName)
+        {
+            Name = name;
+            ExportName = exportName;
+        }
     }
 
     public class ImportedKeyframedAnimation

@@ -51,6 +51,7 @@ namespace AnimeStudio.CLI
                 CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
+                CliExportOptions.OutputRoot = o.Output.FullName;
                 Logger.Default = new ConsoleLogger();
                 Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
                 Logger.FileLogging = Settings.Default.enableFileLogging;

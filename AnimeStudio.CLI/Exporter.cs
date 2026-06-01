@@ -15,6 +15,7 @@ namespace AnimeStudio.CLI
         public static float? FbxScaleFactor { get; set; }
         public static int? FbxBoneSize { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
+        public static string OutputRoot { get; set; }
 
         public static bool ExportAnimations => FbxAnimationMode != FbxAnimationMode.Skip;
         public static bool CollectAnimations => FbxAnimationMode == FbxAnimationMode.Auto;
@@ -556,6 +557,8 @@ namespace AnimeStudio.CLI
                     Properties.Settings.Default.texs
                 ),
             };
+            options.textureDataExists = (_, exportName) =>
+                ExportedTextureExists(exportFullPath, exportName);
             var convert =
                 animationList != null
                     ? new ModelConverter(
@@ -606,6 +609,7 @@ namespace AnimeStudio.CLI
             List<AssetItem> animationList = null
         )
         {
+            var exportFullPath = exportPath + FixFileName(gameObject.m_Name) + ".fbx";
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
@@ -624,6 +628,8 @@ namespace AnimeStudio.CLI
                     Properties.Settings.Default.texs
                 ),
             };
+            options.textureDataExists = (_, exportName) =>
+                ExportedTextureExists(exportFullPath, exportName);
             var convert =
                 animationList != null
                     ? new ModelConverter(
@@ -651,8 +657,7 @@ namespace AnimeStudio.CLI
                     ExportJSONFile(matItem, exportPath);
                 }
             }
-            exportPath = exportPath + FixFileName(gameObject.m_Name) + ".fbx";
-            ExportFbx(convert, exportPath);
+            ExportFbx(convert, exportFullPath);
             return true;
         }
 
@@ -679,6 +684,25 @@ namespace AnimeStudio.CLI
 
         private static string GetSharedTextureDirectory(string exportPath)
         {
+            if (!string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                var outputRoot = Path.GetFullPath(CliExportOptions.OutputRoot).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar
+                );
+                var fullExportPath = Path.GetFullPath(exportPath);
+                if (
+                    fullExportPath.StartsWith(
+                        outputRoot + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    || string.Equals(fullExportPath, outputRoot, StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    return Path.Combine(outputRoot, "Textures", "_ModelDependencies");
+                }
+            }
+
             var fullPath = Path.GetFullPath(
                 exportPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             );
@@ -691,6 +715,41 @@ namespace AnimeStudio.CLI
 
             var libraryRoot = fullPath.Substring(0, index);
             return Path.Combine(libraryRoot, "Textures", "_ModelDependencies");
+        }
+
+        private static bool ExportedTextureExists(string exportPath, string exportName)
+        {
+            var textureDirectory = GetSharedTextureDirectory(exportPath);
+            if (string.IsNullOrWhiteSpace(textureDirectory))
+            {
+                textureDirectory = Path.GetDirectoryName(
+                    Path.GetFullPath(
+                        exportPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    )
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(textureDirectory))
+            {
+                return false;
+            }
+
+            var rawName = Path.GetFileNameWithoutExtension(exportName);
+            var safeRaw = GetSafeTextureFileName(rawName);
+            if (safeRaw.Length > 100)
+            {
+                safeRaw = safeRaw.Substring(0, 67) + "_" + safeRaw.Substring(safeRaw.Length - 32);
+            }
+            return File.Exists(Path.Combine(textureDirectory, $"{safeRaw}.png"));
+        }
+
+        private static string GetSafeTextureFileName(string name)
+        {
+            foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c, '_');
+            }
+            return name;
         }
 
         public static bool ExportDumpFile(AssetItem item, string exportPath)

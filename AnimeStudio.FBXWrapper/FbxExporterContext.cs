@@ -228,14 +228,21 @@ namespace AnimeStudio.FbxInterop
 
             var file = new FileInfo(fullPath);
             file.Directory?.Create();
-            if (!file.Exists)
+            if (!file.Exists && texture.Data != null)
             {
                 using (var writer = new BinaryWriter(file.Create()))
                 {
                     writer.Write(texture.Data);
                 }
             }
-            CreateLocalTextureLink(fullPath, safeName);
+            else if (!file.Exists)
+            {
+                Logger.Warning($"Texture data for {texture.Name} was skipped but {fullPath} does not exist.");
+            }
+            if (File.Exists(fullPath))
+            {
+                CreateLocalTextureLink(fullPath, safeName);
+            }
 
             return pTex;
         }

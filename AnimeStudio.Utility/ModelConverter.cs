@@ -818,13 +818,20 @@ namespace AnimeStudio
                 return;
             }
 
+            var exportName = GetTextureExportName(m_Texture2D, name);
+            if (options.textureDataExists?.Invoke(m_Texture2D, exportName) == true)
+            {
+                TextureList.Add(new ImportedTexture(name, exportName));
+                return;
+            }
+
             var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
             if (stream != null)
             {
                 using (stream)
                 {
                     iTex = new ImportedTexture(stream, name);
-                    iTex.ExportName = GetTextureExportName(m_Texture2D, name);
+                    iTex.ExportName = exportName;
                     TextureList.Add(iTex);
                 }
             }
@@ -1236,6 +1243,7 @@ namespace AnimeStudio
             public HashSet<Material> materials;
             public Dictionary<string, (bool, int)> uvs;
             public Dictionary<string, int> texs;
+            public Func<Texture2D, string, bool> textureDataExists;
             public bool useAnimatorHierarchy = true;
         }
     }

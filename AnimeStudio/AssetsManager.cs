@@ -181,6 +181,10 @@ namespace AnimeStudio
 
                 OffsetData[key] = set.ToList();
             }
+            else if (AssetsHelper.TryGet(reader.FullPath, out var dependencyOffsets) && dependencyOffsets.Length > 0)
+            {
+                OffsetData[reader.FileName] = dependencyOffsets.ToList();
+            }
 
             switch (reader.FileType)
             {
@@ -627,8 +631,9 @@ namespace AnimeStudio
             tokenSource.Dispose();
             tokenSource = new CancellationTokenSource();
 
-            // GC.WaitForPendingFinalizers();
-            // GC.Collect();
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         }
 
         private void ReadAssets()
