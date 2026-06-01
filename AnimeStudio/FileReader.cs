@@ -183,6 +183,16 @@ namespace AnimeStudio
         public static FileReader PreProcessing(this FileReader reader, Game game)
         {
             Logger.Verbose($"Applying preprocessing to file {reader.FileName}");
+            if (reader.FileType == FileType.ResourceFile && HasUnityFSHeaderAt(reader, 1))
+            {
+                Logger.Verbose("Found UnityFS header at offset 1, skipping leading marker byte.");
+                reader = new FileReader(
+                    reader.FullPath,
+                    new OffsetStream(reader.BaseStream, 1),
+                    true
+                );
+            }
+
             if (reader.FileType == FileType.ResourceFile || !game.Type.IsNormal())
             {
                 Logger.Verbose("File is encrypted !!");
@@ -277,6 +287,21 @@ namespace AnimeStudio
 
             Logger.Verbose("No preprocessing is needed");
             return reader;
+        }
+
+        private static bool HasUnityFSHeaderAt(FileReader reader, long offset)
+        {
+            const string Signature = "UnityFS";
+            if (reader.BaseStream.Length < offset + Signature.Length)
+            {
+                return false;
+            }
+
+            var position = reader.Position;
+            reader.Position = offset;
+            var signature = reader.ReadStringToNull(Signature.Length + 1);
+            reader.Position = position;
+            return signature == Signature;
         }
     } 
 }
