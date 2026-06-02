@@ -806,6 +806,7 @@ namespace AnimeStudio.CLI
                 Path.Combine(savePath, "asset_summary.json"),
                 JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
             );
+            UnityRelationGraph.Generate(savePath, assetsManager, exportableAssets);
 
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
@@ -856,6 +857,9 @@ namespace AnimeStudio.CLI
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 catalog = catalogPath,
                 rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
+                relationRule = "Unity explicit references and structural compatibility must outrank path/name heuristics. Current candidates may still include heuristic matches until they are regenerated from unity_relations.jsonl.",
+                relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
+                relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
                 models = models
                     .OrderBy(x => (string)x["resourceKind"])
                     .ThenBy(x => (string)x["name"])

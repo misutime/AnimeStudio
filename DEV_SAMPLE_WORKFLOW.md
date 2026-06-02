@@ -49,6 +49,8 @@ asset_catalog.jsonl
 asset_summary.json
 animation_bindings.jsonl
 model_animations.json
+unity_relations.jsonl
+unity_relation_summary.json
 export_manifest.jsonl
 Models\
 Animations\
@@ -94,7 +96,9 @@ Shader 样本应该满足：
 - `asset_summary.json` 汇总模型、动画、实验 shader 数量。
 - `asset_catalog.jsonl` 记录每个模型的 mesh、material、texture、bone、skeletonHash。
 - `animation_bindings.jsonl` 记录独立动画和候选模型。
-- `model_animations.json` 从模型视角记录候选动画、匹配依据、匹配分数和下一步动作；当前是启发式索引，不等于最终 retarget 结果。
+- `unity_relations.jsonl` 记录 GameObject、组件、Animator、Controller、Avatar、SkinnedMeshRenderer、AnimationClip binding 等 Unity 原生关系。
+- `unity_relation_summary.json` 汇总关系数量和关键覆盖率，便于快速判断样本是否真的加载到了 Animator Controller、Avatar、Muscle Clip、skin bones。
+- `model_animations.json` 从模型视角记录候选动画、匹配依据、匹配分数和下一步动作；当前仍可能包含低优先级启发式候选，不等于最终 retarget 结果。
 
 ## 失败案例
 
@@ -153,7 +157,7 @@ Unity 原生关系包括：
 
 当前 `animation_bindings.jsonl` 和 `model_animations.json` 仍然只是候选索引；`--generate_preview_gltf` 会把候选动画实际写入 glTF 并生成 `preview_validation.json`，用于验证 channel、skin、主体骨骼覆盖和 bbox。
 
-后续应新增 `asset_graph.jsonl` 或 `unity_relations.jsonl`，把模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖全部记录下来。`model_animations.json` 应从这个 Unity 关系图生成，而不是主要依赖路径/名称启发式。
+当前已生成 `unity_relations.jsonl` 和 `unity_relation_summary.json`，把模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖记录下来。下一步应让 `model_animations.json` 主要从这个 Unity 关系图生成，而不是主要依赖路径/名称启发式。
 
 `asset_catalog.jsonl` 和 `model_animations.json` 里的动画候选还会记录：
 

@@ -258,9 +258,11 @@ AnimationClip 条目会额外记录：
 asset_summary.json
 animation_bindings.jsonl
 model_animations.json
+unity_relations.jsonl
+unity_relation_summary.json
 ```
 
-`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。目前按 `resourceKind`、资源路径和角色/场景线索做启发式匹配，后续升级为 skeleton hash / bone path 级验证。
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。目前 `model_animations.json` 仍可能包含 `resourceKind`、资源路径和角色/场景线索等低优先级启发式匹配，后续必须主要从 Unity 关系图派生，并用 skeleton hash / bone path / preview glTF 做验证。
 
 `export_profile.jsonl` 已记录：
 
@@ -299,8 +301,8 @@ model_animations.json
 
 - blendshape 动画未写入 `weights` channel。
 - Humanoid/Muscle 动画未 bake 到骨骼 TRS，所以 Freedunk 这类角色身体动作暂时只能看到辅助节点 channel。
-- 动画 clip 与 AnimatorController 状态机关系还没有形成完整索引。
-- 模型与动画的适配关系还需要从启发式升级为 Unity 关系图 + 可验证关系。
+- 动画 clip 与 AnimatorController 状态机关系已有关系图明细，但还没有形成完整可浏览索引。
+- 模型与动画的适配关系已有 Unity 关系图上游数据，`model_animations.json` 仍需要从启发式升级为关系图 + 可验证关系。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
 - 缺少动画合集 glTF/GLB 打包 CLI。
 
@@ -388,7 +390,7 @@ Freedunk 当前验证结论：
 
 任务：
 
-1. 建立 Unity 关系图：GameObject/prefab、Animator、Animation、Controller、OverrideController、Avatar、SkinnedMeshRenderer、AnimationClip binding、PPtr 依赖。
+1. 完善 Unity 关系图消费：用 GameObject/prefab、Animator、Animation、Controller、OverrideController、Avatar、SkinnedMeshRenderer、AnimationClip binding、PPtr 依赖生成模型动画绑定索引。
 2. 补 Humanoid/Muscle bake：把 Unity muscle 曲线采样成目标骨架 TRS 曲线。
 3. 补 glTF morph target 导出。
 4. 补 glTF blendshape weight 动画。
@@ -590,7 +592,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 建议下一阶段不要继续扩大“能导出多少类型”，而是先把主路径做扎实：
 
-1. Unity 关系图和关系优先级。
+1. 用 Unity 关系图驱动 `model_animations.json`，替代当前低优先级启发式主导的候选绑定。
 2. Humanoid/Muscle bake。
 3. glTF morph target / blendshape 动画。
 4. asset catalog 和 filter report。

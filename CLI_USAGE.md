@@ -118,8 +118,8 @@ CLI 生成索引时，关系优先级应为：
    默认 `Library` 输出的 glTF 只包含模型、材质、贴图、骨骼、skin，以及模型自身必要结构，不默认嵌入全局动作库。
 2. 动画独立入库。
    AnimationClip 默认进入 `Animations`，作为可复用资产保存。
-3. 自动生成绑定索引。
-   `asset_catalog.jsonl`、`animation_bindings.jsonl` 和 `model_animations.json` 负责说明“哪些动画可能适配哪些模型”。
+3. 自动生成 Unity 关系图和绑定索引。
+   `unity_relations.jsonl` 记录 Unity 原生关系，`unity_relation_summary.json` 给出轻量摘要；`animation_bindings.jsonl` 和 `model_animations.json` 负责说明“哪些动画可能适配哪些模型”。
 4. 按需生成预览 glTF。
    看到某个模型后，再选择某个动画生成临时可播放 glTF，用于查看动作效果。
 5. 可选打包动画合集。
@@ -166,7 +166,10 @@ Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01` 属于 `MixedHumanoidT
 - 绑定关系优先通过 Unity 原生关系建立：Animator/Animation 组件、AnimatorController/OverrideController、Avatar、SkinnedMeshRenderer bones、AnimationClip binding path/type/property、PPtr 依赖。
 - AnimationClip container、目录名、角色名、resourceKind 只作为低优先级补充线索。
 - 只有显式 `--animation_package Embedded` 或 `Both`，或后续专门的预览/打包命令，才把动画写进模型 glTF。
-- `animation_bindings.jsonl` 和 `model_animations.json` 目前是候选索引，不等于最终可播放验证结果；预览/打包命令会负责验证实际写入 glTF 后的 channel 数。
+- `unity_relations.jsonl` 是后续动画绑定的上游关系图，包含 GameObject、组件、Animator、Controller、Avatar、SkinnedMeshRenderer、AnimationClip binding 等 Unity 原生关系。
+- `unity_relation_summary.json` 是关系图摘要，适合快速判断当前样本有没有 Animator Controller、Avatar、Muscle Clip、skin bones 等关键关系。
+- `animation_bindings.jsonl` 和 `model_animations.json` 目前是候选索引，不等于最终可播放验证结果；在完全迁移到关系图派生前，其中仍可能包含低优先级路径/名称启发式候选。
+- 预览/打包命令会负责验证实际写入 glTF 后的 channel 数、skin/joint 和主体骨骼覆盖。
 
 ### 默认素材库命令
 
@@ -209,6 +212,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
     _ModelDependencies\
   export_manifest.jsonl
   export_profile.jsonl
+  unity_relations.jsonl
+  unity_relation_summary.json
 ```
 
 说明：
@@ -220,6 +225,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - Shader 默认不导出；需要研究 shader 时显式使用 `--include_shaders`，会以 `.shader.raw` 和 `.shader.raw.json` 安全归档。
 - `asset_catalog.jsonl` 记录模型、动画、实验 shader 的结构化索引和模型统计。
 - `asset_summary.json` 汇总导出数量、资源分类和模型统计。
+- `unity_relations.jsonl` 记录 Unity 原生关系，是后续从模型定位动画、Avatar、Controller、Material、Mesh 关系的主入口。
+- `unity_relation_summary.json` 汇总关系数量和关键覆盖率，便于快速排查“为什么找不到动画关系”。
 - `animation_bindings.jsonl` 按资源分类给独立动画列出候选模型，供后续绑定/验证流程使用。
 
 ### Freedunk 失败案例
