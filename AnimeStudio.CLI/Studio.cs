@@ -807,6 +807,7 @@ namespace AnimeStudio.CLI
                 JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
             );
             UnityRelationGraph.Generate(savePath, assetsManager, exportableAssets);
+            ModelLibraryValidator.Generate(savePath);
 
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();

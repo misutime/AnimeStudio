@@ -77,10 +77,11 @@ Unity 关系解构准则：
 
 1. 默认 `Library` 导出干净模型：mesh、material、PNG texture、skeleton/skin。
 2. AnimationClip 独立进入 `Animations`。
-3. 自动生成 Unity 关系图：模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖。
-4. 从 Unity 关系图生成绑定索引：`animation_bindings.jsonl` 和 `model_animations.json`。
-5. 选中模型和动画后，按需生成可播放预览 glTF。
-6. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
+3. 先生成并检查静态模型验收报告：模型、贴图、材质、skin/joint 基础结构必须自洽。
+4. 自动生成 Unity 关系图：模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖。
+5. 从 Unity 关系图生成绑定索引：`animation_bindings.jsonl` 和 `model_animations.json`。
+6. 选中模型和动画后，按需生成可播放预览 glTF。
+7. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
 
 默认素材库形态：
 
@@ -260,9 +261,10 @@ animation_bindings.jsonl
 model_animations.json
 unity_relations.jsonl
 unity_relation_summary.json
+model_validation.json
 ```
 
-`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。默认候选必须从 Unity 关系图或等价的内存 Unity 引用解析结果派生；`resourceKind`、资源路径和角色/场景线索只能在显式 fallback 模式中作为带标注的补充线索。
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`model_validation.json` 检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽；这是动画前的静态模型验收门。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。默认候选必须从 Unity 关系图或等价的内存 Unity 引用解析结果派生；`resourceKind`、资源路径和角色/场景线索只能在显式 fallback 模式中作为带标注的补充线索。
 
 `export_profile.jsonl` 已记录：
 
@@ -376,7 +378,7 @@ Freedunk 当前验证结论：
 缺口：
 
 - 没有标准测试样本集。
-- 没有自动打开 glTF 验证 mesh/skin/material/texture/animation 是否存在。
+- 已有 `model_validation.json` 自动验证 mesh/skin/material/texture 基础结构；仍缺少可视化缩略图和 Blender/查看器级别验收。
 - 没有导出前后资源数量、顶点数、骨骼数、动画 clip 数的差异报告。
 - 没有内存峰值和耗时基线。
 

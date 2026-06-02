@@ -51,6 +51,7 @@ animation_bindings.jsonl
 model_animations.json
 unity_relations.jsonl
 unity_relation_summary.json
+model_validation.json
 export_manifest.jsonl
 Models\
 Animations\
@@ -77,6 +78,7 @@ Bill 样本应该满足：
 - 有 `skins`。
 - 有骨骼统计和 `skeletonHash`。
 - 有 PNG 贴图引用。
+- `model_validation.json` 不应报告无效 image、texture、material、mesh accessor、skin joint 或 inverseBindMatrices。
 - `animations` 为 0，不能再把 Animator Controller 的全局动作库塞进模型。
 
 Shader 样本应该满足：
@@ -98,6 +100,7 @@ Shader 样本应该满足：
 - `animation_bindings.jsonl` 记录独立动画和候选模型。
 - `unity_relations.jsonl` 记录 GameObject、组件、Animator、Controller、Avatar、SkinnedMeshRenderer、AnimationClip binding 等 Unity 原生关系。
 - `unity_relation_summary.json` 汇总关系数量和关键覆盖率，便于快速判断样本是否真的加载到了 Animator Controller、Avatar、Muscle Clip、skin bones。
+- `model_validation.json` 验证 glTF 模型、贴图、材质、skin/joint 的基础结构。先确认模型基础结构，再推进动画。
 - `model_animations.json` 从模型视角记录候选动画、匹配依据、匹配分数和下一步动作；默认候选必须来自 Unity 显式引用或结构兼容关系，不等于最终 retarget 结果。
 
 ## 失败案例
@@ -116,9 +119,10 @@ Shader 样本应该满足：
 
 1. 运行 `dotnet build AnimeStudio.CLI\AnimeStudio.CLI.csproj`。
 2. 运行 `tools\Export-FreedunkDevSamples.ps1`。
-3. 检查 `asset_catalog.jsonl` 和关键 glTF。
-4. 确认 `D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
-5. 确认新增逻辑优先使用 Unity 原生关系，而不是按游戏名、目录名、角色名写死。
+3. 先检查 `model_validation.json`，确认模型、贴图、材质、skin/joint 基础结构自洽。
+4. 再检查 `asset_catalog.jsonl`、`unity_relations.jsonl` 和关键 glTF。
+5. 确认 `D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
+6. 确认新增逻辑优先使用 Unity 原生关系，而不是按游戏名、目录名、角色名写死。
 
 Unity 原生关系包括：
 
