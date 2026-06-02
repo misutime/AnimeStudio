@@ -27,6 +27,7 @@ namespace AnimeStudio
         private HashSet<AnimationClip> animationClipHashSet = new HashSet<AnimationClip>();
         private Dictionary<AnimationClip, string> boundAnimationPathDic = new Dictionary<AnimationClip, string>();
         private Dictionary<uint, string> bonePathHash = new Dictionary<uint, string>();
+        private Dictionary<AnimationClip, Dictionary<uint, string>> animationTosCache = new Dictionary<AnimationClip, Dictionary<uint, string>>();
         private Dictionary<Texture2D, string> textureNameDictionary = new Dictionary<Texture2D, string>();
         private Dictionary<Transform, ImportedFrame> transformDictionary = new Dictionary<Transform, ImportedFrame>();
         Dictionary<uint, string> morphChannelNames = new Dictionary<uint, string>();
@@ -688,7 +689,27 @@ namespace AnimeStudio
         private string FixBonePath(string path)
         {
             var frame = RootFrame.FindFrameByPath(path);
-            return frame?.Path;
+            if (frame != null)
+            {
+                return frame.Path;
+            }
+
+            while (!string.IsNullOrEmpty(path))
+            {
+                var separatorIndex = path.IndexOf("/", StringComparison.Ordinal);
+                if (separatorIndex < 0 || separatorIndex == path.Length - 1)
+                {
+                    break;
+                }
+                path = path.Substring(separatorIndex + 1);
+                frame = RootFrame.FindFrameByPath(path);
+                if (frame != null)
+                {
+                    return frame.Path;
+                }
+            }
+
+            return null;
         }
 
         private static string GetTransformPathByFather(Transform transform)
@@ -1260,7 +1281,7 @@ namespace AnimeStudio
                             for (int curveIndex = 0; curveIndex < m_ACLClip.CurveCount;)
                             {
                                 var index = curveIndex;
-                                ReadCurveData(iAnim, m_ClipBindingConstant, index, time, values, (int)frameOffset, ref curveIndex);
+                                ReadCurveData(animationClip, iAnim, m_ClipBindingConstant, index, time, values, (int)frameOffset, ref curveIndex);
                             }
 
                         }
@@ -1274,7 +1295,7 @@ namespace AnimeStudio
                             var index = frame.keyList[curveIndex].index;
                             if (!options.game.Type.IsSRGroup())
                                 index += (int)aclCount;
-                            ReadCurveData(iAnim, m_ClipBindingConstant, index, frame.time, streamedValues, 0, ref curveIndex);
+                            ReadCurveData(animationClip, iAnim, m_ClipBindingConstant, index, frame.time, streamedValues, 0, ref curveIndex);
                         }
                     }
                     var m_DenseClip = m_Clip.m_DenseClip;
@@ -1288,7 +1309,7 @@ namespace AnimeStudio
                             var index = streamCount + curveIndex;
                             if (!options.game.Type.IsSRGroup())
                                 index += (int)aclCount;
-                            ReadCurveData(iAnim, m_ClipBindingConstant, (int)index, time, m_DenseClip.m_SampleArray, (int)frameOffset, ref curveIndex);
+                            ReadCurveData(animationClip, iAnim, m_ClipBindingConstant, (int)index, time, m_DenseClip.m_SampleArray, (int)frameOffset, ref curveIndex);
                         }
                     }
                     if (m_ACLClip.IsSet && options.game.Type.IsSRGroup())
@@ -1301,7 +1322,7 @@ namespace AnimeStudio
                             for (int curveIndex = 0; curveIndex < m_ACLClip.CurveCount;)
                             {
                                 var index = (int)(curveIndex + m_DenseClip.m_CurveCount + streamCount);
-                                ReadCurveData(iAnim, m_ClipBindingConstant, index, time, values, (int)frameOffset, ref curveIndex);
+                                ReadCurveData(animationClip, iAnim, m_ClipBindingConstant, index, time, values, (int)frameOffset, ref curveIndex);
                             }
 
                         }
@@ -1316,7 +1337,7 @@ namespace AnimeStudio
                             for (int curveIndex = 0; curveIndex < m_ConstantClip.data.Length;)
                             {
                                 var index = aclCount + streamCount + denseCount + curveIndex;
-                                ReadCurveData(iAnim, m_ClipBindingConstant, (int)index, time2, m_ConstantClip.data, 0, ref curveIndex);
+                                ReadCurveData(animationClip, iAnim, m_ClipBindingConstant, (int)index, time2, m_ConstantClip.data, 0, ref curveIndex);
                             }
                             time2 = animationClip.m_MuscleClip.m_StopTime;
                         }
@@ -1325,7 +1346,7 @@ namespace AnimeStudio
             }
         }
 
-        private void ReadCurveData(ImportedKeyframedAnimation iAnim, AnimationClipBindingConstant m_ClipBindingConstant, int index, float time, float[] data, int offset, ref int curveIndex)
+        private void ReadCurveData(AnimationClip animationClip, ImportedKeyframedAnimation iAnim, AnimationClipBindingConstant m_ClipBindingConstant, int index, float time, float[] data, int offset, ref int curveIndex)
         {
             var binding = m_ClipBindingConstant.FindBinding(index);
             if (binding.typeID == ClassIDType.SkinnedMeshRenderer) //BlendShape
@@ -1345,7 +1366,7 @@ namespace AnimeStudio
                 var path = GetPathByChannelName(channelName);
                 if (string.IsNullOrEmpty(path))
                 {
-                    path = FixBonePath(GetPathFromHash(binding.path));
+                    path = FixBonePath(GetPathFromHash(binding.path, animationClip));
                 }
                 var track = iAnim.FindTrack(path, channelName);
                 if (track.BlendShape == null)
@@ -1357,7 +1378,7 @@ namespace AnimeStudio
             }
             else if (binding.typeID == ClassIDType.Transform)
             {
-                var path = FixBonePath(GetPathFromHash(binding.path));
+                var path = FixBonePath(GetPathFromHash(binding.path, animationClip));
                 var track = iAnim.FindTrack(path);
 
                 switch (binding.attribute)
@@ -1407,12 +1428,21 @@ namespace AnimeStudio
             }
         }
 
-        private string GetPathFromHash(uint hash)
+        private string GetPathFromHash(uint hash, AnimationClip animationClip = null)
         {
             bonePathHash.TryGetValue(hash, out var boneName);
             if (string.IsNullOrEmpty(boneName))
             {
                 boneName = avatar?.FindBonePath(hash);
+            }
+            if (string.IsNullOrEmpty(boneName) && animationClip != null)
+            {
+                if (!animationTosCache.TryGetValue(animationClip, out var tos))
+                {
+                    tos = animationClip.FindTOS();
+                    animationTosCache[animationClip] = tos;
+                }
+                tos.TryGetValue(hash, out boneName);
             }
             if (string.IsNullOrEmpty(boneName))
             {

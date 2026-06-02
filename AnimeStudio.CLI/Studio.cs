@@ -712,7 +712,8 @@ namespace AnimeStudio.CLI
                 $"Exporting asset library: {models.Count} model candidate(s), {animations.Count} animation clip(s), {shaders.Count} shader(s)."
             );
 
-            ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, null);
+            var modelAnimations = CliExportOptions.ExportEmbeddedAnimations ? animations : null;
+            ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, modelAnimations);
             ExportSeparateAnimationClips(savePath);
             if (shaders.Count > 0)
             {
