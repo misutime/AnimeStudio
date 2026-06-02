@@ -204,11 +204,14 @@ namespace AnimeStudio
         public float Shininess { get; set; }
         public float Transparency { get; set; }
         public List<ImportedMaterialTexture> Textures { get; set; }
+        public Dictionary<string, float> UnityFloats { get; set; }
+        public Dictionary<string, Color> UnityColors { get; set; }
     }
 
     public class ImportedMaterialTexture
     {
         public string Name { get; set; }
+        public string Slot { get; set; }
         public int Dest { get; set; }
         public Vector2 Offset { get; set; }
         public Vector2 Scale { get; set; }

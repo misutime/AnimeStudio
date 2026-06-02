@@ -418,7 +418,7 @@ namespace AnimeStudio
                 ["roughnessFactor"] = 0.8f,
             };
             Dictionary<string, object> normalTexture = null;
-            List<Dictionary<string, object>> nonStandardTextures = null;
+            var unityTextures = new List<Dictionary<string, object>>();
 
             foreach (var textureRef in material.Textures ?? Enumerable.Empty<ImportedMaterialTexture>())
             {
@@ -427,27 +427,7 @@ namespace AnimeStudio
                 {
                     continue;
                 }
-                if (texture.IsReferenceOnly || !IsGltfSupportedImageName(texture.ExportName ?? texture.Name))
-                {
-                    nonStandardTextures ??= new List<Dictionary<string, object>>();
-                    nonStandardTextures.Add(new Dictionary<string, object>
-                    {
-                        ["slot"] = textureRef.Dest,
-                        ["name"] = texture.Name,
-                        ["exportName"] = texture.ExportName ?? texture.Name,
-                        ["format"] = texture.SourceTextureFormat,
-                        ["width"] = texture.Width,
-                        ["height"] = texture.Height,
-                        ["mipCount"] = texture.MipCount,
-                        ["sourcePathId"] = texture.SourcePathId,
-                        ["sourceAssetPath"] = texture.SourceAssetPath,
-                        ["sourceFileName"] = texture.SourceFileName,
-                        ["unityVersion"] = texture.UnityVersion,
-                        ["platform"] = texture.Platform,
-                        ["rawDataSize"] = texture.RawDataSize,
-                        ["referenceOnly"] = texture.IsReferenceOnly,
-                    });
-                }
+                unityTextures.Add(BuildUnityTextureExtra(textureRef, texture));
                 var textureIndex = GetTextureIndex(texture);
                 if (textureIndex < 0)
                 {
@@ -472,15 +452,17 @@ namespace AnimeStudio
             {
                 gltfMaterial["normalTexture"] = normalTexture;
             }
-            if (material.Diffuse.A < 0.999f || material.Transparency > 0)
+            ApplyUnityMaterialState(material, gltfMaterial);
+            if (!gltfMaterial.ContainsKey("alphaMode") && (material.Diffuse.A < 0.999f || material.Transparency > 0))
             {
                 gltfMaterial["alphaMode"] = "BLEND";
             }
-            if (nonStandardTextures?.Count > 0)
+            if (unityTextures.Count > 0 || material.UnityFloats?.Count > 0 || material.UnityColors?.Count > 0)
             {
                 gltfMaterial["extras"] = new Dictionary<string, object>
                 {
-                    ["unityTextures"] = nonStandardTextures,
+                    ["unityTextures"] = unityTextures,
+                    ["unityMaterial"] = BuildUnityMaterialExtra(material, unityTextures),
                 };
             }
 
@@ -488,6 +470,89 @@ namespace AnimeStudio
             _materials.Add(gltfMaterial);
             _materialMap[name] = index;
             return index;
+        }
+
+        private static Dictionary<string, object> BuildUnityTextureExtra(ImportedMaterialTexture textureRef, ImportedTexture texture)
+        {
+            return new Dictionary<string, object>
+            {
+                ["slotName"] = textureRef.Slot ?? "",
+                ["dest"] = textureRef.Dest,
+                ["name"] = texture.Name,
+                ["exportName"] = texture.ExportName ?? texture.Name,
+                ["format"] = texture.SourceTextureFormat,
+                ["width"] = texture.Width,
+                ["height"] = texture.Height,
+                ["mipCount"] = texture.MipCount,
+                ["sourcePathId"] = texture.SourcePathId,
+                ["sourceAssetPath"] = texture.SourceAssetPath,
+                ["sourceFileName"] = texture.SourceFileName,
+                ["unityVersion"] = texture.UnityVersion,
+                ["platform"] = texture.Platform,
+                ["rawDataSize"] = texture.RawDataSize,
+                ["referenceOnly"] = texture.IsReferenceOnly,
+                ["scale"] = new[] { textureRef.Scale.X, textureRef.Scale.Y },
+                ["offset"] = new[] { textureRef.Offset.X, textureRef.Offset.Y },
+            };
+        }
+
+        private static Dictionary<string, object> BuildUnityMaterialExtra(
+            ImportedMaterial material,
+            List<Dictionary<string, object>> unityTextures)
+        {
+            var extra = new Dictionary<string, object>();
+            if (unityTextures.Count > 0)
+            {
+                extra["textures"] = unityTextures;
+            }
+            if (material.UnityFloats?.Count > 0)
+            {
+                extra["floats"] = material.UnityFloats;
+            }
+            if (material.UnityColors?.Count > 0)
+            {
+                extra["colors"] = material.UnityColors.ToDictionary(
+                    x => x.Key,
+                    x => new[] { x.Value.R, x.Value.G, x.Value.B, x.Value.A });
+            }
+            return extra;
+        }
+
+        private static void ApplyUnityMaterialState(ImportedMaterial material, Dictionary<string, object> gltfMaterial)
+        {
+            if (GetUnityFloat(material, "_DoubleSidedEnable") > 0.5f || GetUnityFloat(material, "_CullMode") == 0.0f)
+            {
+                gltfMaterial["doubleSided"] = true;
+            }
+
+            var surfaceType = GetUnityFloat(material, "_SurfaceType");
+            if (surfaceType > 0.5f)
+            {
+                gltfMaterial["alphaMode"] = "BLEND";
+                return;
+            }
+
+            if (
+                GetUnityFloat(material, "_AlphaCutoffEnable") > 0.5f
+                || GetUnityFloat(material, "_AlphaToMask") > 0.5f
+                || GetUnityFloat(material, "_UseOpacityMap") > 0.5f
+                || GetUnityFloat(material, "_TransparentDepthPrepassEnable") > 0.5f
+                || GetUnityFloat(material, "_TransparentDepthPostpassEnable") > 0.5f)
+            {
+                gltfMaterial["alphaMode"] = "MASK";
+                var cutoff = GetUnityFloat(material, "_Cutoff");
+                if (cutoff > 0.0f && cutoff < 1.0f)
+                {
+                    gltfMaterial["alphaCutoff"] = cutoff;
+                }
+            }
+        }
+
+        private static float GetUnityFloat(ImportedMaterial material, string name)
+        {
+            return material.UnityFloats != null && material.UnityFloats.TryGetValue(name, out var value)
+                ? value
+                : 0.0f;
         }
 
         private int GetTextureIndex(ImportedTexture texture)

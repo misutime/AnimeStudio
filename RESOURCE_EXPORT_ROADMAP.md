@@ -39,6 +39,10 @@ CAB / PPtr 依赖索引策略：
 
 > CAB map 是一次完整构建、长期复用的 Unity 外部引用索引，不应为某次导出做瘦身版。导出候选可以裁剪，但依赖图必须来自完整输入源目录。新版 CAB map 记录来源文件数量和完整输入集合 fingerprint；只有源文件变化、map 格式升级或显式复用了错误 map 时才自动重建。这样后续新增动画、材质、贴图、shader 或其他素材导出逻辑时，不会因为旧的裁剪 map 切断 Unity 外部引用。
 
+材质和 shader 解构准则：
+
+> 材质还原必须来自 Unity `Material.m_SavedProperties`、Renderer 材质槽、Texture PPtr、shader 引用和渲染状态。默认 glTF 导出应把 Unity 可标准表达的部分转成 glTF PBR、`alphaMode`、`alphaCutoff`、`doubleSided` 和标准贴图引用；不能被 glTF 标准表达的自定义 shader slot、float、color、scale/offset 必须保留到材质 JSON 和 `materials[].extras.unityMaterial`。后续 face/eye、mask、ramp、toon、skin、sweat 等效果应基于这些 Unity 原始属性做通用模板或烘焙，而不是按单个游戏目录或角色名硬编码。
+
 通用关系来源包括：
 
 - `GameObject` / prefab 层级。
@@ -110,7 +114,7 @@ CAB / PPtr 依赖索引策略：
 | glTF 输出 | 已有 `.gltf + .bin`、`.glb`、材质贴图引用、skin、基础 TRS 动画 | 60% |
 | FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
-| 材质导出 | 能导出材质 JSON、基础 PBR 映射、extras 保留 Unity 贴图信息 | 55% |
+| 材质导出 | 能导出材质 JSON、基础 PBR 映射、glTF alpha/double-sided 状态、extras 保留 Unity slot/float/color 信息 | 62% |
 | 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持按需生成预览 glTF、验证报告和 AnimationClip 类型分类 | 68% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
@@ -321,19 +325,21 @@ Freedunk 当前验证结论：
 
 优先级：P0
 
-### 3. 材质还原只是基础可见
+### 3. 材质还原仍需 shader-aware 重建
 
 当前材质可以：
 
 - 输出材质 JSON。
 - 基础映射 baseColor/normal/emissive。
-- 在 glTF extras 保存 Unity 贴图引用。
+- 在 glTF extras 保存 Unity 贴图 slot、scale/offset、float、color 等原始属性。
+- 把 Unity 透明、裁剪、双面状态映射到 glTF `alphaMode`、`alphaCutoff`、`doubleSided`。
 
 缺口：
 
 - Metallic/Roughness/Smoothness/Mask 贴图的语义推断不足。
 - 不同游戏自定义 shader 槽没有规则化模板。
-- Alpha/透明、双面、裁剪、法线强度等参数还原不足。
+- Face/eye、mask、ramp、toon、skin、sweat 等自定义 shader 逻辑还没有模板化或烘焙。
+- 法线强度、通道打包、mask map 语义等参数还原仍不足。
 - 缺少材质重建策略文档和自动化测试样例。
 
 优先级：P1

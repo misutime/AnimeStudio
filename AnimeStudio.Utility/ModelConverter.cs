@@ -803,6 +803,8 @@ namespace AnimeStudio
                     iMat.Reflection = new Color(0, 0, 0, 1);
                     iMat.Shininess = 20f;
                     iMat.Transparency = 0f;
+                    iMat.UnityFloats = mat.m_SavedProperties.m_Floats.ToDictionary(x => x.Key, x => x.Value);
+                    iMat.UnityColors = mat.m_SavedProperties.m_Colors.ToDictionary(x => x.Key, x => x.Value);
                     foreach (var col in mat.m_SavedProperties.m_Colors)
                     {
                         switch (col.Key)
@@ -854,6 +856,7 @@ namespace AnimeStudio
                         var texture = new ImportedMaterialTexture();
                         iMat.Textures.Add(texture);
 
+                        texture.Slot = texEnv.Key;
                         texture.Dest = GetTextureDestination(texEnv.Key);
 
                         var ext = GetTextureNameExtension();
@@ -1099,10 +1102,13 @@ namespace AnimeStudio
                 Textures = material.Textures?.Select(x => new ImportedMaterialTexture
                 {
                     Name = x.Name,
+                    Slot = x.Slot,
                     Dest = x.Dest,
                     Offset = x.Offset,
                     Scale = x.Scale,
                 }).ToList(),
+                UnityFloats = material.UnityFloats?.ToDictionary(x => x.Key, x => x.Value),
+                UnityColors = material.UnityColors?.ToDictionary(x => x.Key, x => x.Value),
             };
         }
 
