@@ -38,20 +38,22 @@ tools\Export-FreedunkMultiModelStaticSample.ps1
 D:\Assets\Freedunk_Data_Dev\MultiModelStaticSample
 ```
 
-这个脚本会复制 12 个角色的 prefab/fbx/material/texture bundle 到：
+这个脚本直接以真实游戏资源目录为输入：
 
 ```text
-D:\Assets\Freedunk_Data_Dev\MultiModelMiniInput
+C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets
 ```
+
+脚本会用完整输入建立 CAB / PPtr 依赖图，再用角色路径和名称过滤导出样本。不要把模型测试改回只复制几个角色 bundle 的 mini input：Unity 游戏常把脸、附件、材质或 Mesh 拆到外部 CAB，裁掉依赖源会让 `SkinnedMeshRenderer.m_Mesh` 无法解析，表现为角色身体正常但脸或附件缺失。
 
 验收重点：
 
 - `model_validation.json` 里至少应有 10 个以上模型。
 - 多数角色模型应有 `skin`。
 - 所有导出的 glTF 不应出现无效 image、texture、material、mesh accessor、skin joint 或 inverseBindMatrices。
-- 如果某个角色有 face/cap 等独立附件，允许它作为单独模型出现；这类附件可用于检查非主体模型是否也能正确导出。
+- 如果某个角色有 face/cap 等独立附件，允许它作为单独模型出现；同时 ingame/outgame prefab 里通过 Unity 引用挂载的 face/cap 也应尽量随主体一起导出。
 
-截至当前基线，这个样本导出 38 个 glTF，`model_validation.json` 全部为 `ok`，其中 37 个带 skin，38 个都有贴图。
+截至当前基线，这个样本导出 39 个 glTF，`model_validation.json` 全部为 `ok`，其中 37 个带 skin，39 个都有贴图。Duke、Frorin、Bill 的 ingame glTF 已确认包含独立 face mesh 节点，说明外部 CAB 依赖已补齐。
 
 ## 样本来源
 
@@ -153,6 +155,8 @@ Shader 样本应该满足：
 4. 再检查 `asset_catalog.jsonl`、`unity_relations.jsonl` 和关键 glTF。
 5. 确认 `D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
 6. 确认新增逻辑优先使用 Unity 原生关系，而不是按游戏名、目录名、角色名写死。
+
+做精准样本导出时可以过滤导出候选，但 CAB / PPtr 依赖图必须来自完整源目录。`--containers`、`--names` 只能决定“导出哪些资产”，不能提前裁掉用于解析 Unity 外部引用的源文件集合。
 
 Unity 原生关系包括：
 

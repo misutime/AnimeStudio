@@ -1,7 +1,6 @@
 param(
     [string]$GameData = "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data",
-    [string]$OutputRoot = "D:\Assets\Freedunk_Data_Dev",
-    [switch]$KeepMiniInput
+    [string]$OutputRoot = "D:\Assets\Freedunk_Data_Dev"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,12 +17,7 @@ if (!(Test-Path $GameData)) {
 }
 
 $assets = Join-Path $GameData "StreamingAssets\assets"
-$miniInput = Join-Path $OutputRoot "MultiModelMiniInput"
 $output = Join-Path $OutputRoot "MultiModelStaticSample"
-
-if (!$KeepMiniInput -and (Test-Path $miniInput)) {
-    Remove-Item -LiteralPath $miniInput -Recurse -Force
-}
 if (Test-Path $output) {
     Remove-Item -LiteralPath $output -Recurse -Force
 }
@@ -43,29 +37,11 @@ $characters = @(
     "lilly_01_00"
 )
 
-$files = New-Object System.Collections.Generic.List[string]
-foreach ($character in $characters) {
-    $files.Add("graphics\character\pc\$character.ab")
-    $files.Add("graphics\character\pc\$character\fbx.ab")
-    $files.Add("graphics\character\pc\$character\material_ingame.ab")
-    $files.Add("graphics\character\pc\$character\material.ab")
-    $files.Add("graphics\character\pc\$character\texture.ab")
-}
-
-foreach ($rel in $files) {
-    $src = Join-Path $assets $rel
-    $dst = Join-Path $miniInput $rel
-    if (!(Test-Path $src)) {
-        throw "Sample source file not found: $src"
-    }
-    New-Item -ItemType Directory -Force -Path (Split-Path $dst -Parent) | Out-Null
-    Copy-Item -LiteralPath $src -Destination $dst -Force
-}
-
 $namePattern = "^(" + (($characters | ForEach-Object { [Regex]::Escape($_) }) -join "|") + ")"
+$containerPattern = "graphics[\\/]character[\\/]pc[\\/](" + (($characters | ForEach-Object { [Regex]::Escape($_) }) -join "|") + ")([\\/]|\.|$)"
 
 & $cli `
-    $miniInput `
+    $assets `
     $output `
     --game Normal `
     --mode Library `
@@ -76,6 +52,8 @@ $namePattern = "^(" + (($characters | ForEach-Object { [Regex]::Escape($_) }) -j
     --animation_package Separate `
     --fbx_animation Skip `
     --names $namePattern `
+    --containers $containerPattern `
+    --map_name Freedunk_Data_Dev_full_v2 `
     --batch_files 64 `
     --profile_log off `
     --silent

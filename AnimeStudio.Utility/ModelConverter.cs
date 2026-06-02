@@ -652,6 +652,14 @@ namespace AnimeStudio
                 {
                     return m_Mesh;
                 }
+
+                sMesh.m_GameObject.TryGet(out var gameObject);
+                var externalName = GetExternalFileName(sMesh.m_Mesh.m_FileID, sMesh.assetsFile);
+                Logger.Warning(
+                    $"Unable to resolve SkinnedMeshRenderer mesh for {gameObject?.m_Name ?? "<unknown>"} " +
+                    $"rendererPathId={sMesh.m_PathID} source={sMesh.assetsFile?.originalPath ?? sMesh.assetsFile?.fileName} " +
+                    $"meshFileId={sMesh.m_Mesh.m_FileID} meshExternal={externalName} meshPathId={sMesh.m_Mesh.m_PathID}."
+                );
             }
             else
             {
@@ -662,9 +670,30 @@ namespace AnimeStudio
                     {
                         return m_Mesh;
                     }
+
+                    Logger.Warning(
+                        $"Unable to resolve MeshFilter mesh for {m_GameObject?.m_Name ?? "<unknown>"} " +
+                        $"source={m_GameObject?.assetsFile?.originalPath ?? m_GameObject?.assetsFile?.fileName} " +
+                        $"meshFileId={m_GameObject.m_MeshFilter.m_Mesh.m_FileID} " +
+                        $"meshExternal={GetExternalFileName(m_GameObject.m_MeshFilter.m_Mesh.m_FileID, m_GameObject.m_MeshFilter.assetsFile)} " +
+                        $"meshPathId={m_GameObject.m_MeshFilter.m_Mesh.m_PathID}."
+                    );
                 }
             }
 
+            return null;
+        }
+
+        private static string GetExternalFileName(int fileId, SerializedFile assetsFile)
+        {
+            if (fileId == 0)
+            {
+                return assetsFile?.fileName;
+            }
+            if (assetsFile != null && fileId > 0 && fileId - 1 < assetsFile.m_Externals.Count)
+            {
+                return assetsFile.m_Externals[fileId - 1].fileName;
+            }
             return null;
         }
 

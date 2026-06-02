@@ -37,6 +37,7 @@
 - 本项目的核心目标是把 PC 端 Unity 打包资源还原成“可供开发者使用的素材库”。后续每一步实现都必须服务这个目标：模型、骨骼、贴图、材质、动画要尽可能准确、可浏览、可复用；特殊调试、Raw 扫描、旧式全嵌动画等行为必须用显式参数开启。
 - 导出关系必须来自 Unity 自身的通用序列化引用和结构。默认逻辑的核心目标是解析 Unity 关系和引用；如无不得已的明确理由，绝不按单个游戏、目录、角色名、资源名前缀自行推断关系。
 - Unity 关系优先级固定为：1. 显式引用，包括 `Animator`、`Animation`、`AnimatorController`、`AnimatorOverrideController`、`PPtr`；2. 结构兼容，包括 `Avatar`、`HumanDescription`、`SkinnedMeshRenderer bones`、`AnimationClip binding path/type/property`、blendshape channel；3. 实际导出验证，包括 glTF channel、skin/joint、主体骨骼覆盖、bbox。container、目录名、资源名、游戏 profile 只能作为显式标注的 fallback，不能进入默认绑定结果。
+- 精准导出时可以用 `--containers`、`--names` 过滤导出候选，但 CAB / PPtr 依赖图必须来自完整源目录。不要为了样本变快而只复制少量 bundle 当输入；Unity 游戏常把脸、附件、材质或 Mesh 拆到外部 CAB，裁掉依赖源会导致模型缺件。
 - 模型和动画的默认规则是：模型保持干净，动画独立入库，绑定关系通过 Unity 关系图、索引、预览验证和显式打包建立。不要默认把一个模型可能引用到的所有动画塞进 glTF/GLB。
 - 角色、NPC、道具、机关、场景物件都可能有动画。动画适配逻辑必须基于 Unity component/controller/clip binding/avatar/bone path 等通用关系，不能只服务角色动画。
 - 如果确实需要针对某个游戏做特殊适配，必须默认关闭或放入 profile/config，并在文档里标明它是游戏 profile 规则，不是 `Normal` 通用 Unity 导出路径的一部分。

@@ -218,6 +218,7 @@ namespace AnimeStudio.CLI
 
                 Logger.Info("Scanning for files...");
                 var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
+                var dependencyMapFiles = files;
                 var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.Profile3D, o.ContainerExcludeFilter);
                 var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.Profile3D, o.NameExcludeFilter);
                 if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
@@ -249,14 +250,15 @@ namespace AnimeStudio.CLI
                 var mapName = ResolveMapName(o.MapName, game, inputBaseFolder);
                 Logger.Info($"Using map name {mapName}");
                 var needsModelDependencies = ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport();
+                var cabMapSourceFiles = needsModelDependencies ? dependencyMapFiles : files;
 
                 if (o.MapOp.HasFlag(MapOpType.CABMap))
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
-                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = files.Length, ["mapName"] = mapName }))
+                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = cabMapSourceFiles.Length, ["mapName"] = mapName }))
                         {
-                            AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
+                            AssetsHelper.BuildCABMap(cabMapSourceFiles, mapName, inputBaseFolder, game);
                         }
                     }
                     else
@@ -293,9 +295,9 @@ namespace AnimeStudio.CLI
                     if (!cabMapLoaded)
                     {
                         Logger.Info("Building CAB dependency map for model materials...");
-                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = files.Length, ["mapName"] = mapName }))
+                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = cabMapSourceFiles.Length, ["mapName"] = mapName }))
                         {
-                            AssetsHelper.BuildCABMap(files, mapName, inputBaseFolder, game);
+                            AssetsHelper.BuildCABMap(cabMapSourceFiles, mapName, inputBaseFolder, game);
                         }
                         using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
                         {
