@@ -136,6 +136,29 @@ Shader 样本应该满足：
 
 当前 `animation_bindings.jsonl` 和 `model_animations.json` 只是候选索引。下一阶段要补按需预览/打包命令，把候选动画实际写入 glTF/GLB，并记录有效 channel 数。
 
+## 动画预览验证样本
+
+验证候选动画是否真的能绑定模型时，不要改默认 Library 模型，单独生成 preview：
+
+```powershell
+cd D:\misutime\AnimeStudio
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --generate_preview_gltf "D:\Assets\Freedunk_Data_Dev\LibraryIndexSample\model_animations.json" `
+  --game Normal `
+  --preview_model "^Bill_01_00_ingame$" `
+  --preview_animation "^NORMALMOVE_STAND_01$" `
+  --preview_output "D:\Assets\Freedunk_Data_Dev\Preview_Bill_NormalMove"
+```
+
+验收重点：
+
+- `preview_validation.json` 的 `status` 为 `ok`。
+- `counts.animations` 大于 0。
+- `counts.channels` 大于 0。
+- `counts.invalidChannels` 为 0。
+- `counts.skins` 和 `counts.skinJoints` 大于 0。
+- `bounds.raw.size` 和 `bounds.skinnedFinal.size` 接近，不能回到 skin 拉爆形态。
+
 ## 完整模型动画样本
 
 当需要验证“模型 + PNG 贴图 + skin/bones + 可播放身体动画”时，使用固定小输入样本，不要直接扫完整 `Freedunk_Data`：

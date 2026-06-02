@@ -92,6 +92,10 @@ namespace AnimeStudio.CLI
                 optionsBinder.ConvertTextureOutput,
                 optionsBinder.ConvertTextureFormat,
                 optionsBinder.UpdateGltfTextureRefs,
+                optionsBinder.GeneratePreviewGltf,
+                optionsBinder.PreviewModel,
+                optionsBinder.PreviewAnimation,
+                optionsBinder.PreviewOutput,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -140,6 +144,10 @@ namespace AnimeStudio.CLI
         public DirectoryInfo ConvertTextureOutput { get; set; }
         public AnimeStudio.ImageFormat ConvertTextureFormat { get; set; }
         public bool UpdateGltfTextureRefs { get; set; }
+        public FileInfo GeneratePreviewGltf { get; set; }
+        public string PreviewModel { get; set; }
+        public string PreviewAnimation { get; set; }
+        public DirectoryInfo PreviewOutput { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -183,6 +191,10 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> ConvertTextureOutput;
         public readonly Option<AnimeStudio.ImageFormat> ConvertTextureFormat;
         public readonly Option<bool> UpdateGltfTextureRefs;
+        public readonly Option<FileInfo> GeneratePreviewGltf;
+        public readonly Option<string> PreviewModel;
+        public readonly Option<string> PreviewAnimation;
+        public readonly Option<DirectoryInfo> PreviewOutput;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -224,6 +236,10 @@ namespace AnimeStudio.CLI
             ConvertTextureOutput = new Option<DirectoryInfo>("--texture_output", "Output folder for converted model textures. Defaults to a Textures folder next to the glTF.").LegalFilePathsOnly();
             ConvertTextureFormat = new Option<AnimeStudio.ImageFormat>("--texture_output_format", "Output image format for --convert_model_textures.");
             UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
+            GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Generate a playable preview glTF from model_animations.json by re-exporting one model with one selected animation.").LegalFilePathsOnly();
+            PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with --generate_preview_gltf.");
+            PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with --generate_preview_gltf.");
+            PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for --generate_preview_gltf. Defaults to Previews/<model>__<animation> next to the index.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -350,6 +366,10 @@ namespace AnimeStudio.CLI
                 ConvertTextureOutput = bindingContext.ParseResult.GetValueForOption(ConvertTextureOutput),
                 ConvertTextureFormat = bindingContext.ParseResult.GetValueForOption(ConvertTextureFormat),
                 UpdateGltfTextureRefs = bindingContext.ParseResult.GetValueForOption(UpdateGltfTextureRefs),
+                GeneratePreviewGltf = bindingContext.ParseResult.GetValueForOption(GeneratePreviewGltf),
+                PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
+                PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),
+                PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
             DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
             Input = bindingContext.ParseResult.GetValueForArgument(Input),
             Output = bindingContext.ParseResult.GetValueForArgument(Output)

@@ -74,7 +74,7 @@
 | FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、extras 保留 Unity 贴图信息 | 55% |
-| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库 | 55% |
+| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持按需生成预览 glTF 和验证报告 | 65% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
@@ -372,8 +372,9 @@ model_animations.json
    - skeleton/bone count
 3. 用 skeleton hash / bone path / AnimatorController / source container 验证动画候选绑定，减少只靠 resourceKind 的误配。
 4. 生成 `model_animations.json`，从模型视角列出可用动画、匹配依据、匹配分数和验证状态。
-5. 生成可选 `catalog.html` 或轻量浏览器。
-6. 给每个模型输出 `model.info.json`，方便单模型后处理。
+5. 使用 `--generate_preview_gltf` 对单个模型和单个候选动画生成可播放预览，并写出 `preview_validation.json`，记录 channel、skin、joint 和 bbox 验证结果。
+6. 生成可选 `catalog.html` 或轻量浏览器。
+7. 给每个模型输出 `model.info.json`，方便单模型后处理。
 
 验收：
 
