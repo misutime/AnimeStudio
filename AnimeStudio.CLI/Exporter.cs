@@ -18,6 +18,7 @@ namespace AnimeStudio.CLI
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
         public static AnimationPackageMode AnimationPackage { get; set; } = AnimationPackageMode.Separate;
+        public static ModelSourceMode ModelSource { get; set; } = ModelSourceMode.PrefabPrimary;
         public static AnimeStudio.TextureExportMode TextureMode { get; set; } = AnimeStudio.TextureExportMode.Raw;
         public static string OutputRoot { get; set; }
 
@@ -882,6 +883,7 @@ namespace AnimeStudio.CLI
             var entry = new
             {
                 kind = "Model",
+                libraryRole = source is AssetItem sourceItem ? sourceItem.LibraryRole ?? "PrefabPrimary" : "PrefabPrimary",
                 resourceKind = InferResourceKind(sourceInfo.name, sourceInfo.container, sourceInfo.source),
                 exportedAt = DateTime.UtcNow.ToString("O"),
                 name = sourceInfo.name,
@@ -891,6 +893,7 @@ namespace AnimeStudio.CLI
                 pathId = sourceInfo.pathId,
                 output = outputPath,
                 format = CliExportOptions.ModelFormat.ToString(),
+                modelSource = CliExportOptions.ModelSource.ToString(),
                 textureMode = CliExportOptions.TextureMode.ToString(),
                 animationPackage = CliExportOptions.AnimationPackage.ToString(),
                 nodeCount = CountFrames(imported.RootFrame),

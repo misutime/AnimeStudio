@@ -96,6 +96,7 @@ namespace AnimeStudio.CLI
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
                 CliExportOptions.ModelFormat = o.ModelFormat;
                 CliExportOptions.AnimationPackage = o.AnimationPackage;
+                CliExportOptions.ModelSource = o.ModelSource;
                 CliExportOptions.TextureMode = o.TextureMode;
                 CliExportOptions.OutputRoot = o.Output.FullName;
                 Logger.FileLogging = Settings.Default.enableFileLogging;

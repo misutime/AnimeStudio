@@ -83,7 +83,7 @@ CAB / PPtr 依赖索引策略：
 
 团队统一工作流：
 
-1. 默认 `Library` 导出干净模型：mesh、material、PNG texture、skeleton/skin。
+1. 默认 `Library` 导出 prefab/Animator/GameObject 组合模型：mesh、material、PNG texture、skeleton/skin。
 2. AnimationClip 独立进入 `Animations`。
 3. 先生成并检查静态模型验收报告：模型、贴图、材质、skin/joint 基础结构必须自洽。
 4. 自动生成 Unity 关系图：模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖。
@@ -94,6 +94,10 @@ CAB / PPtr 依赖索引策略：
 默认素材库形态：
 
 - 模型默认 glTF，进入 `Models`。
+- `Models` 默认只放完整 prefab、Animator 或 GameObject 组合模型，也就是 `--model_source PrefabPrimary`。
+- raw fbx 身体、face、附件等 source parts 默认不作为可浏览模型导出；它们必须写入 `asset_catalog.jsonl`，标记为 `ModelSourcePart`、`RawModel`、`SourcePart`、`AttachmentSource` 或类似角色。
+- 如果 raw fbx 没有被任何组合模型覆盖，但它本身是可用模型，则进入 `Models/RawUnreferenced`。
+- 需要研究零散 fbx/source parts 时，显式使用 `--model_source PrefabAndParts` 或 `RawPartsOnly`。
 - 角色/蒙皮模型默认保留 skeleton/skin，不能为了模型浏览速度丢掉骨骼。
 - 贴图默认 PNG，进入共享 `Textures/_ModelDependencies`，模型目录通过硬链接引用。
 - 动画默认独立进入 `Animations`，不嵌入每个模型。
@@ -119,7 +123,7 @@ CAB / PPtr 依赖索引策略：
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
-| 输出可浏览性 | 目录按 container 组织，模型依赖贴图集中共享并硬链接到模型目录 | 70% |
+| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 只放组合模型，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录 | 75% |
 
 ## 已有关键能力
 

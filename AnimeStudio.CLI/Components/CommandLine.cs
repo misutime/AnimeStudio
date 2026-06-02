@@ -37,6 +37,13 @@ namespace AnimeStudio.CLI
         All
     }
 
+    public enum ModelSourceMode
+    {
+        PrefabPrimary,
+        PrefabAndParts,
+        RawPartsOnly
+    }
+
     public enum AnimationPackageMode
     {
         Separate,
@@ -82,6 +89,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.AnimationPackage,
                 optionsBinder.TextureMode,
                 optionsBinder.Profile3D,
+                optionsBinder.ModelSource,
                 optionsBinder.IncludeShaders,
                 optionsBinder.MaxExportTasks,
                 optionsBinder.BatchFiles,
@@ -134,6 +142,7 @@ namespace AnimeStudio.CLI
         public AnimationPackageMode AnimationPackage { get; set; }
         public AnimeStudio.TextureExportMode TextureMode { get; set; }
         public Model3DProfile Profile3D { get; set; }
+        public ModelSourceMode ModelSource { get; set; }
         public bool IncludeShaders { get; set; }
         public int MaxExportTasks { get; set; }
         public int BatchFiles { get; set; }
@@ -181,6 +190,7 @@ namespace AnimeStudio.CLI
         public readonly Option<AnimationPackageMode> AnimationPackage;
         public readonly Option<AnimeStudio.TextureExportMode> TextureMode;
         public readonly Option<Model3DProfile> Profile3D;
+        public readonly Option<ModelSourceMode> ModelSource;
         public readonly Option<bool> IncludeShaders;
         public readonly Option<int> MaxExportTasks;
         public readonly Option<int> BatchFiles;
@@ -226,6 +236,7 @@ namespace AnimeStudio.CLI
             AnimationPackage = new Option<AnimationPackageMode>("--animation_package", "Specify animation packaging: Separate exports clips into the animation library; Embedded writes clips into each model; Both does both.");
             TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
+            ModelSource = new Option<ModelSourceMode>("--model_source", "Specify Library model source mode: PrefabPrimary exports prefab/Animator models by default and indexes raw fbx parts; PrefabAndParts exports both; RawPartsOnly exports only raw fbx/source parts.");
             IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
@@ -281,6 +292,7 @@ namespace AnimeStudio.CLI
             AnimationPackage.SetDefaultValue(AnimeStudio.CLI.AnimationPackageMode.Separate);
             TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Png);
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.Core);
+            ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
             MaxExportTasks.SetDefaultValue(1);
             BatchFiles.SetDefaultValue(4);
             ModelGcInterval.SetDefaultValue(32);
@@ -356,6 +368,7 @@ namespace AnimeStudio.CLI
                 AnimationPackage = bindingContext.ParseResult.GetValueForOption(AnimationPackage),
                 TextureMode = bindingContext.ParseResult.GetValueForOption(TextureMode),
                 Profile3D = bindingContext.ParseResult.GetValueForOption(Profile3D),
+                ModelSource = bindingContext.ParseResult.GetValueForOption(ModelSource),
                 IncludeShaders = bindingContext.ParseResult.GetValueForOption(IncludeShaders),
                 MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
                 BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),

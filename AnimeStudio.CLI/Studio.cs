@@ -707,10 +707,14 @@ namespace AnimeStudio.CLI
             var models = exportableAssets.Where(x => x.Asset is GameObject or Animator).ToList();
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
             var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
+            var sourcePartModels = new List<AssetItem>();
+
+            models = FilterLibraryModelSources(models, sourcePartModels);
 
             Logger.Info(
-                $"Exporting asset library: {models.Count} model candidate(s), {animations.Count} animation clip(s), {shaders.Count} shader(s)."
+                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {shaders.Count} shader(s)."
             );
+            AppendModelSourcePartCatalog(savePath, sourcePartModels);
 
             var modelAnimations = CliExportOptions.ExportEmbeddedAnimations ? animations : null;
             ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, modelAnimations);
@@ -720,6 +724,176 @@ namespace AnimeStudio.CLI
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
             GenerateLibraryIndexes(savePath);
+        }
+
+        private static List<AssetItem> FilterLibraryModelSources(
+            List<AssetItem> models,
+            List<AssetItem> sourcePartModels)
+        {
+            if (CliExportOptions.ModelSource == ModelSourceMode.PrefabAndParts)
+            {
+                foreach (var model in models)
+                {
+                    model.LibraryRole = IsRawModelSourcePart(model) ? ClassifySourcePartRole(model) : "PrefabPrimary";
+                }
+                return models;
+            }
+
+            // 默认素材库只展示 prefab/Animator 组合体。raw fbx 仍进索引，避免身体、脸、附件零件污染 Models 浏览目录。
+            var rawModels = models.Where(IsRawModelSourcePart).ToList();
+            var primaryModels = models.Where(x => !IsRawModelSourcePart(x)).ToList();
+            var primaryKeys = primaryModels
+                .Select(GetLibraryModelGroupKey)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (CliExportOptions.ModelSource == ModelSourceMode.RawPartsOnly)
+            {
+                foreach (var raw in rawModels)
+                {
+                    raw.LibraryRole = ClassifySourcePartRole(raw);
+                }
+                sourcePartModels.AddRange(primaryModels.Select(x =>
+                {
+                    x.LibraryRole = "PrefabPrimary";
+                    return x;
+                }));
+                Logger.Info($"--model_source RawPartsOnly selected {rawModels.Count} raw/source model part(s).");
+                return rawModels;
+            }
+
+            foreach (var primary in primaryModels)
+            {
+                primary.LibraryRole = "PrefabPrimary";
+            }
+
+            var exportModels = new List<AssetItem>(primaryModels);
+            foreach (var raw in rawModels)
+            {
+                var key = GetLibraryModelGroupKey(raw);
+                if (!string.IsNullOrWhiteSpace(key) && primaryKeys.Contains(key))
+                {
+                    raw.LibraryRole = ClassifySourcePartRole(raw);
+                    sourcePartModels.Add(raw);
+                }
+                else
+                {
+                    raw.LibraryRole = "RawUnreferenced";
+                    exportModels.Add(raw);
+                }
+            }
+
+            if (sourcePartModels.Count > 0)
+            {
+                Logger.Info($"--model_source PrefabPrimary indexed {sourcePartModels.Count} raw/source model part(s) without exporting them as browsable Models.");
+            }
+            return exportModels;
+        }
+
+        private static bool IsRawModelSourcePart(AssetItem asset)
+        {
+            var text = GetFilterableContainerText(asset).Replace('\\', '/').ToLowerInvariant();
+            return Regex.IsMatch(text, @"(^|/)fbx(/|$)|\.fbx($|/)");
+        }
+
+        private static string ClassifySourcePartRole(AssetItem asset)
+        {
+            var text = string.Join("/", asset.Text, asset.Container, asset.SourceFile?.originalPath, asset.SourceFile?.fileName)
+                .Replace('\\', '/')
+                .ToLowerInvariant();
+            if (Regex.IsMatch(text, @"face|eye|brow|mouth"))
+            {
+                return "AttachmentSource";
+            }
+            if (IsRawModelSourcePart(asset))
+            {
+                return "RawModel";
+            }
+            return "SourcePart";
+        }
+
+        private static string GetLibraryModelGroupKey(AssetItem asset)
+        {
+            var path = asset.Container;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                path = asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName ?? asset.Text;
+            }
+            path = (path ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
+            var fbxIndex = path.IndexOf("/fbx/", StringComparison.OrdinalIgnoreCase);
+            if (fbxIndex >= 0)
+            {
+                return path.Substring(0, fbxIndex).Trim('/');
+            }
+            if (path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetDirectoryName(path)?.Replace('\\', '/').Trim('/');
+            }
+            if (Path.HasExtension(path))
+            {
+                return Path.GetDirectoryName(path)?.Replace('\\', '/').Trim('/');
+            }
+            return path.Trim('/');
+        }
+
+        private static void AppendModelSourcePartCatalog(string savePath, List<AssetItem> sourcePartModels)
+        {
+            if (sourcePartModels.Count == 0 || string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                return;
+            }
+
+            var catalogPath = Path.Combine(CliExportOptions.OutputRoot, "asset_catalog.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(catalogPath));
+            foreach (var item in sourcePartModels)
+            {
+                var entry = new
+                {
+                    kind = "ModelSourcePart",
+                    libraryRole = item.LibraryRole,
+                    resourceKind = InferLibraryResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
+                    exportedAt = DateTime.UtcNow.ToString("O"),
+                    name = item.Text,
+                    sourceType = item.TypeString,
+                    container = item.Container,
+                    source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                    pathId = item.m_PathID,
+                    output = (string)null,
+                    exportPolicy = CliExportOptions.ModelSource.ToString(),
+                    modelGroupKey = GetLibraryModelGroupKey(item),
+                };
+                File.AppendAllText(catalogPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
+            }
+        }
+
+        private static string InferLibraryResourceKind(string name, string container, string source)
+        {
+            var text = string.Join(
+                "/",
+                new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+
+            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)(pc|player)(/|$)"))
+            {
+                return "Character";
+            }
+            if (Regex.IsMatch(text, @"(^|/)character/npc|(^|/)npc(/|$)"))
+            {
+                return "NPC";
+            }
+            if (Regex.IsMatch(text, @"(^|/)stage|court|scene|map"))
+            {
+                return "Stage";
+            }
+            if (Regex.IsMatch(text, @"(^|/)ball|basketball"))
+            {
+                return "Ball";
+            }
+            if (Regex.IsMatch(text, @"(^|/)trophy|prop|props|object|item|weapon"))
+            {
+                return "Prop";
+            }
+            return "Unknown";
         }
 
         private static void ExportSeparateAnimationClips(string savePath)
@@ -1375,6 +1549,19 @@ namespace AnimeStudio.CLI
         }
 
         private static string GetLibrarySubPath(AssetItem asset)
+        {
+            if (asset.LibraryRole == "RawUnreferenced")
+            {
+                var rawSubPath = GetLibrarySubPathWithoutRole(asset);
+                return string.IsNullOrWhiteSpace(rawSubPath)
+                    ? "RawUnreferenced"
+                    : Path.Combine("RawUnreferenced", rawSubPath);
+            }
+
+            return GetLibrarySubPathWithoutRole(asset);
+        }
+
+        private static string GetLibrarySubPathWithoutRole(AssetItem asset)
         {
             if (!string.IsNullOrWhiteSpace(asset.Container) && !int.TryParse(asset.Container, out _))
             {

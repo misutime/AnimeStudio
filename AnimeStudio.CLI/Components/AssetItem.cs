@@ -12,6 +12,7 @@
         public ClassIDType Type;
         public string InfoText;
         public string UniqueID;
+        public string LibraryRole;
 
         public AssetItem(Object asset)
         {
