@@ -113,6 +113,27 @@ Shader 样本应该满足：
 3. 检查 `asset_catalog.jsonl` 和关键 glTF。
 4. 确认 `D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
 
+## 模型动画绑定规则
+
+后续开发统一遵循：
+
+- 默认 `Library` 输出干净模型，不默认嵌入全局动作库。
+- 动画默认独立进入 `Animations`。
+- 自动索引告诉团队“这个模型可能支持哪些动画”。
+- 按需生成预览 glTF，用来查看某个模型播放某个动画的效果。
+- 确认一组动画后，再显式生成带动画合集的 glTF/GLB。
+
+测试时不要把“一个角色能找到的所有动画”直接塞进模型。Freedunk 角色会引用大量公共篮球动作，直接全嵌会回到旧失败案例：文件巨大、重复、难浏览。
+
+绑定关系应优先验证这些信息：
+
+- Animator Controller 是否直接引用该 AnimationClip。
+- AnimationClip source/container 是否和角色、职业、性别、动作库有关。
+- skeleton hash / bone path 是否兼容。
+- 实际写入 glTF 后是否产生有效 animation channels。
+
+当前 `animation_bindings.jsonl` 只是候选索引。下一阶段要把它升级成从模型视角可读的 `model_animations.json`，并记录匹配依据和验证状态。
+
 ## 完整模型动画样本
 
 当需要验证“模型 + PNG 贴图 + skin/bones + 可播放身体动画”时，使用固定小输入样本，不要直接扫完整 `Freedunk_Data`：

@@ -31,6 +31,25 @@
 
 > 后续每一步实现都以“导出可用素材库”为准。默认输出必须服务于开发者浏览、筛选、复用素材；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
 
+模型和动画准则：
+
+> 模型默认保持干净，动画默认独立入库，绑定关系通过索引和后处理建立；只有按需预览或显式打包时，才把动画写入模型 glTF/GLB。
+
+原因：
+
+- 一个角色模型通常能使用很多动画，直接全嵌会导致 glTF 巨大、重复、难浏览。
+- Unity 游戏常把角色模型、角色私有动画、通用身体动作、NPC 动画、场景动画放在不同 bundle；导出模型时未必已经加载完整动画集合。
+- 同名/同类动画不一定兼容，必须通过骨骼路径、skeleton hash、Animator/AnimationClip 关系和实际 glTF channel 写入结果验证。
+- 默认素材库的首要价值是“能浏览和筛选资产”，不是把所有运行时关系一次性塞进单文件。
+
+团队统一工作流：
+
+1. 默认 `Library` 导出干净模型：mesh、material、PNG texture、skeleton/skin。
+2. AnimationClip 独立进入 `Animations`。
+3. 自动生成绑定索引：`animation_bindings.jsonl`，后续增强为 `model_animations.json`。
+4. 选中模型和动画后，按需生成可播放预览 glTF。
+5. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
+
 默认素材库形态：
 
 - 模型默认 glTF，进入 `Models`。
@@ -236,9 +255,10 @@ animation_bindings.jsonl
 缺口：
 
 - blendshape 动画未写入 `weights` channel。
-- 动画 clip 与 AnimatorController 状态机关系未形成清晰索引。
+- 动画 clip 与 AnimatorController 状态机关系还没有形成完整索引。
+- 模型与动画的适配关系还需要从启发式升级为可验证关系。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
-- 缺少动画预览/验证流程。
+- 缺少按需生成预览 glTF / 动画合集 glTF 的 CLI。
 
 优先级：P0
 
@@ -320,14 +340,17 @@ animation_bindings.jsonl
 1. 补 glTF morph target 导出。
 2. 补 glTF blendshape weight 动画。
 3. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
-4. 给 Animator 模式输出动画 clip 列表和角色归属。
-5. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
+4. 给 Animator/AnimationClip 输出动画 clip 列表、来源、角色归属和候选模型。
+5. 增加按需预览命令：给一个模型 glTF 和一个 AnimationClip，生成可播放预览 glTF。
+6. 增加动画合集打包命令：把已确认的一组动画写进 glTF/GLB。
+7. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
 
 验收：
 
 - Blender 打开 glTF 可看到模型、骨骼、贴图和基础动画。
 - 有 blendshape 的角色，glTF 中存在 `targets` 和 `weights`。
-- profile log 中动画导出不再混入模型模式。
+- 默认 Library 模型仍然干净，不嵌全局动作库。
+- 预览 glTF 能播放指定动画，并记录实际写入的 channel 数。
 
 ### P1：做资源库索引和浏览友好输出
 
@@ -346,9 +369,10 @@ animation_bindings.jsonl
    - texture count
    - animation count
    - skeleton/bone count
-3. 用 skeleton hash / bone path 验证动画候选绑定，减少只靠 resourceKind 的误配。
-4. 生成可选 `catalog.html` 或轻量浏览器。
-5. 给每个模型输出 `model.info.json`，方便单模型后处理。
+3. 用 skeleton hash / bone path / AnimatorController / source container 验证动画候选绑定，减少只靠 resourceKind 的误配。
+4. 生成 `model_animations.json`，从模型视角列出可用动画、匹配依据、匹配分数和验证状态。
+5. 生成可选 `catalog.html` 或轻量浏览器。
+6. 给每个模型输出 `model.info.json`，方便单模型后处理。
 
 验收：
 
