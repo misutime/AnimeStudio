@@ -11,6 +11,7 @@ using System.Xml;
 using System.Text;
 using MessagePack;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
 
 namespace AnimeStudio
 {
@@ -21,9 +22,10 @@ namespace AnimeStudio
         public static bool Minimal = true;
         public static CancellationTokenSource tokenSource = new CancellationTokenSource();
 
-        private const int CABMapVersion = 2;
+        private const int CABMapVersion = 3;
         private static string BaseFolder = "";
         private static int CABMapSourceFileCount = -1;
+        private static string CABMapSourceFingerprint = string.Empty;
         private static Dictionary<string, Entry> CABMap = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
         private static Dictionary<string, HashSet<long>> Offsets = new Dictionary<string, HashSet<long>>();
         private static AssetsManager assetsManager = new AssetsManager() { Silent = true, SkipProcess = true, ResolveDependencies = false };
@@ -57,6 +59,7 @@ namespace AnimeStudio
             Offsets.Clear();
             BaseFolder = string.Empty;
             CABMapSourceFileCount = -1;
+            CABMapSourceFingerprint = string.Empty;
             assetsManager.SpecifyUnityVersion = string.Empty;
 
             tokenSource.Dispose();
@@ -154,6 +157,13 @@ namespace AnimeStudio
             return CABMapSourceFileCount >= expectedSourceFileCount;
         }
 
+        public static bool IsCABMapCompleteFor(string[] expectedSourceFiles, string baseFolder)
+        {
+            return CABMapSourceFileCount >= expectedSourceFiles.Length
+                && !string.IsNullOrEmpty(CABMapSourceFingerprint)
+                && string.Equals(CABMapSourceFingerprint, BuildSourceFingerprint(expectedSourceFiles, baseFolder), StringComparison.Ordinal);
+        }
+
         public static void BuildCABMap(string[] files, string mapName, string baseFolder, Game game)
         {
             Logger.Info("Building CABMap...");
@@ -161,6 +171,7 @@ namespace AnimeStudio
             {
                 CABMap.Clear();
                 CABMapSourceFileCount = files.Length;
+                CABMapSourceFingerprint = BuildSourceFingerprint(files, baseFolder);
                 Progress.Reset();
                 var collision = 0;
                 BaseFolder = baseFolder;
@@ -247,6 +258,7 @@ namespace AnimeStudio
                 writer.Write(BaseFolder);
                 writer.Write(-CABMapVersion);
                 writer.Write(CABMapSourceFileCount);
+                writer.Write(CABMapSourceFingerprint);
                 writer.Write(CABMap.Count);
                 foreach (var kv in CABMap)
                 {
@@ -309,6 +321,7 @@ namespace AnimeStudio
         {
             BaseFolder = reader.ReadString();
             CABMapSourceFileCount = -1;
+            CABMapSourceFingerprint = string.Empty;
 
             var count = reader.ReadInt32();
             if (count < 0)
@@ -319,6 +332,10 @@ namespace AnimeStudio
                     throw new InvalidDataException($"Unsupported CABMap version {version}");
                 }
                 CABMapSourceFileCount = reader.ReadInt32();
+                if (version >= 3)
+                {
+                    CABMapSourceFingerprint = reader.ReadString();
+                }
                 count = reader.ReadInt32();
             }
             for (int i = 0; i < count; i++)
@@ -742,6 +759,7 @@ namespace AnimeStudio
             Logger.Info($"Building Both...");
             CABMap.Clear();
             CABMapSourceFileCount = files.Length;
+            CABMapSourceFingerprint = BuildSourceFingerprint(files, baseFolder);
             Progress.Reset();
             var collision = 0;
             BaseFolder = baseFolder;
@@ -758,6 +776,27 @@ namespace AnimeStudio
 
             Logger.Info($"Map build successfully !! {collision} collisions found");
             await ExportAssetsMap(assets, game, mapName, savePath, exportListType);
+        }
+
+        private static string BuildSourceFingerprint(string[] files, string baseFolder)
+        {
+            var normalizedBase = Path.GetFullPath(baseFolder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            using var sha = SHA256.Create();
+            using var stream = new MemoryStream();
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
+            {
+                writer.Write(normalizedBase.ToLowerInvariant());
+                foreach (var file in files.Select(Path.GetFullPath).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    var info = new FileInfo(file);
+                    var relativePath = Path.GetRelativePath(normalizedBase, info.FullName).Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+                    writer.Write(relativePath.ToLowerInvariant());
+                    writer.Write(info.Exists ? info.Length : -1);
+                    writer.Write(info.Exists ? info.LastWriteTimeUtc.Ticks : 0);
+                }
+            }
+            stream.Position = 0;
+            return Convert.ToHexString(sha.ComputeHash(stream)).ToLowerInvariant();
         }
     }
 }

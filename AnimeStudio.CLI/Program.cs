@@ -269,7 +269,7 @@ namespace AnimeStudio.CLI
                         {
                             cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
                         }
-                        if (cabMapLoaded && needsModelDependencies && !AssetsHelper.IsCABMapCompleteFor(expectedCabMapFileCount))
+                        if (cabMapLoaded && needsModelDependencies && !AssetsHelper.IsCABMapCompleteFor(cabMapSourceFiles, inputBaseFolder))
                         {
                             Logger.Warning("CAB dependency map was built from an incomplete source set. Rebuilding from the full input so Unity external references stay resolvable.");
                             using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = expectedCabMapFileCount, ["mapName"] = mapName }))
@@ -309,7 +309,7 @@ namespace AnimeStudio.CLI
                     {
                         cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
                     }
-                    if (cabMapLoaded && !AssetsHelper.IsCABMapCompleteFor(expectedCabMapFileCount))
+                    if (cabMapLoaded && !AssetsHelper.IsCABMapCompleteFor(cabMapSourceFiles, inputBaseFolder))
                     {
                         Logger.Warning("CAB dependency map was built from an incomplete source set. Rebuilding from the full input so Unity external references stay resolvable.");
                         cabMapLoaded = false;
