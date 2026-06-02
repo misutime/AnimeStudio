@@ -904,9 +904,67 @@ namespace AnimeStudio.CLI
                 animationCount = imported.AnimationList?.Count ?? 0,
                 morphCount = imported.MorphList?.Count ?? 0,
                 boneCount = bonePaths.Length,
+                bonePaths = bonePaths.Take(512).ToArray(),
+                bonePathsTruncated = bonePaths.Length > 512,
                 skeletonHash = bonePaths.Length == 0 ? null : HashText(string.Join("\n", bonePaths)),
+                avatar = GetModelAvatarInfo(source),
             };
             AppendCatalogEntry(entry);
+        }
+
+        private static object GetModelAvatarInfo(object source)
+        {
+            var modelAsset = source is AssetItem item ? item.Asset : source as AnimeStudio.Object;
+            var animator = modelAsset switch
+            {
+                Animator direct => direct,
+                GameObject gameObject => FindAnimatorInHierarchy(gameObject),
+                _ => null,
+            };
+            if (animator == null || !animator.m_Avatar.TryGet(out var avatar))
+            {
+                return null;
+            }
+
+            return new
+            {
+                name = avatar.m_Name,
+                source = avatar.assetsFile?.originalPath ?? avatar.assetsFile?.fileName,
+                pathId = avatar.m_PathID,
+                hasHumanDescription = avatar.m_HumanDescription != null,
+                humanBoneCount = avatar.m_HumanDescription?.m_Human?.Count ?? 0,
+                skeletonBoneCount = avatar.m_HumanDescription?.m_Skeleton?.Count ?? 0,
+                avatarSkeletonNodeCount = avatar.m_Avatar?.m_AvatarSkeleton?.m_Node?.Count ?? 0,
+            };
+        }
+
+        private static Animator FindAnimatorInHierarchy(GameObject root)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            foreach (var componentPtr in root.m_Components ?? Enumerable.Empty<PPtr<Component>>())
+            {
+                if (componentPtr.TryGet<Animator>(out var animator))
+                {
+                    return animator;
+                }
+            }
+
+            foreach (var childPtr in root.m_Transform?.m_Children ?? Enumerable.Empty<PPtr<Transform>>())
+            {
+                if (childPtr.TryGet(out var childTransform) && childTransform.m_GameObject.TryGet(out var child))
+                {
+                    var nested = FindAnimatorInHierarchy(child);
+                    if (nested != null)
+                    {
+                        return nested;
+                    }
+                }
+            }
+            return null;
         }
 
         private static void AppendAssetCatalog(AssetItem item, string outputPath, string kind)
@@ -1030,7 +1088,7 @@ namespace AnimeStudio.CLI
                 : null;
         }
 
-        private static bool IsCoreAnimationPath(string path)
+        internal static bool IsCoreAnimationPath(string path)
         {
             var text = NormalizeAnimationPath(path);
             if (IsAuxiliaryAnimationPath(path) || IsTwistOrHelperAnimationPath(path))
@@ -1063,7 +1121,7 @@ namespace AnimeStudio.CLI
             return text.Contains("twist") || text.Contains("helper");
         }
 
-        private static string NormalizeAnimationPath(string path)
+        internal static string NormalizeAnimationPath(string path)
         {
             return Regex.Replace((path ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }

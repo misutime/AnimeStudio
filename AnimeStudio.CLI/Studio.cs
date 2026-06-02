@@ -1022,9 +1022,14 @@ namespace AnimeStudio.CLI
                         boneCount = link.ModelBoneCount,
                         meshCount = link.ModelMeshCount,
                         textureCount = link.ModelTextureCount,
+                        relationSource = link.Source,
+                        score = link.Score,
                         confidence = link.Confidence,
                         relation = link.Relation,
                         matchReasons = link.Reasons,
+                        matchedBindingPaths = link.MatchedBindingPaths,
+                        unmatchedBindingPaths = link.UnmatchedBindingPaths,
+                        requiresHumanoidBake = link.RequiresHumanoidBake,
                     }).ToArray(),
                 };
                 writer.WriteLine(JsonConvert.SerializeObject(binding));
@@ -1035,7 +1040,7 @@ namespace AnimeStudio.CLI
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 catalog = catalogPath,
                 rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
-                relationRule = "Default candidates come from explicit Unity Animator/Animation references only. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
+                relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
                 relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                 relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
                 models = models
@@ -1105,7 +1110,47 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            AddStructuralUnityBindingLinks(links, models, animations);
+
             return links;
+        }
+
+        private static void AddStructuralUnityBindingLinks(ExplicitAnimationLinks links, List<JObject> models, List<JObject> animations)
+        {
+            foreach (var model in models)
+            {
+                var modelKey = GetCatalogKey(model);
+                var modelBonePaths = GetModelBonePaths(model);
+                if (modelBonePaths.Length == 0)
+                {
+                    continue;
+                }
+
+                foreach (var animation in animations)
+                {
+                    var animationKey = GetCatalogKey(animation);
+                    if (links.ContainsModelAnimation(modelKey, animationKey))
+                    {
+                        continue;
+                    }
+
+                    var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
+                    var match = AnalyzeStructuralAnimationMatch(modelBonePaths, animationPaths);
+                    if (!match.IsCandidate)
+                    {
+                        var humanoidMatch = AnalyzeHumanoidAnimationMatch(model, animation);
+                        if (!humanoidMatch.IsCandidate)
+                        {
+                            continue;
+                        }
+
+                        links.Add(modelKey, animationKey, BuildHumanoidLink(model, animation, humanoidMatch));
+                        continue;
+                    }
+
+                    links.Add(modelKey, animationKey, BuildStructuralLink(model, animation, match));
+                }
+            }
         }
 
         private static IEnumerable<ExplicitAnimationRelation> CollectExplicitAnimationRelations(AnimeStudio.Object modelAsset)
@@ -1130,29 +1175,59 @@ namespace AnimeStudio.CLI
                 yield break;
             }
 
-            foreach (var componentPtr in gameObject.m_Components ?? Enumerable.Empty<PPtr<Component>>())
+            foreach (var owner in EnumerateGameObjectHierarchy(gameObject))
             {
-                if (componentPtr.TryGet<Animator>(out var animator))
+                foreach (var componentPtr in owner.m_Components ?? Enumerable.Empty<PPtr<Component>>())
                 {
-                    foreach (var relation in CollectAnimatorClipRelations(animator, "gameObject.animator.controller"))
+                    if (componentPtr.TryGet<Animator>(out var animator))
                     {
-                        yield return relation;
+                        var relationName = owner == gameObject
+                            ? "gameObject.animator.controller"
+                            : "childGameObject.animator.controller";
+                        foreach (var relation in CollectAnimatorClipRelations(animator, relationName))
+                        {
+                            yield return relation;
+                        }
+                    }
+
+                    if (componentPtr.TryGet<Animation>(out var animation))
+                    {
+                        var relationName = owner == gameObject
+                            ? "animation.clip"
+                            : "childGameObject.animation.clip";
+                        foreach (var clipPtr in animation.m_Animations ?? Enumerable.Empty<PPtr<AnimationClip>>())
+                        {
+                            if (clipPtr.TryGet(out var clip))
+                            {
+                                yield return new ExplicitAnimationRelation
+                                {
+                                    Clip = clip,
+                                    Relation = relationName,
+                                    Reasons = new[] { "Unity Animation component explicitly references this AnimationClip." },
+                                };
+                            }
+                        }
                     }
                 }
+            }
+        }
 
-                if (componentPtr.TryGet<Animation>(out var animation))
+        private static IEnumerable<GameObject> EnumerateGameObjectHierarchy(GameObject root)
+        {
+            if (root == null)
+            {
+                yield break;
+            }
+
+            yield return root;
+            var transform = root.m_Transform;
+            foreach (var childPtr in transform?.m_Children ?? Enumerable.Empty<PPtr<Transform>>())
+            {
+                if (childPtr.TryGet(out var childTransform) && childTransform.m_GameObject.TryGet(out var child))
                 {
-                    foreach (var clipPtr in animation.m_Animations ?? Enumerable.Empty<PPtr<AnimationClip>>())
+                    foreach (var nested in EnumerateGameObjectHierarchy(child))
                     {
-                        if (clipPtr.TryGet(out var clip))
-                        {
-                            yield return new ExplicitAnimationRelation
-                            {
-                                Clip = clip,
-                                Relation = "animation.clip",
-                                Reasons = new[] { "Unity Animation component explicitly references this AnimationClip." },
-                            };
-                        }
+                        yield return nested;
                     }
                 }
             }
@@ -1226,8 +1301,63 @@ namespace AnimeStudio.CLI
                 ModelTextureCount = (int?)model["textureCount"] ?? 0,
                 Animation = animation,
                 Relation = relation.Relation,
+                Source = "explicit",
+                Score = 100,
                 Confidence = "explicit_unity_reference",
                 Reasons = relation.Reasons,
+            };
+        }
+
+        private static ExplicitModelAnimationLink BuildStructuralLink(JObject model, JObject animation, StructuralAnimationMatch match)
+        {
+            return new ExplicitModelAnimationLink
+            {
+                ModelName = (string)model["name"],
+                ModelResourceKind = (string)model["resourceKind"],
+                ModelOutput = (string)model["output"],
+                ModelSkeletonHash = (string)model["skeletonHash"],
+                ModelBoneCount = (int?)model["boneCount"] ?? 0,
+                ModelMeshCount = (int?)model["meshCount"] ?? 0,
+                ModelTextureCount = (int?)model["textureCount"] ?? 0,
+                Animation = animation,
+                Relation = "animationClip.bindingPath.compatibleWithModelBones",
+                Source = "structural",
+                Score = match.Score,
+                Confidence = "structural_unity_binding",
+                Reasons = new[]
+                {
+                    $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone path(s).",
+                    $"Core body binding matches: {match.CoreMatchedPathCount}.",
+                    "This uses Unity AnimationClip binding paths and exported model bone paths, not name/path fallback.",
+                },
+                MatchedBindingPaths = match.MatchedPaths,
+                UnmatchedBindingPaths = match.UnmatchedPaths,
+            };
+        }
+
+        private static ExplicitModelAnimationLink BuildHumanoidLink(JObject model, JObject animation, HumanoidAnimationMatch match)
+        {
+            return new ExplicitModelAnimationLink
+            {
+                ModelName = (string)model["name"],
+                ModelResourceKind = (string)model["resourceKind"],
+                ModelOutput = (string)model["output"],
+                ModelSkeletonHash = (string)model["skeletonHash"],
+                ModelBoneCount = (int?)model["boneCount"] ?? 0,
+                ModelMeshCount = (int?)model["meshCount"] ?? 0,
+                ModelTextureCount = (int?)model["textureCount"] ?? 0,
+                Animation = animation,
+                Relation = "avatar.humanoidCompatibleWithAnimationClip",
+                Source = "structural",
+                Score = match.Score,
+                Confidence = "structural_unity_avatar",
+                RequiresHumanoidBake = true,
+                Reasons = new[]
+                {
+                    $"Model has Unity Avatar '{match.AvatarName}' with human description.",
+                    $"AnimationClip has {match.HumanoidBindingCount} Animator/Humanoid binding(s) or MuscleClip data.",
+                    "This candidate is Unity Avatar compatible, but must be baked from Humanoid/Muscle curves to skeleton TRS before glTF body playback.",
+                },
             };
         }
 
@@ -1248,6 +1378,7 @@ namespace AnimeStudio.CLI
                 humanoidBindingCount = (int?)entry["humanoidBindingCount"],
                 blendShapeBindingCount = (int?)entry["blendShapeBindingCount"],
                 auxiliaryBindingCount = (int?)entry["auxiliaryBindingCount"],
+                transformBindingPaths = entry["transformBindingPaths"]?.ToObject<string[]>(),
                 classificationNotes = entry["classificationNotes"]?.ToObject<string[]>(),
             };
         }
@@ -1266,6 +1397,8 @@ namespace AnimeStudio.CLI
                 meshCount = (int?)entry["meshCount"] ?? 0,
                 textureCount = (int?)entry["textureCount"] ?? 0,
                 animationCount = (int?)entry["animationCount"] ?? 0,
+                bonePaths = entry["bonePaths"]?.ToObject<string[]>(),
+                avatar = entry["avatar"],
             };
         }
 
@@ -1293,16 +1426,101 @@ namespace AnimeStudio.CLI
                 classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
                 confidence = link.Confidence,
                 relation = link.Relation,
-                score = 100,
+                relationSource = link.Source,
+                score = link.Score,
                 matchReasons = link.Reasons,
+                matchedBindingPaths = link.MatchedBindingPaths,
+                unmatchedBindingPaths = link.UnmatchedBindingPaths,
+                requiresHumanoidBake = link.RequiresHumanoidBake,
                 verification = new
                 {
-                    status = "explicit_unity_reference",
+                    status = link.Confidence,
                     channelCount = (int?)null,
-                    note = "This candidate comes from a Unity Animator/Animation reference. Preview glTF still needs to validate playable channels and skin coverage.",
+                    note = link.RequiresHumanoidBake
+                        ? "This candidate is Humanoid/Avatar compatible but still needs bake-to-skeleton before a body animation preview can be trusted."
+                        : link.Source == "explicit"
+                        ? "This candidate comes from a Unity Animator/Animation reference. Preview glTF still needs to validate playable channels and skin coverage."
+                        : "This candidate comes from Unity AnimationClip binding paths matching exported model bone paths. Preview glTF still needs to validate playable channels and skin coverage.",
                 },
                 nextAction = "generate_preview_gltf",
             };
+        }
+
+        private static string[] GetModelBonePaths(JObject model)
+        {
+            return model["bonePaths"]?.ToObject<string[]>()?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static StructuralAnimationMatch AnalyzeStructuralAnimationMatch(string[] modelBonePaths, string[] animationPaths)
+        {
+            var modelKeys = modelBonePaths
+                .SelectMany(GetComparableBonePathKeys)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var normalizedAnimationPaths = animationPaths
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var matched = new List<string>();
+            var unmatched = new List<string>();
+            foreach (var path in normalizedAnimationPaths)
+            {
+                var keys = GetComparableBonePathKeys(path);
+                if (keys.Any(modelKeys.Contains))
+                {
+                    matched.Add(path);
+                }
+                else
+                {
+                    unmatched.Add(path);
+                }
+            }
+
+            var coreMatched = matched.Count(IsCoreAnimationPath);
+            var score = Math.Min(95, coreMatched * 10 + matched.Count * 2);
+            var isCandidate = matched.Count >= 4 && coreMatched >= 2;
+            return new StructuralAnimationMatch(
+                isCandidate,
+                score,
+                matched.Count,
+                coreMatched,
+                matched.Take(64).ToArray(),
+                unmatched.Take(32).ToArray()
+            );
+        }
+
+        private static HumanoidAnimationMatch AnalyzeHumanoidAnimationMatch(JObject model, JObject animation)
+        {
+            var avatar = model["avatar"] as JObject;
+            var hasHumanAvatar = avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false);
+            var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
+            var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+            var isCandidate = hasHumanAvatar && (humanoidBindingCount > 0 || hasMuscleClip);
+            var score = isCandidate ? Math.Min(80, 50 + Math.Min(30, humanoidBindingCount / 5)) : 0;
+            return new HumanoidAnimationMatch(
+                isCandidate,
+                score,
+                (string)avatar?["name"],
+                humanoidBindingCount
+            );
+        }
+
+        private static IEnumerable<string> GetComparableBonePathKeys(string path)
+        {
+            var parts = (path ?? string.Empty)
+                .Replace('\\', '/')
+                .Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(NormalizeAnimationPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            for (var i = 0; i < parts.Length; i++)
+            {
+                yield return string.Join("/", parts.Skip(i));
+            }
         }
 
         private static string GetCatalogKey(JObject entry)
@@ -1349,8 +1567,12 @@ namespace AnimeStudio.CLI
             public string[] classificationNotes { get; set; }
             public string confidence { get; set; }
             public string relation { get; set; }
+            public string relationSource { get; set; }
             public int score { get; set; }
             public string[] matchReasons { get; set; }
+            public string[] matchedBindingPaths { get; set; }
+            public string[] unmatchedBindingPaths { get; set; }
+            public bool requiresHumanoidBake { get; set; }
             public object verification { get; set; }
             public string nextAction { get; set; }
         }
@@ -1371,6 +1593,12 @@ namespace AnimeStudio.CLI
 
                 AddTo(ByModel, modelKey, link);
                 AddTo(ByAnimation, animationKey, link);
+            }
+
+            public bool ContainsModelAnimation(string modelKey, string animationKey)
+            {
+                return ByModel.TryGetValue(modelKey, out var links)
+                    && links.Any(x => string.Equals(GetCatalogKey(x.Animation), animationKey, StringComparison.OrdinalIgnoreCase));
             }
 
             private static void AddTo(Dictionary<string, List<ExplicitModelAnimationLink>> map, string key, ExplicitModelAnimationLink link)
@@ -1396,7 +1624,12 @@ namespace AnimeStudio.CLI
             public JObject Animation { get; set; }
             public string Confidence { get; set; }
             public string Relation { get; set; }
+            public string Source { get; set; }
+            public int Score { get; set; }
             public string[] Reasons { get; set; }
+            public string[] MatchedBindingPaths { get; set; }
+            public string[] UnmatchedBindingPaths { get; set; }
+            public bool RequiresHumanoidBake { get; set; }
         }
 
         private sealed class ExplicitAnimationRelation
@@ -1405,6 +1638,22 @@ namespace AnimeStudio.CLI
             public string Relation { get; set; }
             public string[] Reasons { get; set; }
         }
+
+        private sealed record StructuralAnimationMatch(
+            bool IsCandidate,
+            int Score,
+            int MatchedPathCount,
+            int CoreMatchedPathCount,
+            string[] MatchedPaths,
+            string[] UnmatchedPaths
+        );
+
+        private sealed record HumanoidAnimationMatch(
+            bool IsCandidate,
+            int Score,
+            string AvatarName,
+            int HumanoidBindingCount
+        );
 
         private static void ExportModelAssets(
             string savePath,

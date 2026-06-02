@@ -119,7 +119,7 @@ CAB / PPtr 依赖索引策略：
 | FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、glTF alpha/double-sided 状态、extras 保留 Unity slot/float/color 信息 | 62% |
-| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持按需生成预览 glTF、验证报告和 AnimationClip 类型分类 | 68% |
+| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、按需生成预览 glTF、验证报告和 AnimationClip 类型分类 | 72% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
@@ -315,8 +315,8 @@ model_validation.json
 
 - blendshape 动画未写入 `weights` channel。
 - Humanoid/Muscle 动画未 bake 到骨骼 TRS，所以 Freedunk 这类角色身体动作暂时只能看到辅助节点 channel。
-- 动画 clip 与 AnimatorController 状态机关系已有关系图明细，但还没有形成完整可浏览索引。
-- 模型与动画的适配关系已有 Unity 关系图上游数据，`model_animations.json` 默认候选必须从关系图 + 可验证关系生成。
+- 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
+- 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
 - 缺少动画合集 glTF/GLB 打包 CLI。
 
