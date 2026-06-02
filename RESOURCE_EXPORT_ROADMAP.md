@@ -11,7 +11,7 @@
 - 动画：Animator/AnimationClip 导出的骨骼动画，后续包含 blendshape 动画。
 - 贴图：Texture2D，支持 Raw 快速导出、按需 PNG 后处理。
 - 材质：Material 参数、贴图槽、shader 引用和可分析 metadata。
-- Shader：以研究和重建材质为目标，先保证可转储、可定位、可关联。
+- Shader：实验功能，以研究和重建材质为目标，先保证可转储、可定位、可关联；不进入默认核心导出。
 
 非目标或低优先级：
 
@@ -37,7 +37,7 @@
 - 角色/蒙皮模型默认保留 skeleton/skin，不能为了模型浏览速度丢掉骨骼。
 - 贴图默认 PNG，进入共享 `Textures/_ModelDependencies`，模型目录通过硬链接引用。
 - 动画默认独立进入 `Animations`，不嵌入每个模型。
-- Shader 默认进入 `Shaders`，以安全 raw archive + metadata 形式保留。
+- Shader 默认不导出；实验研究时显式 `--include_shaders`，进入 `Shaders`，以安全 raw archive + metadata 形式保留。
 - 材质、贴图、动画、源路径关系由 manifest/catalog 记录。
 - `Core` profile 默认过滤 UI、sound、video、camera、effect、manager、test、dummy 等低价值噪声。
 
@@ -56,7 +56,7 @@
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、extras 保留 Unity 贴图信息 | 55% |
 | 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库 | 55% |
-| Shader 导出 | 默认安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
+| Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
 | 输出可浏览性 | 目录按 container 组织，模型依赖贴图集中共享并硬链接到模型目录 | 70% |
@@ -189,7 +189,16 @@ asset_catalog.jsonl
 export_profile.jsonl
 ```
 
-`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数和 skeletonHash；动画和 shader 也会作为独立资产登记。
+`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数和 skeletonHash；动画会作为独立资产登记，实验 shader 只在 `--include_shaders` 时登记。
+
+默认还会生成：
+
+```text
+asset_summary.json
+animation_bindings.jsonl
+```
+
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，目前按 `resourceKind` 做启发式匹配，后续升级为 skeleton hash / bone path 级验证。
 
 `export_profile.jsonl` 已记录：
 
@@ -262,15 +271,15 @@ export_profile.jsonl
 
 优先级：P1
 
-### 5. 输出素材库索引不足
+### 5. 输出素材库索引仍需增强
 
-现在有 manifest，但还不是给人浏览的素材库索引。
+现在已有 manifest、`asset_catalog.jsonl`、`asset_summary.json` 和 `animation_bindings.jsonl`，但还不是完整的人类浏览索引。
 
 缺口：
 
-- 没有统一 `asset_catalog.json`。
-- 没有按角色、NPC、场景、道具、球、动画、贴图分类的索引。
-- 没有模型与贴图、材质、动画、源文件的关系图。
+- 没有统一 `asset_catalog.json` 或可浏览 `catalog.html`。
+- 资源分类仍是启发式，需要更强的 Character / NPC / Stage / Prop / Ball 分类规则。
+- 模型与贴图、材质、动画、源文件的关系图还不够完整。
 - 没有自动生成缩略图/预览图。
 
 优先级：P1
@@ -326,8 +335,8 @@ export_profile.jsonl
 
 任务：
 
-1. 生成 `asset_catalog.jsonl` 或 `asset_catalog.json`。
-2. 记录每个模型：
+1. 将现有 `asset_catalog.jsonl` / `asset_summary.json` / `animation_bindings.jsonl` 扩展成可浏览索引。
+2. 继续完善每个模型记录：
    - 类型推断：Character / NPC / Stage / Prop / Ball / Effect / Unknown
    - 源 container
    - 源 file
@@ -337,8 +346,9 @@ export_profile.jsonl
    - texture count
    - animation count
    - skeleton/bone count
-3. 生成可选 `catalog.html` 或轻量浏览器。
-4. 给每个模型输出 `model.info.json`，方便单模型后处理。
+3. 用 skeleton hash / bone path 验证动画候选绑定，减少只靠 resourceKind 的误配。
+4. 生成可选 `catalog.html` 或轻量浏览器。
+5. 给每个模型输出 `model.info.json`，方便单模型后处理。
 
 验收：
 

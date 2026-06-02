@@ -82,6 +82,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.AnimationPackage,
                 optionsBinder.TextureMode,
                 optionsBinder.Profile3D,
+                optionsBinder.IncludeShaders,
                 optionsBinder.MaxExportTasks,
                 optionsBinder.BatchFiles,
                 optionsBinder.ModelGcInterval,
@@ -129,6 +130,7 @@ namespace AnimeStudio.CLI
         public AnimationPackageMode AnimationPackage { get; set; }
         public AnimeStudio.TextureExportMode TextureMode { get; set; }
         public Model3DProfile Profile3D { get; set; }
+        public bool IncludeShaders { get; set; }
         public int MaxExportTasks { get; set; }
         public int BatchFiles { get; set; }
         public int ModelGcInterval { get; set; }
@@ -171,6 +173,7 @@ namespace AnimeStudio.CLI
         public readonly Option<AnimationPackageMode> AnimationPackage;
         public readonly Option<AnimeStudio.TextureExportMode> TextureMode;
         public readonly Option<Model3DProfile> Profile3D;
+        public readonly Option<bool> IncludeShaders;
         public readonly Option<int> MaxExportTasks;
         public readonly Option<int> BatchFiles;
         public readonly Option<int> ModelGcInterval;
@@ -211,6 +214,7 @@ namespace AnimeStudio.CLI
             AnimationPackage = new Option<AnimationPackageMode>("--animation_package", "Specify animation packaging: Separate exports clips into the animation library; Embedded writes clips into each model; Both does both.");
             TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
+            IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
             ModelGcInterval = new Option<int>("--model_gc_interval", "Run a full blocking GC after this many exported models in 3D modes. Use 0 to disable model-level full GC.");
@@ -336,6 +340,7 @@ namespace AnimeStudio.CLI
                 AnimationPackage = bindingContext.ParseResult.GetValueForOption(AnimationPackage),
                 TextureMode = bindingContext.ParseResult.GetValueForOption(TextureMode),
                 Profile3D = bindingContext.ParseResult.GetValueForOption(Profile3D),
+                IncludeShaders = bindingContext.ParseResult.GetValueForOption(IncludeShaders),
                 MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
                 BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),
                 ModelGcInterval = bindingContext.ParseResult.GetValueForOption(ModelGcInterval),

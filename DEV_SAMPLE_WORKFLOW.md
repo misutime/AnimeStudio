@@ -35,7 +35,8 @@ C:\Program Files (x86)\Freedunk\Game\Freedunk_Data
 
 - `graphics\character\pc\bill_01_00`：角色模型、骨骼、材质、PNG 贴图。
 - `graphics\trophy`：静态道具、prefab 材质贴图、模型拆分噪声。
-- `graphics\shaders.ab`：shader 原始归档和 metadata。
+- `graphics\stage\models.ab`：球场、篮筐、场景模型，用于验证场景动画候选绑定。
+- `graphics\shaders.ab`：实验 shader 原始归档和 metadata，脚本显式传 `--include_shaders`。
 - `graphics\stage\animation.ab`：场景/篮筐相关动画。
 - `graphics\character\npc\prefab\animation_npc.ab`：NPC 动画。
 
@@ -45,10 +46,12 @@ C:\Program Files (x86)\Freedunk\Game\Freedunk_Data
 
 ```text
 asset_catalog.jsonl
+asset_summary.json
+animation_bindings.jsonl
 export_manifest.jsonl
 Models\
 Animations\
-Shaders\
+Shaders\   # 只有实验 shader 样本会出现
 Textures\_ModelDependencies\
 ```
 
@@ -75,7 +78,7 @@ Bill 样本应该满足：
 
 Shader 样本应该满足：
 
-- 默认导出 `.shader.raw` 和 `.shader.raw.json`。
+- 只有显式 `--include_shaders` 时导出 `.shader.raw` 和 `.shader.raw.json`。
 - 不运行 native D3D 反汇编。
 - 不因 shader 反编译崩溃导致整个导出失败。
 
@@ -83,6 +86,13 @@ Shader 样本应该满足：
 
 - 独立写入 `Animations`。
 - 不依赖某个模型文件内嵌。
+- `animation_bindings.jsonl` 里能看到按 `resourceKind` 匹配出来的候选模型。
+
+索引样本应该满足：
+
+- `asset_summary.json` 汇总模型、动画、实验 shader 数量。
+- `asset_catalog.jsonl` 记录每个模型的 mesh、material、texture、bone、skeletonHash。
+- `animation_bindings.jsonl` 记录独立动画和候选模型；当前是启发式索引，不等于最终 retarget 结果。
 
 ## 失败案例
 

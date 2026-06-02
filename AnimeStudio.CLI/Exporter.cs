@@ -924,8 +924,37 @@ namespace AnimeStudio.CLI
                 source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
                 pathId = item.m_PathID,
                 output = outputPath,
+                sampleRate = item.Asset is AnimationClip clip ? clip.m_SampleRate : (float?)null,
+                duration = item.Asset is AnimationClip durationClip ? GetAnimationDuration(durationClip) : (float?)null,
+                curveCount = item.Asset is AnimationClip curveClip ? GetAnimationCurveCount(curveClip) : (int?)null,
+                eventCount = item.Asset is AnimationClip eventClip ? eventClip.m_Events?.Count ?? 0 : (int?)null,
+                legacy = item.Asset is AnimationClip legacyClip ? legacyClip.m_Legacy : (bool?)null,
             };
             AppendCatalogEntry(entry);
+        }
+
+        private static float? GetAnimationDuration(AnimationClip clip)
+        {
+            if (clip?.m_MuscleClip != null)
+            {
+                return Math.Max(0, clip.m_MuscleClip.m_StopTime - clip.m_MuscleClip.m_StartTime);
+            }
+            return null;
+        }
+
+        private static int GetAnimationCurveCount(AnimationClip clip)
+        {
+            if (clip == null)
+            {
+                return 0;
+            }
+            return (clip.m_RotationCurves?.Count ?? 0)
+                + (clip.m_CompressedRotationCurves?.Count ?? 0)
+                + (clip.m_EulerCurves?.Count ?? 0)
+                + (clip.m_PositionCurves?.Count ?? 0)
+                + (clip.m_ScaleCurves?.Count ?? 0)
+                + (clip.m_FloatCurves?.Count ?? 0)
+                + (clip.m_PPtrCurves?.Count ?? 0);
         }
 
         private static void AppendCatalogEntry(object entry)

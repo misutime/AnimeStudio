@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Xml;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
+using Newtonsoft.Json.Linq;
 using static AnimeStudio.CLI.Exporter;
 
 namespace AnimeStudio.CLI
@@ -37,6 +38,7 @@ namespace AnimeStudio.CLI
         public static int MaxExportTasks { get; set; } = 1;
         public static int BatchFiles { get; set; } = 4;
         public static int ModelGcInterval { get; set; } = 32;
+        public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
         private static readonly Regex[] ModelRootExcludePatterns =
@@ -716,6 +718,7 @@ namespace AnimeStudio.CLI
             {
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
+            GenerateLibraryIndexes(savePath);
         }
 
         private static void ExportSeparateAnimationClips(string savePath)
@@ -744,6 +747,7 @@ namespace AnimeStudio.CLI
             var animators = exportableAssets.Where(x => x.Asset is Animator).ToList();
             ExportModelAssets(savePath, animators, assetGroupOption, animations);
             ExportSeparateAnimationClips(savePath);
+            GenerateLibraryIndexes(savePath);
         }
 
         private static List<AssetItem> GetAnimationListForMode()
@@ -751,6 +755,128 @@ namespace AnimeStudio.CLI
             return CliExportOptions.ExportEmbeddedAnimations && FbxAnimationMode == FbxAnimationMode.All
                 ? exportableAssets.Where(x => x.Asset is AnimationClip).ToList()
                 : null;
+        }
+
+        private static void GenerateLibraryIndexes(string savePath)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                return;
+            }
+
+            var entries = File.ReadLines(catalogPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x =>
+                {
+                    try
+                    {
+                        return JObject.Parse(x);
+                    }
+                    catch
+                    {
+                        return null;
+                    }
+                })
+                .Where(x => x != null)
+                .ToList();
+
+            var summary = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                catalog = catalogPath,
+                totalsByKind = entries
+                    .GroupBy(x => (string)x["kind"] ?? "Unknown")
+                    .OrderBy(x => x.Key)
+                    .ToDictionary(x => x.Key, x => x.Count()),
+                totalsByResourceKind = entries
+                    .GroupBy(x => (string)x["resourceKind"] ?? "Unknown")
+                    .OrderBy(x => x.Key)
+                    .ToDictionary(x => x.Key, x => x.Count()),
+                modelStats = new
+                {
+                    count = entries.Count(x => (string)x["kind"] == "Model"),
+                    skinned = entries.Count(x => (string)x["kind"] == "Model" && ((int?)x["boneCount"] ?? 0) > 0),
+                    withTextures = entries.Count(x => (string)x["kind"] == "Model" && ((int?)x["textureCount"] ?? 0) > 0),
+                    withMorphs = entries.Count(x => (string)x["kind"] == "Model" && ((int?)x["morphCount"] ?? 0) > 0),
+                },
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "asset_summary.json"),
+                JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
+            );
+
+            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+            var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
+            using var writer = new StreamWriter(bindingsPath, false);
+            foreach (var animation in animations)
+            {
+                var animationKind = (string)animation["resourceKind"] ?? "Unknown";
+                var candidates = models
+                    .Where(model => IsAnimationCandidate(animationKind, (string)model["resourceKind"]))
+                    .OrderByDescending(model => ((int?)model["boneCount"] ?? 0) > 0)
+                    .ThenBy(model => (string)model["name"])
+                    .ToList();
+
+                if (candidates.Count == 0)
+                {
+                    var unbound = new
+                    {
+                        animation = BuildBindingAsset(animation),
+                        candidateCount = 0,
+                        candidates = Array.Empty<object>(),
+                        note = "No model with a matching resourceKind was exported in this sample/library batch.",
+                    };
+                    writer.WriteLine(JsonConvert.SerializeObject(unbound));
+                    continue;
+                }
+
+                var binding = new
+                {
+                    animation = BuildBindingAsset(animation),
+                    candidateCount = candidates.Count,
+                    candidates = candidates.Take(16).Select(model => new
+                    {
+                        name = (string)model["name"],
+                        resourceKind = (string)model["resourceKind"],
+                        output = (string)model["output"],
+                        skeletonHash = (string)model["skeletonHash"],
+                        boneCount = (int?)model["boneCount"] ?? 0,
+                        meshCount = (int?)model["meshCount"] ?? 0,
+                        textureCount = (int?)model["textureCount"] ?? 0,
+                    }).ToArray(),
+                };
+                writer.WriteLine(JsonConvert.SerializeObject(binding));
+            }
+        }
+
+        private static object BuildBindingAsset(JObject entry)
+        {
+            return new
+            {
+                name = (string)entry["name"],
+                resourceKind = (string)entry["resourceKind"],
+                output = (string)entry["output"],
+                source = (string)entry["source"],
+                sampleRate = (float?)entry["sampleRate"],
+                duration = (float?)entry["duration"],
+                curveCount = (int?)entry["curveCount"] ?? 0,
+            };
+        }
+
+        private static bool IsAnimationCandidate(string animationKind, string modelKind)
+        {
+            if (string.IsNullOrWhiteSpace(animationKind) || string.IsNullOrWhiteSpace(modelKind))
+            {
+                return false;
+            }
+            if (string.Equals(animationKind, modelKind, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            return string.Equals(animationKind, "NPC", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(modelKind, "Character", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ExportModelAssets(

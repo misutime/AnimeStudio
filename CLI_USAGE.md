@@ -146,8 +146,10 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - `Models` 里的角色/蒙皮模型会保留 skeleton/skin，方便后续绑定独立动画。
 - `Animations` 里保存独立 AnimationClip，后续会继续增强为 animation-only glTF 和绑定索引。
 - `Textures\_ModelDependencies` 保存共享 PNG 实体，模型目录里的 `Textures` 通常是硬链接。
-- `Shaders` 里默认保存 `.shader.raw` 和 `.shader.raw.json`，不在默认路径运行可能崩溃的 native 反汇编。
-- `asset_catalog.jsonl` 记录模型、动画、shader 的结构化索引和模型统计。
+- Shader 默认不导出；需要研究 shader 时显式使用 `--include_shaders`，会以 `.shader.raw` 和 `.shader.raw.json` 安全归档。
+- `asset_catalog.jsonl` 记录模型、动画、实验 shader 的结构化索引和模型统计。
+- `asset_summary.json` 汇总导出数量、资源分类和模型统计。
+- `animation_bindings.jsonl` 按资源分类给独立动画列出候选模型，供后续绑定/验证流程使用。
 
 ### Freedunk 失败案例
 
@@ -333,11 +335,15 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```text
 export_manifest.jsonl
 asset_catalog.jsonl
+asset_summary.json
+animation_bindings.jsonl
 ```
 
 每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
 
 `asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数和 `skeletonHash`。
+
+`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`animation_bindings.jsonl` 是动画候选绑定索引，当前按 `resourceKind` 做启发式匹配，后续会升级为 skeleton hash / bone path 级验证。
 
 默认还会写入性能日志：
 
@@ -626,7 +632,13 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --group_assets ByLibrary
 ```
 
-Shader 导出是研究资料，不等于 Blender 可以直接使用。默认 Library 导出会保存 `.shader.raw` 和 `.shader.raw.json`，避免 native D3D 反汇编在部分游戏 shader 上崩溃。后续重建 Blender 材质时，应结合 shader raw、材质 JSON、贴图文件一起分析。
+Shader 导出是研究资料，不等于 Blender 可以直接使用。默认 Library 素材库不导出 shader；如果要把 shader 作为实验资料归档，可以在 Library 命令中加入：
+
+```powershell
+--include_shaders
+```
+
+此模式只保存 `.shader.raw` 和 `.shader.raw.json`，避免 native D3D 反汇编在部分游戏 shader 上崩溃。后续重建 Blender 材质时，应结合 shader raw、材质 JSON、贴图文件一起分析。
 
 ## 原神目录恢复和 asset index
 
@@ -725,7 +737,8 @@ CLI 的 FBX 导出目标是“Blender 可打开、基础材质可见”，不是
 4. 需要排查模型重复或容器路径时，才使用 `--mode SplitObjects`。
 5. 需要排查 Animator Controller 或旧式内嵌动画时，才使用 `--mode Animator`。
 6. 不要默认使用 `--animation_package Embedded`，否则容易把全局动作库重复写进每个角色模型。
-7. 发现慢点时优先看 `export_profile.jsonl`，不要只根据控制台进度猜瓶颈。
+7. Shader 只作为实验功能，研究时显式传 `--include_shaders`。
+8. 发现慢点时优先看 `export_profile.jsonl`，不要只根据控制台进度猜瓶颈。
 
 全量导出会消耗较多内存和时间。CLI 会按文件逐个加载、导出、清理，但跨 bundle 依赖仍可能拉起大量资源，建议优先分目录导出。
 

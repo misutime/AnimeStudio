@@ -35,9 +35,14 @@ $jobs = @(
         Args = @("--batch_files", "16")
     },
     @{
+        Name = "stage_models"
+        Input = Join-Path $assets "graphics\stage\models.ab"
+        Args = @()
+    },
+    @{
         Name = "global_shaders"
         Input = Join-Path $assets "graphics\shaders.ab"
-        Args = @()
+        Args = @("--include_shaders")
     },
     @{
         Name = "stage_animations"

@@ -75,6 +75,7 @@ namespace AnimeStudio.CLI
                 Studio.ModelRootsOnly = o.ModelRootsOnly || o.WorkMode == WorkMode.Library;
                 Studio.WorkMode = o.WorkMode;
                 Studio.FbxAnimationMode = o.FbxAnimationMode;
+                Studio.IncludeShaders = o.IncludeShaders;
                 Studio.MaxExportTasks = Math.Max(1, o.MaxExportTasks);
                 Studio.BatchFiles = Math.Max(1, o.BatchFiles);
                 Studio.ModelGcInterval = Math.Max(0, o.ModelGcInterval);
@@ -469,6 +470,16 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.Mesh, true, false);
             TypeFlags.SetType(ClassIDType.Material, true, false);
             TypeFlags.SetType(ClassIDType.Texture2D, true, false);
+            TypeFlags.SetType(ClassIDType.AudioClip, false, false);
+            TypeFlags.SetType(ClassIDType.VideoClip, false, false);
+            TypeFlags.SetType(ClassIDType.MovieTexture, false, false);
+            TypeFlags.SetType(ClassIDType.Sprite, false, false);
+            TypeFlags.SetType(ClassIDType.SpriteAtlas, false, false);
+            TypeFlags.SetType(ClassIDType.Font, false, false);
+            TypeFlags.SetType(ClassIDType.TextAsset, false, false);
+            TypeFlags.SetType(ClassIDType.MonoBehaviour, false, false);
+            TypeFlags.SetType(ClassIDType.MiHoYoBinData, false, false);
+            TypeFlags.SetType(ClassIDType.Shader, false, false);
 
             if (workMode == WorkMode.Library || animationMode != FbxAnimationMode.Skip)
             {
@@ -478,7 +489,7 @@ namespace AnimeStudio.CLI
                 TypeFlags.SetType(ClassIDType.Avatar, true, false);
             }
 
-            if (workMode == WorkMode.Library)
+            if (workMode == WorkMode.Library && Studio.IncludeShaders)
             {
                 TypeFlags.SetType(ClassIDType.Shader, true, true);
             }
