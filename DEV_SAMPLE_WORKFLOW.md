@@ -23,6 +23,36 @@ tools\Export-FreedunkDevSamples.ps1
 tools\Export-FreedunkDevSamples.ps1 -KeepExisting
 ```
 
+## 多模型静态验收样本
+
+模型、贴图、材质、骨骼、skin 的基础逻辑不要只看 Bill。默认使用 12 个 Freedunk 角色变体做交叉验证：
+
+```powershell
+cd D:\misutime\AnimeStudio
+tools\Export-FreedunkMultiModelStaticSample.ps1
+```
+
+默认输出：
+
+```text
+D:\Assets\Freedunk_Data_Dev\MultiModelStaticSample
+```
+
+这个脚本会复制 12 个角色的 prefab/fbx/material/texture bundle 到：
+
+```text
+D:\Assets\Freedunk_Data_Dev\MultiModelMiniInput
+```
+
+验收重点：
+
+- `model_validation.json` 里至少应有 10 个以上模型。
+- 多数角色模型应有 `skin`。
+- 所有导出的 glTF 不应出现无效 image、texture、material、mesh accessor、skin joint 或 inverseBindMatrices。
+- 如果某个角色有 face/cap 等独立附件，允许它作为单独模型出现；这类附件可用于检查非主体模型是否也能正确导出。
+
+截至当前基线，这个样本导出 38 个 glTF，`model_validation.json` 全部为 `ok`，其中 37 个带 skin，38 个都有贴图。
+
 ## 样本来源
 
 默认脚本使用：
