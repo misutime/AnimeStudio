@@ -27,6 +27,19 @@
 - 输出目录能像素材库一样浏览，单个模型目录可以直接查看模型和相关贴图。
 - 保持准确前提下优先提升批量导出速度和内存稳定性。
 
+基础准则：
+
+> 后续每一步实现都以“导出可用素材库”为准。默认输出必须服务于开发者浏览、筛选、复用素材；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
+
+默认素材库形态：
+
+- 模型默认 glTF，进入 `Models`。
+- 角色/蒙皮模型默认保留 skeleton/skin，不能为了模型浏览速度丢掉骨骼。
+- 贴图默认 PNG，进入共享 `Textures/_ModelDependencies`，模型目录通过硬链接引用。
+- 动画默认独立进入 `Animations`，不嵌入每个模型。
+- 材质、贴图、动画、源路径关系由 manifest/catalog 记录。
+- `Core` profile 默认过滤 UI、sound、video、camera、effect、manager、test、dummy 等低价值噪声。
+
 ## 当前完成度
 
 总体判断：当前工具已经进入“可用于 PC Unity 3D 游戏批量资源提取”的阶段，但还没有达到“高可信开发素材库还原器”的完整状态。
@@ -39,9 +52,9 @@
 | 3D 模型导出 | 支持 `SplitObjects`、`Animator`，默认 glTF，可导出 mesh、skin、基础层级 | 70% |
 | glTF 输出 | 已有 `.gltf + .bin`、`.glb`、材质贴图引用、skin、基础 TRS 动画 | 60% |
 | FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
-| 贴图导出 | Raw 默认、PNG 可选、按模型后处理、硬链接省空间 | 80% |
+| 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、extras 保留 Unity 贴图信息 | 55% |
-| 动画导出 | `Animator` 模式可导骨骼 TRS 动画；模型模式默认跳过动画 | 50% |
+| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库 | 55% |
 | Shader 导出 | 可转储/反编译研究资料，但未形成可直接复用的材质系统 | 35% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
@@ -76,7 +89,7 @@
 --profile_3d All
 ```
 
-### 默认 glTF + Raw 工作流
+### 默认 glTF + PNG 素材库工作流
 
 默认模型格式：
 
@@ -87,10 +100,17 @@
 默认贴图模式：
 
 ```powershell
---texture_mode Raw
+--texture_mode Png
 ```
 
-Raw 模式会把 Unity 原始贴图数据保存为：
+PNG 模式会把可查看贴图保存为共享实体，并在模型目录建立硬链接：
+
+```text
+Textures/_ModelDependencies/*.png
+Models/.../<Model>/Textures/*.png
+```
+
+Raw 模式仍作为特殊高速扫描路径，会把 Unity 原始贴图数据保存为：
 
 ```text
 Textures/_ModelDependencies/*.rawtex
@@ -109,6 +129,26 @@ Textures/_ModelDependencies/*.rawtex.json
 - raw data size
 
 这使得全量导出时不必把所有贴图转 PNG，能显著降低导出耗时。
+
+### Freedunk 失败案例：不要把全局动作库嵌进每个模型
+
+`D:\Assets\Freedunk_Data_core_png_anim` 使用了：
+
+```powershell
+--mode Animator
+--texture_mode Png
+--fbx_animation Auto
+```
+
+结果 `assets\ingame\prefabs\characters\Bill_01_00\Bill_01_00.gltf` 变成了“角色 prefab + 脸部/辅助节点 + 上千个通用篮球动作”的混合包。这个文件不是干净角色素材，打开时容易显得混乱，文件体积也明显膨胀。
+
+修正后的默认策略：
+
+- 默认 `--mode Library`。
+- 默认 `--animation_package Separate`。
+- 模型 glTF 不嵌入 Animator Controller 的全局动作库。
+- AnimationClip 独立写入 `Animations`。
+- 后续通过 skeleton hash、binding manifest、animation-only glTF 把模型和动画重新关联。
 
 ### 按模型单独转换贴图
 
@@ -405,12 +445,23 @@ export_filter_report.json
 
 ## 推荐默认命令
 
-### Core 模型库，最快可浏览
+### 默认可用素材库
 
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_core" `
+  "D:\Assets\Freedunk_Data_library" `
+  --game Normal
+```
+
+等价于 `Library + ByLibrary + Core + glTF + PNG + Separate animations`。这是团队后续开发、测试和验收的主路径。
+
+### 快速模型扫描
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
+  "D:\Assets\Freedunk_Data_models_raw_scan" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -421,50 +472,26 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --fbx_animation Skip
 ```
 
-### Core 带 PNG 贴图
+### Animator 调试，不作为默认素材库
 
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_core_png" `
-  --game Normal `
-  --mode SplitObjects `
-  --model_roots_only `
-  --group_assets ByContainer `
-  --profile_3d Core `
-  --model_format Gltf `
-  --texture_mode Png `
-  --fbx_animation Skip
-```
-
-### Core 动画角色
-
-```powershell
-AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
-  "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_core_anim" `
-  --game Normal `
-  --mode Animator `
-  --group_assets ByContainer `
-  --profile_3d Core `
-  --model_format Gltf `
-  --texture_mode Raw `
-  --fbx_animation Auto
-```
-
-### Core 动画角色 + PNG
-
-```powershell
-AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
-  "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_core_png_anim" `
+  "D:\Assets\Freedunk_Data_animator_debug" `
   --game Normal `
   --mode Animator `
   --group_assets ByContainer `
   --profile_3d Core `
   --model_format Gltf `
   --texture_mode Png `
+  --animation_package Separate `
   --fbx_animation Auto
+```
+
+如需复现旧式“动画嵌入每个模型”的行为，必须显式传：
+
+```powershell
+--animation_package Embedded
 ```
 
 ## 近期建议

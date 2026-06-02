@@ -418,8 +418,17 @@ namespace AnimeStudio.CLI
                 if (skippedModels > 0)
                 {
                     Logger.Warning(
-                        $"--model_roots_only skipped {skippedModels} GameObject model(s) because no AssetBundle/ResourceManager main GameObject entries were found."
+                        $"--model_roots_only found no AssetBundle/ResourceManager main GameObject entries for {skippedModels} GameObject model(s)."
                     );
+                }
+                if (WorkMode == WorkMode.Library)
+                {
+                    Logger.Info("Library mode keeps these model candidates to avoid producing an empty asset library.");
+                    return assets;
+                }
+                if (skippedModels > 0)
+                {
+                    Logger.Warning($"--model_roots_only skipped {skippedModels} GameObject model(s).");
                 }
             }
 
@@ -620,24 +629,28 @@ namespace AnimeStudio.CLI
                             if (ExportRawFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
                         case ExportType.Dump:
                             if (ExportDumpFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
                         case ExportType.Convert:
                             if (ExportConvertFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
                         case ExportType.JSON:
                             if (ExportJSONFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
                     }
@@ -672,6 +685,9 @@ namespace AnimeStudio.CLI
         {
             switch (WorkMode)
             {
+                case WorkMode.Library:
+                    ExportAssetLibrary(savePath);
+                    break;
                 case WorkMode.SplitObjects:
                     ExportSplitObjects(savePath, assetGroupOption);
                     break;
@@ -681,6 +697,32 @@ namespace AnimeStudio.CLI
                 default:
                     ExportAssets(savePath, exportableAssets, assetGroupOption, exportType);
                     break;
+            }
+        }
+
+        public static void ExportAssetLibrary(string savePath)
+        {
+            var models = exportableAssets.Where(x => x.Asset is GameObject or Animator).ToList();
+            var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
+
+            Logger.Info(
+                $"Exporting asset library: {models.Count} model candidate(s), {animations.Count} animation clip(s)."
+            );
+
+            ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, null);
+            ExportSeparateAnimationClips(savePath);
+        }
+
+        private static void ExportSeparateAnimationClips(string savePath)
+        {
+            var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
+            if (CliExportOptions.ExportSeparateAnimations && animations.Count > 0)
+            {
+                ExportAssets(savePath, animations, AssetGroupOption.ByLibrary, ExportType.Convert);
+            }
+            else if (animations.Count > 0)
+            {
+                Logger.Info("Animation clips were parsed but not written because --animation_package is Embedded.");
             }
         }
 
@@ -696,11 +738,12 @@ namespace AnimeStudio.CLI
             var animations = GetAnimationListForMode();
             var animators = exportableAssets.Where(x => x.Asset is Animator).ToList();
             ExportModelAssets(savePath, animators, assetGroupOption, animations);
+            ExportSeparateAnimationClips(savePath);
         }
 
         private static List<AssetItem> GetAnimationListForMode()
         {
-            return FbxAnimationMode == FbxAnimationMode.All
+            return CliExportOptions.ExportEmbeddedAnimations && FbxAnimationMode == FbxAnimationMode.All
                 ? exportableAssets.Where(x => x.Asset is AnimationClip).ToList()
                 : null;
         }
@@ -835,6 +878,7 @@ namespace AnimeStudio.CLI
             return asset.Type switch
             {
                 ClassIDType.GameObject or ClassIDType.Animator => "Models",
+                ClassIDType.AnimationClip => "Animations",
                 ClassIDType.Texture2D or ClassIDType.Sprite => "Textures",
                 ClassIDType.Material => "Materials",
                 ClassIDType.Mesh => "Meshes",

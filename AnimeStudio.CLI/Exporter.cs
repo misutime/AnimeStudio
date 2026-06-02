@@ -16,11 +16,19 @@ namespace AnimeStudio.CLI
         public static int? FbxBoneSize { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
+        public static AnimationPackageMode AnimationPackage { get; set; } = AnimationPackageMode.Separate;
         public static AnimeStudio.TextureExportMode TextureMode { get; set; } = AnimeStudio.TextureExportMode.Raw;
         public static string OutputRoot { get; set; }
 
-        public static bool ExportAnimations => FbxAnimationMode != FbxAnimationMode.Skip;
-        public static bool CollectAnimations => FbxAnimationMode == FbxAnimationMode.Auto;
+        public static bool ExportEmbeddedAnimations =>
+            FbxAnimationMode != FbxAnimationMode.Skip
+            && AnimationPackage != AnimationPackageMode.Separate;
+        public static bool CollectAnimations =>
+            FbxAnimationMode == FbxAnimationMode.Auto
+            && AnimationPackage != AnimationPackageMode.Separate;
+        public static bool ExportSeparateAnimations =>
+            AnimationPackage == AnimationPackageMode.Separate
+            || AnimationPackage == AnimationPackageMode.Both;
     }
 
     internal static class Exporter
@@ -556,7 +564,7 @@ namespace AnimeStudio.CLI
                 textureMode = CliExportOptions.TextureMode,
                 game = Studio.Game,
                 collectAnimations = CliExportOptions.CollectAnimations,
-                exportAnimations = CliExportOptions.ExportAnimations,
+                exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 materialCache = SharedMaterialCache,
@@ -638,7 +646,7 @@ namespace AnimeStudio.CLI
                 textureMode = CliExportOptions.TextureMode,
                 game = Studio.Game,
                 collectAnimations = CliExportOptions.CollectAnimations,
-                exportAnimations = CliExportOptions.ExportAnimations,
+                exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 materialCache = SharedMaterialCache,
@@ -648,7 +656,8 @@ namespace AnimeStudio.CLI
                 profileMeasure = ProfileLogger.Measure,
                 useAnimatorHierarchy =
                     Properties.Settings.Default.exportSkins
-                    || CliExportOptions.ExportAnimations
+                    || Studio.WorkMode == WorkMode.Library
+                    || CliExportOptions.ExportEmbeddedAnimations
                     || CliExportOptions.CollectAnimations,
                 uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(
                     Properties.Settings.Default.uvs
@@ -734,7 +743,7 @@ namespace AnimeStudio.CLI
                 filterPrecision = (float)Properties.Settings.Default.filterPrecision,
                 exportAllNodes = Properties.Settings.Default.exportAllNodes,
                 exportSkins = Properties.Settings.Default.exportSkins,
-                exportAnimations = CliExportOptions.ExportAnimations,
+                exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 exportBlendShape = Properties.Settings.Default.exportBlendShape,
                 castToBone = Properties.Settings.Default.castToBone,
                 boneSize = CliExportOptions.FbxBoneSize ?? (int)Properties.Settings.Default.boneSize,
@@ -752,8 +761,10 @@ namespace AnimeStudio.CLI
             var exportOptions = new Gltf.ExportOptions()
             {
                 binary = binary,
-                exportSkins = Properties.Settings.Default.exportSkins || CliExportOptions.ExportAnimations,
-                exportAnimations = CliExportOptions.ExportAnimations,
+                exportSkins = Properties.Settings.Default.exportSkins
+                    || Studio.WorkMode == WorkMode.Library
+                    || CliExportOptions.ExportEmbeddedAnimations,
+                exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 textureDirectory = GetSharedTextureDirectory(exportPath),
                 localTextureDirectoryName = "Textures",
             };
@@ -846,6 +857,7 @@ namespace AnimeStudio.CLI
                 ["output"] = exportPath,
                 ["format"] = CliExportOptions.ModelFormat.ToString(),
                 ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                ["animationPackage"] = CliExportOptions.AnimationPackage.ToString(),
             };
             if (materialCount.HasValue)
             {
@@ -868,6 +880,8 @@ namespace AnimeStudio.CLI
                 ["pathId"] = gameObject.m_PathID,
                 ["output"] = exportPath,
                 ["format"] = CliExportOptions.ModelFormat.ToString(),
+                ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                ["animationPackage"] = CliExportOptions.AnimationPackage.ToString(),
             };
             if (materialCount.HasValue)
             {
@@ -886,6 +900,8 @@ namespace AnimeStudio.CLI
             {
                 ["output"] = exportPath,
                 ["format"] = CliExportOptions.ModelFormat.ToString(),
+                ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                ["animationPackage"] = CliExportOptions.AnimationPackage.ToString(),
                 ["meshCount"] = imported.MeshList?.Count ?? 0,
                 ["materialCount"] = imported.MaterialList?.Count ?? 0,
                 ["textureCount"] = imported.TextureList?.Count ?? 0,

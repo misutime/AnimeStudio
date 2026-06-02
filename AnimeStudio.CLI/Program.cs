@@ -72,7 +72,7 @@ namespace AnimeStudio.CLI
                 }
 
                 Studio.Game = game;
-                Studio.ModelRootsOnly = o.ModelRootsOnly;
+                Studio.ModelRootsOnly = o.ModelRootsOnly || o.WorkMode == WorkMode.Library;
                 Studio.WorkMode = o.WorkMode;
                 Studio.FbxAnimationMode = o.FbxAnimationMode;
                 Studio.MaxExportTasks = Math.Max(1, o.MaxExportTasks);
@@ -82,6 +82,7 @@ namespace AnimeStudio.CLI
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
                 CliExportOptions.ModelFormat = o.ModelFormat;
+                CliExportOptions.AnimationPackage = o.AnimationPackage;
                 CliExportOptions.TextureMode = o.TextureMode;
                 CliExportOptions.OutputRoot = o.Output.FullName;
                 Logger.FileLogging = Settings.Default.enableFileLogging;
@@ -459,8 +460,8 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            TypeFlags.SetType(ClassIDType.GameObject, true, workMode == WorkMode.SplitObjects);
-            TypeFlags.SetType(ClassIDType.Animator, true, workMode == WorkMode.Animator);
+            TypeFlags.SetType(ClassIDType.GameObject, true, workMode == WorkMode.SplitObjects || workMode == WorkMode.Library);
+            TypeFlags.SetType(ClassIDType.Animator, true, workMode == WorkMode.Animator || workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.Transform, true, false);
             TypeFlags.SetType(ClassIDType.MeshFilter, true, false);
             TypeFlags.SetType(ClassIDType.MeshRenderer, true, false);
@@ -469,7 +470,7 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.Material, true, false);
             TypeFlags.SetType(ClassIDType.Texture2D, true, false);
 
-            if (animationMode != FbxAnimationMode.Skip)
+            if (workMode == WorkMode.Library || animationMode != FbxAnimationMode.Skip)
             {
                 TypeFlags.SetType(ClassIDType.AnimationClip, true, true);
                 TypeFlags.SetType(ClassIDType.AnimatorController, true, false);

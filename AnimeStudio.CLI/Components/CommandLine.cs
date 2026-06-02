@@ -13,7 +13,8 @@ namespace AnimeStudio.CLI
     {
         Export,
         SplitObjects,
-        Animator
+        Animator,
+        Library
     }
 
     public enum FbxAnimationMode
@@ -34,6 +35,13 @@ namespace AnimeStudio.CLI
     {
         Core,
         All
+    }
+
+    public enum AnimationPackageMode
+    {
+        Separate,
+        Embedded,
+        Both
     }
 
     public static class CommandLine
@@ -71,6 +79,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.FbxBoneSize,
                 optionsBinder.FbxAnimationMode,
                 optionsBinder.ModelFormat,
+                optionsBinder.AnimationPackage,
                 optionsBinder.TextureMode,
                 optionsBinder.Profile3D,
                 optionsBinder.MaxExportTasks,
@@ -117,6 +126,7 @@ namespace AnimeStudio.CLI
         public int? FbxBoneSize { get; set; }
         public FbxAnimationMode FbxAnimationMode { get; set; }
         public ModelExportFormat ModelFormat { get; set; }
+        public AnimationPackageMode AnimationPackage { get; set; }
         public AnimeStudio.TextureExportMode TextureMode { get; set; }
         public Model3DProfile Profile3D { get; set; }
         public int MaxExportTasks { get; set; }
@@ -158,6 +168,7 @@ namespace AnimeStudio.CLI
         public readonly Option<int?> FbxBoneSize;
         public readonly Option<FbxAnimationMode> FbxAnimationMode;
         public readonly Option<ModelExportFormat> ModelFormat;
+        public readonly Option<AnimationPackageMode> AnimationPackage;
         public readonly Option<AnimeStudio.TextureExportMode> TextureMode;
         public readonly Option<Model3DProfile> Profile3D;
         public readonly Option<int> MaxExportTasks;
@@ -182,7 +193,7 @@ namespace AnimeStudio.CLI
             ContainerFilter = new Option<Regex[]>("--containers", ParseRegexOption, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
             NameExcludeFilter = new Option<Regex[]>("--names_exclude", ParseRegexOption, false, "Specify name regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
             ContainerExcludeFilter = new Option<Regex[]>("--containers_exclude", ParseRegexOption, false, "Specify container/path regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
-            WorkMode = new Option<WorkMode>("--mode", "Specify 3D export mode: Export, SplitObjects, or Animator.");
+            WorkMode = new Option<WorkMode>("--mode", "Specify export mode: Library, Export, SplitObjects, or Animator.");
             GameName = new Option<string>("--game", $"Specify Game.");
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
@@ -197,6 +208,7 @@ namespace AnimeStudio.CLI
             FbxBoneSize = new Option<int?>("--fbx_bone_size", "Override FBX bone size.");
             FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
             ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
+            AnimationPackage = new Option<AnimationPackageMode>("--animation_package", "Specify animation packaging: Separate exports clips into the animation library; Embedded writes clips into each model; Both does both.");
             TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
@@ -241,12 +253,13 @@ namespace AnimeStudio.CLI
             GameName.FromAmong(GameManager.GetGameNames());
 
             LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Debug, LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
-            GroupAssetsType.SetDefaultValue(AssetGroupOption.ByType);
+            GroupAssetsType.SetDefaultValue(AssetGroupOption.ByLibrary);
             AssetExportType.SetDefaultValue(ExportType.Convert);
-            WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Export);
+            WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Library);
             FbxAnimationMode.SetDefaultValue(AnimeStudio.CLI.FbxAnimationMode.Skip);
             ModelFormat.SetDefaultValue(AnimeStudio.CLI.ModelExportFormat.Gltf);
-            TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Raw);
+            AnimationPackage.SetDefaultValue(AnimeStudio.CLI.AnimationPackageMode.Separate);
+            TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Png);
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.Core);
             MaxExportTasks.SetDefaultValue(1);
             BatchFiles.SetDefaultValue(4);
@@ -320,6 +333,7 @@ namespace AnimeStudio.CLI
                 FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
                 FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
                 ModelFormat = bindingContext.ParseResult.GetValueForOption(ModelFormat),
+                AnimationPackage = bindingContext.ParseResult.GetValueForOption(AnimationPackage),
                 TextureMode = bindingContext.ParseResult.GetValueForOption(TextureMode),
                 Profile3D = bindingContext.ParseResult.GetValueForOption(Profile3D),
                 MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),

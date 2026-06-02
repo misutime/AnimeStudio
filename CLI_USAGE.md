@@ -80,14 +80,102 @@ auto_GI_3a1b2c4d5e6f
 
 输出为素材库结构，适合原神这类目录恢复不完整但需要模型、贴图、材质分库管理的场景。
 
+## 默认目标：导出可用素材库
+
+AnimeStudio CLI 现在默认以“可供开发者直接使用的素材库”为导出目标，而不是尽量复刻 Unity 运行时 prefab 的杂乱结构。
+
+默认行为：
+
+- `--mode Library`：导出素材库。
+- `--group_assets ByLibrary`：按 `Models`、`Animations`、`Textures`、`Materials` 等库目录组织。
+- `--model_format Gltf`：模型默认 glTF。
+- `--texture_mode Png`：贴图默认 PNG，模型目录下有 `Textures` 硬链接，方便直接查看。
+- `--animation_package Separate`：动画默认独立入库，不嵌入每个模型。
+- `--profile_3d Core`：默认过滤 UI、sound、video、camera、effect、manager、test、dummy 等低价值噪声。
+
+最重要的准则：
+
+> 默认导出结果应该像素材库，而不是像 Unity 运行时对象转储。模型要干净可浏览，动画要独立可复用，贴图要默认可见，manifest 负责记录源路径和后续绑定关系。
+
+### 默认素材库命令
+
+普通 Unity 游戏：
+
+```powershell
+cd D:\misutime\AnimeStudio
+
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "<Unity_Data目录或资源目录>" `
+  "<输出目录>" `
+  --game Normal
+```
+
+这等价于：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "<Unity_Data目录或资源目录>" `
+  "<输出目录>" `
+  --game Normal `
+  --mode Library `
+  --group_assets ByLibrary `
+  --profile_3d Core `
+  --model_format Gltf `
+  --texture_mode Png `
+  --animation_package Separate `
+  --fbx_animation Skip
+```
+
+输出结构大致为：
+
+```text
+<输出目录>\
+  Models\
+    assets\...
+  Animations\
+    assets\...
+  Textures\
+    _ModelDependencies\
+  export_manifest.jsonl
+  export_profile.jsonl
+```
+
+说明：
+
+- `Models` 里的 glTF 不会默认嵌入 Animator Controller 的全局动作库。
+- `Models` 里的角色/蒙皮模型会保留 skeleton/skin，方便后续绑定独立动画。
+- `Animations` 里保存独立 AnimationClip，后续会继续增强为 animation-only glTF 和绑定索引。
+- `Textures\_ModelDependencies` 保存共享 PNG 实体，模型目录里的 `Textures` 通常是硬链接。
+
+### Freedunk 失败案例
+
+不要再把下面这种命令作为默认素材库导出：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
+  "D:\Assets\Freedunk_Data_core_png_anim" `
+  --game Normal `
+  --mode Animator `
+  --group_assets ByContainer `
+  --profile_3d Core `
+  --model_format Gltf `
+  --texture_mode Png `
+  --fbx_animation Auto
+```
+
+这个命令会从角色 Animator Controller 收集动画。Freedunk 的角色控制器引用了大量全局篮球动作，结果 `assets\ingame\prefabs\characters\Bill_01_00\Bill_01_00.gltf` 被写成“角色 prefab + 脸部/辅助节点 + 上千个通用动作”的混合包，文件巨大，也不适合浏览模型。
+
+现在默认素材库导出会避免这种失败形态：模型入 `Models`，动画入 `Animations`，不把全局动作库重复塞进每个角色模型。
+
 ## 3D 导出模式
 
-3D 导出分成两类：
+底层仍保留几个模式，主要用于特殊处理和排查：
 
-- 模型导出：角色、NPC、球、场景、道具等模型。
-- 动画导出：Animator/AnimationClip 相关动画。
-
-不要把模型导出和动画导出混在同一次全量任务里。
+- `Library`：默认素材库导出，推荐主路径。
+- `SplitObjects`：只导模型，适合排查模型候选。
+- `Animator`：按 Animator 导出，适合调试动画收集。
+- `Export`：传统按类型转换，适合特殊资源研究。
 
 ### 模型模式
 
@@ -112,23 +200,17 @@ auto_GI_3a1b2c4d5e6f
 
 全量资源提取建议使用默认 `Gltf`。它会输出 `.gltf + .bin`，比 FBX 更适合批量导出、恢复导出和后处理。FBX 只建议在需要兼容旧流程或特定 DCC 工具时使用。
 
-模型依赖贴图默认使用 Raw 模式：
-
-```powershell
---texture_mode Raw
-```
-
 贴图模式：
 
-- `--texture_mode Raw`：默认值。导出 Unity 原始/压缩贴图数据为 `.rawtex`，旁边写 `.rawtex.json` 记录宽高、Unity TextureFormat、mip 数、源 asset/pathId、Unity 版本和平台；glTF 材质 `extras.unityTextures` 保留贴图引用。速度最快，适合全量提取和后续批量转换。
-- `--texture_mode Png`：解码并导出 `.png`，glTF 会直接引用 PNG。PNG 会先写入顶层共享目录 `Textures\_ModelDependencies`，再在模型目录的 `Textures` 子目录创建硬链接；这样模型目录便于单独查看，同时重复贴图不额外占用磁盘空间。最兼容 Blender/预览器，但全量角色会明显变慢。
+- `--texture_mode Png`：默认值。解码并导出 `.png`，glTF 会直接引用 PNG。PNG 会先写入顶层共享目录 `Textures\_ModelDependencies`，再在模型目录的 `Textures` 子目录创建硬链接；这样模型目录便于单独查看，同时重复贴图不额外占用磁盘空间。
+- `--texture_mode Raw`：导出 Unity 原始/压缩贴图数据为 `.rawtex`，旁边写 `.rawtex.json` 记录宽高、Unity TextureFormat、mip 数、源 asset/pathId、Unity 版本和平台；glTF 材质 `extras.unityTextures` 保留贴图引用。速度最快，适合特殊的大规模扫描和后续批量转换。
 - `--texture_mode Reference`：只在 glTF 材质 `extras.unityTextures` 记录引用，不写贴图数据。最快，适合先扫模型结构。
 
 ### 贴图工作流和技术逻辑
 
-当前推荐流程是先看模型，再按需处理贴图：
+默认素材库导出使用 PNG，因为目标是让模型目录可以直接查看。Raw 是特殊的高速扫描/后处理工作流：
 
-1. 全量模型导出默认使用 `--texture_mode Raw`。
+1. 使用 `--texture_mode Raw` 做大规模快速扫描。
 2. 先用 `.gltf/.glb` 浏览模型结构、命名、骨骼、网格和材质槽。
 3. 看到值得保留的模型后，直接对该模型的 `.gltf` 执行 `--convert_model_textures`。
 4. CLI 会读取 glTF 材质里的 `extras.unityTextures`，到顶层 `Textures\_ModelDependencies` 找对应 `.rawtex/.rawtex.json`，只转换这个模型实际用到的贴图。
@@ -270,9 +352,9 @@ export_profile.jsonl
 --profile_log "D:\Assets\profile.jsonl"
 ```
 
-## 通用 3D 模型导出命令
+## 特殊模型扫描命令
 
-适合普通 Unity 游戏：
+只想快速扫描模型候选、不需要默认素材库结构时，可以显式使用 `SplitObjects`：
 
 ```powershell
 cd D:\misutime\AnimeStudio
@@ -292,15 +374,17 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 说明：
 
-- `--mode SplitObjects`：按 GameObject 拆分导出模型。
+- `--mode SplitObjects`：按 GameObject 拆分导出模型，这是模型排查模式，不是默认素材库模式。
 - `--model_roots_only`：尽量只导出模型根节点，减少子 mesh 零件重复导出。
 - `--group_assets ByContainer`：按资源容器路径组织输出。
 - `--profile_3d Core`：默认值。保留角色、NPC、场景、道具、球等高相关 3D 模型，额外排除常见 effect 承载网格、manager/data 间接引用、stagetest/temp、shadow/dummy/test/sphere 等非核心模型。需要研究全部候选模型时改用 `--profile_3d All`。
 - `--model_format Gltf`：导出 `.gltf + .bin`；这是默认值，可以省略。
-- `--texture_mode Raw`：导出原始贴图数据，避免 PNG 解码拖慢全量模型导出；这是默认值，可以省略。
+- `--texture_mode Raw`：导出原始贴图数据，避免 PNG 解码拖慢快速扫描；默认素材库导出仍然是 PNG。
 - `--fbx_animation Skip`：模型导出不附带动画。参数名仍沿用旧名，控制模型导出时是否收集动画数据。
 
-## 通用动画导出命令
+## 特殊 Animator 调试命令
+
+`Animator` 模式主要用于排查 Animator Controller、动画收集和旧式内嵌动画，不作为默认素材库命令。默认 `--animation_package Separate` 会阻止动画写进每个模型；如果确实要复现旧行为，需要显式传 `--animation_package Embedded` 或 `Both`。
 
 ```powershell
 cd D:\misutime\AnimeStudio
@@ -312,6 +396,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --mode Animator `
   --group_assets ByContainer `
   --model_format Gltf `
+  --animation_package Separate `
   --fbx_animation Auto
 ```
 
@@ -337,14 +422,27 @@ C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets
 
 Freedunk 的 `.ab` 文件带 1 字节前导标记，AnimeStudio 已兼容这种 `01 + UnityFS` 格式。
 
-### Freedunk 全量模型
+### Freedunk 默认素材库
 
 ```powershell
 cd D:\misutime\AnimeStudio
 
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_models" `
+  "D:\Assets\Freedunk_Data_library" `
+  --game Normal
+```
+
+这会使用默认 `Library + ByLibrary + Core + glTF + PNG + Separate animations`。模型和贴图可直接浏览，动画独立进入 `Animations`，不会把全局篮球动作重复塞进每个角色 glTF。
+
+### Freedunk 快速模型扫描
+
+```powershell
+cd D:\misutime\AnimeStudio
+
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
+  "D:\Assets\Freedunk_Data_models_raw_scan" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -355,22 +453,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --fbx_animation Skip
 ```
 
-全量会产生大量模型。默认 `--profile_3d Core` 会过滤 Freedunk 里大量 effect、manager/data、stagetest/temp、shadow/dummy/test/sphere 等非核心模型；如果要保留所有候选模型用于排查，改用 `--profile_3d All`。默认 glTF + Raw 贴图 + 批处理会优先保证可持续导出和较低内存峰值；如果机器内存充足，可以增加 `--batch_files`。需要 Blender 直接显示贴图时，再改用 `--texture_mode Png` 或后续单独批量转贴图。
-
-### Freedunk 全量动画
-
-```powershell
-cd D:\misutime\AnimeStudio
-
-AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
-  "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_animators" `
-  --game Normal `
-  --mode Animator `
-  --group_assets ByContainer `
-  --model_format Gltf `
-  --fbx_animation Auto
-```
+这个命令用于更快排查模型候选；它不是默认素材库输出。
 
 ### Freedunk 分目录模型
 
@@ -520,7 +603,7 @@ D:\tmp\AnimeStudio_GI_Library\
   Materials\
 ```
 
-模型依赖贴图会统一写入顶层 `Textures\_ModelDependencies`。默认 `--texture_mode Raw` 会写 `.rawtex` 和 `.rawtex.json`；如果使用 `--texture_mode Png`，则会写 PNG。模型依赖的材质 JSON 会和模型放在同一目录，独立材质会进入顶层 `Materials`。
+模型依赖贴图会统一写入顶层 `Textures\_ModelDependencies`。默认 `--texture_mode Png` 会写 PNG；如果显式使用 `--texture_mode Raw`，则会写 `.rawtex` 和 `.rawtex.json`。模型依赖的材质 JSON 会和模型放在同一目录，独立材质会进入顶层 `Materials`。
 
 `--texture_mode Png` 下，glTF 会优先引用模型目录旁边 `Textures` 子目录里的 PNG；这些 PNG 是从顶层 `Textures\_ModelDependencies` 创建的硬链接。硬链接失败时才会退回普通复制。
 
@@ -631,13 +714,13 @@ CLI 的 FBX 导出目标是“Blender 可打开、基础材质可见”，不是
 
 ## 建议流程
 
-1. 先用小目录测试。
-2. 全量或大目录模型导出优先使用默认 `--texture_mode Raw`，先快速浏览模型。
-3. 看到喜欢或需要保留的模型后，再单独转换该模型依赖的贴图。
-4. 如果需要查看器直接显示贴图，小范围重跑 `--texture_mode Png`。
-5. 再扩大到角色、场景、道具等目录。
-6. 最后再考虑完整 `*_Data` 全量导出。
-7. 动画单独用 `--mode Animator --fbx_animation Auto` 跑。
+1. 默认使用 `--mode Library` 导出素材库。
+2. 全量或大目录默认保留 `--texture_mode Png`，让模型目录能直接查看贴图。
+3. 如果只是快速扫描候选模型，显式改用 `--texture_mode Raw` 或 `Reference`。
+4. 需要排查模型重复或容器路径时，才使用 `--mode SplitObjects`。
+5. 需要排查 Animator Controller 或旧式内嵌动画时，才使用 `--mode Animator`。
+6. 不要默认使用 `--animation_package Embedded`，否则容易把全局动作库重复写进每个角色模型。
+7. 发现慢点时优先看 `export_profile.jsonl`，不要只根据控制台进度猜瓶颈。
 
 全量导出会消耗较多内存和时间。CLI 会按文件逐个加载、导出、清理，但跨 bundle 依赖仍可能拉起大量资源，建议优先分目录导出。
 
