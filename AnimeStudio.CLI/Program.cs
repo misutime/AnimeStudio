@@ -251,6 +251,7 @@ namespace AnimeStudio.CLI
                 Logger.Info($"Using map name {mapName}");
                 var needsModelDependencies = ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport();
                 var cabMapSourceFiles = needsModelDependencies ? dependencyMapFiles : files;
+                var expectedCabMapFileCount = cabMapSourceFiles.Length;
 
                 if (o.MapOp.HasFlag(MapOpType.CABMap))
                 {
@@ -263,11 +264,27 @@ namespace AnimeStudio.CLI
                     }
                     else
                     {
+                        bool cabMapLoaded;
                         using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
                         {
-                            AssetsHelper.LoadCABMapInternal(mapName);
+                            cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
                         }
-                        assetsManager.ResolveDependencies = true;
+                        if (cabMapLoaded && needsModelDependencies && !AssetsHelper.IsCABMapCompleteFor(expectedCabMapFileCount))
+                        {
+                            Logger.Warning("CAB dependency map was built from an incomplete source set. Rebuilding from the full input so Unity external references stay resolvable.");
+                            using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = expectedCabMapFileCount, ["mapName"] = mapName }))
+                            {
+                                AssetsHelper.BuildCABMap(cabMapSourceFiles, mapName, inputBaseFolder, game);
+                            }
+                            using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
+                            {
+                                cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
+                            }
+                        }
+                        if (cabMapLoaded)
+                        {
+                            assetsManager.ResolveDependencies = true;
+                        }
                     }
                 }
                 if (o.MapOp.HasFlag(MapOpType.AssetMap))
@@ -283,7 +300,7 @@ namespace AnimeStudio.CLI
                 }
                 if (o.MapOp.HasFlag(MapOpType.Both))
                 {
-                    Task.Run(() => AssetsHelper.BuildBoth(files, mapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
+                    Task.Run(() => AssetsHelper.BuildBoth(cabMapSourceFiles, mapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                 }
                 if (needsModelDependencies && o.MapOp.Equals(MapOpType.None))
                 {
@@ -292,10 +309,15 @@ namespace AnimeStudio.CLI
                     {
                         cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
                     }
+                    if (cabMapLoaded && !AssetsHelper.IsCABMapCompleteFor(expectedCabMapFileCount))
+                    {
+                        Logger.Warning("CAB dependency map was built from an incomplete source set. Rebuilding from the full input so Unity external references stay resolvable.");
+                        cabMapLoaded = false;
+                    }
                     if (!cabMapLoaded)
                     {
                         Logger.Info("Building CAB dependency map for model materials...");
-                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = cabMapSourceFiles.Length, ["mapName"] = mapName }))
+                        using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = expectedCabMapFileCount, ["mapName"] = mapName }))
                         {
                             AssetsHelper.BuildCABMap(cabMapSourceFiles, mapName, inputBaseFolder, game);
                         }

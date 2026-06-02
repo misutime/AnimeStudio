@@ -21,7 +21,9 @@ namespace AnimeStudio
         public static bool Minimal = true;
         public static CancellationTokenSource tokenSource = new CancellationTokenSource();
 
+        private const int CABMapVersion = 2;
         private static string BaseFolder = "";
+        private static int CABMapSourceFileCount = -1;
         private static Dictionary<string, Entry> CABMap = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
         private static Dictionary<string, HashSet<long>> Offsets = new Dictionary<string, HashSet<long>>();
         private static AssetsManager assetsManager = new AssetsManager() { Silent = true, SkipProcess = true, ResolveDependencies = false };
@@ -54,6 +56,7 @@ namespace AnimeStudio
             CABMap.Clear();
             Offsets.Clear();
             BaseFolder = string.Empty;
+            CABMapSourceFileCount = -1;
             assetsManager.SpecifyUnityVersion = string.Empty;
 
             tokenSource.Dispose();
@@ -146,12 +149,18 @@ namespace AnimeStudio
             return files;
         }
 
+        public static bool IsCABMapCompleteFor(int expectedSourceFileCount)
+        {
+            return CABMapSourceFileCount >= expectedSourceFileCount;
+        }
+
         public static void BuildCABMap(string[] files, string mapName, string baseFolder, Game game)
         {
             Logger.Info("Building CABMap...");
             try
             {
                 CABMap.Clear();
+                CABMapSourceFileCount = files.Length;
                 Progress.Reset();
                 var collision = 0;
                 BaseFolder = baseFolder;
@@ -236,6 +245,8 @@ namespace AnimeStudio
             using (var writer = new BinaryWriter(binaryFile))
             {
                 writer.Write(BaseFolder);
+                writer.Write(-CABMapVersion);
+                writer.Write(CABMapSourceFileCount);
                 writer.Write(CABMap.Count);
                 foreach (var kv in CABMap)
                 {
@@ -297,7 +308,19 @@ namespace AnimeStudio
         private static void ParseCABMap(BinaryReader reader)
         {
             BaseFolder = reader.ReadString();
+            CABMapSourceFileCount = -1;
+
             var count = reader.ReadInt32();
+            if (count < 0)
+            {
+                var version = -count;
+                if (version > CABMapVersion)
+                {
+                    throw new InvalidDataException($"Unsupported CABMap version {version}");
+                }
+                CABMapSourceFileCount = reader.ReadInt32();
+                count = reader.ReadInt32();
+            }
             for (int i = 0; i < count; i++)
             {
                 var cab = reader.ReadString();
@@ -718,6 +741,7 @@ namespace AnimeStudio
         {
             Logger.Info($"Building Both...");
             CABMap.Clear();
+            CABMapSourceFileCount = files.Length;
             Progress.Reset();
             var collision = 0;
             BaseFolder = baseFolder;
