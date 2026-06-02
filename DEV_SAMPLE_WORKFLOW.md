@@ -49,8 +49,7 @@ D:\Assets\Freedunk_Data_Dev\MultiModelMiniInput
 - `model_validation.json` 里至少应有 10 个以上模型。
 - 多数角色模型应有 `skin`。
 - 所有导出的 glTF 不应出现无效 image、texture、material、mesh accessor、skin joint 或 inverseBindMatrices。
-- 如果某个角色有 face、mask、cap、bag 等模块化部件，优先按 Unity `SkinnedMeshRenderer.mesh`、`SkinnedMeshRenderer.bones`、Transform 层级装配进角色 glTF；如果它本身也是独立 GameObject/root，则也允许作为单独模型出现。不要因为名称里有 `face` 就强制合并或强制拆分。
-- 角色看起来“没脸”时，先检查 glTF 是否含有 face/mask mesh、材质贴图和 skin，再用 F3D/模型校验确认它是否被头盔、面罩、头发遮挡，或者是否因为 skin/bind pose 变换跑飞。不要直接按目录名或角色名补特殊规则。
+- 如果某个角色有 face/cap 等独立附件，允许它作为单独模型出现；这类附件可用于检查非主体模型是否也能正确导出。
 
 截至当前基线，这个样本导出 38 个 glTF，`model_validation.json` 全部为 `ok`，其中 37 个带 skin，38 个都有贴图。
 
@@ -162,7 +161,6 @@ Unity 原生关系包括：
 - Animator 使用哪个 Avatar。
 - Avatar / HumanDescription 如何映射 human bone 和 skeleton。
 - SkinnedMeshRenderer 使用哪些 bones、bind pose、blendshape。
-- SkinnedMeshRenderer 所在 Transform 和 bone Transform 的层级关系；Unity bind pose 转 glTF inverseBindMatrices 时必须避免重复应用 renderer/mesh node transform。
 - AnimationClip binding 的 path、type/classID、attribute/property、customType。
 - AssetBundle / SerializedFile / PPtr 依赖关系。
 

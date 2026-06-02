@@ -47,7 +47,6 @@ namespace AnimeStudio
         private readonly Dictionary<string, int> _materialMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _textureMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _skinMap = new Dictionary<string, int>(StringComparer.Ordinal);
-        private readonly Dictionary<string, Matrix4x4> _pathWorldMatrixMap = new Dictionary<string, Matrix4x4>(StringComparer.Ordinal);
         private readonly List<Dictionary<string, object>> _nodes = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> _meshes = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> _materials = new List<Dictionary<string, object>>();
@@ -74,7 +73,7 @@ namespace AnimeStudio
         public void Export()
         {
             Directory.CreateDirectory(_directory);
-            BuildNodeTree(_imported.RootFrame, null, IdentityMatrix());
+            BuildNodeTree(_imported.RootFrame, null);
             BuildMeshesAndSkins();
             BuildAnimations();
             Align(4);
@@ -91,7 +90,7 @@ namespace AnimeStudio
             }
         }
 
-        private int BuildNodeTree(ImportedFrame frame, List<int> rootNodes, Matrix4x4 parentWorld)
+        private int BuildNodeTree(ImportedFrame frame, List<int> rootNodes)
         {
             var node = new Dictionary<string, object>
             {
@@ -114,11 +113,6 @@ namespace AnimeStudio
             _nodes.Add(node);
             _nodeMap[frame] = index;
             _pathNodeMap[frame.Path] = index;
-            var world = parentWorld * BuildLocalMatrix(frame);
-            if (frame.Path != null)
-            {
-                _pathWorldMatrixMap[frame.Path] = world;
-            }
 
             if (rootNodes != null)
             {
@@ -128,7 +122,7 @@ namespace AnimeStudio
             var children = new List<int>();
             for (var i = 0; i < frame.Count; i++)
             {
-                children.Add(BuildNodeTree(frame[i], null, world));
+                children.Add(BuildNodeTree(frame[i], null));
             }
             if (children.Count > 0)
             {
@@ -268,8 +262,6 @@ namespace AnimeStudio
 
             var joints = new List<int>();
             var matrices = new List<Matrix4x4>();
-            _pathWorldMatrixMap.TryGetValue(mesh.Path, out var meshWorld);
-            var inverseMeshWorld = InvertMatrix(meshWorld == default ? IdentityMatrix() : meshWorld);
             foreach (var bone in mesh.BoneList)
             {
                 if (bone.Path == null || !_pathNodeMap.TryGetValue(bone.Path, out var jointNode))
@@ -277,9 +269,7 @@ namespace AnimeStudio
                     continue;
                 }
                 joints.Add(jointNode);
-                // Unity bind poses are bone.worldToLocal * renderer.localToWorld.
-                // glTF inverseBindMatrices are only bone.worldToLocal because the mesh node transform is applied separately.
-                matrices.Add(bone.Matrix * inverseMeshWorld);
+                matrices.Add(bone.Matrix);
             }
 
             if (joints.Count == 0)
@@ -906,64 +896,6 @@ namespace AnimeStudio
                 name = name.Replace(c, '_');
             }
             return name.Length > 100 ? name.Substring(0, 67) + "_" + name.Substring(name.Length - 32) : name;
-        }
-
-        private static Matrix4x4 BuildLocalMatrix(ImportedFrame frame)
-        {
-            return Matrix4x4.Translate(frame.LocalPosition)
-                * Matrix4x4.Rotate(frame.LocalRotation)
-                * Matrix4x4.Scale(frame.LocalScale);
-        }
-
-        private static Matrix4x4 IdentityMatrix()
-        {
-            return new Matrix4x4(new[]
-            {
-                1f, 0f, 0f, 0f,
-                0f, 1f, 0f, 0f,
-                0f, 0f, 1f, 0f,
-                0f, 0f, 0f, 1f,
-            });
-        }
-
-        private static Matrix4x4 InvertMatrix(Matrix4x4 matrix)
-        {
-            var m = new float[16];
-            for (var i = 0; i < 16; i++)
-            {
-                m[i] = matrix[i];
-            }
-
-            var inv = new float[16];
-            inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
-            inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
-            inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
-            inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
-            inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
-            inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
-            inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
-            inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
-            inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
-            inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
-            inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
-            inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
-            inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
-            inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
-            inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
-            inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
-
-            var det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-            if (Math.Abs(det) < 0.000001f)
-            {
-                return IdentityMatrix();
-            }
-
-            det = 1.0f / det;
-            for (var i = 0; i < inv.Length; i++)
-            {
-                inv[i] *= det;
-            }
-            return new Matrix4x4(inv);
         }
     }
 }
