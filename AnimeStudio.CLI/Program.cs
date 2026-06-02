@@ -477,6 +477,11 @@ namespace AnimeStudio.CLI
                 TypeFlags.SetType(ClassIDType.AnimatorOverrideController, true, false);
                 TypeFlags.SetType(ClassIDType.Avatar, true, false);
             }
+
+            if (workMode == WorkMode.Library)
+            {
+                TypeFlags.SetType(ClassIDType.Shader, true, true);
+            }
         }
 
         private static int GetEffectiveBatchSize(WorkMode workMode)

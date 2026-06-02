@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
@@ -107,11 +108,27 @@ namespace AnimeStudio.CLI
 
         public static bool ExportShader(AssetItem item, string exportPath)
         {
-            if (!TryExportFile(exportPath, item, ".shader", out var exportFullPath))
+            if (!TryExportFile(exportPath, item, ".shader.raw", out var exportFullPath))
                 return false;
             var m_Shader = (Shader)item.Asset;
-            var str = m_Shader.Convert();
-            File.WriteAllText(exportFullPath, str);
+            File.WriteAllBytes(exportFullPath, m_Shader.GetRawData());
+            var metadata = new
+            {
+                name = m_Shader.Name,
+                unityName = m_Shader.m_Name,
+                source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                container = item.Container,
+                pathId = item.m_PathID,
+                unityVersion = m_Shader.version == null ? null : string.Join(".", m_Shader.version),
+                platforms = m_Shader.platforms?.Select(x => x.ToString()).ToArray(),
+                hasParsedForm = m_Shader.m_ParsedForm != null,
+                hasCompressedBlob = m_Shader.compressedBlob?.Length > 0,
+                compressedBlobSize = m_Shader.compressedBlob?.Length ?? 0,
+                rawDataFile = Path.GetFileName(exportFullPath),
+                note = "Safe shader archive. Native shader disassembly is intentionally not run during default library export.",
+            };
+            File.WriteAllText(exportFullPath + ".json", JsonConvert.SerializeObject(metadata, Formatting.Indented));
+            AppendAssetCatalog(item, exportFullPath, "Shader");
             return true;
         }
 
@@ -544,6 +561,7 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrEmpty(str))
                 return false;
             File.WriteAllText(exportFullPath, str);
+            AppendAssetCatalog(item, exportFullPath, "Animation");
             return true;
         }
 
@@ -708,6 +726,7 @@ namespace AnimeStudio.CLI
 
         private static void ExportFbx(IImported convert, string exportPath, object source)
         {
+            var outputPath = exportPath;
             using (ProfileLogger.Measure("model_write", GetImportedProfileData(convert, exportPath, source)))
             {
                 switch (CliExportOptions.ModelFormat)
@@ -716,13 +735,16 @@ namespace AnimeStudio.CLI
                         ExportFbxModel(convert, exportPath);
                         break;
                     case ModelExportFormat.Glb:
-                        ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".glb"), true);
+                        outputPath = Path.ChangeExtension(exportPath, ".glb");
+                        ExportGltfModel(convert, outputPath, true);
                         break;
                     default:
-                        ExportGltfModel(convert, Path.ChangeExtension(exportPath, ".gltf"), false);
+                        outputPath = Path.ChangeExtension(exportPath, ".gltf");
+                        ExportGltfModel(convert, outputPath, false);
                         break;
                 }
             }
+            AppendModelAssetCatalog(convert, outputPath, source);
         }
 
         private static string GetModelExtension()
@@ -839,6 +861,159 @@ namespace AnimeStudio.CLI
                 name = name.Replace(c, '_');
             }
             return name;
+        }
+
+        private static void AppendModelAssetCatalog(IImported imported, string outputPath, object source)
+        {
+            if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                return;
+            }
+
+            var sourceInfo = GetSourceInfo(source);
+            var bonePaths = imported.MeshList?
+                .SelectMany(x => x.BoneList ?? Enumerable.Empty<ImportedBone>())
+                .Select(x => x.Path)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
+
+            var entry = new
+            {
+                kind = "Model",
+                resourceKind = InferResourceKind(sourceInfo.name, sourceInfo.container, sourceInfo.source),
+                exportedAt = DateTime.UtcNow.ToString("O"),
+                name = sourceInfo.name,
+                sourceType = sourceInfo.type,
+                container = sourceInfo.container,
+                source = sourceInfo.source,
+                pathId = sourceInfo.pathId,
+                output = outputPath,
+                format = CliExportOptions.ModelFormat.ToString(),
+                textureMode = CliExportOptions.TextureMode.ToString(),
+                animationPackage = CliExportOptions.AnimationPackage.ToString(),
+                nodeCount = CountFrames(imported.RootFrame),
+                meshCount = imported.MeshList?.Count ?? 0,
+                vertexCount = imported.MeshList?.Sum(x => x.VertexList?.Count ?? 0) ?? 0,
+                materialCount = imported.MaterialList?.Count ?? 0,
+                textureCount = imported.TextureList?.Count ?? 0,
+                animationCount = imported.AnimationList?.Count ?? 0,
+                morphCount = imported.MorphList?.Count ?? 0,
+                boneCount = bonePaths.Length,
+                skeletonHash = bonePaths.Length == 0 ? null : HashText(string.Join("\n", bonePaths)),
+            };
+            AppendCatalogEntry(entry);
+        }
+
+        private static void AppendAssetCatalog(AssetItem item, string outputPath, string kind)
+        {
+            if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                return;
+            }
+
+            var entry = new
+            {
+                kind,
+                resourceKind = InferResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
+                exportedAt = DateTime.UtcNow.ToString("O"),
+                name = item.Text,
+                sourceType = item.TypeString,
+                container = item.Container,
+                source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                pathId = item.m_PathID,
+                output = outputPath,
+            };
+            AppendCatalogEntry(entry);
+        }
+
+        private static void AppendCatalogEntry(object entry)
+        {
+            var catalogPath = Path.Combine(CliExportOptions.OutputRoot, "asset_catalog.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(catalogPath));
+            File.AppendAllText(catalogPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
+        }
+
+        private static (string type, string name, string container, string source, long pathId) GetSourceInfo(object source)
+        {
+            return source switch
+            {
+                AssetItem item => (
+                    item.TypeString,
+                    item.Text,
+                    item.Container,
+                    item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                    item.m_PathID
+                ),
+                GameObject gameObject => (
+                    nameof(GameObject),
+                    gameObject.m_Name,
+                    null,
+                    gameObject.assetsFile?.originalPath ?? gameObject.assetsFile?.fileName,
+                    gameObject.m_PathID
+                ),
+                _ => (source?.GetType().Name, source?.ToString(), null, null, 0),
+            };
+        }
+
+        private static string InferResourceKind(string name, string container, string source)
+        {
+            var text = string.Join(
+                "/",
+                new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+
+            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)(pc|player)(/|$)"))
+            {
+                return "Character";
+            }
+            if (Regex.IsMatch(text, @"(^|/)character/npc|(^|/)npc(/|$)"))
+            {
+                return "NPC";
+            }
+            if (Regex.IsMatch(text, @"(^|/)stage|court|scene|map"))
+            {
+                return "Stage";
+            }
+            if (Regex.IsMatch(text, @"(^|/)ball|basketball"))
+            {
+                return "Ball";
+            }
+            if (Regex.IsMatch(text, @"(^|/)trophy|prop|props|object|item|weapon"))
+            {
+                return "Prop";
+            }
+            if (Regex.IsMatch(text, @"(^|/)shader|\.shader$"))
+            {
+                return "Shader";
+            }
+            if (Regex.IsMatch(text, @"(^|/)animation|\.anim$"))
+            {
+                return "Animation";
+            }
+            return "Unknown";
+        }
+
+        private static int CountFrames(ImportedFrame frame)
+        {
+            if (frame == null)
+            {
+                return 0;
+            }
+
+            var count = 1;
+            for (var i = 0; i < frame.Count; i++)
+            {
+                count += CountFrames(frame[i]);
+            }
+            return count;
+        }
+
+        private static string HashText(string text)
+        {
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(text ?? string.Empty));
+            return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
         }
 
         private static Dictionary<string, object> GetModelProfileData(

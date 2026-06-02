@@ -1,0 +1,104 @@
+# AnimeStudio 开发样本工作流
+
+本项目后续功能开发以“导出可用素材库”为基础准则。不要只靠全量导出验证功能；全量太慢，也不利于定位问题。默认使用 Freedunk 的真实资源建立一个小型、固定、可重复的开发样本库。
+
+## 固定样本目录
+
+默认输出：
+
+```text
+D:\Assets\AnimeStudio_DevSamples
+```
+
+重建样本：
+
+```powershell
+cd D:\misutime\AnimeStudio
+tools\Export-FreedunkDevSamples.ps1
+```
+
+保留已有输出并追加：
+
+```powershell
+tools\Export-FreedunkDevSamples.ps1 -KeepExisting
+```
+
+## 样本来源
+
+默认脚本使用：
+
+```text
+C:\Program Files (x86)\Freedunk\Game\Freedunk_Data
+```
+
+覆盖的真实素材：
+
+- `graphics\character\pc\bill_01_00`：角色模型、骨骼、材质、PNG 贴图。
+- `graphics\trophy`：静态道具、prefab 材质贴图、模型拆分噪声。
+- `graphics\shaders.ab`：shader 原始归档和 metadata。
+- `graphics\stage\animation.ab`：场景/篮筐相关动画。
+- `graphics\character\npc\prefab\animation_npc.ab`：NPC 动画。
+
+## 验收文件
+
+样本导出后重点看：
+
+```text
+asset_catalog.jsonl
+export_manifest.jsonl
+Models\
+Animations\
+Shaders\
+Textures\_ModelDependencies\
+```
+
+`asset_catalog.jsonl` 是后续自动检查的主入口。模型条目应该包含：
+
+- `resourceKind`
+- `meshCount`
+- `vertexCount`
+- `materialCount`
+- `textureCount`
+- `boneCount`
+- `skeletonHash`
+- `animationCount`
+
+## 当前基线
+
+Bill 样本应该满足：
+
+- 有 glTF 模型。
+- 有 `skins`。
+- 有骨骼统计和 `skeletonHash`。
+- 有 PNG 贴图引用。
+- `animations` 为 0，不能再把 Animator Controller 的全局动作库塞进模型。
+
+Shader 样本应该满足：
+
+- 默认导出 `.shader.raw` 和 `.shader.raw.json`。
+- 不运行 native D3D 反汇编。
+- 不因 shader 反编译崩溃导致整个导出失败。
+
+动画样本应该满足：
+
+- 独立写入 `Animations`。
+- 不依赖某个模型文件内嵌。
+
+## 失败案例
+
+`D:\Assets\Freedunk_Data_core_png_anim` 是旧策略失败案例：`Animator + Auto` 把 Freedunk 的全局篮球动作库重复嵌进每个角色模型，导致 `Bill_01_00.gltf` 巨大且不适合浏览。
+
+后续开发中，默认输出不得回到这种形态。需要旧式内嵌动画时，必须显式使用：
+
+```powershell
+--animation_package Embedded
+```
+
+## 后续开发规则
+
+每做一项导出逻辑改动，都应：
+
+1. 运行 `dotnet build AnimeStudio.CLI\AnimeStudio.CLI.csproj`。
+2. 运行 `tools\Export-FreedunkDevSamples.ps1`。
+3. 检查 `asset_catalog.jsonl` 和关键 glTF。
+4. 确认 `D:\Assets\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。

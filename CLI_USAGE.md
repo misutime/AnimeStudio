@@ -146,6 +146,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - `Models` 里的角色/蒙皮模型会保留 skeleton/skin，方便后续绑定独立动画。
 - `Animations` 里保存独立 AnimationClip，后续会继续增强为 animation-only glTF 和绑定索引。
 - `Textures\_ModelDependencies` 保存共享 PNG 实体，模型目录里的 `Textures` 通常是硬链接。
+- `Shaders` 里默认保存 `.shader.raw` 和 `.shader.raw.json`，不在默认路径运行可能崩溃的 native 反汇编。
+- `asset_catalog.jsonl` 记录模型、动画、shader 的结构化索引和模型统计。
 
 ### Freedunk 失败案例
 
@@ -330,9 +332,12 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 ```text
 export_manifest.jsonl
+asset_catalog.jsonl
 ```
 
 每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
+
+`asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数和 `skeletonHash`。
 
 默认还会写入性能日志：
 
@@ -621,7 +626,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --group_assets ByLibrary
 ```
 
-Shader 导出是研究资料，不等于 Blender 可以直接使用。后续重建 Blender 材质时，应结合 `.shader`、材质 JSON、贴图文件一起分析。
+Shader 导出是研究资料，不等于 Blender 可以直接使用。默认 Library 导出会保存 `.shader.raw` 和 `.shader.raw.json`，避免 native D3D 反汇编在部分游戏 shader 上崩溃。后续重建 Blender 材质时，应结合 shader raw、材质 JSON、贴图文件一起分析。
 
 ## 原神目录恢复和 asset index
 

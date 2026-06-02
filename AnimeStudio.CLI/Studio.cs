@@ -704,13 +704,18 @@ namespace AnimeStudio.CLI
         {
             var models = exportableAssets.Where(x => x.Asset is GameObject or Animator).ToList();
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
+            var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
 
             Logger.Info(
-                $"Exporting asset library: {models.Count} model candidate(s), {animations.Count} animation clip(s)."
+                $"Exporting asset library: {models.Count} model candidate(s), {animations.Count} animation clip(s), {shaders.Count} shader(s)."
             );
 
             ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, null);
             ExportSeparateAnimationClips(savePath);
+            if (shaders.Count > 0)
+            {
+                ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
+            }
         }
 
         private static void ExportSeparateAnimationClips(string savePath)
@@ -879,6 +884,7 @@ namespace AnimeStudio.CLI
             {
                 ClassIDType.GameObject or ClassIDType.Animator => "Models",
                 ClassIDType.AnimationClip => "Animations",
+                ClassIDType.Shader => "Shaders",
                 ClassIDType.Texture2D or ClassIDType.Sprite => "Textures",
                 ClassIDType.Material => "Materials",
                 ClassIDType.Mesh => "Meshes",

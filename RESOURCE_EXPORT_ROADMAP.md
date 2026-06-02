@@ -37,6 +37,7 @@
 - 角色/蒙皮模型默认保留 skeleton/skin，不能为了模型浏览速度丢掉骨骼。
 - 贴图默认 PNG，进入共享 `Textures/_ModelDependencies`，模型目录通过硬链接引用。
 - 动画默认独立进入 `Animations`，不嵌入每个模型。
+- Shader 默认进入 `Shaders`，以安全 raw archive + metadata 形式保留。
 - 材质、贴图、动画、源路径关系由 manifest/catalog 记录。
 - `Core` profile 默认过滤 UI、sound、video、camera、effect、manager、test、dummy 等低价值噪声。
 
@@ -55,7 +56,7 @@
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、extras 保留 Unity 贴图信息 | 55% |
 | 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库 | 55% |
-| Shader 导出 | 可转储/反编译研究资料，但未形成可直接复用的材质系统 | 35% |
+| Shader 导出 | 默认安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
 | 输出可浏览性 | 目录按 container 组织，模型依赖贴图集中共享并硬链接到模型目录 | 70% |
@@ -178,14 +179,17 @@ AnimeStudio.CLI.exe `
 
 这能兼顾模型目录可浏览性和磁盘空间。
 
-### 性能日志和 manifest
+### 性能日志、manifest 和 catalog
 
 默认输出：
 
 ```text
 export_manifest.jsonl
+asset_catalog.jsonl
 export_profile.jsonl
 ```
+
+`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数和 skeletonHash；动画和 shader 也会作为独立资产登记。
 
 `export_profile.jsonl` 已记录：
 
