@@ -147,6 +147,8 @@ Models\...\<model>.gltf
 
 `preview_validation.json` 会记录 animation channel 数、无效 channel 数、skin/joint 数、主体骨骼覆盖率、raw bbox 和 skinned bbox。只有当动画写入成功、channel 指向有效节点、skin 存在、命中主体骨骼且 skinned bbox 没有明显异常时，预览状态才会是 `ok`。如果只命中 `Ball_Point`、socket、twist/helper 这类辅助节点，报告会标为 `warning`。
 
+Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01` 属于 `MixedHumanoidTransform`，预览 glTF 里可写出的 channel 主要是辅助节点，身体动作需要后续 Humanoid/Muscle bake 才能完整还原。
+
 实现原则：
 
 - 默认导出阶段可以收集动画线索，但不默认嵌入动画。
@@ -400,6 +402,8 @@ model_animations.json
 每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
 
 `asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数和 `skeletonHash`。
+
+AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、BlendShape 动画，还是只作用在 socket/helper 上的辅助动画。
 
 `asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。当前按 `resourceKind`、资源路径和角色/场景线索做启发式匹配，后续会升级为 skeleton hash / bone path 级验证。
 

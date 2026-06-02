@@ -74,7 +74,7 @@
 | FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、extras 保留 Unity 贴图信息 | 55% |
-| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持按需生成预览 glTF 和验证报告 | 65% |
+| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持按需生成预览 glTF、验证报告和 AnimationClip 类型分类 | 68% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
@@ -210,6 +210,16 @@ export_profile.jsonl
 
 `asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数和 skeletonHash；动画会作为独立资产登记，实验 shader 只在 `--include_shaders` 时登记。
 
+AnimationClip 条目会额外记录：
+
+- `animationType`：`TransformBodyAnimation`、`MixedHumanoidTransform`、`HumanoidMuscleAnimation`、`AuxiliaryAnimation`、`BlendShapeAnimation` 等。
+- `hasMuscleClip`：是否存在 Unity Humanoid/Muscle 数据。
+- `coreTransformBindingCount`：直接命中主体骨骼的 Transform binding 数。
+- `humanoidBindingCount`：Animator/Humanoid binding 数。
+- `blendShapeBindingCount`：SkinnedMeshRenderer / blendshape binding 数。
+- `auxiliaryBindingCount`：point、socket、twist、helper 等辅助节点 binding 数。
+- `classificationNotes`：是否需要 Humanoid/Muscle bake、是否主要是辅助节点动画等提示。
+
 默认还会生成：
 
 ```text
@@ -251,15 +261,22 @@ model_animations.json
 
 ### 2. glTF 动画仍偏基础
 
-当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。
+当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。对于普通 Transform 曲线，这条路径可以生成可播放动画；对于 Unity Humanoid/Muscle 动画，还需要先把 muscle 曲线烘焙回目标骨架的 TRS 曲线。
 
 缺口：
 
 - blendshape 动画未写入 `weights` channel。
+- Humanoid/Muscle 动画未 bake 到骨骼 TRS，所以 Freedunk 这类角色身体动作暂时只能看到辅助节点 channel。
 - 动画 clip 与 AnimatorController 状态机关系还没有形成完整索引。
 - 模型与动画的适配关系还需要从启发式升级为可验证关系。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
-- 缺少按需生成预览 glTF / 动画合集 glTF 的 CLI。
+- 缺少动画合集 glTF/GLB 打包 CLI。
+
+Freedunk 当前验证结论：
+
+- `D:\Assets\Freedunk_Data_Dev\AnimationTypeScan` 小样本扫描 594 个 `AnimationClip`，全部是 `MixedHumanoidTransform`。
+- `NORMALMOVE_STAND_01` 预览能写出 glTF animation channel，但 `coreBoneChannelCount` 为 0，主要命中 `Ball_Point`、twist/helper 等辅助节点。
+- 这说明 Freedunk 角色身体动作的主路径是 Humanoid/Muscle bake，不是继续寻找直接 Transform body 曲线。
 
 优先级：P0
 
@@ -338,13 +355,14 @@ model_animations.json
 
 任务：
 
-1. 补 glTF morph target 导出。
-2. 补 glTF blendshape weight 动画。
-3. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
-4. 给 Animator/AnimationClip 输出动画 clip 列表、来源、角色归属和候选模型。
-5. 增加按需预览命令：给一个模型 glTF 和一个 AnimationClip，生成可播放预览 glTF。
-6. 增加动画合集打包命令：把已确认的一组动画写进 glTF/GLB。
-7. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
+1. 补 Humanoid/Muscle bake：把 Unity muscle 曲线采样成目标骨架 TRS 曲线。
+2. 补 glTF morph target 导出。
+3. 补 glTF blendshape weight 动画。
+4. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
+5. 给 Animator/AnimationClip 输出动画 clip 列表、来源、角色归属和候选模型。
+6. 增强按需预览命令：Humanoid/Muscle 动画预览必须覆盖主体骨骼。
+7. 增加动画合集打包命令：把已确认的一组动画写进 glTF/GLB。
+8. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
 
 验收：
 

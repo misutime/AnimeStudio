@@ -913,6 +913,7 @@ namespace AnimeStudio.CLI
                 return;
             }
 
+            var animationInfo = item.Asset is AnimationClip infoClip ? AnalyzeAnimationClip(infoClip) : null;
             var entry = new
             {
                 kind,
@@ -929,9 +930,153 @@ namespace AnimeStudio.CLI
                 curveCount = item.Asset is AnimationClip curveClip ? GetAnimationCurveCount(curveClip) : (int?)null,
                 eventCount = item.Asset is AnimationClip eventClip ? eventClip.m_Events?.Count ?? 0 : (int?)null,
                 legacy = item.Asset is AnimationClip legacyClip ? legacyClip.m_Legacy : (bool?)null,
+                animationType = animationInfo?.animationType,
+                hasMuscleClip = animationInfo?.hasMuscleClip,
+                transformBindingCount = animationInfo?.transformBindingCount,
+                coreTransformBindingCount = animationInfo?.coreTransformBindingCount,
+                humanoidBindingCount = animationInfo?.humanoidBindingCount,
+                blendShapeBindingCount = animationInfo?.blendShapeBindingCount,
+                auxiliaryBindingCount = animationInfo?.auxiliaryBindingCount,
+                unknownBindingCount = animationInfo?.unknownBindingCount,
+                transformBindingPaths = animationInfo?.transformBindingPaths,
+                classificationNotes = animationInfo?.classificationNotes,
             };
             AppendCatalogEntry(entry);
         }
+
+        private static AnimationClipInfo AnalyzeAnimationClip(AnimationClip clip)
+        {
+            var bindings = clip.m_ClipBindingConstant?.genericBindings ?? new List<GenericBinding>();
+            var tos = clip.FindTOS();
+            var transformPaths = bindings
+                .Where(x => x.typeID == ClassIDType.Transform)
+                .Select(x => ResolveAnimationBindingPath(x, tos))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var coreTransformCount = transformPaths.Count(IsCoreAnimationPath);
+            var auxiliaryCount = transformPaths.Count(x => IsAuxiliaryAnimationPath(x) || IsTwistOrHelperAnimationPath(x));
+            var transformBindingCount = bindings.Count(x => x.typeID == ClassIDType.Transform)
+                + (clip.m_RotationCurves?.Count ?? 0)
+                + (clip.m_PositionCurves?.Count ?? 0)
+                + (clip.m_ScaleCurves?.Count ?? 0)
+                + (clip.m_EulerCurves?.Count ?? 0);
+            var blendShapeBindingCount = bindings.Count(x => x.typeID == ClassIDType.SkinnedMeshRenderer);
+            var humanoidBindingCount = bindings.Count(x => x.typeID == ClassIDType.Animator);
+            var unknownBindingCount = bindings.Count(x => x.typeID != ClassIDType.Transform && x.typeID != ClassIDType.SkinnedMeshRenderer && x.typeID != ClassIDType.Animator);
+            var hasMuscleClip = clip.m_MuscleClip != null;
+            var notes = new List<string>();
+
+            string animationType;
+            if (humanoidBindingCount > 0)
+            {
+                animationType = transformBindingCount > 0 ? "MixedHumanoidTransform" : "HumanoidMuscleAnimation";
+                notes.Add("Animator/humanoid bindings are present; current glTF export may need humanoid/muscle baking for full body motion.");
+            }
+            else if (coreTransformCount >= 3)
+            {
+                animationType = "TransformBodyAnimation";
+            }
+            else if (transformBindingCount > 0 && coreTransformCount == 0 && auxiliaryCount > 0)
+            {
+                animationType = "AuxiliaryAnimation";
+                notes.Add("Transform bindings mainly target helper, socket, point, or twist nodes.");
+            }
+            else if (blendShapeBindingCount > 0 && transformBindingCount == 0)
+            {
+                animationType = "BlendShapeAnimation";
+            }
+            else if (transformBindingCount > 0)
+            {
+                animationType = "TransformAnimation";
+                notes.Add("Transform bindings exist but core body bone coverage is low.");
+            }
+            else if (hasMuscleClip)
+            {
+                animationType = "HumanoidMuscleAnimation";
+                notes.Add("Muscle clip data exists but no direct transform body bindings were classified.");
+            }
+            else
+            {
+                animationType = "UnknownAnimation";
+            }
+
+            return new AnimationClipInfo(
+                animationType,
+                hasMuscleClip,
+                transformBindingCount,
+                coreTransformCount,
+                humanoidBindingCount,
+                blendShapeBindingCount,
+                auxiliaryCount,
+                unknownBindingCount,
+                transformPaths.Take(64).ToArray(),
+                notes.ToArray()
+            );
+        }
+
+        private static string ResolveAnimationBindingPath(GenericBinding binding, Dictionary<uint, string> tos)
+        {
+            if (binding == null)
+            {
+                return null;
+            }
+            return tos != null && tos.TryGetValue(binding.path, out var path)
+                ? path
+                : null;
+        }
+
+        private static bool IsCoreAnimationPath(string path)
+        {
+            var text = NormalizeAnimationPath(path);
+            if (IsAuxiliaryAnimationPath(path) || IsTwistOrHelperAnimationPath(path))
+            {
+                return false;
+            }
+            return text.Contains("pelvis")
+                || text.Contains("spine")
+                || text.Contains("neck")
+                || text.Contains("head")
+                || text.Contains("clavicle")
+                || text.Contains("upperarm")
+                || text.Contains("forearm")
+                || text.Contains("hand")
+                || text.Contains("thigh")
+                || text.Contains("calf")
+                || text.Contains("foot")
+                || text.Contains("toe");
+        }
+
+        private static bool IsAuxiliaryAnimationPath(string path)
+        {
+            var text = NormalizeAnimationPath(path);
+            return text.Contains("point") || text.Contains("socket") || text.Contains("attach");
+        }
+
+        private static bool IsTwistOrHelperAnimationPath(string path)
+        {
+            var text = NormalizeAnimationPath(path);
+            return text.Contains("twist") || text.Contains("helper");
+        }
+
+        private static string NormalizeAnimationPath(string path)
+        {
+            return Regex.Replace((path ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
+        }
+
+        private sealed record AnimationClipInfo(
+            string animationType,
+            bool hasMuscleClip,
+            int transformBindingCount,
+            int coreTransformBindingCount,
+            int humanoidBindingCount,
+            int blendShapeBindingCount,
+            int auxiliaryBindingCount,
+            int unknownBindingCount,
+            string[] transformBindingPaths,
+            string[] classificationNotes
+        );
 
         private static float? GetAnimationDuration(AnimationClip clip)
         {

@@ -134,7 +134,16 @@ Shader 样本应该满足：
 - skeleton hash / bone path 是否兼容。
 - 实际写入 glTF 后是否产生有效 animation channels。
 
-当前 `animation_bindings.jsonl` 和 `model_animations.json` 只是候选索引。下一阶段要补按需预览/打包命令，把候选动画实际写入 glTF/GLB，并记录有效 channel 数。
+当前 `animation_bindings.jsonl` 和 `model_animations.json` 仍然只是候选索引；`--generate_preview_gltf` 会把候选动画实际写入 glTF 并生成 `preview_validation.json`，用于验证 channel、skin、主体骨骼覆盖和 bbox。
+
+`asset_catalog.jsonl` 和 `model_animations.json` 里的动画候选还会记录：
+
+- `animationType`：例如 `TransformBodyAnimation`、`MixedHumanoidTransform`、`HumanoidMuscleAnimation`、`AuxiliaryAnimation`。
+- `hasMuscleClip`：是否包含 Unity Humanoid/Muscle 动画数据。
+- `coreTransformBindingCount`：直接命中主体骨骼的 Transform binding 数。
+- `humanoidBindingCount`：Animator/Humanoid binding 数。
+- `auxiliaryBindingCount`：socket、point、twist、helper 等辅助节点 binding 数。
+- `classificationNotes`：当前导出器对该动画的风险提示。
 
 ## 动画预览验证样本
 
@@ -152,13 +161,15 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 验收重点：
 
-- `preview_validation.json` 的 `status` 为 `ok`。
+- `preview_validation.json` 的 `status` 为 `ok`。如果是 `warning`，先看 `notes` 说明。
 - `counts.animations` 大于 0。
 - `counts.channels` 大于 0。
 - `counts.invalidChannels` 为 0。
 - `counts.skins` 和 `counts.skinJoints` 大于 0。
 - `animationCoverage.coreBoneChannelCount` 大于 0，且 `animationCoverage.coreBoneNodeCount` 至少覆盖多个主体骨骼。
 - `bounds.raw.size` 和 `bounds.skinnedFinal.size` 接近，不能回到 skin 拉爆形态。
+
+当前 Freedunk 的 `NORMALMOVE_STAND_01` 预览会被标为 `warning`：它能写出 glTF 动画 channel，但主体骨骼覆盖为 0，主要命中 `Ball_Point`、twist/helper 之类辅助节点。这个现象不是模型 skin 再次拉爆，而是 Freedunk 身体动作主要存放在 Unity Humanoid/Muscle 数据里，当前 glTF TRS 动画写入还没有完成 Muscle bake。
 
 ## 完整模型动画样本
 
@@ -182,3 +193,26 @@ D:\Assets\Freedunk_Data_Dev\CompleteMiniInput
 ```
 
 然后只导出 `Bill_01_00_ingame` / `Bill_01_00_outgame` 和 `NORMALMOVE_STAND_01`。这是后续验证模型动画绑定的首选小样本。
+
+## 动画类型扫描样本
+
+当需要判断某个游戏的角色动画是普通 Transform 曲线，还是 Unity Humanoid/Muscle 动画时，使用：
+
+```powershell
+cd D:\misutime\AnimeStudio
+tools\Export-FreedunkAnimationTypeScan.ps1
+```
+
+默认输出：
+
+```text
+D:\Assets\Freedunk_Data_Dev\AnimationTypeScan
+```
+
+这个脚本会复制 Bill 模型和 Freedunk 多个 ingame/outgame/lobby 动画 bundle 到：
+
+```text
+D:\Assets\Freedunk_Data_Dev\AnimationTypeMiniInput
+```
+
+截至当前基线，这个样本共扫描到 594 个 `AnimationClip`，全部分类为 `MixedHumanoidTransform`，没有发现可直接作为身体动作的 `TransformBodyAnimation`。因此 Freedunk 角色身体动画的主路径应推进 Humanoid/Muscle bake，而不是继续寻找普通骨骼 TRS 曲线。

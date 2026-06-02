@@ -899,6 +899,13 @@ namespace AnimeStudio.CLI
                 sampleRate = (float?)entry["sampleRate"],
                 duration = (float?)entry["duration"],
                 curveCount = (int?)entry["curveCount"] ?? 0,
+                animationType = (string)entry["animationType"],
+                hasMuscleClip = (bool?)entry["hasMuscleClip"],
+                coreTransformBindingCount = (int?)entry["coreTransformBindingCount"],
+                humanoidBindingCount = (int?)entry["humanoidBindingCount"],
+                blendShapeBindingCount = (int?)entry["blendShapeBindingCount"],
+                auxiliaryBindingCount = (int?)entry["auxiliaryBindingCount"],
+                classificationNotes = entry["classificationNotes"]?.ToObject<string[]>(),
             };
         }
 
@@ -988,6 +995,13 @@ namespace AnimeStudio.CLI
                 curveCount = (int?)animation["curveCount"] ?? 0,
                 eventCount = (int?)animation["eventCount"] ?? 0,
                 legacy = (bool?)animation["legacy"],
+                animationType = (string)animation["animationType"],
+                hasMuscleClip = (bool?)animation["hasMuscleClip"],
+                coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
+                humanoidBindingCount = (int?)animation["humanoidBindingCount"],
+                blendShapeBindingCount = (int?)animation["blendShapeBindingCount"],
+                auxiliaryBindingCount = (int?)animation["auxiliaryBindingCount"],
+                classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
                 score = score,
                 matchReasons = reasons.ToArray(),
                 verification = new
@@ -1037,6 +1051,13 @@ namespace AnimeStudio.CLI
             public int curveCount { get; set; }
             public int eventCount { get; set; }
             public bool? legacy { get; set; }
+            public string animationType { get; set; }
+            public bool? hasMuscleClip { get; set; }
+            public int? coreTransformBindingCount { get; set; }
+            public int? humanoidBindingCount { get; set; }
+            public int? blendShapeBindingCount { get; set; }
+            public int? auxiliaryBindingCount { get; set; }
+            public string[] classificationNotes { get; set; }
             public int score { get; set; }
             public string[] matchReasons { get; set; }
             public object verification { get; set; }
