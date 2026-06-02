@@ -715,9 +715,13 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var matrix in list)
             {
-                for (var i = 0; i < 16; i++)
+                // Unity bind poses arrive in the importer orientation; glTF MAT4 accessors need the transposed column-major form.
+                for (var column = 0; column < 4; column++)
                 {
-                    _writer.Write(matrix[i]);
+                    for (var row = 0; row < 4; row++)
+                    {
+                        _writer.Write(matrix[column, row]);
+                    }
                 }
             }
             return AddAccessor(offset, list.Count * 64, Float, "MAT4", list.Count);
