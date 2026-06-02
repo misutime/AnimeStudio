@@ -1,6 +1,6 @@
 param(
     [string]$GameData = "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data",
-    [string]$Output = "D:\Assets\AnimeStudio_DevSamples",
+    [string]$Output = "D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples",
     [switch]$KeepExisting
 )
 

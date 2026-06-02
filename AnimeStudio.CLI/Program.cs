@@ -214,6 +214,17 @@ namespace AnimeStudio.CLI
                     files = files.Where(x => !containerExcludeFilters.Any(y => y.IsMatch(x))).ToArray();
                     Logger.Info($"Excluded {originalCount - files.Length} file(s) by 3D path filters.");
                 }
+                if (o.WorkMode != WorkMode.Export && !o.ContainerFilter.IsNullOrEmpty())
+                {
+                    var matchedFiles = files
+                        .Where(x => o.ContainerFilter.Any(y => y.IsMatch(NormalizeFilterPath(x))))
+                        .ToArray();
+                    if (matchedFiles.Length > 0 && matchedFiles.Length < files.Length)
+                    {
+                        Logger.Info($"Prefiltered source files by --containers: {files.Length} -> {matchedFiles.Length}.");
+                        files = matchedFiles;
+                    }
+                }
                 Logger.Info($"Found {files.Length} files");
                 if (files.Length == 0)
                 {
@@ -320,13 +331,16 @@ namespace AnimeStudio.CLI
                                     ref i
                                 );
                             }
-                            using (ProfileLogger.Measure("export_batch", new Dictionary<string, object>
+                            if (exportableAssets.Count > 0)
                             {
-                                ["exportableCount"] = exportableAssets.Count,
-                                ["firstFile"] = batch.FirstOrDefault(),
-                            }))
-                            {
-                                ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
+                                using (ProfileLogger.Measure("export_batch", new Dictionary<string, object>
+                                {
+                                    ["exportableCount"] = exportableAssets.Count,
+                                    ["firstFile"] = batch.FirstOrDefault(),
+                                }))
+                                {
+                                    ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
+                                }
                             }
                         }
                         exportableAssets.Clear();
@@ -419,6 +433,11 @@ namespace AnimeStudio.CLI
             }
 
             return filters.ToArray();
+        }
+
+        private static string NormalizeFilterPath(string path)
+        {
+            return path?.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/') ?? string.Empty;
         }
 
         private static Regex[] GetNameExcludeFilters(WorkMode workMode, Model3DProfile profile3D, Regex[] userExcludeFilters)

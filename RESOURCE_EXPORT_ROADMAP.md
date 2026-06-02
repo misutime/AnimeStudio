@@ -464,7 +464,7 @@ export_filter_report.json
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_library" `
+  "D:\Assets\Freedunk_Data_Dev\Freedunk_Data_library" `
   --game Normal
 ```
 
@@ -475,7 +475,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_models_raw_scan" `
+  "D:\Assets\Freedunk_Data_Dev\Freedunk_Data_models_raw_scan" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -491,7 +491,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_animator_debug" `
+  "D:\Assets\Freedunk_Data_Dev\Freedunk_Data_animator_debug" `
   --game Normal `
   --mode Animator `
   --group_assets ByContainer `

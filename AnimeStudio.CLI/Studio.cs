@@ -338,7 +338,7 @@ namespace AnimeStudio.CLI
                         typeFilters.IsNullOrEmpty() || typeFilters.Contains(x.Type);
                     var isContainerMatch =
                         containerFilters.IsNullOrEmpty()
-                        || containerFilters.Any(y => y.IsMatch(x.Container));
+                        || containerFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
                     var isNameExcluded =
                         !nameExcludeFilters.IsNullOrEmpty()
                         && nameExcludeFilters.Any(y => y.IsMatch(x.Text ?? string.Empty));

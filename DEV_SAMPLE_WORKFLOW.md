@@ -7,7 +7,7 @@
 默认输出：
 
 ```text
-D:\Assets\AnimeStudio_DevSamples
+D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples
 ```
 
 重建样本：
@@ -111,4 +111,27 @@ Shader 样本应该满足：
 1. 运行 `dotnet build AnimeStudio.CLI\AnimeStudio.CLI.csproj`。
 2. 运行 `tools\Export-FreedunkDevSamples.ps1`。
 3. 检查 `asset_catalog.jsonl` 和关键 glTF。
-4. 确认 `D:\Assets\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
+4. 确认 `D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
+
+## 完整模型动画样本
+
+当需要验证“模型 + PNG 贴图 + skin/bones + 可播放身体动画”时，使用固定小输入样本，不要直接扫完整 `Freedunk_Data`：
+
+```powershell
+cd D:\misutime\AnimeStudio
+tools\Export-FreedunkCompleteBodySample.ps1
+```
+
+默认输出：
+
+```text
+D:\Assets\Freedunk_Data_Dev\CompleteBodyAnimSample
+```
+
+这个脚本会把 Bill 角色相关 bundle 和 `01_normal.ab` 复制到：
+
+```text
+D:\Assets\Freedunk_Data_Dev\CompleteMiniInput
+```
+
+然后只导出 `Bill_01_00_ingame` / `Bill_01_00_outgame` 和 `NORMALMOVE_STAND_01`。这是后续验证模型动画绑定的首选小样本。

@@ -440,7 +440,7 @@ cd D:\misutime\AnimeStudio
 
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_library" `
+  "D:\Assets\Freedunk_Data_Dev\Freedunk_Data_library" `
   --game Normal
 ```
 
@@ -453,7 +453,7 @@ cd D:\misutime\AnimeStudio
 
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
-  "D:\Assets\Freedunk_Data_models_raw_scan" `
+  "D:\Assets\Freedunk_Data_Dev\Freedunk_Data_models_raw_scan" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -473,7 +473,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\stage" `
-  "D:\Assets\stages" `
+  "D:\Assets\Freedunk_Data_Dev\stages" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -486,7 +486,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\ball" `
-  "D:\Assets\balls" `
+  "D:\Assets\Freedunk_Data_Dev\balls" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -499,7 +499,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\character\pc" `
-  "D:\Assets\characters_pc" `
+  "D:\Assets\Freedunk_Data_Dev\characters_pc" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
@@ -512,7 +512,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data\StreamingAssets\assets\graphics\character\npc" `
-  "D:\Assets\characters_npc" `
+  "D:\Assets\Freedunk_Data_Dev\characters_npc" `
   --game Normal `
   --mode SplitObjects `
   --model_roots_only `
