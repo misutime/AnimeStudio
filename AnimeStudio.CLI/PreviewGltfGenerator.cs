@@ -270,6 +270,7 @@ namespace AnimeStudio.CLI
                     path = (string)x["target"]?["path"],
                 })
                 .ToArray();
+            var coverage = AnalyzeAnimationCoverage(channelTargets.Select(x => (x.nodeName, x.path)));
             var skinJointCount = skins.Sum(x => x["joints"]?.Count() ?? 0);
             var meshNode = nodes
                 .Select((node, index) => new { node, index })
@@ -283,6 +284,8 @@ namespace AnimeStudio.CLI
                 && channels.Length > 0
                 && invalidChannels == 0
                 && skins.Length > 0
+                && coverage.coreBoneChannelCount > 0
+                && coverage.coreBoneNodeCount >= 3
                 && bbox?.skinnedSizeLooksReasonable != false
                     ? "ok"
                     : "warning";
@@ -306,19 +309,101 @@ namespace AnimeStudio.CLI
                     channels = channels.Length,
                     invalidChannels,
                 },
+                animationCoverage = coverage,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, bbox),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, bbox),
             };
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, BoundsReport bounds)
+        private static AnimationCoverage AnalyzeAnimationCoverage(IEnumerable<(string nodeName, string path)> channelTargets)
+        {
+            var targets = channelTargets
+                .Where(x => !string.IsNullOrWhiteSpace(x.nodeName))
+                .ToArray();
+            var core = targets
+                .Where(x => IsCoreAnimatedBone(x.nodeName))
+                .Select(x => x.nodeName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var twist = targets
+                .Where(x => IsTwistOrHelperBone(x.nodeName))
+                .Select(x => x.nodeName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var helper = targets
+                .Where(x => IsAccessoryPoint(x.nodeName))
+                .Select(x => x.nodeName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return new AnimationCoverage(
+                core.Length,
+                targets.Count(x => IsCoreAnimatedBone(x.nodeName)),
+                twist.Length,
+                helper.Length,
+                core,
+                twist,
+                helper
+            );
+        }
+
+        private static bool IsCoreAnimatedBone(string nodeName)
+        {
+            var name = NormalizeBoneName(nodeName);
+            if (IsTwistOrHelperBone(nodeName) || IsAccessoryPoint(nodeName))
+            {
+                return false;
+            }
+            return name.Contains("pelvis")
+                || name.Contains("spine")
+                || name.Contains("neck")
+                || name.Contains("head")
+                || name.Contains("clavicle")
+                || name.Contains("upperarm")
+                || name.Contains("forearm")
+                || name.Contains("hand")
+                || name.Contains("thigh")
+                || name.Contains("calf")
+                || name.Contains("foot")
+                || name.Contains("toe");
+        }
+
+        private static bool IsTwistOrHelperBone(string nodeName)
+        {
+            var name = NormalizeBoneName(nodeName);
+            return name.Contains("twist") || name.Contains("helper");
+        }
+
+        private static bool IsAccessoryPoint(string nodeName)
+        {
+            var name = NormalizeBoneName(nodeName);
+            return name.Contains("point") || name.Contains("socket") || name.Contains("attach");
+        }
+
+        private static string NormalizeBoneName(string nodeName)
+        {
+            return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
+        }
+
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, BoundsReport bounds)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
             if (channelCount == 0) notes.Add("The embedded animation has no valid glTF channels.");
             if (skinCount == 0) notes.Add("No skin was exported for the preview model.");
             if (invalidChannels > 0) notes.Add($"{invalidChannels} animation channel(s) target missing nodes.");
+            if (coverage.coreBoneChannelCount == 0)
+            {
+                notes.Add("No core body bone channels were written; the preview animation currently affects only helper/accessory/twist nodes.");
+            }
+            else if (coverage.coreBoneNodeCount < 3)
+            {
+                notes.Add("Very few core body bones were animated; inspect whether this is an auxiliary clip rather than a body animation.");
+            }
             if (bounds?.skinnedSizeLooksReasonable == false) notes.Add("Skinned rest bounds differ greatly from raw mesh bounds; inspect bind poses or joints.");
             return notes;
         }
@@ -472,6 +557,16 @@ namespace AnimeStudio.CLI
         }
 
         private sealed record BoundsReport(Bounds raw, Bounds skinnedFinal, bool skinnedSizeLooksReasonable);
+
+        private sealed record AnimationCoverage(
+            int coreBoneNodeCount,
+            int coreBoneChannelCount,
+            int twistOrHelperNodeCount,
+            int accessoryPointNodeCount,
+            string[] coreBoneNodes,
+            string[] twistOrHelperNodes,
+            string[] accessoryPointNodes
+        );
 
         private sealed record Bounds(float[] min, float[] max, float[] size)
         {

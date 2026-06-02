@@ -157,6 +157,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - `counts.channels` 大于 0。
 - `counts.invalidChannels` 为 0。
 - `counts.skins` 和 `counts.skinJoints` 大于 0。
+- `animationCoverage.coreBoneChannelCount` 大于 0，且 `animationCoverage.coreBoneNodeCount` 至少覆盖多个主体骨骼。
 - `bounds.raw.size` 和 `bounds.skinnedFinal.size` 接近，不能回到 skin 拉爆形态。
 
 ## 完整模型动画样本

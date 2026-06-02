@@ -145,7 +145,7 @@ preview_validation.json
 Models\...\<model>.gltf
 ```
 
-`preview_validation.json` 会记录 animation channel 数、无效 channel 数、skin/joint 数、raw bbox 和 skinned bbox。只有当动画写入成功、channel 指向有效节点、skin 存在且 skinned bbox 没有明显异常时，预览状态才会是 `ok`。
+`preview_validation.json` 会记录 animation channel 数、无效 channel 数、skin/joint 数、主体骨骼覆盖率、raw bbox 和 skinned bbox。只有当动画写入成功、channel 指向有效节点、skin 存在、命中主体骨骼且 skinned bbox 没有明显异常时，预览状态才会是 `ok`。如果只命中 `Ball_Point`、socket、twist/helper 这类辅助节点，报告会标为 `warning`。
 
 实现原则：
 
