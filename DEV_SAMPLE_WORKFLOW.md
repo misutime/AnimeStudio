@@ -114,6 +114,19 @@ Shader 样本应该满足：
 2. 运行 `tools\Export-FreedunkDevSamples.ps1`。
 3. 检查 `asset_catalog.jsonl` 和关键 glTF。
 4. 确认 `D:\Assets\Freedunk_Data_Dev\AnimeStudio_DevSamples` 仍然像可用素材库，而不是散乱对象转储。
+5. 确认新增逻辑优先使用 Unity 原生关系，而不是按游戏名、目录名、角色名写死。
+
+Unity 原生关系包括：
+
+- Animator / Animation 组件挂在哪个 GameObject 上。
+- AnimatorController / AnimatorOverrideController 直接引用哪些 AnimationClip。
+- Animator 使用哪个 Avatar。
+- Avatar / HumanDescription 如何映射 human bone 和 skeleton。
+- SkinnedMeshRenderer 使用哪些 bones、bind pose、blendshape。
+- AnimationClip binding 的 path、type/classID、attribute/property、customType。
+- AssetBundle / SerializedFile / PPtr 依赖关系。
+
+只有在 Unity 关系缺失或被游戏打包流程破坏时，才允许用 container、目录名、资源名、游戏 profile 作为补充线索。补充线索必须低于 Unity 显式引用和结构兼容验证。
 
 ## 模型动画绑定规则
 
@@ -129,12 +142,18 @@ Shader 样本应该满足：
 
 绑定关系应优先验证这些信息：
 
-- Animator Controller 是否直接引用该 AnimationClip。
-- AnimationClip source/container 是否和角色、职业、性别、动作库有关。
-- skeleton hash / bone path 是否兼容。
+- Animator / Animation 组件是否直接挂在该模型根或 prefab 层级上。
+- AnimatorController / AnimatorOverrideController 是否直接引用该 AnimationClip。
+- Animator 的 Avatar 是否能解释该 Humanoid/Muscle AnimationClip。
+- AnimationClip Transform binding path 是否覆盖模型层级或骨骼路径。
+- AnimationClip BlendShape binding 是否命中 mesh morph channel。
+- skeleton hash / bone path / human bone 映射是否兼容。
 - 实际写入 glTF 后是否产生有效 animation channels。
+- 低优先级再看 AnimationClip source/container 是否和角色、职业、性别、动作库有关。
 
 当前 `animation_bindings.jsonl` 和 `model_animations.json` 仍然只是候选索引；`--generate_preview_gltf` 会把候选动画实际写入 glTF 并生成 `preview_validation.json`，用于验证 channel、skin、主体骨骼覆盖和 bbox。
+
+后续应新增 `asset_graph.jsonl` 或 `unity_relations.jsonl`，把模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖全部记录下来。`model_animations.json` 应从这个 Unity 关系图生成，而不是主要依赖路径/名称启发式。
 
 `asset_catalog.jsonl` 和 `model_animations.json` 里的动画候选还会记录：
 

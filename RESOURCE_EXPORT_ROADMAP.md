@@ -31,6 +31,36 @@
 
 > 后续每一步实现都以“导出可用素材库”为准。默认输出必须服务于开发者浏览、筛选、复用素材；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
 
+Unity 关系解构准则：
+
+> 后续每一步实现都必须优先使用 Unity 自身序列化出来的通用关系来还原素材库，而不是围绕某个游戏、某个目录、某个角色名写特殊适配。游戏名、目录名、资源名前缀只能作为低优先级补充线索，不能替代 Unity 关系图。
+
+通用关系来源包括：
+
+- `GameObject` / prefab 层级。
+- `Animator` 组件挂载关系。
+- `Animation` legacy 组件挂载关系。
+- `AnimatorController` / `AnimatorOverrideController` 对 `AnimationClip` 的引用。
+- `Animator.Avatar`、`Avatar`、`HumanDescription`、骨架层级和 human bone 映射。
+- `SkinnedMeshRenderer` 的 bones、bind pose、blendshape/morph channel。
+- `AnimationClip` binding：path、type/classID、attribute/property、customType。
+- Humanoid/Muscle 曲线、Transform TRS 曲线、BlendShape 曲线、object reference 曲线。
+- AssetBundle / SerializedFile / PPtr 依赖关系。
+
+关系优先级：
+
+1. Unity 显式引用：Animator/Animation 组件、Controller、OverrideController、PPtr 依赖。
+2. Unity 结构兼容：Avatar/human bone、skeleton hash、bone path、clip binding path、blendshape channel。
+3. 实际验证：预览/打包后 glTF channel、skin/joint、主体骨骼覆盖、bbox。
+4. 低优先级启发式：container、目录名、角色名、资源分类、游戏 profile。
+
+任何针对单个游戏的规则都必须满足：
+
+- 默认关闭或放入 profile/config。
+- 有通用关系图无法表达的明确理由。
+- 不影响 `Normal` 通用 Unity 导出路径。
+- 文档中标明它是游戏 profile 规则，不是核心导出逻辑。
+
 模型和动画准则：
 
 > 模型默认保持干净，动画默认独立入库，绑定关系通过索引和后处理建立；只有按需预览或显式打包时，才把动画写入模型 glTF/GLB。
@@ -41,14 +71,16 @@
 - Unity 游戏常把角色模型、角色私有动画、通用身体动作、NPC 动画、场景动画放在不同 bundle；导出模型时未必已经加载完整动画集合。
 - 同名/同类动画不一定兼容，必须通过骨骼路径、skeleton hash、Animator/AnimationClip 关系和实际 glTF channel 写入结果验证。
 - 默认素材库的首要价值是“能浏览和筛选资产”，不是把所有运行时关系一次性塞进单文件。
+- 角色、NPC、道具、机关、场景物件都可能有动画；绑定逻辑必须基于 Unity component/controller/clip binding，而不是只服务角色动画。
 
 团队统一工作流：
 
 1. 默认 `Library` 导出干净模型：mesh、material、PNG texture、skeleton/skin。
 2. AnimationClip 独立进入 `Animations`。
-3. 自动生成绑定索引：`animation_bindings.jsonl` 和 `model_animations.json`。
-4. 选中模型和动画后，按需生成可播放预览 glTF。
-5. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
+3. 自动生成 Unity 关系图：模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖。
+4. 从 Unity 关系图生成绑定索引：`animation_bindings.jsonl` 和 `model_animations.json`。
+5. 选中模型和动画后，按需生成可播放预览 glTF。
+6. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
 
 默认素材库形态：
 
@@ -268,7 +300,7 @@ model_animations.json
 - blendshape 动画未写入 `weights` channel。
 - Humanoid/Muscle 动画未 bake 到骨骼 TRS，所以 Freedunk 这类角色身体动作暂时只能看到辅助节点 channel。
 - 动画 clip 与 AnimatorController 状态机关系还没有形成完整索引。
-- 模型与动画的适配关系还需要从启发式升级为可验证关系。
+- 模型与动画的适配关系还需要从启发式升级为 Unity 关系图 + 可验证关系。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
 - 缺少动画合集 glTF/GLB 打包 CLI。
 
@@ -356,14 +388,15 @@ Freedunk 当前验证结论：
 
 任务：
 
-1. 补 Humanoid/Muscle bake：把 Unity muscle 曲线采样成目标骨架 TRS 曲线。
-2. 补 glTF morph target 导出。
-3. 补 glTF blendshape weight 动画。
-4. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
-5. 给 Animator/AnimationClip 输出动画 clip 列表、来源、角色归属和候选模型。
-6. 增强按需预览命令：Humanoid/Muscle 动画预览必须覆盖主体骨骼。
-7. 增加动画合集打包命令：把已确认的一组动画写进 glTF/GLB。
-8. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
+1. 建立 Unity 关系图：GameObject/prefab、Animator、Animation、Controller、OverrideController、Avatar、SkinnedMeshRenderer、AnimationClip binding、PPtr 依赖。
+2. 补 Humanoid/Muscle bake：把 Unity muscle 曲线采样成目标骨架 TRS 曲线。
+3. 补 glTF morph target 导出。
+4. 补 glTF blendshape weight 动画。
+5. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
+6. 给 Animator/AnimationClip 输出动画 clip 列表、来源、角色归属和候选模型。
+7. 增强按需预览命令：Humanoid/Muscle 动画预览必须覆盖主体骨骼。
+8. 增加动画合集打包命令：把已确认的一组动画写进 glTF/GLB。
+9. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
 
 验收：
 
@@ -557,10 +590,12 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 建议下一阶段不要继续扩大“能导出多少类型”，而是先把主路径做扎实：
 
-1. glTF morph target / blendshape 动画。
-2. asset catalog 和 filter report。
-3. 材质语义 schema。
-4. Core profile 配置化。
-5. 固定 Freedunk 样本集做回归验证。
+1. Unity 关系图和关系优先级。
+2. Humanoid/Muscle bake。
+3. glTF morph target / blendshape 动画。
+4. asset catalog 和 filter report。
+5. 材质语义 schema。
+6. Core profile 配置化。
+7. 固定 Freedunk 样本集做回归验证。
 
 这样工具会从“能导出”进入“能稳定产出可用素材库”的阶段。
