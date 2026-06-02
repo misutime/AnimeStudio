@@ -1173,6 +1173,7 @@ namespace AnimeStudio
                 iAnim.Name = name;
                 iAnim.SampleRate = animationClip.m_SampleRate;
                 iAnim.TrackList = new List<ImportedAnimationKeyframedTrack>();
+                iAnim.HumanoidMuscles = new List<ImportedHumanoidMuscleCurve>();
                 AnimationList.Add(iAnim);
                 if (animationClip.m_Legacy)
                 {
@@ -1421,6 +1422,17 @@ namespace AnimeStudio
                         curveIndex++;
                         break;
                 }
+            }
+            else if ((BindingCustomType)binding.customType == BindingCustomType.AnimatorMuscle)
+            {
+                var attribute = binding.GetHumanoidMuscle().ToAttributeString();
+                var curve = iAnim.HumanoidMuscles.FirstOrDefault(x => x.Attribute == attribute);
+                if (curve == null)
+                {
+                    curve = new ImportedHumanoidMuscleCurve { Attribute = attribute };
+                    iAnim.HumanoidMuscles.Add(curve);
+                }
+                curve.Keyframes.Add(new ImportedKeyframe<float>(time, data[curveIndex++ + offset]));
             }
             else
             {

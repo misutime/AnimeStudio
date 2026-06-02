@@ -257,6 +257,7 @@ namespace AnimeStudio
         public string Name { get; set; }
         public float SampleRate { get; set; }
         public List<ImportedAnimationKeyframedTrack> TrackList { get; set; }
+        public List<ImportedHumanoidMuscleCurve> HumanoidMuscles { get; set; } = new List<ImportedHumanoidMuscleCurve>();
 
         public ImportedAnimationKeyframedTrack FindTrack(string path, string attribute = null)
         {
@@ -303,6 +304,12 @@ namespace AnimeStudio
     {
         public string ChannelName;
         public List<ImportedKeyframe<float>> Keyframes = new List<ImportedKeyframe<float>>();
+    }
+
+    public class ImportedHumanoidMuscleCurve
+    {
+        public string Attribute { get; set; }
+        public List<ImportedKeyframe<float>> Keyframes { get; set; } = new List<ImportedKeyframe<float>>();
     }
 
     public class ImportedMorph

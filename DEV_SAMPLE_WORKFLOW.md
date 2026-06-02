@@ -171,6 +171,17 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 当前 Freedunk 的 `NORMALMOVE_STAND_01` 预览会被标为 `warning`：它能写出 glTF 动画 channel，但主体骨骼覆盖为 0，主要命中 `Ball_Point`、twist/helper 之类辅助节点。这个现象不是模型 skin 再次拉爆，而是 Freedunk 身体动作主要存放在 Unity Humanoid/Muscle 数据里，当前 glTF TRS 动画写入还没有完成 Muscle bake。
 
+当前 `D:\Assets\Freedunk_Data_Dev\Preview_Bill_NormalMove\preview_validation.json` 已能报告 Humanoid 诊断：
+
+```text
+humanoid.present: true
+humanoid.requiresBake: true
+humanoid.muscleCurveCount: 160
+humanoid.keyframeCount: 3177
+```
+
+这说明动画数据已经被读取并保留到 glTF `animations[].extras.unityHumanoid`；下一步不是再找动画文件，而是实现 Humanoid/Muscle -> skeleton TRS bake。
+
 ## 完整模型动画样本
 
 当需要验证“模型 + PNG 贴图 + skin/bones + 可播放身体动画”时，使用固定小输入样本，不要直接扫完整 `Freedunk_Data`：

@@ -257,6 +257,7 @@ namespace AnimeStudio.CLI
             var animation = animations.FirstOrDefault(x => string.Equals((string)x["name"], expectedAnimationName, StringComparison.OrdinalIgnoreCase))
                 ?? animations.FirstOrDefault();
             var channels = animation?["channels"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var humanoid = ReadHumanoidExtras(animation);
             var invalidChannels = channels.Count(x =>
             {
                 var nodeIndex = (int?)x["target"]?["node"];
@@ -310,10 +311,29 @@ namespace AnimeStudio.CLI
                     invalidChannels,
                 },
                 animationCoverage = coverage,
+                humanoid,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, bbox),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, humanoid, bbox),
             };
+        }
+
+        private static HumanoidAnimationReport ReadHumanoidExtras(JObject animation)
+        {
+            var humanoid = animation?["extras"]?["unityHumanoid"] as JObject;
+            if (humanoid == null)
+            {
+                return new HumanoidAnimationReport(false, false, 0, 0, Array.Empty<string>());
+            }
+
+            var attributes = humanoid["attributes"]?.Values<string>()?.ToArray() ?? Array.Empty<string>();
+            return new HumanoidAnimationReport(
+                true,
+                (bool?)humanoid["requiresBake"] ?? false,
+                (int?)humanoid["muscleCurveCount"] ?? 0,
+                (int?)humanoid["keyframeCount"] ?? 0,
+                attributes.Take(128).ToArray()
+            );
         }
 
         private static AnimationCoverage AnalyzeAnimationCoverage(IEnumerable<(string nodeName, string path)> channelTargets)
@@ -389,13 +409,17 @@ namespace AnimeStudio.CLI
             return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, BoundsReport bounds)
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, HumanoidAnimationReport humanoid, BoundsReport bounds)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
             if (channelCount == 0) notes.Add("The embedded animation has no valid glTF channels.");
             if (skinCount == 0) notes.Add("No skin was exported for the preview model.");
             if (invalidChannels > 0) notes.Add($"{invalidChannels} animation channel(s) target missing nodes.");
+            if (humanoid?.requiresBake == true)
+            {
+                notes.Add($"Unity Humanoid/Muscle curves are present ({humanoid.muscleCurveCount} curves, {humanoid.keyframeCount} keyframes); they must be baked to skeleton TRS before the body animation can play in glTF.");
+            }
             if (coverage.coreBoneChannelCount == 0)
             {
                 notes.Add("No core body bone channels were written; the preview animation currently affects only helper/accessory/twist nodes.");
@@ -566,6 +590,14 @@ namespace AnimeStudio.CLI
             string[] coreBoneNodes,
             string[] twistOrHelperNodes,
             string[] accessoryPointNodes
+        );
+
+        private sealed record HumanoidAnimationReport(
+            bool present,
+            bool requiresBake,
+            int muscleCurveCount,
+            int keyframeCount,
+            string[] attributes
         );
 
         private sealed record Bounds(float[] min, float[] max, float[] size)

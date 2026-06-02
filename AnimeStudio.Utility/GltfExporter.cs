@@ -313,14 +313,52 @@ namespace AnimeStudio
 
                 if (channels.Count > 0)
                 {
-                    _animations.Add(new Dictionary<string, object>
+                    var animationEntry = new Dictionary<string, object>
                     {
                         ["name"] = animation.Name ?? "Animation",
                         ["samplers"] = samplers,
                         ["channels"] = channels,
-                    });
+                    };
+                    AddAnimationExtras(animationEntry, animation);
+                    _animations.Add(animationEntry);
+                }
+                else if (animation.HumanoidMuscles?.Count > 0)
+                {
+                    var animationEntry = new Dictionary<string, object>
+                    {
+                        ["name"] = animation.Name ?? "Animation",
+                        ["samplers"] = samplers,
+                        ["channels"] = channels,
+                    };
+                    AddAnimationExtras(animationEntry, animation);
+                    _animations.Add(animationEntry);
                 }
             }
+        }
+
+        private static void AddAnimationExtras(Dictionary<string, object> animationEntry, ImportedKeyframedAnimation animation)
+        {
+            if (animation.HumanoidMuscles == null || animation.HumanoidMuscles.Count == 0)
+            {
+                return;
+            }
+
+            animationEntry["extras"] = new Dictionary<string, object>
+            {
+                ["unityHumanoid"] = new Dictionary<string, object>
+                {
+                    ["requiresBake"] = true,
+                    ["muscleCurveCount"] = animation.HumanoidMuscles.Count,
+                    ["keyframeCount"] = animation.HumanoidMuscles.Sum(x => x.Keyframes?.Count ?? 0),
+                    ["attributes"] = animation.HumanoidMuscles
+                        .Select(x => x.Attribute)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                        .Take(256)
+                        .ToArray(),
+                },
+            };
         }
 
         private void AddAnimationChannel<T>(

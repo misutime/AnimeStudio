@@ -276,6 +276,7 @@ Freedunk 当前验证结论：
 
 - `D:\Assets\Freedunk_Data_Dev\AnimationTypeScan` 小样本扫描 594 个 `AnimationClip`，全部是 `MixedHumanoidTransform`。
 - `NORMALMOVE_STAND_01` 预览能写出 glTF animation channel，但 `coreBoneChannelCount` 为 0，主要命中 `Ball_Point`、twist/helper 等辅助节点。
+- 预览 glTF 已保留 `animations[].extras.unityHumanoid`，`NORMALMOVE_STAND_01` 当前可看到 160 条 muscle 曲线、3177 个 keyframe，并明确标记 `requiresBake: true`。
 - 这说明 Freedunk 角色身体动作的主路径是 Humanoid/Muscle bake，不是继续寻找直接 Transform body 曲线。
 
 优先级：P0
