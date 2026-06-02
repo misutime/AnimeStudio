@@ -850,6 +850,42 @@ namespace AnimeStudio.CLI
                 };
                 writer.WriteLine(JsonConvert.SerializeObject(binding));
             }
+
+            var modelAnimations = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                catalog = catalogPath,
+                rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
+                models = models
+                    .OrderBy(x => (string)x["resourceKind"])
+                    .ThenBy(x => (string)x["name"])
+                    .Select(model =>
+                    {
+                        var modelKind = (string)model["resourceKind"] ?? "Unknown";
+                        var candidates = animations
+                            .Select(animation => BuildModelAnimationCandidate(model, animation))
+                            .Where(x => x != null)
+                            .OrderByDescending(x => x.score)
+                            .ThenBy(x => x.name)
+                            .ToArray();
+
+                        return new
+                        {
+                            model = BuildModelBindingAsset(model),
+                            candidateCount = candidates.Length,
+                            embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
+                            candidates,
+                            notes = candidates.Length == 0
+                                ? new[] { $"No compatible {modelKind} animation candidate was exported in this library batch." }
+                                : Array.Empty<string>(),
+                        };
+                    })
+                    .ToArray(),
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "model_animations.json"),
+                JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
+            );
         }
 
         private static object BuildBindingAsset(JObject entry)
@@ -866,6 +902,115 @@ namespace AnimeStudio.CLI
             };
         }
 
+        private static object BuildModelBindingAsset(JObject entry)
+        {
+            return new
+            {
+                name = (string)entry["name"],
+                resourceKind = (string)entry["resourceKind"],
+                output = (string)entry["output"],
+                source = (string)entry["source"],
+                container = (string)entry["container"],
+                skeletonHash = (string)entry["skeletonHash"],
+                boneCount = (int?)entry["boneCount"] ?? 0,
+                meshCount = (int?)entry["meshCount"] ?? 0,
+                textureCount = (int?)entry["textureCount"] ?? 0,
+                animationCount = (int?)entry["animationCount"] ?? 0,
+            };
+        }
+
+        private static ModelAnimationCandidate BuildModelAnimationCandidate(JObject model, JObject animation)
+        {
+            var modelKind = (string)model["resourceKind"] ?? "Unknown";
+            var animationKind = (string)animation["resourceKind"] ?? "Unknown";
+            if (!IsAnimationCandidate(animationKind, modelKind))
+            {
+                return null;
+            }
+
+            var reasons = new List<string>();
+            var score = 0;
+            if (string.Equals(modelKind, animationKind, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 50;
+                reasons.Add("resourceKind exact match");
+            }
+            else if (IsAnimationCandidate(animationKind, modelKind))
+            {
+                score += 30;
+                reasons.Add("resourceKind compatible");
+            }
+
+            var modelBoneCount = (int?)model["boneCount"] ?? 0;
+            if (modelBoneCount > 0 && ((int?)animation["curveCount"] ?? 0) > 0)
+            {
+                score += 20;
+                reasons.Add("skinned model with transform curves");
+            }
+
+            var modelSource = ((string)model["source"] ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
+            var animationSource = ((string)animation["source"] ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
+            var animationContainer = ((string)animation["container"] ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
+            var modelToken = NormalizeBindingToken((string)model["name"]);
+            if (!string.IsNullOrEmpty(modelToken) && (animationSource.Contains(modelToken) || animationContainer.Contains(modelToken)))
+            {
+                score += 25;
+                reasons.Add("animation source/container mentions model name");
+            }
+            if (modelSource.Contains("/character/") && animationSource.Contains("/character/"))
+            {
+                score += 10;
+                reasons.Add("both assets are under character resources");
+            }
+            if (modelSource.Contains("/stage/") && animationSource.Contains("/stage/"))
+            {
+                score += 10;
+                reasons.Add("both assets are under stage resources");
+            }
+
+            var embedded = ((int?)model["animationCount"] ?? 0) > 0
+                && string.Equals(CliExportOptions.AnimationPackage.ToString(), "Both", StringComparison.OrdinalIgnoreCase);
+            if (embedded)
+            {
+                score += 5;
+                reasons.Add("model was exported with embedded animation package");
+            }
+
+            return new ModelAnimationCandidate
+            {
+                name = (string)animation["name"],
+                resourceKind = animationKind,
+                output = (string)animation["output"],
+                source = (string)animation["source"],
+                container = (string)animation["container"],
+                sampleRate = (float?)animation["sampleRate"],
+                duration = (float?)animation["duration"],
+                curveCount = (int?)animation["curveCount"] ?? 0,
+                eventCount = (int?)animation["eventCount"] ?? 0,
+                legacy = (bool?)animation["legacy"],
+                score = score,
+                matchReasons = reasons.ToArray(),
+                verification = new
+                {
+                    status = embedded ? "embedded_in_current_export" : "candidate_only",
+                    channelCount = embedded ? (int?)null : null,
+                    note = embedded
+                        ? "The model was exported with animation embedding enabled; inspect the glTF animations array for exact channel counts."
+                        : "Candidate relationship has not been validated by writing a preview glTF yet.",
+                },
+                nextAction = embedded ? "inspect_gltf" : "generate_preview_gltf",
+            };
+        }
+
+        private static string NormalizeBindingToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+            return Regex.Replace(value.ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
+        }
+
         private static bool IsAnimationCandidate(string animationKind, string modelKind)
         {
             if (string.IsNullOrWhiteSpace(animationKind) || string.IsNullOrWhiteSpace(modelKind))
@@ -878,6 +1023,24 @@ namespace AnimeStudio.CLI
             }
             return string.Equals(animationKind, "NPC", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(modelKind, "Character", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private sealed class ModelAnimationCandidate
+        {
+            public string name { get; set; }
+            public string resourceKind { get; set; }
+            public string output { get; set; }
+            public string source { get; set; }
+            public string container { get; set; }
+            public float? sampleRate { get; set; }
+            public float? duration { get; set; }
+            public int curveCount { get; set; }
+            public int eventCount { get; set; }
+            public bool? legacy { get; set; }
+            public int score { get; set; }
+            public string[] matchReasons { get; set; }
+            public object verification { get; set; }
+            public string nextAction { get; set; }
         }
 
         private static void ExportModelAssets(

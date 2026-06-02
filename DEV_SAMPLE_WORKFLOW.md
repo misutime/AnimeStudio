@@ -48,6 +48,7 @@ C:\Program Files (x86)\Freedunk\Game\Freedunk_Data
 asset_catalog.jsonl
 asset_summary.json
 animation_bindings.jsonl
+model_animations.json
 export_manifest.jsonl
 Models\
 Animations\
@@ -92,7 +93,8 @@ Shader 样本应该满足：
 
 - `asset_summary.json` 汇总模型、动画、实验 shader 数量。
 - `asset_catalog.jsonl` 记录每个模型的 mesh、material、texture、bone、skeletonHash。
-- `animation_bindings.jsonl` 记录独立动画和候选模型；当前是启发式索引，不等于最终 retarget 结果。
+- `animation_bindings.jsonl` 记录独立动画和候选模型。
+- `model_animations.json` 从模型视角记录候选动画、匹配依据、匹配分数和下一步动作；当前是启发式索引，不等于最终 retarget 结果。
 
 ## 失败案例
 
@@ -132,7 +134,7 @@ Shader 样本应该满足：
 - skeleton hash / bone path 是否兼容。
 - 实际写入 glTF 后是否产生有效 animation channels。
 
-当前 `animation_bindings.jsonl` 只是候选索引。下一阶段要把它升级成从模型视角可读的 `model_animations.json`，并记录匹配依据和验证状态。
+当前 `animation_bindings.jsonl` 和 `model_animations.json` 只是候选索引。下一阶段要补按需预览/打包命令，把候选动画实际写入 glTF/GLB，并记录有效 channel 数。
 
 ## 完整模型动画样本
 

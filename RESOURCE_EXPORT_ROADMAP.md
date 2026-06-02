@@ -46,7 +46,7 @@
 
 1. 默认 `Library` 导出干净模型：mesh、material、PNG texture、skeleton/skin。
 2. AnimationClip 独立进入 `Animations`。
-3. 自动生成绑定索引：`animation_bindings.jsonl`，后续增强为 `model_animations.json`。
+3. 自动生成绑定索引：`animation_bindings.jsonl` 和 `model_animations.json`。
 4. 选中模型和动画后，按需生成可播放预览 glTF。
 5. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
 
@@ -176,7 +176,7 @@ Textures/_ModelDependencies/*.rawtex.json
 
 ```powershell
 AnimeStudio.CLI.exe `
-  --convert_model_textures "D:\Assets\Freedunk_Data_gltf\assets\ingame\prefabs\characters\Qiqi_03_00\Qiqi_03_00.gltf"
+  --convert_model_textures "D:\Assets\Freedunk_Data_Dev\Freedunk_Data_library\Models\assets\ingame\prefabs\characters\Qiqi_03_00\Qiqi_03_00.gltf"
 ```
 
 默认行为：
@@ -215,9 +215,10 @@ export_profile.jsonl
 ```text
 asset_summary.json
 animation_bindings.jsonl
+model_animations.json
 ```
 
-`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，目前按 `resourceKind` 做启发式匹配，后续升级为 skeleton hash / bone path 级验证。
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。目前按 `resourceKind`、资源路径和角色/场景线索做启发式匹配，后续升级为 skeleton hash / bone path 级验证。
 
 `export_profile.jsonl` 已记录：
 
