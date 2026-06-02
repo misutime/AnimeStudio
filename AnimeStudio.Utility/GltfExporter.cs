@@ -347,7 +347,11 @@ namespace AnimeStudio
             {
                 ["unityHumanoid"] = new Dictionary<string, object>
                 {
-                    ["requiresBake"] = true,
+                    ["requiresBake"] = !animation.HumanoidMusclesBaked,
+                    ["baked"] = animation.HumanoidMusclesBaked,
+                    ["bakeMode"] = animation.HumanoidBakeMode,
+                    ["bakedTrackCount"] = animation.HumanoidBakedTrackCount,
+                    ["bakedKeyframeCount"] = animation.HumanoidBakedKeyframeCount,
                     ["muscleCurveCount"] = animation.HumanoidMuscles.Count,
                     ["keyframeCount"] = animation.HumanoidMuscles.Sum(x => x.Keyframes?.Count ?? 0),
                     ["attributes"] = animation.HumanoidMuscles

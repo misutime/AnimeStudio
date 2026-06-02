@@ -261,6 +261,10 @@ namespace AnimeStudio
         public float SampleRate { get; set; }
         public List<ImportedAnimationKeyframedTrack> TrackList { get; set; }
         public List<ImportedHumanoidMuscleCurve> HumanoidMuscles { get; set; } = new List<ImportedHumanoidMuscleCurve>();
+        public bool HumanoidMusclesBaked { get; set; }
+        public string HumanoidBakeMode { get; set; }
+        public int HumanoidBakedTrackCount { get; set; }
+        public int HumanoidBakedKeyframeCount { get; set; }
 
         public ImportedAnimationKeyframedTrack FindTrack(string path, string attribute = null)
         {

@@ -173,7 +173,7 @@ Models\...\<model>.gltf
 
 `preview_validation.json` 会记录 animation channel 数、无效 channel 数、skin/joint 数、主体骨骼覆盖率、raw bbox 和 skinned bbox。只有当动画写入成功、channel 指向有效节点、skin 存在、命中主体骨骼且 skinned bbox 没有明显异常时，预览状态才会是 `ok`。如果只命中 `Ball_Point`、socket、twist/helper 这类辅助节点，报告会标为 `warning`。
 
-Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01` 属于 `MixedHumanoidTransform`，预览 glTF 里可写出的 channel 主要是辅助节点，身体动作需要后续 Humanoid/Muscle bake 才能完整还原。预览 glTF 会把已读取的 Humanoid 数据保存在 `animations[].extras.unityHumanoid`，验证报告的 `humanoid.requiresBake`、`muscleCurveCount` 和 `keyframeCount` 用于判断下一步是否需要 bake。
+Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，预览 glTF 现在会把 Unity Humanoid/Muscle 曲线烘焙成目标骨架的 rotation/translation channel。`animations[].extras.unityHumanoid` 会记录原始 muscle 数据和 bake 状态；`preview_validation.json` 的 `humanoid.baked`、`bakeMode`、`bakedTrackCount`、`bakedKeyframeCount` 用于判断本次预览是否已经生成可播放骨骼动画。当前 bake 模式为 `ApproximateHumanoidMuscleV1`，目标是先生成可播放素材库预览；后续仍需要继续逼近 Unity 原生 Humanoid solver 的高保真 retarget。
 
 实现原则：
 

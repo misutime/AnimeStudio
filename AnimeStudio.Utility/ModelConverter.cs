@@ -1379,7 +1379,217 @@ namespace AnimeStudio
                         }
                     }
                 }
+
+                BakeHumanoidMusclesToSkeleton(iAnim);
             }
+        }
+
+        private void BakeHumanoidMusclesToSkeleton(ImportedKeyframedAnimation animation)
+        {
+            if (animation?.HumanoidMuscles == null || animation.HumanoidMuscles.Count == 0 || avatar?.m_HumanDescription?.m_Human == null)
+            {
+                return;
+            }
+
+            var curves = animation.HumanoidMuscles
+                .Where(x => !string.IsNullOrWhiteSpace(x.Attribute) && x.Keyframes != null && x.Keyframes.Count > 0)
+                .GroupBy(x => x.Attribute, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            if (curves.Count == 0)
+            {
+                return;
+            }
+
+            var times = curves.Values
+                .SelectMany(x => x.Keyframes.Select(k => k.time))
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray();
+            if (times.Length == 0)
+            {
+                return;
+            }
+
+            var humanBoneToFrame = avatar.m_HumanDescription.m_Human
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_HumanName) && !string.IsNullOrWhiteSpace(x.m_BoneName))
+                .Select(x => new { x.m_HumanName, Frame = RootFrame?.FindFrame(x.m_BoneName) })
+                .Where(x => x.Frame != null)
+                .GroupBy(x => x.m_HumanName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First().Frame, StringComparer.OrdinalIgnoreCase);
+            if (humanBoneToFrame.Count == 0)
+            {
+                return;
+            }
+
+            var bakedTrackCount = 0;
+            var bakedKeyframeCount = 0;
+            foreach (var target in HumanoidMuscleBakeTarget.Targets)
+            {
+                if (!humanBoneToFrame.TryGetValue(target.HumanBone, out var frame))
+                {
+                    continue;
+                }
+
+                var hasCurve = curves.ContainsKey(target.XAttribute)
+                    || curves.ContainsKey(target.YAttribute)
+                    || curves.ContainsKey(target.ZAttribute);
+                if (!hasCurve)
+                {
+                    continue;
+                }
+
+                var track = animation.FindTrack(frame.Path);
+                var rest = NormalizeQuaternion(frame.LocalRotation);
+                foreach (var time in times)
+                {
+                    var x = SampleCurve(curves, target.XAttribute, time) * target.XScale;
+                    var y = SampleCurve(curves, target.YAttribute, time) * target.YScale;
+                    var z = SampleCurve(curves, target.ZAttribute, time) * target.ZScale;
+                    var delta = EulerDegreesToQuaternion(new Vector3(x, y, z));
+                    track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(Multiply(rest, delta))));
+                    bakedKeyframeCount++;
+                }
+                bakedTrackCount++;
+            }
+
+            if (humanBoneToFrame.TryGetValue("Hips", out var hipsFrame))
+            {
+                var tx = SampleCurve(curves, "RootT.x", times[0]);
+                var ty = SampleCurve(curves, "RootT.y", times[0]);
+                var tz = SampleCurve(curves, "RootT.z", times[0]);
+                var hasRootTranslation = curves.ContainsKey("RootT.x") || curves.ContainsKey("RootT.y") || curves.ContainsKey("RootT.z");
+                if (hasRootTranslation)
+                {
+                    var track = animation.FindTrack(hipsFrame.Path);
+                    foreach (var time in times)
+                    {
+                        tx = SampleCurve(curves, "RootT.x", time);
+                        ty = SampleCurve(curves, "RootT.y", time);
+                        tz = SampleCurve(curves, "RootT.z", time);
+                        track.Translations.Add(new ImportedKeyframe<Vector3>(time, hipsFrame.LocalPosition + new Vector3(-tx, ty, tz)));
+                        bakedKeyframeCount++;
+                    }
+                    bakedTrackCount++;
+                }
+            }
+
+            if (bakedTrackCount > 0)
+            {
+                animation.HumanoidMusclesBaked = true;
+                animation.HumanoidBakeMode = "ApproximateHumanoidMuscleV1";
+                animation.HumanoidBakedTrackCount = bakedTrackCount;
+                animation.HumanoidBakedKeyframeCount = bakedKeyframeCount;
+            }
+        }
+
+        private static float SampleCurve(Dictionary<string, ImportedHumanoidMuscleCurve> curves, string attribute, float time)
+        {
+            if (string.IsNullOrWhiteSpace(attribute) || !curves.TryGetValue(attribute, out var curve) || curve.Keyframes.Count == 0)
+            {
+                return 0;
+            }
+
+            var keys = curve.Keyframes.OrderBy(x => x.time).ToArray();
+            if (time <= keys[0].time)
+            {
+                return keys[0].value;
+            }
+            if (time >= keys[keys.Length - 1].time)
+            {
+                return keys[keys.Length - 1].value;
+            }
+
+            for (var i = 1; i < keys.Length; i++)
+            {
+                if (time > keys[i].time)
+                {
+                    continue;
+                }
+                var a = keys[i - 1];
+                var b = keys[i];
+                var span = b.time - a.time;
+                var t = span <= 0 ? 0 : (time - a.time) / span;
+                return a.value + (b.value - a.value) * t;
+            }
+            return keys[keys.Length - 1].value;
+        }
+
+        private static Quaternion EulerDegreesToQuaternion(Vector3 degrees)
+        {
+            var halfX = degrees.X * Math.PI / 360.0;
+            var halfY = degrees.Y * Math.PI / 360.0;
+            var halfZ = degrees.Z * Math.PI / 360.0;
+            var sx = Math.Sin(halfX);
+            var cx = Math.Cos(halfX);
+            var sy = Math.Sin(halfY);
+            var cy = Math.Cos(halfY);
+            var sz = Math.Sin(halfZ);
+            var cz = Math.Cos(halfZ);
+
+            return NormalizeQuaternion(new Quaternion(
+                (float)(sx * cy * cz + cx * sy * sz),
+                (float)(cx * sy * cz - sx * cy * sz),
+                (float)(cx * cy * sz + sx * sy * cz),
+                (float)(cx * cy * cz - sx * sy * sz)
+            ));
+        }
+
+        private static Quaternion Multiply(Quaternion a, Quaternion b)
+        {
+            return new Quaternion(
+                a.W * b.X + a.X * b.W + a.Y * b.Z - a.Z * b.Y,
+                a.W * b.Y - a.X * b.Z + a.Y * b.W + a.Z * b.X,
+                a.W * b.Z + a.X * b.Y - a.Y * b.X + a.Z * b.W,
+                a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z
+            );
+        }
+
+        private static Quaternion NormalizeQuaternion(Quaternion q)
+        {
+            var length = Math.Sqrt(q.X * q.X + q.Y * q.Y + q.Z * q.Z + q.W * q.W);
+            if (length <= 0.000001)
+            {
+                return Quaternion.Zero;
+            }
+            var inv = 1.0 / length;
+            return new Quaternion((float)(q.X * inv), (float)(q.Y * inv), (float)(q.Z * inv), (float)(q.W * inv));
+        }
+
+        private sealed record HumanoidMuscleBakeTarget(
+            string HumanBone,
+            string XAttribute,
+            string YAttribute,
+            string ZAttribute,
+            float XScale = 35,
+            float YScale = 35,
+            float ZScale = 35
+        )
+        {
+            public static readonly HumanoidMuscleBakeTarget[] Targets =
+            {
+                new("Spine", "Spine Front-Back", "Spine Left-Right", "Spine Twist Left-Right", -25, 25, -35),
+                new("Chest", "Chest Front-Back", "Chest Left-Right", "Chest Twist Left-Right", -25, 25, -35),
+                new("UpperChest", "UpperChest Front-Back", "UpperChest Left-Right", "UpperChest Twist Left-Right", -25, 25, -35),
+                new("Neck", "Neck Nod Down-Up", "Neck Tilt Left-Right", "Neck Turn Left-Right", -30, 30, -45),
+                new("Head", "Head Nod Down-Up", "Head Tilt Left-Right", "Head Turn Left-Right", -35, 35, -55),
+                new("LeftUpperLeg", "Left Upper Leg Front-Back", "Left Upper Leg In-Out", "Left Upper Leg Twist In-Out", -65, 35, -35),
+                new("RightUpperLeg", "Right Upper Leg Front-Back", "Right Upper Leg In-Out", "Right Upper Leg Twist In-Out", -65, -35, 35),
+                new("LeftLowerLeg", "Left Lower Leg Stretch", null, "Left Lower Leg Twist In-Out", -75, 0, -25),
+                new("RightLowerLeg", "Right Lower Leg Stretch", null, "Right Lower Leg Twist In-Out", -75, 0, 25),
+                new("LeftFoot", "Left Foot Up-Down", null, "Left Foot Twist In-Out", -45, 0, -35),
+                new("RightFoot", "Right Foot Up-Down", null, "Right Foot Twist In-Out", -45, 0, 35),
+                new("LeftToes", "Left Toes Up-Down", null, null, -35, 0, 0),
+                new("RightToes", "Right Toes Up-Down", null, null, -35, 0, 0),
+                new("LeftShoulder", "Left Shoulder Down-Up", "Left Shoulder Front-Back", null, -35, 35, 0),
+                new("RightShoulder", "Right Shoulder Down-Up", "Right Shoulder Front-Back", null, -35, -35, 0),
+                new("LeftUpperArm", "Left Arm Down-Up", "Left Arm Front-Back", "Left Arm Twist In-Out", -75, 45, -45),
+                new("RightUpperArm", "Right Arm Down-Up", "Right Arm Front-Back", "Right Arm Twist In-Out", -75, -45, 45),
+                new("LeftLowerArm", "Left Forearm Stretch", null, "Left Forearm Twist In-Out", -95, 0, -45),
+                new("RightLowerArm", "Right Forearm Stretch", null, "Right Forearm Twist In-Out", -95, 0, 45),
+                new("LeftHand", "Left Hand Down-Up", "Left Hand In-Out", null, -45, 35, 0),
+                new("RightHand", "Right Hand Down-Up", "Right Hand In-Out", null, -45, -35, 0),
+                new("Jaw", "Jaw Close", "Jaw Left-Right", null, -20, 20, 0),
+            };
         }
 
         private void ReadCurveData(AnimationClip animationClip, ImportedKeyframedAnimation iAnim, AnimationClipBindingConstant m_ClipBindingConstant, int index, float time, float[] data, int offset, ref int curveIndex)

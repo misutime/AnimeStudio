@@ -323,13 +323,17 @@ namespace AnimeStudio.CLI
             var humanoid = animation?["extras"]?["unityHumanoid"] as JObject;
             if (humanoid == null)
             {
-                return new HumanoidAnimationReport(false, false, 0, 0, Array.Empty<string>());
+                return new HumanoidAnimationReport(false, false, false, null, 0, 0, 0, 0, Array.Empty<string>());
             }
 
             var attributes = humanoid["attributes"]?.Values<string>()?.ToArray() ?? Array.Empty<string>();
             return new HumanoidAnimationReport(
                 true,
                 (bool?)humanoid["requiresBake"] ?? false,
+                (bool?)humanoid["baked"] ?? false,
+                (string)humanoid["bakeMode"],
+                (int?)humanoid["bakedTrackCount"] ?? 0,
+                (int?)humanoid["bakedKeyframeCount"] ?? 0,
                 (int?)humanoid["muscleCurveCount"] ?? 0,
                 (int?)humanoid["keyframeCount"] ?? 0,
                 attributes.Take(128).ToArray()
@@ -419,6 +423,10 @@ namespace AnimeStudio.CLI
             if (humanoid?.requiresBake == true)
             {
                 notes.Add($"Unity Humanoid/Muscle curves are present ({humanoid.muscleCurveCount} curves, {humanoid.keyframeCount} keyframes); they must be baked to skeleton TRS before the body animation can play in glTF.");
+            }
+            else if (humanoid?.baked == true)
+            {
+                notes.Add($"Unity Humanoid/Muscle curves were baked with {humanoid.bakeMode ?? "unknown"} into {humanoid.bakedTrackCount} skeleton track(s), {humanoid.bakedKeyframeCount} keyframes.");
             }
             if (coverage.coreBoneChannelCount == 0)
             {
@@ -595,6 +603,10 @@ namespace AnimeStudio.CLI
         private sealed record HumanoidAnimationReport(
             bool present,
             bool requiresBake,
+            bool baked,
+            string bakeMode,
+            int bakedTrackCount,
+            int bakedKeyframeCount,
             int muscleCurveCount,
             int keyframeCount,
             string[] attributes

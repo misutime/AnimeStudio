@@ -119,7 +119,7 @@ CAB / PPtr 依赖索引策略：
 | FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、glTF alpha/double-sided 状态、extras 保留 Unity slot/float/color 信息 | 62% |
-| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、按需生成预览 glTF、验证报告和 AnimationClip 类型分类 | 72% |
+| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、Humanoid/Muscle 近似 bake v1、按需生成预览 glTF、验证报告和 AnimationClip 类型分类 | 76% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
@@ -309,12 +309,12 @@ model_validation.json
 
 ### 2. glTF 动画仍偏基础
 
-当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。对于普通 Transform 曲线，这条路径可以生成可播放动画；对于 Unity Humanoid/Muscle 动画，还需要先把 muscle 曲线烘焙回目标骨架的 TRS 曲线。
+当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。普通 Transform 曲线可以直接生成可播放动画；Unity Humanoid/Muscle 动画现在已有 `ApproximateHumanoidMuscleV1`，会把主要 muscle 曲线近似烘焙到目标骨架 rotation/translation channel，优先满足素材库预览和动作筛选。它还不是 Unity 原生 Humanoid solver 的完整复刻，高保真 retarget 仍需继续完善 Avatar axes、limit、pre/post rotation 和手指/TDoF 细节。
 
 缺口：
 
 - blendshape 动画未写入 `weights` channel。
-- Humanoid/Muscle 动画未 bake 到骨骼 TRS，所以 Freedunk 这类角色身体动作暂时只能看到辅助节点 channel。
+- Humanoid/Muscle 动画已有近似 bake v1，Freedunk 角色身体动作可写出主体骨骼 channel；后续需要继续提高与 Unity 原生 Humanoid solver 的一致性。
 - 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
 - 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
@@ -323,9 +323,9 @@ model_validation.json
 Freedunk 当前验证结论：
 
 - `D:\Assets\Freedunk_Data_Dev\AnimationTypeScan` 小样本扫描 594 个 `AnimationClip`，全部是 `MixedHumanoidTransform`。
-- `NORMALMOVE_STAND_01` 预览能写出 glTF animation channel，但 `coreBoneChannelCount` 为 0，主要命中 `Ball_Point`、twist/helper 等辅助节点。
-- 预览 glTF 已保留 `animations[].extras.unityHumanoid`，`NORMALMOVE_STAND_01` 当前可看到 160 条 muscle 曲线、3177 个 keyframe，并明确标记 `requiresBake: true`。
-- 这说明 Freedunk 角色身体动作的主路径是 Humanoid/Muscle bake，不是继续寻找直接 Transform body 曲线。
+- `NORMALMOVE_STAND_01` 使用 `ApproximateHumanoidMuscleV1` 预览后，`preview_validation.json` 为 `status: ok`，67 个 animation channel、22 个主体骨骼节点、0 个无效 channel，`humanoid.baked: true`，`bakedTrackCount: 22`，`bakedKeyframeCount: 1100`。
+- `DASH_01` 使用同一 bake 路径预览后，`status: ok`，67 个 animation channel、22 个主体骨骼节点、0 个无效 channel，`bakedTrackCount: 22`，`bakedKeyframeCount: 396`。
+- 这说明 Freedunk 角色身体动作的主路径确实是 Humanoid/Muscle bake；当前 v1 已能生成可播放预览，下一阶段是提升 retarget 精度和动画合集打包。
 
 优先级：P0
 
