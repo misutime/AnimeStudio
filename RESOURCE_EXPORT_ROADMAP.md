@@ -33,7 +33,7 @@
 
 Unity 关系解构准则：
 
-> 后续每一步实现都必须优先使用 Unity 自身序列化出来的通用关系来还原素材库，而不是围绕某个游戏、某个目录、某个角色名写特殊适配。游戏名、目录名、资源名前缀只能作为低优先级补充线索，不能替代 Unity 关系图。
+> 后续每一步实现都必须使用 Unity 自身序列化出来的通用引用和结构来还原素材库，而不是围绕某个游戏、某个目录、某个角色名写特殊适配。默认逻辑如无不得已的明确理由，绝不自行推断关系；游戏名、目录名、资源名前缀只能作为显式 fallback，不能替代 Unity 关系图。
 
 通用关系来源包括：
 
@@ -52,7 +52,7 @@ Unity 关系解构准则：
 1. Unity 显式引用：Animator/Animation 组件、Controller、OverrideController、PPtr 依赖。
 2. Unity 结构兼容：Avatar/human bone、skeleton hash、bone path、clip binding path、blendshape channel。
 3. 实际验证：预览/打包后 glTF channel、skin/joint、主体骨骼覆盖、bbox。
-4. 低优先级启发式：container、目录名、角色名、资源分类、游戏 profile。
+4. 显式 fallback：container、目录名、角色名、资源分类、游戏 profile。fallback 必须明确标注，不能混入默认绑定结果。
 
 任何针对单个游戏的规则都必须满足：
 
@@ -262,7 +262,7 @@ unity_relations.jsonl
 unity_relation_summary.json
 ```
 
-`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。目前 `model_animations.json` 仍可能包含 `resourceKind`、资源路径和角色/场景线索等低优先级启发式匹配，后续必须主要从 Unity 关系图派生，并用 skeleton hash / bone path / preview glTF 做验证。
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。默认候选必须从 Unity 关系图或等价的内存 Unity 引用解析结果派生；`resourceKind`、资源路径和角色/场景线索只能在显式 fallback 模式中作为带标注的补充线索。
 
 `export_profile.jsonl` 已记录：
 
@@ -302,7 +302,7 @@ unity_relation_summary.json
 - blendshape 动画未写入 `weights` channel。
 - Humanoid/Muscle 动画未 bake 到骨骼 TRS，所以 Freedunk 这类角色身体动作暂时只能看到辅助节点 channel。
 - 动画 clip 与 AnimatorController 状态机关系已有关系图明细，但还没有形成完整可浏览索引。
-- 模型与动画的适配关系已有 Unity 关系图上游数据，`model_animations.json` 仍需要从启发式升级为关系图 + 可验证关系。
+- 模型与动画的适配关系已有 Unity 关系图上游数据，`model_animations.json` 默认候选必须从关系图 + 可验证关系生成。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
 - 缺少动画合集 glTF/GLB 打包 CLI。
 
@@ -351,7 +351,7 @@ Freedunk 当前验证结论：
 缺口：
 
 - 没有统一 `asset_catalog.json` 或可浏览 `catalog.html`。
-- 资源分类仍是启发式，需要更强的 Character / NPC / Stage / Prop / Ball 分类规则。
+- 资源分类仍有 fallback 成分，需要优先寻找 Unity 类型、组件和引用依据，再标注无法由 Unity 关系解释的部分。
 - 模型与贴图、材质、动画、源文件的关系图还不够完整。
 - 没有自动生成缩略图/预览图。
 
@@ -592,7 +592,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 建议下一阶段不要继续扩大“能导出多少类型”，而是先把主路径做扎实：
 
-1. 用 Unity 关系图驱动 `model_animations.json`，替代当前低优先级启发式主导的候选绑定。
+1. 用 Unity 关系图驱动 `model_animations.json`，默认不再输出路径/名称/resourceKind 推断出来的候选绑定。
 2. Humanoid/Muscle bake。
 3. glTF morph target / blendshape 动画。
 4. asset catalog 和 filter report。

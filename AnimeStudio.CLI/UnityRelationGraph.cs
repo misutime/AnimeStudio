@@ -352,7 +352,7 @@ namespace AnimeStudio.CLI
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 relationGraph = relationPath,
-                note = "Unity 原生关系图摘要。model_animations.json 在完全迁移前仍可能包含低优先级启发式候选；动画绑定应优先从 unity_relations.jsonl 派生并通过 preview 验证。",
+                note = "Unity 原生关系图摘要。默认动画绑定必须来自 Unity 显式引用或结构兼容关系；路径、目录、名字、resourceKind 不能作为默认绑定依据。",
                 assets = new
                 {
                     total = stats.AssetCount,
@@ -386,7 +386,7 @@ namespace AnimeStudio.CLI
                 {
                     "用 animator.controller / animatorController.clip / animation.clip 建立显式动画候选。",
                     "用 animator.avatar、AnimationClip binding 和 SkinnedMeshRenderer bones 做结构兼容验证。",
-                    "低优先级路径/名称候选只能补充缺失关系，不能覆盖 Unity 显式关系。",
+                    "如确需路径/名称/resourceKind fallback，必须由显式参数或 profile 开启，并在输出中标注为 fallback。",
                 },
             };
 

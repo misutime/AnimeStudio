@@ -98,7 +98,7 @@ Shader 样本应该满足：
 - `animation_bindings.jsonl` 记录独立动画和候选模型。
 - `unity_relations.jsonl` 记录 GameObject、组件、Animator、Controller、Avatar、SkinnedMeshRenderer、AnimationClip binding 等 Unity 原生关系。
 - `unity_relation_summary.json` 汇总关系数量和关键覆盖率，便于快速判断样本是否真的加载到了 Animator Controller、Avatar、Muscle Clip、skin bones。
-- `model_animations.json` 从模型视角记录候选动画、匹配依据、匹配分数和下一步动作；当前仍可能包含低优先级启发式候选，不等于最终 retarget 结果。
+- `model_animations.json` 从模型视角记录候选动画、匹配依据、匹配分数和下一步动作；默认候选必须来自 Unity 显式引用或结构兼容关系，不等于最终 retarget 结果。
 
 ## 失败案例
 
@@ -130,7 +130,7 @@ Unity 原生关系包括：
 - AnimationClip binding 的 path、type/classID、attribute/property、customType。
 - AssetBundle / SerializedFile / PPtr 依赖关系。
 
-只有在 Unity 关系缺失或被游戏打包流程破坏时，才允许用 container、目录名、资源名、游戏 profile 作为补充线索。补充线索必须低于 Unity 显式引用和结构兼容验证。
+只有在 Unity 关系缺失或被游戏打包流程破坏，并且命令或 profile 显式开启 fallback 时，才允许用 container、目录名、资源名、游戏 profile 作为补充线索。fallback 结果必须在索引中标明，不能伪装成 Unity 引用关系。
 
 ## 模型动画绑定规则
 
@@ -153,11 +153,11 @@ Unity 原生关系包括：
 - AnimationClip BlendShape binding 是否命中 mesh morph channel。
 - skeleton hash / bone path / human bone 映射是否兼容。
 - 实际写入 glTF 后是否产生有效 animation channels。
-- 低优先级再看 AnimationClip source/container 是否和角色、职业、性别、动作库有关。
+- 显式 fallback 模式下，才允许参考 AnimationClip source/container 是否和角色、职业、性别、动作库有关。
 
 当前 `animation_bindings.jsonl` 和 `model_animations.json` 仍然只是候选索引；`--generate_preview_gltf` 会把候选动画实际写入 glTF 并生成 `preview_validation.json`，用于验证 channel、skin、主体骨骼覆盖和 bbox。
 
-当前已生成 `unity_relations.jsonl` 和 `unity_relation_summary.json`，把模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖记录下来。下一步应让 `model_animations.json` 主要从这个 Unity 关系图生成，而不是主要依赖路径/名称启发式。
+当前已生成 `unity_relations.jsonl` 和 `unity_relation_summary.json`，把模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖记录下来。`model_animations.json` 默认必须从 Unity 关系图或等价的内存 Unity 引用解析结果生成，不再主要依赖路径/名称启发式。
 
 `asset_catalog.jsonl` 和 `model_animations.json` 里的动画候选还会记录：
 

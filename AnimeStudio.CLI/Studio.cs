@@ -810,15 +810,15 @@ namespace AnimeStudio.CLI
 
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+            var explicitAnimationLinks = BuildExplicitUnityAnimationLinks(models, animations);
             var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
             using var writer = new StreamWriter(bindingsPath, false);
             foreach (var animation in animations)
             {
-                var animationKind = (string)animation["resourceKind"] ?? "Unknown";
-                var candidates = models
-                    .Where(model => IsAnimationCandidate(animationKind, (string)model["resourceKind"]))
-                    .OrderByDescending(model => ((int?)model["boneCount"] ?? 0) > 0)
-                    .ThenBy(model => (string)model["name"])
+                var animationKey = GetCatalogKey(animation);
+                explicitAnimationLinks.ByAnimation.TryGetValue(animationKey, out var linkedModels);
+                var candidates = (linkedModels ?? new List<ExplicitModelAnimationLink>())
+                    .OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 if (candidates.Count == 0)
@@ -828,7 +828,7 @@ namespace AnimeStudio.CLI
                         animation = BuildBindingAsset(animation),
                         candidateCount = 0,
                         candidates = Array.Empty<object>(),
-                        note = "No model with a matching resourceKind was exported in this sample/library batch.",
+                        note = "No exported model has an explicit Unity Animator/Animation reference to this clip in the current loaded files.",
                     };
                     writer.WriteLine(JsonConvert.SerializeObject(unbound));
                     continue;
@@ -838,15 +838,18 @@ namespace AnimeStudio.CLI
                 {
                     animation = BuildBindingAsset(animation),
                     candidateCount = candidates.Count,
-                    candidates = candidates.Take(16).Select(model => new
+                    candidates = candidates.Take(16).Select(link => new
                     {
-                        name = (string)model["name"],
-                        resourceKind = (string)model["resourceKind"],
-                        output = (string)model["output"],
-                        skeletonHash = (string)model["skeletonHash"],
-                        boneCount = (int?)model["boneCount"] ?? 0,
-                        meshCount = (int?)model["meshCount"] ?? 0,
-                        textureCount = (int?)model["textureCount"] ?? 0,
+                        name = link.ModelName,
+                        resourceKind = link.ModelResourceKind,
+                        output = link.ModelOutput,
+                        skeletonHash = link.ModelSkeletonHash,
+                        boneCount = link.ModelBoneCount,
+                        meshCount = link.ModelMeshCount,
+                        textureCount = link.ModelTextureCount,
+                        confidence = link.Confidence,
+                        relation = link.Relation,
+                        matchReasons = link.Reasons,
                     }).ToArray(),
                 };
                 writer.WriteLine(JsonConvert.SerializeObject(binding));
@@ -857,7 +860,7 @@ namespace AnimeStudio.CLI
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 catalog = catalogPath,
                 rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
-                relationRule = "Unity explicit references and structural compatibility must outrank path/name heuristics. Current candidates may still include heuristic matches until they are regenerated from unity_relations.jsonl.",
+                relationRule = "Default candidates come from explicit Unity Animator/Animation references only. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
                 relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                 relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
                 models = models
@@ -865,10 +868,10 @@ namespace AnimeStudio.CLI
                     .ThenBy(x => (string)x["name"])
                     .Select(model =>
                     {
-                        var modelKind = (string)model["resourceKind"] ?? "Unknown";
-                        var candidates = animations
-                            .Select(animation => BuildModelAnimationCandidate(model, animation))
-                            .Where(x => x != null)
+                        var modelKey = GetCatalogKey(model);
+                        explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var linkedAnimations);
+                        var candidates = (linkedAnimations ?? new List<ExplicitModelAnimationLink>())
+                            .Select(BuildExplicitModelAnimationCandidate)
                             .OrderByDescending(x => x.score)
                             .ThenBy(x => x.name)
                             .ToArray();
@@ -880,7 +883,7 @@ namespace AnimeStudio.CLI
                             embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
                             candidates,
                             notes = candidates.Length == 0
-                                ? new[] { $"No compatible {modelKind} animation candidate was exported in this library batch." }
+                                ? new[] { "No explicit Unity Animator/Animation clip reference was found for this exported model in the current loaded files." }
                                 : Array.Empty<string>(),
                         };
                     })
@@ -890,6 +893,167 @@ namespace AnimeStudio.CLI
                 Path.Combine(savePath, "model_animations.json"),
                 JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
             );
+        }
+
+        private static ExplicitAnimationLinks BuildExplicitUnityAnimationLinks(List<JObject> models, List<JObject> animations)
+        {
+            var links = new ExplicitAnimationLinks();
+            var modelEntries = models
+                .GroupBy(GetCatalogKey)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            var animationEntries = animations
+                .GroupBy(GetCatalogKey)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            var modelItems = exportableAssets
+                .Where(x => x?.Asset is GameObject or Animator)
+                .Where(x => modelEntries.ContainsKey(GetAssetKey(x.Asset)))
+                .ToList();
+
+            foreach (var item in modelItems)
+            {
+                var modelKey = GetAssetKey(item.Asset);
+                if (!modelEntries.TryGetValue(modelKey, out var modelEntry))
+                {
+                    continue;
+                }
+
+                foreach (var relation in CollectExplicitAnimationRelations(item.Asset))
+                {
+                    var animationKey = GetAssetKey(relation.Clip);
+                    if (!animationEntries.TryGetValue(animationKey, out var animationEntry))
+                    {
+                        continue;
+                    }
+
+                    var link = BuildExplicitLink(modelEntry, animationEntry, relation);
+                    links.Add(modelKey, animationKey, link);
+                }
+            }
+
+            return links;
+        }
+
+        private static IEnumerable<ExplicitAnimationRelation> CollectExplicitAnimationRelations(AnimeStudio.Object modelAsset)
+        {
+            var gameObject = modelAsset switch
+            {
+                Animator animator when animator.m_GameObject.TryGet(out var owner) => owner,
+                GameObject go => go,
+                _ => null,
+            };
+
+            if (modelAsset is Animator directAnimator)
+            {
+                foreach (var relation in CollectAnimatorClipRelations(directAnimator, "animator.controller"))
+                {
+                    yield return relation;
+                }
+            }
+
+            if (gameObject == null)
+            {
+                yield break;
+            }
+
+            foreach (var componentPtr in gameObject.m_Components ?? Enumerable.Empty<PPtr<Component>>())
+            {
+                if (componentPtr.TryGet<Animator>(out var animator))
+                {
+                    foreach (var relation in CollectAnimatorClipRelations(animator, "gameObject.animator.controller"))
+                    {
+                        yield return relation;
+                    }
+                }
+
+                if (componentPtr.TryGet<Animation>(out var animation))
+                {
+                    foreach (var clipPtr in animation.m_Animations ?? Enumerable.Empty<PPtr<AnimationClip>>())
+                    {
+                        if (clipPtr.TryGet(out var clip))
+                        {
+                            yield return new ExplicitAnimationRelation
+                            {
+                                Clip = clip,
+                                Relation = "animation.clip",
+                                Reasons = new[] { "Unity Animation component explicitly references this AnimationClip." },
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        private static IEnumerable<ExplicitAnimationRelation> CollectAnimatorClipRelations(Animator animator, string relationName)
+        {
+            if (!animator.m_Controller.TryGet<RuntimeAnimatorController>(out var controller))
+            {
+                yield break;
+            }
+
+            foreach (var clip in CollectRuntimeControllerClips(controller))
+            {
+                yield return new ExplicitAnimationRelation
+                {
+                    Clip = clip,
+                    Relation = relationName,
+                    Reasons = new[] { "Unity AnimatorController explicitly references this AnimationClip." },
+                };
+            }
+        }
+
+        private static IEnumerable<AnimationClip> CollectRuntimeControllerClips(RuntimeAnimatorController controller)
+        {
+            switch (controller)
+            {
+                case AnimatorController animatorController:
+                    foreach (var clipPtr in animatorController.m_AnimationClips ?? Enumerable.Empty<PPtr<AnimationClip>>())
+                    {
+                        if (clipPtr.TryGet(out var clip))
+                        {
+                            yield return clip;
+                        }
+                    }
+                    break;
+                case AnimatorOverrideController overrideController:
+                    if (overrideController.m_Controller.TryGet<RuntimeAnimatorController>(out var baseController))
+                    {
+                        foreach (var clip in CollectRuntimeControllerClips(baseController))
+                        {
+                            yield return clip;
+                        }
+                    }
+
+                    foreach (var pair in overrideController.m_Clips ?? Enumerable.Empty<AnimationClipOverride>())
+                    {
+                        if (pair.m_OverrideClip.TryGet(out var overrideClip))
+                        {
+                            yield return overrideClip;
+                        }
+                        else if (pair.m_OriginalClip.TryGet(out var originalClip))
+                        {
+                            yield return originalClip;
+                        }
+                    }
+                    break;
+            }
+        }
+
+        private static ExplicitModelAnimationLink BuildExplicitLink(JObject model, JObject animation, ExplicitAnimationRelation relation)
+        {
+            return new ExplicitModelAnimationLink
+            {
+                ModelName = (string)model["name"],
+                ModelResourceKind = (string)model["resourceKind"],
+                ModelOutput = (string)model["output"],
+                ModelSkeletonHash = (string)model["skeletonHash"],
+                ModelBoneCount = (int?)model["boneCount"] ?? 0,
+                ModelMeshCount = (int?)model["meshCount"] ?? 0,
+                ModelTextureCount = (int?)model["textureCount"] ?? 0,
+                Animation = animation,
+                Relation = relation.Relation,
+                Confidence = "explicit_unity_reference",
+                Reasons = relation.Reasons,
+            };
         }
 
         private static object BuildBindingAsset(JObject entry)
@@ -930,67 +1094,13 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static ModelAnimationCandidate BuildModelAnimationCandidate(JObject model, JObject animation)
+        private static ModelAnimationCandidate BuildExplicitModelAnimationCandidate(ExplicitModelAnimationLink link)
         {
-            var modelKind = (string)model["resourceKind"] ?? "Unknown";
-            var animationKind = (string)animation["resourceKind"] ?? "Unknown";
-            if (!IsAnimationCandidate(animationKind, modelKind))
-            {
-                return null;
-            }
-
-            var reasons = new List<string>();
-            var score = 0;
-            if (string.Equals(modelKind, animationKind, StringComparison.OrdinalIgnoreCase))
-            {
-                score += 50;
-                reasons.Add("resourceKind exact match");
-            }
-            else if (IsAnimationCandidate(animationKind, modelKind))
-            {
-                score += 30;
-                reasons.Add("resourceKind compatible");
-            }
-
-            var modelBoneCount = (int?)model["boneCount"] ?? 0;
-            if (modelBoneCount > 0 && ((int?)animation["curveCount"] ?? 0) > 0)
-            {
-                score += 20;
-                reasons.Add("skinned model with transform curves");
-            }
-
-            var modelSource = ((string)model["source"] ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
-            var animationSource = ((string)animation["source"] ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
-            var animationContainer = ((string)animation["container"] ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
-            var modelToken = NormalizeBindingToken((string)model["name"]);
-            if (!string.IsNullOrEmpty(modelToken) && (animationSource.Contains(modelToken) || animationContainer.Contains(modelToken)))
-            {
-                score += 25;
-                reasons.Add("animation source/container mentions model name");
-            }
-            if (modelSource.Contains("/character/") && animationSource.Contains("/character/"))
-            {
-                score += 10;
-                reasons.Add("both assets are under character resources");
-            }
-            if (modelSource.Contains("/stage/") && animationSource.Contains("/stage/"))
-            {
-                score += 10;
-                reasons.Add("both assets are under stage resources");
-            }
-
-            var embedded = ((int?)model["animationCount"] ?? 0) > 0
-                && string.Equals(CliExportOptions.AnimationPackage.ToString(), "Both", StringComparison.OrdinalIgnoreCase);
-            if (embedded)
-            {
-                score += 5;
-                reasons.Add("model was exported with embedded animation package");
-            }
-
+            var animation = link.Animation;
             return new ModelAnimationCandidate
             {
                 name = (string)animation["name"],
-                resourceKind = animationKind,
+                resourceKind = (string)animation["resourceKind"],
                 output = (string)animation["output"],
                 source = (string)animation["source"],
                 container = (string)animation["container"],
@@ -1006,41 +1116,41 @@ namespace AnimeStudio.CLI
                 blendShapeBindingCount = (int?)animation["blendShapeBindingCount"],
                 auxiliaryBindingCount = (int?)animation["auxiliaryBindingCount"],
                 classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
-                score = score,
-                matchReasons = reasons.ToArray(),
+                confidence = link.Confidence,
+                relation = link.Relation,
+                score = 100,
+                matchReasons = link.Reasons,
                 verification = new
                 {
-                    status = embedded ? "embedded_in_current_export" : "candidate_only",
-                    channelCount = embedded ? (int?)null : null,
-                    note = embedded
-                        ? "The model was exported with animation embedding enabled; inspect the glTF animations array for exact channel counts."
-                        : "Candidate relationship has not been validated by writing a preview glTF yet.",
+                    status = "explicit_unity_reference",
+                    channelCount = (int?)null,
+                    note = "This candidate comes from a Unity Animator/Animation reference. Preview glTF still needs to validate playable channels and skin coverage.",
                 },
-                nextAction = embedded ? "inspect_gltf" : "generate_preview_gltf",
+                nextAction = "generate_preview_gltf",
             };
         }
 
-        private static string NormalizeBindingToken(string value)
+        private static string GetCatalogKey(JObject entry)
         {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return string.Empty;
-            }
-            return Regex.Replace(value.ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
+            return BuildAssetKey((string)entry["source"], (long?)entry["pathId"] ?? 0);
         }
 
-        private static bool IsAnimationCandidate(string animationKind, string modelKind)
+        private static string GetAssetKey(AnimeStudio.Object asset)
         {
-            if (string.IsNullOrWhiteSpace(animationKind) || string.IsNullOrWhiteSpace(modelKind))
-            {
-                return false;
-            }
-            if (string.Equals(animationKind, modelKind, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-            return string.Equals(animationKind, "NPC", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(modelKind, "Character", StringComparison.OrdinalIgnoreCase);
+            return BuildAssetKey(asset?.assetsFile?.originalPath ?? asset?.assetsFile?.fileName, asset?.m_PathID ?? 0);
+        }
+
+        private static string BuildAssetKey(string source, long pathId)
+        {
+            return $"{NormalizeSourcePath(source)}#{pathId}";
+        }
+
+        private static string NormalizeSourcePath(string source)
+        {
+            return (source ?? string.Empty)
+                .Replace('\\', '/')
+                .Trim()
+                .ToLowerInvariant();
         }
 
         private sealed class ModelAnimationCandidate
@@ -1062,10 +1172,63 @@ namespace AnimeStudio.CLI
             public int? blendShapeBindingCount { get; set; }
             public int? auxiliaryBindingCount { get; set; }
             public string[] classificationNotes { get; set; }
+            public string confidence { get; set; }
+            public string relation { get; set; }
             public int score { get; set; }
             public string[] matchReasons { get; set; }
             public object verification { get; set; }
             public string nextAction { get; set; }
+        }
+
+        private sealed class ExplicitAnimationLinks
+        {
+            public Dictionary<string, List<ExplicitModelAnimationLink>> ByModel { get; } = new Dictionary<string, List<ExplicitModelAnimationLink>>(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, List<ExplicitModelAnimationLink>> ByAnimation { get; } = new Dictionary<string, List<ExplicitModelAnimationLink>>(StringComparer.OrdinalIgnoreCase);
+            private readonly HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            public void Add(string modelKey, string animationKey, ExplicitModelAnimationLink link)
+            {
+                var uniqueKey = $"{modelKey}|{animationKey}|{link.Relation}";
+                if (!seen.Add(uniqueKey))
+                {
+                    return;
+                }
+
+                AddTo(ByModel, modelKey, link);
+                AddTo(ByAnimation, animationKey, link);
+            }
+
+            private static void AddTo(Dictionary<string, List<ExplicitModelAnimationLink>> map, string key, ExplicitModelAnimationLink link)
+            {
+                if (!map.TryGetValue(key, out var links))
+                {
+                    links = new List<ExplicitModelAnimationLink>();
+                    map[key] = links;
+                }
+                links.Add(link);
+            }
+        }
+
+        private sealed class ExplicitModelAnimationLink
+        {
+            public string ModelName { get; set; }
+            public string ModelResourceKind { get; set; }
+            public string ModelOutput { get; set; }
+            public string ModelSkeletonHash { get; set; }
+            public int ModelBoneCount { get; set; }
+            public int ModelMeshCount { get; set; }
+            public int ModelTextureCount { get; set; }
+            public JObject Animation { get; set; }
+            public string Confidence { get; set; }
+            public string Relation { get; set; }
+            public string[] Reasons { get; set; }
+        }
+
+        private sealed class ExplicitAnimationRelation
+        {
+            public AnimationClip Clip { get; set; }
+            public string Relation { get; set; }
+            public string[] Reasons { get; set; }
         }
 
         private static void ExportModelAssets(
