@@ -30,11 +30,13 @@ namespace AnimeStudio
         private Dictionary<AnimationClip, Dictionary<uint, string>> animationTosCache = new Dictionary<AnimationClip, Dictionary<uint, string>>();
         private Dictionary<Texture2D, string> textureNameDictionary = new Dictionary<Texture2D, string>();
         private Dictionary<Transform, ImportedFrame> transformDictionary = new Dictionary<Transform, ImportedFrame>();
+        private bool hasExplicitAnimationList;
         Dictionary<uint, string> morphChannelNames = new Dictionary<uint, string>();
 
         public ModelConverter(GameObject m_GameObject, Options options, AnimationClip[] animationList = null)
         {
             this.options = options;
+            hasExplicitAnimationList = animationList != null;
 
             if (m_GameObject.m_Animator != null && options.useAnimatorHierarchy)
             {
@@ -61,6 +63,7 @@ namespace AnimeStudio
         public ModelConverter(string rootName, List<GameObject> m_GameObjects, Options options, AnimationClip[] animationList = null)
         {
             this.options = options;
+            hasExplicitAnimationList = animationList != null;
 
             RootFrame = CreateFrame(rootName, Vector3.Zero, new Quaternion(0, 0, 0, 0), Vector3.One);
             foreach (var m_GameObject in m_GameObjects)
@@ -92,6 +95,7 @@ namespace AnimeStudio
         public ModelConverter(Animator m_Animator, Options options, AnimationClip[] animationList = null)
         {
             this.options = options;
+            hasExplicitAnimationList = animationList != null;
 
             InitWithAnimator(m_Animator);
             if (animationList == null && this.options.collectAnimations)
@@ -173,7 +177,7 @@ namespace AnimeStudio
                 ConvertMeshRenderer(m_GameObject.m_SkinnedMeshRenderer);
             }
 
-            if (options.exportAnimations && m_GameObject.m_Animation != null)
+            if (options.exportAnimations && !hasExplicitAnimationList && m_GameObject.m_Animation != null)
             {
                 foreach (var animation in m_GameObject.m_Animation.m_Animations)
                 {
