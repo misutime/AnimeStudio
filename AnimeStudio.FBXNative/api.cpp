@@ -276,6 +276,11 @@ AS_API(void) AsFbxSetJointsNode_BoneInPath(AsFbxContext* pContext, FbxNode* pNod
 	pJoint->Size.Set(FbxDouble(boneSize));
 	pJoint->SetSkeletonType(FbxSkeleton::eLimbNode);
 	pNode->SetNodeAttribute(pJoint);
+
+	pJoint = FbxSkeleton::Create(pContext->pScene, "");
+	pJoint->Size.Set(FbxDouble(boneSize));
+	pJoint->SetSkeletonType(FbxSkeleton::eLimbNode);
+	pNode->GetParent()->SetNodeAttribute(pJoint);
 }
 
 AS_API(void) AsFbxSetJointsNode_Generic(AsFbxContext* pContext, FbxNode* pNode)
