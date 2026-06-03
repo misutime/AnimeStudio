@@ -146,6 +146,147 @@ namespace AnimeStudio.CLI
             Logger.Info($"Preview validation: {reportPath}");
         }
 
+        public static void GeneratePack(
+            string indexPath,
+            string gameName,
+            string modelSelector,
+            string animationSelectors,
+            string outputDirectory,
+            int limit
+        )
+        {
+            if (string.IsNullOrWhiteSpace(gameName))
+            {
+                Logger.Error("--game is required with --pack_model_animations.");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                Logger.Error($"model_animations.json not found: {indexPath}");
+                return;
+            }
+
+            var index = JObject.Parse(File.ReadAllText(indexPath));
+            var model = SelectModel(index, modelSelector);
+            if (model == null)
+            {
+                Logger.Error("No model matched --preview_model for --pack_model_animations.");
+                return;
+            }
+
+            var modelInfo = model["model"] as JObject;
+            var modelName = (string)modelInfo?["name"];
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(
+                    Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? Directory.GetCurrentDirectory(),
+                    "AnimationPacks",
+                    SafeName(modelName ?? "Model")
+                )
+                : outputDirectory;
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+            Directory.CreateDirectory(output);
+
+            var animations = SelectPackAnimations(model, animationSelectors, Math.Max(1, limit));
+            if (animations.Count == 0)
+            {
+                Logger.Error("No animation candidates matched --pack_animations.");
+                return;
+            }
+
+            Logger.Info($"Generating animation pack: {modelName} + {animations.Count} animation(s)");
+            var results = new List<object>();
+            foreach (var animation in animations)
+            {
+                var animationName = (string)animation["name"];
+                var itemOutput = Path.Combine(output, SafeName(animationName ?? "Animation"));
+                Generate(indexPath, gameName, modelName, $"^{Regex.Escape(animationName ?? string.Empty)}$", itemOutput);
+
+                var validationPath = Path.Combine(itemOutput, "preview_validation.json");
+                JObject validation = null;
+                if (File.Exists(validationPath))
+                {
+                    validation = JObject.Parse(File.ReadAllText(validationPath));
+                }
+                var gltfPath = validation == null
+                    ? Directory.EnumerateFiles(itemOutput, "*.gltf", SearchOption.AllDirectories).FirstOrDefault()
+                    : (string)validation["gltf"];
+                results.Add(new
+                {
+                    model = modelName,
+                    animation = animationName,
+                    output = gltfPath,
+                    validation = validationPath,
+                    status = (string)validation?["status"] ?? "missing",
+                    channels = (int?)validation?["counts"]?["channels"] ?? 0,
+                    coreBoneNodes = (int?)validation?["animationCoverage"]?["coreBoneNodeCount"] ?? 0,
+                    invalidChannels = (int?)validation?["counts"]?["invalidChannels"] ?? 0,
+                    baked = (bool?)validation?["humanoid"]?["baked"] ?? false,
+                    bakeMode = (string)validation?["humanoid"]?["bakeMode"],
+                    bakedTrackCount = (int?)validation?["humanoid"]?["bakedTrackCount"] ?? 0,
+                    bakedKeyframeCount = (int?)validation?["humanoid"]?["bakedKeyframeCount"] ?? 0,
+                    humanoid = validation?["humanoid"],
+                    notes = validation?["notes"],
+                });
+            }
+
+            var report = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                rule = "Each item is a reusable playable model+single-animation glTF generated from Unity relation indexes. Use these assets for small-scope validation before creating larger animation bundles.",
+                index = indexPath,
+                model = modelInfo,
+                requestedAnimations = animationSelectors,
+                count = results.Count,
+                animations = results,
+            };
+            var reportPath = Path.Combine(output, "animation_pack_report.json");
+            File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
+            Logger.Info($"Animation pack report: {reportPath}");
+        }
+
+        private static JObject SelectModel(JObject index, string modelSelector)
+        {
+            return index["models"]?
+                .OfType<JObject>()
+                .FirstOrDefault(model =>
+                {
+                    var modelInfo = model["model"] as JObject;
+                    return Matches(modelSelector, (string)modelInfo?["name"], (string)modelInfo?["output"]);
+                });
+        }
+
+        private static List<JObject> SelectPackAnimations(JObject model, string animationSelectors, int limit)
+        {
+            var candidates = model["candidates"]?
+                .OfType<JObject>()
+                .OrderByDescending(x => (int?)x["score"] ?? 0)
+                .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? new List<JObject>();
+            if (string.IsNullOrWhiteSpace(animationSelectors))
+            {
+                return candidates.Take(limit).ToList();
+            }
+
+            var selectors = animationSelectors
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            var selected = new List<JObject>();
+            foreach (var selector in selectors)
+            {
+                selected.AddRange(candidates.Where(x => Matches(selector, (string)x["name"], (string)x["output"])));
+            }
+            return selected
+                .GroupBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .Take(limit)
+                .ToList();
+        }
+
         private static PreviewSelection SelectPreview(JObject index, string modelSelector, string animationSelector)
         {
             foreach (var model in index["models"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())

@@ -47,9 +47,22 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.PackModelAnimations != null)
+                {
+                    PreviewGltfGenerator.GeneratePack(
+                        o.PackModelAnimations.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PackAnimations,
+                        o.PackOutput?.FullName,
+                        o.PackLimit
+                    );
+                    return;
+                }
+
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures or --generate_preview_gltf for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, or --pack_model_animations for post-export commands.");
                     return;
                 }
 

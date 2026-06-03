@@ -104,6 +104,10 @@ namespace AnimeStudio.CLI
                 optionsBinder.PreviewModel,
                 optionsBinder.PreviewAnimation,
                 optionsBinder.PreviewOutput,
+                optionsBinder.PackModelAnimations,
+                optionsBinder.PackAnimations,
+                optionsBinder.PackOutput,
+                optionsBinder.PackLimit,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -157,6 +161,10 @@ namespace AnimeStudio.CLI
         public string PreviewModel { get; set; }
         public string PreviewAnimation { get; set; }
         public DirectoryInfo PreviewOutput { get; set; }
+        public FileInfo PackModelAnimations { get; set; }
+        public string PackAnimations { get; set; }
+        public DirectoryInfo PackOutput { get; set; }
+        public int PackLimit { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -205,6 +213,10 @@ namespace AnimeStudio.CLI
         public readonly Option<string> PreviewModel;
         public readonly Option<string> PreviewAnimation;
         public readonly Option<DirectoryInfo> PreviewOutput;
+        public readonly Option<FileInfo> PackModelAnimations;
+        public readonly Option<string> PackAnimations;
+        public readonly Option<DirectoryInfo> PackOutput;
+        public readonly Option<int> PackLimit;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -251,6 +263,10 @@ namespace AnimeStudio.CLI
             PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with --generate_preview_gltf.");
             PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with --generate_preview_gltf.");
             PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for --generate_preview_gltf. Defaults to Previews/<model>__<animation> next to the index.");
+            PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
+            PackAnimations = new Option<string>("--pack_animations", "Comma-separated animation names or regexes used with --pack_model_animations. If omitted, top candidates are used.");
+            PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for --pack_model_animations.");
+            PackLimit = new Option<int>("--pack_limit", "Maximum number of animations to pack when --pack_animations is omitted.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -299,6 +315,7 @@ namespace AnimeStudio.CLI
             ProfileLog.SetDefaultValue("export_profile.jsonl");
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
             UpdateGltfTextureRefs.SetDefaultValue(true);
+            PackLimit.SetDefaultValue(5);
             MapOp.SetDefaultValue(MapOpType.None);
             MapType.SetDefaultValue(ExportListType.XML);
         }
@@ -383,10 +400,14 @@ namespace AnimeStudio.CLI
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
                 PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),
                 PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
-            DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
-            Input = bindingContext.ParseResult.GetValueForArgument(Input),
-            Output = bindingContext.ParseResult.GetValueForArgument(Output)
-        };
+                PackModelAnimations = bindingContext.ParseResult.GetValueForOption(PackModelAnimations),
+                PackAnimations = bindingContext.ParseResult.GetValueForOption(PackAnimations),
+                PackOutput = bindingContext.ParseResult.GetValueForOption(PackOutput),
+                PackLimit = bindingContext.ParseResult.GetValueForOption(PackLimit),
+                DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
+                Input = bindingContext.ParseResult.GetValueForArgument(Input),
+                Output = bindingContext.ParseResult.GetValueForArgument(Output)
+            };
 
         private static Regex[] ParseRegexOption(ArgumentResult result)
         {

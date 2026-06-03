@@ -175,6 +175,37 @@ Models\...\<model>.gltf
 
 Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，预览 glTF 现在会把 Unity Humanoid/Muscle 曲线烘焙成目标骨架的 rotation/translation channel。`animations[].extras.unityHumanoid` 会记录原始 muscle 数据和 bake 状态；`preview_validation.json` 的 `humanoid.baked`、`bakeMode`、`bakedTrackCount`、`bakedKeyframeCount` 用于判断本次预览是否已经生成可播放骨骼动画。当前 bake 模式为 `ApproximateHumanoidMuscleV1`，目标是先生成可播放素材库预览；后续仍需要继续逼近 Unity 原生 Humanoid solver 的高保真 retarget。
 
+### 批量生成模型动画验证包
+
+当已经有 `model_animations.json`，并想小范围验证一个模型的多条候选动画时，可以使用 `--pack_model_animations`：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --pack_model_animations "D:\Assets\Freedunk_Data_Dev\SkeletonIndexV1Sample\model_animations.json" `
+  --game Normal `
+  --preview_model "Bill_01_00_ingame" `
+  --pack_animations "NORMALMOVE_STAND_01,DASH_01,DEFENSEMOVE_RUN_0_01" `
+  --pack_output "D:\Assets\Freedunk_Data_Dev\Bill_AnimationPack_V1" `
+  --pack_limit 3
+```
+
+输出结构：
+
+```text
+Bill_AnimationPack_V1\
+  animation_pack_report.json
+  NORMALMOVE_STAND_01\
+    preview_validation.json
+    Models\...\Bill_01_00_ingame.gltf
+  DASH_01\
+    preview_validation.json
+    Models\...\Bill_01_00_ingame.gltf
+```
+
+这个命令会对每个动画复用按需预览流程，生成“同一个模型 + 单条动画”的可播放 glTF，并汇总 `animation_pack_report.json`。报告会列出 `status`、`channels`、`coreBoneNodes`、`invalidChannels`、`baked`、`bakeMode`、`bakedTrackCount`、`bakedKeyframeCount` 和输出 glTF 路径。
+
+当前 `--pack_model_animations` 的定位是“可复用动画验证包”：用于确认某个模型能否播放一组候选动画、快速筛选动作、给后续动画合集打包提供已验证输入。它不是最终的 animation-only 资产格式。最终素材库仍应继续向“干净模型 + 独立动画资产 + 绑定索引 + 按需合并/预览”推进。
+
 实现原则：
 
 - 默认导出阶段可以收集动画线索，但不默认嵌入动画。
