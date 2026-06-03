@@ -16,10 +16,32 @@ namespace AnimeStudio.FbxInterop
         [DllImport(FbxDll.DllName)]
         private static extern void AsFbxDisposeContext(ref IntPtr ppContext);
 
-        private static void AsFbxSetFramePaths(IntPtr context, string[] framePaths) => AsFbxSetFramePaths(context, framePaths, framePaths.Length);
+        private static void AsFbxSetFramePaths(IntPtr context, string[] framePaths)
+        {
+            var pathPointers = new IntPtr[framePaths.Length];
+            try
+            {
+                for (var i = 0; i < framePaths.Length; i++)
+                {
+                    pathPointers[i] = Marshal.StringToCoTaskMemUTF8(framePaths[i]);
+                }
+
+                AsFbxSetFramePaths(context, pathPointers, pathPointers.Length);
+            }
+            finally
+            {
+                foreach (var pathPointer in pathPointers)
+                {
+                    if (pathPointer != IntPtr.Zero)
+                    {
+                        Marshal.FreeCoTaskMem(pathPointer);
+                    }
+                }
+            }
+        }
 
         [DllImport(FbxDll.DllName)]
-        private static extern void AsFbxSetFramePaths(IntPtr context, [MarshalAs(UnmanagedType.LPUTF8Str)] string[] framePaths, int count);
+        private static extern void AsFbxSetFramePaths(IntPtr context, IntPtr[] framePaths, int count);
 
         [DllImport(FbxDll.DllName)]
         private static extern void AsFbxExportScene(IntPtr context);

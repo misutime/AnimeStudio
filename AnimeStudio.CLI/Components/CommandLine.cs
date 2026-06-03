@@ -84,6 +84,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.ModelRootsOnly,
                 optionsBinder.FbxScaleFactor,
                 optionsBinder.FbxBoneSize,
+                optionsBinder.FbxExportAllNodes,
                 optionsBinder.FbxAnimationMode,
                 optionsBinder.HumanoidBakeSolver,
                 optionsBinder.ModelFormat,
@@ -155,6 +156,7 @@ namespace AnimeStudio.CLI
         public bool ModelRootsOnly { get; set; }
         public float? FbxScaleFactor { get; set; }
         public int? FbxBoneSize { get; set; }
+        public bool FbxExportAllNodes { get; set; }
         public FbxAnimationMode FbxAnimationMode { get; set; }
         public string HumanoidBakeSolver { get; set; }
         public ModelExportFormat ModelFormat { get; set; }
@@ -221,6 +223,7 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> ModelRootsOnly;
         public readonly Option<float?> FbxScaleFactor;
         public readonly Option<int?> FbxBoneSize;
+        public readonly Option<bool> FbxExportAllNodes;
         public readonly Option<FbxAnimationMode> FbxAnimationMode;
         public readonly Option<string> HumanoidBakeSolver;
         public readonly Option<ModelExportFormat> ModelFormat;
@@ -285,6 +288,7 @@ namespace AnimeStudio.CLI
             ModelRootsOnly = new Option<bool>("--model_roots_only", "Export only top-level model GameObjects and skip child mesh parts when their parent model is also exportable.");
             FbxScaleFactor = new Option<float?>("--fbx_scale_factor", "Override FBX scale factor.");
             FbxBoneSize = new Option<int?>("--fbx_bone_size", "Override FBX bone size.");
+            FbxExportAllNodes = new Option<bool>("--fbx_export_all_nodes", "Export every Unity transform/helper node in FBX. Disabled by default for clean library models.");
             FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
             HumanoidBakeSolver = new Option<string>("--humanoid_bake_solver", "Experimental Humanoid bake solver variant used for glTF preview/animation bake.");
             ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
@@ -438,6 +442,7 @@ namespace AnimeStudio.CLI
             ModelRootsOnly = bindingContext.ParseResult.GetValueForOption(ModelRootsOnly),
                 FbxScaleFactor = bindingContext.ParseResult.GetValueForOption(FbxScaleFactor),
                 FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
+                FbxExportAllNodes = bindingContext.ParseResult.GetValueForOption(FbxExportAllNodes),
                 FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
                 HumanoidBakeSolver = bindingContext.ParseResult.GetValueForOption(HumanoidBakeSolver),
                 ModelFormat = bindingContext.ParseResult.GetValueForOption(ModelFormat),

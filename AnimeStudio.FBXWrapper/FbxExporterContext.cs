@@ -136,6 +136,11 @@ namespace AnimeStudio.FbxInterop
 
                 var childNode = AsFbxExportSingleFrame(_pContext, parentNode, frame.Path, frame.Name, frame.LocalPosition, frame.LocalRotation, frame.LocalScale);
 
+                if (childNode == IntPtr.Zero)
+                {
+                    continue;
+                }
+
                 if (meshList != null && ImportedHelpers.FindMesh(frame.Path, meshList) != null)
                 {
                     meshFrames.Add(frame);
@@ -163,7 +168,10 @@ namespace AnimeStudio.FbxInterop
 
                 if (_frameToNode.TryGetValue(frame, out var node))
                 {
-                    Debug.Assert(node != IntPtr.Zero);
+                    if (node == IntPtr.Zero)
+                    {
+                        continue;
+                    }
 
                     if (castToBone)
                     {

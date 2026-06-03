@@ -143,6 +143,7 @@ namespace AnimeStudio.CLI
                 Studio.ModelGcInterval = Math.Max(0, o.ModelGcInterval);
                 CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
+                CliExportOptions.FbxExportAllNodes = o.FbxExportAllNodes;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
                 CliExportOptions.HumanoidBakeSolver = o.HumanoidBakeSolver;
                 CliExportOptions.ModelFormat = o.ModelFormat;

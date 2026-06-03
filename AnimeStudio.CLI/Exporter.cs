@@ -16,6 +16,7 @@ namespace AnimeStudio.CLI
     {
         public static float? FbxScaleFactor { get; set; }
         public static int? FbxBoneSize { get; set; }
+        public static bool FbxExportAllNodes { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static string HumanoidBakeSolver { get; set; } = "AvatarPreEulerPost";
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
@@ -771,7 +772,7 @@ namespace AnimeStudio.CLI
             {
                 eulerFilter = Properties.Settings.Default.eulerFilter,
                 filterPrecision = (float)Properties.Settings.Default.filterPrecision,
-                exportAllNodes = Properties.Settings.Default.exportAllNodes,
+                exportAllNodes = CliExportOptions.FbxExportAllNodes,
                 exportSkins = Properties.Settings.Default.exportSkins,
                 exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 exportBlendShape = Properties.Settings.Default.exportBlendShape,
