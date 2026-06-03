@@ -265,6 +265,7 @@ namespace AnimeStudio
         public string HumanoidBakeMode { get; set; }
         public int HumanoidBakedTrackCount { get; set; }
         public int HumanoidBakedKeyframeCount { get; set; }
+        public ImportedHumanoidBakeDiagnostics HumanoidBakeDiagnostics { get; set; }
 
         public ImportedAnimationKeyframedTrack FindTrack(string path, string attribute = null)
         {
@@ -317,6 +318,30 @@ namespace AnimeStudio
     {
         public string Attribute { get; set; }
         public List<ImportedKeyframe<float>> Keyframes { get; set; } = new List<ImportedKeyframe<float>>();
+    }
+
+    public class ImportedHumanoidBakeDiagnostics
+    {
+        public string Status { get; set; }
+        public string Mode { get; set; }
+        public string Solver { get; set; }
+        public int HumanBoneCount { get; set; }
+        public int TargetCount { get; set; }
+        public int MappedTargetCount { get; set; }
+        public int MissingTargetCount { get; set; }
+        public int SampleTimeCount { get; set; }
+        public List<ImportedHumanoidBakeTargetDiagnostic> Targets { get; set; } = new List<ImportedHumanoidBakeTargetDiagnostic>();
+        public string[] Notes { get; set; } = System.Array.Empty<string>();
+    }
+
+    public class ImportedHumanoidBakeTargetDiagnostic
+    {
+        public string HumanBone { get; set; }
+        public string SkeletonPath { get; set; }
+        public bool HasFrame { get; set; }
+        public bool HasCurves { get; set; }
+        public string[] Attributes { get; set; } = System.Array.Empty<string>();
+        public string Status { get; set; }
     }
 
     public class ImportedMorph

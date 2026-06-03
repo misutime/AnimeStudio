@@ -1391,12 +1391,26 @@ namespace AnimeStudio
                 return;
             }
 
+            animation.HumanoidBakeDiagnostics = new ImportedHumanoidBakeDiagnostics
+            {
+                Mode = "ApproximateHumanoidMuscleV1",
+                Solver = "HeuristicMuscleToEulerScale",
+                HumanBoneCount = avatar.m_HumanDescription.m_Human.Count,
+                TargetCount = HumanoidMuscleBakeTarget.Targets.Length,
+                Notes = new[]
+                {
+                    "This bake is diagnostic and approximate. It does not apply Unity Avatar axes, pre/post rotations, muscle limits, or the native Humanoid solver.",
+                    "Use this output to inspect mapping coverage; do not treat it as final animation correctness.",
+                },
+            };
+
             var curves = animation.HumanoidMuscles
                 .Where(x => !string.IsNullOrWhiteSpace(x.Attribute) && x.Keyframes != null && x.Keyframes.Count > 0)
                 .GroupBy(x => x.Attribute, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
             if (curves.Count == 0)
             {
+                animation.HumanoidBakeDiagnostics.Status = "no_curves";
                 return;
             }
 
@@ -1407,8 +1421,10 @@ namespace AnimeStudio
                 .ToArray();
             if (times.Length == 0)
             {
+                animation.HumanoidBakeDiagnostics.Status = "no_sample_times";
                 return;
             }
+            animation.HumanoidBakeDiagnostics.SampleTimeCount = times.Length;
 
             var humanBoneToFrame = avatar.m_HumanDescription.m_Human
                 .Where(x => !string.IsNullOrWhiteSpace(x.m_HumanName) && !string.IsNullOrWhiteSpace(x.m_BoneName))
@@ -1418,6 +1434,7 @@ namespace AnimeStudio
                 .ToDictionary(x => x.Key, x => x.First().Frame, StringComparer.OrdinalIgnoreCase);
             if (humanBoneToFrame.Count == 0)
             {
+                animation.HumanoidBakeDiagnostics.Status = "no_human_bone_frames";
                 return;
             }
 
@@ -1425,16 +1442,33 @@ namespace AnimeStudio
             var bakedKeyframeCount = 0;
             foreach (var target in HumanoidMuscleBakeTarget.Targets)
             {
+                var attributes = new[] { target.XAttribute, target.YAttribute, target.ZAttribute }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToArray();
+                var diagnostic = new ImportedHumanoidBakeTargetDiagnostic
+                {
+                    HumanBone = target.HumanBone,
+                    Attributes = attributes,
+                };
+                animation.HumanoidBakeDiagnostics.Targets.Add(diagnostic);
+
                 if (!humanBoneToFrame.TryGetValue(target.HumanBone, out var frame))
                 {
+                    diagnostic.HasFrame = false;
+                    diagnostic.HasCurves = attributes.Any(curves.ContainsKey);
+                    diagnostic.Status = "missing_human_bone_frame";
                     continue;
                 }
+                diagnostic.HasFrame = true;
+                diagnostic.SkeletonPath = frame.Path;
 
                 var hasCurve = curves.ContainsKey(target.XAttribute)
                     || curves.ContainsKey(target.YAttribute)
                     || curves.ContainsKey(target.ZAttribute);
+                diagnostic.HasCurves = hasCurve;
                 if (!hasCurve)
                 {
+                    diagnostic.Status = "no_matching_muscle_curve";
                     continue;
                 }
 
@@ -1450,6 +1484,7 @@ namespace AnimeStudio
                     bakedKeyframeCount++;
                 }
                 bakedTrackCount++;
+                diagnostic.Status = "baked_approximate";
             }
 
             if (humanBoneToFrame.TryGetValue("Hips", out var hipsFrame))
@@ -1473,12 +1508,20 @@ namespace AnimeStudio
                 }
             }
 
+            animation.HumanoidBakeDiagnostics.MappedTargetCount = animation.HumanoidBakeDiagnostics.Targets.Count(x => x.Status == "baked_approximate");
+            animation.HumanoidBakeDiagnostics.MissingTargetCount = animation.HumanoidBakeDiagnostics.Targets.Count - animation.HumanoidBakeDiagnostics.MappedTargetCount;
+
             if (bakedTrackCount > 0)
             {
                 animation.HumanoidMusclesBaked = true;
                 animation.HumanoidBakeMode = "ApproximateHumanoidMuscleV1";
                 animation.HumanoidBakedTrackCount = bakedTrackCount;
                 animation.HumanoidBakedKeyframeCount = bakedKeyframeCount;
+                animation.HumanoidBakeDiagnostics.Status = "experimental_baked";
+            }
+            else
+            {
+                animation.HumanoidBakeDiagnostics.Status = "no_tracks_baked";
             }
         }
 

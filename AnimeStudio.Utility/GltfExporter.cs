@@ -361,6 +361,29 @@ namespace AnimeStudio
                         .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                         .Take(256)
                         .ToArray(),
+                    ["diagnostics"] = animation.HumanoidBakeDiagnostics == null ? null : new Dictionary<string, object>
+                    {
+                        ["status"] = animation.HumanoidBakeDiagnostics.Status,
+                        ["mode"] = animation.HumanoidBakeDiagnostics.Mode,
+                        ["solver"] = animation.HumanoidBakeDiagnostics.Solver,
+                        ["humanBoneCount"] = animation.HumanoidBakeDiagnostics.HumanBoneCount,
+                        ["targetCount"] = animation.HumanoidBakeDiagnostics.TargetCount,
+                        ["mappedTargetCount"] = animation.HumanoidBakeDiagnostics.MappedTargetCount,
+                        ["missingTargetCount"] = animation.HumanoidBakeDiagnostics.MissingTargetCount,
+                        ["sampleTimeCount"] = animation.HumanoidBakeDiagnostics.SampleTimeCount,
+                        ["notes"] = animation.HumanoidBakeDiagnostics.Notes ?? Array.Empty<string>(),
+                        ["targets"] = animation.HumanoidBakeDiagnostics.Targets
+                            .Select(x => new Dictionary<string, object>
+                            {
+                                ["humanBone"] = x.HumanBone,
+                                ["skeletonPath"] = x.SkeletonPath,
+                                ["hasFrame"] = x.HasFrame,
+                                ["hasCurves"] = x.HasCurves,
+                                ["attributes"] = x.Attributes ?? Array.Empty<string>(),
+                                ["status"] = x.Status,
+                            })
+                            .ToArray(),
+                    },
                 },
             };
         }

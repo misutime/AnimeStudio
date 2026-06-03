@@ -552,7 +552,7 @@ namespace AnimeStudio.CLI
             var humanoid = animation?["extras"]?["unityHumanoid"] as JObject;
             if (humanoid == null)
             {
-                return new HumanoidAnimationReport(false, false, false, null, 0, 0, 0, 0, Array.Empty<string>());
+                return new HumanoidAnimationReport(false, false, false, null, 0, 0, 0, 0, Array.Empty<string>(), null);
             }
 
             var attributes = humanoid["attributes"]?.Values<string>()?.ToArray() ?? Array.Empty<string>();
@@ -565,7 +565,8 @@ namespace AnimeStudio.CLI
                 (int?)humanoid["bakedKeyframeCount"] ?? 0,
                 (int?)humanoid["muscleCurveCount"] ?? 0,
                 (int?)humanoid["keyframeCount"] ?? 0,
-                attributes.Take(128).ToArray()
+                attributes.Take(128).ToArray(),
+                humanoid["diagnostics"] as JObject
             );
         }
 
@@ -663,6 +664,11 @@ namespace AnimeStudio.CLI
                 if ((humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase))
                 {
                     notes.Add("This Humanoid/Muscle bake is approximate and experimental; it is useful for debugging channel generation, but it is not accepted as a correct reusable animation asset until visual/solver validation passes.");
+                }
+                var diagnosticsStatus = (string)humanoid.diagnostics?["status"];
+                if (!string.IsNullOrWhiteSpace(diagnosticsStatus))
+                {
+                    notes.Add($"Humanoid bake diagnostics: {diagnosticsStatus}, mapped {(int?)humanoid.diagnostics?["mappedTargetCount"] ?? 0}/{(int?)humanoid.diagnostics?["targetCount"] ?? 0} target bone(s), sample times {(int?)humanoid.diagnostics?["sampleTimeCount"] ?? 0}.");
                 }
             }
             if (coverage.coreBoneChannelCount == 0)
@@ -846,7 +852,8 @@ namespace AnimeStudio.CLI
             int bakedKeyframeCount,
             int muscleCurveCount,
             int keyframeCount,
-            string[] attributes
+            string[] attributes,
+            JObject diagnostics
         );
 
         private sealed record Bounds(float[] min, float[] max, float[] size)
