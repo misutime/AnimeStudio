@@ -17,6 +17,7 @@ namespace AnimeStudio.CLI
         public static float? FbxScaleFactor { get; set; }
         public static int? FbxBoneSize { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
+        public static string HumanoidBakeSolver { get; set; } = "AvatarPreEulerPost";
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
         public static AnimationPackageMode AnimationPackage { get; set; } = AnimationPackageMode.Separate;
         public static ModelSourceMode ModelSource { get; set; } = ModelSourceMode.PrefabPrimary;
@@ -587,6 +588,7 @@ namespace AnimeStudio.CLI
                 collectAnimations = CliExportOptions.CollectAnimations,
                 exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 preferBakedHumanoidBodyAnimation = animationList != null,
+                humanoidBakeSolver = CliExportOptions.HumanoidBakeSolver,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 materialCache = SharedMaterialCache,
@@ -670,6 +672,7 @@ namespace AnimeStudio.CLI
                 collectAnimations = CliExportOptions.CollectAnimations,
                 exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 preferBakedHumanoidBodyAnimation = animationList != null,
+                humanoidBakeSolver = CliExportOptions.HumanoidBakeSolver,
                 exportMaterials = Properties.Settings.Default.exportMaterials,
                 materials = new HashSet<Material>(),
                 materialCache = SharedMaterialCache,

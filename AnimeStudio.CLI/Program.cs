@@ -109,6 +109,7 @@ namespace AnimeStudio.CLI
                 CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
+                CliExportOptions.HumanoidBakeSolver = o.HumanoidBakeSolver;
                 CliExportOptions.ModelFormat = o.ModelFormat;
                 CliExportOptions.AnimationPackage = o.AnimationPackage;
                 CliExportOptions.ModelSource = o.ModelSource;

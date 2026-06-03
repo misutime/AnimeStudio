@@ -1437,13 +1437,15 @@ namespace AnimeStudio
 
             animation.HumanoidBakeDiagnostics = new ImportedHumanoidBakeDiagnostics
             {
-                Mode = "ApproximateHumanoidMuscleV2",
-                Solver = "HeuristicMuscleToEulerScale_DeltaBeforeRest_NoRootTranslation",
+                Mode = "ApproximateHumanoidMuscleV3",
+                Solver = string.IsNullOrWhiteSpace(options.humanoidBakeSolver)
+                    ? "AvatarPreEulerPost"
+                    : options.humanoidBakeSolver,
                 HumanBoneCount = avatar.m_HumanDescription.m_Human.Count,
                 TargetCount = HumanoidMuscleBakeTarget.Targets.Length,
                 Notes = new[]
                 {
-                    "This bake is diagnostic and approximate. It does not apply Unity Avatar axes, pre/post rotations, muscle limits, or the native Humanoid solver.",
+                    "This bake is diagnostic and approximate. It applies Unity Avatar axes, pre/post rotations, signs, and limits, but it is not the native Humanoid solver.",
                     "RootT is intentionally not baked into Hips translation because Unity Humanoid root motion needs a separate coordinate/root-motion solve.",
                     "Use this output to inspect mapping coverage; do not treat it as final animation correctness.",
                 },
@@ -1496,6 +1498,7 @@ namespace AnimeStudio
                     Attributes = attributes,
                 };
                 animation.HumanoidBakeDiagnostics.Targets.Add(diagnostic);
+                FillAvatarAxisDiagnostics(target.HumanBone, diagnostic);
 
                 if (!humanBoneToFrame.TryGetValue(target.HumanBone, out var frame))
                 {
@@ -1521,10 +1524,14 @@ namespace AnimeStudio
                 var rest = NormalizeQuaternion(frame.LocalRotation);
                 foreach (var time in times)
                 {
-                    var x = SampleCurve(curves, target.XAttribute, time) * target.XScale;
-                    var y = SampleCurve(curves, target.YAttribute, time) * target.YScale;
-                    var z = SampleCurve(curves, target.ZAttribute, time) * target.ZScale;
-                    var delta = EulerDegreesToQuaternion(new Vector3(x, y, z));
+                    Quaternion delta;
+                    if (!TryBuildAvatarAxisDelta(curves, target, diagnostic, time, options.humanoidBakeSolver, out delta))
+                    {
+                        var x = SampleCurve(curves, target.XAttribute, time) * target.XScale;
+                        var y = SampleCurve(curves, target.YAttribute, time) * target.YScale;
+                        var z = SampleCurve(curves, target.ZAttribute, time) * target.ZScale;
+                        delta = EulerDegreesToQuaternion(new Vector3(x, y, z));
+                    }
                     track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(Multiply(delta, rest))));
                     bakedKeyframeCount++;
                 }
@@ -1538,7 +1545,7 @@ namespace AnimeStudio
             if (bakedTrackCount > 0)
             {
                 animation.HumanoidMusclesBaked = true;
-                animation.HumanoidBakeMode = "ApproximateHumanoidMuscleV2";
+                animation.HumanoidBakeMode = "ApproximateHumanoidMuscleV3";
                 animation.HumanoidBakedTrackCount = bakedTrackCount;
                 animation.HumanoidBakedKeyframeCount = bakedKeyframeCount;
                 animation.HumanoidBakeDiagnostics.Status = "experimental_baked";
@@ -1547,6 +1554,115 @@ namespace AnimeStudio
             {
                 animation.HumanoidBakeDiagnostics.Status = "no_tracks_baked";
             }
+        }
+
+        private void FillAvatarAxisDiagnostics(string humanBoneName, ImportedHumanoidBakeTargetDiagnostic diagnostic)
+        {
+            if (diagnostic == null
+                || string.IsNullOrWhiteSpace(humanBoneName)
+                || avatar?.m_Avatar?.m_Human?.m_Skeleton?.m_Node == null
+                || avatar.m_Avatar.m_Human.m_Skeleton.m_AxesArray == null
+                || avatar.m_Avatar.m_Human.m_HumanBoneIndex == null)
+            {
+                return;
+            }
+
+            if (!Enum.TryParse<BoneType>(humanBoneName, out var boneType))
+            {
+                return;
+            }
+
+            var humanBoneIndex = (int)boneType;
+            diagnostic.HumanBoneIndex = humanBoneIndex;
+            if (humanBoneIndex < 0 || humanBoneIndex >= avatar.m_Avatar.m_Human.m_HumanBoneIndex.Length)
+            {
+                return;
+            }
+
+            var skeletonNodeIndex = avatar.m_Avatar.m_Human.m_HumanBoneIndex[humanBoneIndex];
+            diagnostic.AvatarSkeletonNodeIndex = skeletonNodeIndex;
+            if (skeletonNodeIndex < 0 || skeletonNodeIndex >= avatar.m_Avatar.m_Human.m_Skeleton.m_Node.Count)
+            {
+                return;
+            }
+
+            var node = avatar.m_Avatar.m_Human.m_Skeleton.m_Node[skeletonNodeIndex];
+            diagnostic.AvatarAxesId = node.m_AxesId;
+            if (node.m_AxesId < 0 || node.m_AxesId >= avatar.m_Avatar.m_Human.m_Skeleton.m_AxesArray.Count)
+            {
+                return;
+            }
+
+            var axes = avatar.m_Avatar.m_Human.m_Skeleton.m_AxesArray[node.m_AxesId];
+            diagnostic.AvatarPreQ = ToArray(axes.m_PreQ);
+            diagnostic.AvatarPostQ = ToArray(axes.m_PostQ);
+            diagnostic.AvatarSgn = ToArray3(axes.m_Sgn);
+            diagnostic.AvatarLimitMin = ToArray3(axes.m_Limit?.m_Min);
+            diagnostic.AvatarLimitMax = ToArray3(axes.m_Limit?.m_Max);
+        }
+
+        private static bool TryBuildAvatarAxisDelta(
+            Dictionary<string, ImportedHumanoidMuscleCurve> curves,
+            HumanoidMuscleBakeTarget target,
+            ImportedHumanoidBakeTargetDiagnostic diagnostic,
+            float time,
+            string solver,
+            out Quaternion delta)
+        {
+            delta = Quaternion.Zero;
+            if (target == null
+                || diagnostic?.AvatarPreQ == null
+                || diagnostic.AvatarPostQ == null
+                || diagnostic.AvatarSgn == null
+                || diagnostic.AvatarLimitMin == null
+                || diagnostic.AvatarLimitMax == null)
+            {
+                return false;
+            }
+
+            var x = LimitMuscle(SampleCurve(curves, target.XAttribute, time), diagnostic.AvatarLimitMin, diagnostic.AvatarLimitMax, diagnostic.AvatarSgn, 0);
+            var y = LimitMuscle(SampleCurve(curves, target.YAttribute, time), diagnostic.AvatarLimitMin, diagnostic.AvatarLimitMax, diagnostic.AvatarSgn, 1);
+            var z = LimitMuscle(SampleCurve(curves, target.ZAttribute, time), diagnostic.AvatarLimitMin, diagnostic.AvatarLimitMax, diagnostic.AvatarSgn, 2);
+
+            var pre = ToQuaternion(diagnostic.AvatarPreQ);
+            var post = ToQuaternion(diagnostic.AvatarPostQ);
+            var euler = EulerRadiansToQuaternion(new Vector3(x, y, z));
+            var pair = (solver ?? string.Empty).Trim();
+            Quaternion zero;
+            Quaternion posed;
+            if (string.Equals(pair, "AvatarPostEulerPre", StringComparison.OrdinalIgnoreCase))
+            {
+                zero = NormalizeQuaternion(Multiply(post, pre));
+                posed = NormalizeQuaternion(Multiply(Multiply(post, euler), pre));
+            }
+            else if (string.Equals(pair, "AvatarPrePostEuler", StringComparison.OrdinalIgnoreCase))
+            {
+                zero = NormalizeQuaternion(Multiply(pre, post));
+                posed = NormalizeQuaternion(Multiply(Multiply(pre, post), euler));
+            }
+            else if (string.Equals(pair, "AvatarEulerPrePost", StringComparison.OrdinalIgnoreCase))
+            {
+                zero = NormalizeQuaternion(Multiply(pre, post));
+                posed = NormalizeQuaternion(Multiply(euler, Multiply(pre, post)));
+            }
+            else
+            {
+                zero = NormalizeQuaternion(Multiply(pre, post));
+                posed = NormalizeQuaternion(Multiply(Multiply(pre, euler), post));
+            }
+            delta = NormalizeQuaternion(Multiply(posed, Inverse(zero)));
+            return true;
+        }
+
+        private static float LimitMuscle(float value, float[] min, float[] max, float[] sign, int axis)
+        {
+            if (axis < 0 || min == null || max == null || sign == null || axis >= min.Length || axis >= max.Length || axis >= sign.Length)
+            {
+                return 0;
+            }
+
+            var range = value >= 0 ? max[axis] : -min[axis];
+            return value * range * sign[axis];
         }
 
         private static float SampleCurve(Dictionary<string, ImportedHumanoidMuscleCurve> curves, string attribute, float time)
@@ -1581,6 +1697,48 @@ namespace AnimeStudio
             return keys[keys.Length - 1].value;
         }
 
+        private static float[] ToArray(Vector4 value)
+        {
+            return new[] { value.X, value.Y, value.Z, value.W };
+        }
+
+        private static float[] ToArray3(object value)
+        {
+            return value switch
+            {
+                Vector3 v => new[] { v.X, v.Y, v.Z },
+                Vector4 v => new[] { v.X, v.Y, v.Z },
+                _ => null,
+            };
+        }
+
+        private static Quaternion ToQuaternion(float[] value)
+        {
+            return value == null || value.Length < 4
+                ? Quaternion.Zero
+                : NormalizeQuaternion(new Quaternion(value[0], value[1], value[2], value[3]));
+        }
+
+        private static Quaternion EulerRadiansToQuaternion(Vector3 radians)
+        {
+            var halfX = radians.X / 2.0;
+            var halfY = radians.Y / 2.0;
+            var halfZ = radians.Z / 2.0;
+            var sx = Math.Sin(halfX);
+            var cx = Math.Cos(halfX);
+            var sy = Math.Sin(halfY);
+            var cy = Math.Cos(halfY);
+            var sz = Math.Sin(halfZ);
+            var cz = Math.Cos(halfZ);
+
+            return NormalizeQuaternion(new Quaternion(
+                (float)(sx * cy * cz + cx * sy * sz),
+                (float)(cx * sy * cz - sx * cy * sz),
+                (float)(cx * cy * sz + sx * sy * cz),
+                (float)(cx * cy * cz - sx * sy * sz)
+            ));
+        }
+
         private static Quaternion EulerDegreesToQuaternion(Vector3 degrees)
         {
             var halfX = degrees.X * Math.PI / 360.0;
@@ -1609,6 +1767,17 @@ namespace AnimeStudio
                 a.W * b.Z + a.X * b.Y - a.Y * b.X + a.Z * b.W,
                 a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z
             );
+        }
+
+        private static Quaternion Inverse(Quaternion q)
+        {
+            var lengthSq = q.X * q.X + q.Y * q.Y + q.Z * q.Z + q.W * q.W;
+            if (lengthSq <= 0.000001)
+            {
+                return Quaternion.Zero;
+            }
+            var inv = 1.0f / lengthSq;
+            return new Quaternion(-q.X * inv, -q.Y * inv, -q.Z * inv, q.W * inv);
         }
 
         private static Quaternion NormalizeQuaternion(Quaternion q)
@@ -1878,6 +2047,7 @@ namespace AnimeStudio
             public bool collectAnimations;
             public bool exportAnimations = true;
             public bool preferBakedHumanoidBodyAnimation;
+            public string humanoidBakeSolver = "AvatarPreEulerPost";
             public bool exportMaterials;
             public HashSet<Material> materials;
             public Dictionary<string, (bool, int)> uvs;

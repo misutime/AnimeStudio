@@ -342,6 +342,14 @@ namespace AnimeStudio
         public bool HasCurves { get; set; }
         public string[] Attributes { get; set; } = System.Array.Empty<string>();
         public string Status { get; set; }
+        public int? HumanBoneIndex { get; set; }
+        public int? AvatarSkeletonNodeIndex { get; set; }
+        public int? AvatarAxesId { get; set; }
+        public float[] AvatarPreQ { get; set; }
+        public float[] AvatarPostQ { get; set; }
+        public float[] AvatarSgn { get; set; }
+        public float[] AvatarLimitMin { get; set; }
+        public float[] AvatarLimitMax { get; set; }
     }
 
     public class ImportedMorph
