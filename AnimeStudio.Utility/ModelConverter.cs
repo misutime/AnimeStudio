@@ -1532,11 +1532,29 @@ namespace AnimeStudio
                         var z = SampleCurve(curves, target.ZAttribute, time) * target.ZScale;
                         delta = EulerDegreesToQuaternion(new Vector3(x, y, z));
                     }
-                    track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(Multiply(delta, rest))));
+                    var solver = options.humanoidBakeSolver ?? string.Empty;
+                    if (solver.IndexOf("InvertDelta", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        delta = Inverse(delta);
+                    }
+                    var rotation = solver.IndexOf("RestBeforeDelta", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? Multiply(rest, delta)
+                        : Multiply(delta, rest);
+                    track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(rotation)));
                     bakedKeyframeCount++;
                 }
                 bakedTrackCount++;
                 diagnostic.Status = "baked_approximate";
+            }
+
+            if ((options.humanoidBakeSolver ?? string.Empty).IndexOf("RootQToHips", StringComparison.OrdinalIgnoreCase) >= 0
+                && humanBoneToFrame.TryGetValue("Hips", out var hipsFrame))
+            {
+                if (TryBakeRootQToFrame(curves, times, hipsFrame, animation))
+                {
+                    bakedTrackCount++;
+                    bakedKeyframeCount += times.Length;
+                }
             }
 
             animation.HumanoidBakeDiagnostics.MappedTargetCount = animation.HumanoidBakeDiagnostics.Targets.Count(x => x.Status == "baked_approximate");
@@ -1554,6 +1572,44 @@ namespace AnimeStudio
             {
                 animation.HumanoidBakeDiagnostics.Status = "no_tracks_baked";
             }
+        }
+
+        private static bool TryBakeRootQToFrame(
+            Dictionary<string, ImportedHumanoidMuscleCurve> curves,
+            float[] times,
+            ImportedFrame frame,
+            ImportedKeyframedAnimation animation)
+        {
+            if (curves == null
+                || times == null
+                || times.Length == 0
+                || frame == null
+                || animation == null
+                || !curves.ContainsKey("RootQ.w"))
+            {
+                return false;
+            }
+
+            var track = animation.FindTrack(frame.Path);
+            var rest = NormalizeQuaternion(frame.LocalRotation);
+            var first = SampleRootQ(curves, times[0]);
+            var firstInv = Inverse(first);
+            foreach (var time in times)
+            {
+                var current = SampleRootQ(curves, time);
+                var delta = NormalizeQuaternion(Multiply(current, firstInv));
+                track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(Multiply(delta, rest))));
+            }
+            return true;
+        }
+
+        private static Quaternion SampleRootQ(Dictionary<string, ImportedHumanoidMuscleCurve> curves, float time)
+        {
+            var qx = SampleCurve(curves, "RootQ.x", time);
+            var qy = SampleCurve(curves, "RootQ.y", time);
+            var qz = SampleCurve(curves, "RootQ.z", time);
+            var qw = SampleCurve(curves, "RootQ.w", time);
+            return NormalizeQuaternion(new Quaternion(qx, -qy, -qz, qw));
         }
 
         private void FillAvatarAxisDiagnostics(string humanBoneName, ImportedHumanoidBakeTargetDiagnostic diagnostic)
@@ -1620,9 +1676,28 @@ namespace AnimeStudio
                 return false;
             }
 
-            var x = LimitMuscle(SampleCurve(curves, target.XAttribute, time), diagnostic.AvatarLimitMin, diagnostic.AvatarLimitMax, diagnostic.AvatarSgn, 0);
-            var y = LimitMuscle(SampleCurve(curves, target.YAttribute, time), diagnostic.AvatarLimitMin, diagnostic.AvatarLimitMax, diagnostic.AvatarSgn, 1);
-            var z = LimitMuscle(SampleCurve(curves, target.ZAttribute, time), diagnostic.AvatarLimitMin, diagnostic.AvatarLimitMax, diagnostic.AvatarSgn, 2);
+            var axisOrder = GetAvatarAxisOrder(solver);
+            var muscleValues = new[]
+            {
+                SampleCurve(curves, target.XAttribute, time),
+                SampleCurve(curves, target.YAttribute, time),
+                SampleCurve(curves, target.ZAttribute, time),
+            };
+            ApplyPrimaryOnlyMuscleFilter(target, solver, muscleValues);
+            var angles = new float[3];
+            for (var muscleAxis = 0; muscleAxis < 3; muscleAxis++)
+            {
+                angles[axisOrder[muscleAxis]] = LimitMuscle(
+                    muscleValues[muscleAxis],
+                    diagnostic.AvatarLimitMin,
+                    diagnostic.AvatarLimitMax,
+                    diagnostic.AvatarSgn,
+                    axisOrder[muscleAxis],
+                    solver);
+            }
+            var x = angles[0];
+            var y = angles[1];
+            var z = angles[2];
 
             var pre = ToQuaternion(diagnostic.AvatarPreQ);
             var post = ToQuaternion(diagnostic.AvatarPostQ);
@@ -1654,7 +1729,52 @@ namespace AnimeStudio
             return true;
         }
 
-        private static float LimitMuscle(float value, float[] min, float[] max, float[] sign, int axis)
+        private static void ApplyPrimaryOnlyMuscleFilter(HumanoidMuscleBakeTarget target, string solver, float[] muscleValues)
+        {
+            if (target == null
+                || muscleValues == null
+                || muscleValues.Length < 3
+                || (solver ?? string.Empty).IndexOf("PrimaryOnly", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return;
+            }
+
+            switch (target.HumanBone)
+            {
+                case "LeftLowerLeg":
+                case "RightLowerLeg":
+                    muscleValues[0] = 0;
+                    muscleValues[1] = 0;
+                    muscleValues[2] = 0;
+                    break;
+                case "LeftUpperLeg":
+                case "RightUpperLeg":
+                case "LeftFoot":
+                case "RightFoot":
+                case "LeftUpperArm":
+                case "RightUpperArm":
+                case "LeftLowerArm":
+                case "RightLowerArm":
+                case "LeftHand":
+                case "RightHand":
+                    muscleValues[1] = 0;
+                    muscleValues[2] = 0;
+                    break;
+            }
+        }
+
+        private static int[] GetAvatarAxisOrder(string solver)
+        {
+            var normalized = (solver ?? string.Empty).ToUpperInvariant();
+            if (normalized.Contains("AXISXZY")) return new[] { 0, 2, 1 };
+            if (normalized.Contains("AXISYXZ")) return new[] { 1, 0, 2 };
+            if (normalized.Contains("AXISYZX")) return new[] { 1, 2, 0 };
+            if (normalized.Contains("AXISZXY")) return new[] { 2, 0, 1 };
+            if (normalized.Contains("AXISZYX")) return new[] { 2, 1, 0 };
+            return new[] { 0, 1, 2 };
+        }
+
+        private static float LimitMuscle(float value, float[] min, float[] max, float[] sign, int axis, string solver)
         {
             if (axis < 0 || min == null || max == null || sign == null || axis >= min.Length || axis >= max.Length || axis >= sign.Length)
             {
@@ -1662,7 +1782,17 @@ namespace AnimeStudio
             }
 
             var range = value >= 0 ? max[axis] : -min[axis];
-            return value * range * sign[axis];
+            var signValue = sign[axis];
+            var normalized = solver ?? string.Empty;
+            if (normalized.IndexOf("NoSign", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                signValue = 1;
+            }
+            else if (normalized.IndexOf("InvertSign", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                signValue = -signValue;
+            }
+            return value * range * signValue;
         }
 
         private static float SampleCurve(Dictionary<string, ImportedHumanoidMuscleCurve> curves, string attribute, float time)
@@ -1906,14 +2036,37 @@ namespace AnimeStudio
             }
             else if ((BindingCustomType)binding.customType == BindingCustomType.AnimatorMuscle)
             {
-                var attribute = binding.GetHumanoidMuscle().ToAttributeString();
+                var muscle = binding.GetHumanoidMuscle();
+                var muscleIndex = (int)muscle;
+                var attribute = muscle.ToAttributeString();
                 var curve = iAnim.HumanoidMuscles.FirstOrDefault(x => x.Attribute == attribute);
                 if (curve == null)
                 {
                     curve = new ImportedHumanoidMuscleCurve { Attribute = attribute };
                     iAnim.HumanoidMuscles.Add(curve);
                 }
-                curve.Keyframes.Add(new ImportedKeyframe<float>(time, data[curveIndex++ + offset]));
+                curve.BindingIndex = index;
+                curve.MuscleIndex = muscleIndex;
+                var value = data[curveIndex++ + offset];
+                var referencePose = animationClip.m_MuscleClip?.m_ValueArrayReferencePose;
+                if (referencePose != null)
+                {
+                    if ((options.humanoidBakeSolver ?? string.Empty).IndexOf("ReferenceByBindingIndex", StringComparison.OrdinalIgnoreCase) >= 0
+                        && index >= 0
+                        && index < referencePose.Length)
+                    {
+                        curve.ReferencePoseValue = referencePose[index];
+                        value += referencePose[index];
+                    }
+                    else if ((options.humanoidBakeSolver ?? string.Empty).IndexOf("ReferenceByMuscleAttribute", StringComparison.OrdinalIgnoreCase) >= 0
+                        && muscleIndex >= 0
+                        && muscleIndex < referencePose.Length)
+                    {
+                        curve.ReferencePoseValue = referencePose[muscleIndex];
+                        value += referencePose[muscleIndex];
+                    }
+                }
+                curve.Keyframes.Add(new ImportedKeyframe<float>(time, value));
             }
             else
             {

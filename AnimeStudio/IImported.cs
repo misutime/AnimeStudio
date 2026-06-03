@@ -317,6 +317,9 @@ namespace AnimeStudio
     public class ImportedHumanoidMuscleCurve
     {
         public string Attribute { get; set; }
+        public int BindingIndex { get; set; } = -1;
+        public int MuscleIndex { get; set; } = -1;
+        public float? ReferencePoseValue { get; set; }
         public List<ImportedKeyframe<float>> Keyframes { get; set; } = new List<ImportedKeyframe<float>>();
     }
 
