@@ -200,7 +200,7 @@ Unity 原生关系包括：
 `asset_catalog.jsonl` 和 `model_animations.json` 里的动画候选还会记录：
 
 - `animationType`：例如 `TransformBodyAnimation`、`MixedHumanoidTransform`、`HumanoidMuscleAnimation`、`AuxiliaryAnimation`。
-- `animationAsset`：指向同名 `.animation_asset.json` sidecar。它是默认动画资产的结构化入口，记录 Unity binding、Humanoid muscle、MuscleClip/root motion metadata。
+- `animationAsset`：指向同名 `.animation_asset.json` sidecar。它是默认动画资产的结构化入口，记录 Unity binding、Humanoid muscle、MuscleClip/root motion metadata，以及解码后的 Unity serialized 空间 curves/keyframes。
 - `hasMuscleClip`：是否包含 Unity Humanoid/Muscle 动画数据。
 - `coreTransformBindingCount`：直接命中主体骨骼的 Transform binding 数。
 - `humanoidBindingCount`：Animator/Humanoid binding 数。
@@ -209,7 +209,7 @@ Unity 原生关系包括：
 
 动画验收顺序：
 
-- 先看 `.animation_asset.json` 是否能正确识别 Unity 原始语义。Humanoid 动画应看到 `HumanoidMuscle` binding、可读 `attributeName`、`m_MuscleClip` 时间和 root-motion flags。
+- 先看 `.animation_asset.json` 是否能正确识别 Unity 原始语义。Humanoid 动画应看到 `HumanoidMuscle` binding、可读 `attributeName`、`m_MuscleClip` 时间、root-motion flags，以及 `decoded.status: ok` 和非零 keyframe 数。
 - 再看 `model_animations.json` 是否通过 Unity 显式引用、Avatar 或 binding path 找到候选模型。
 - 最后才生成 glTF 预览。Humanoid/Muscle 预览如果使用 `ApproximateHumanoidMuscleV1`，只能视为实验结果，不能作为最终正确动画验收。
 

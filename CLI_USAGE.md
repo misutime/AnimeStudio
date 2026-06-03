@@ -189,6 +189,7 @@ Animations\...\NORMALMOVE_STAND_01.animation_asset.json
 - 每条 `genericBinding` 的 Unity path hash、解析后的 path、typeID、customType、attribute 和可读 `attributeName`。
 - Humanoid/Muscle 的 `RootT.y`、`LeftFootQ.x`、`Spine Front-Back` 等 Unity muscle 语义。
 - `m_MuscleClip` 的 start/stop time、root motion、foot start、averageSpeed、loop/root-motion flags。
+- `decoded` 曲线块：从 Unity ACL/stream/dense/constant 数据解码出的 `translations`、`rotations`、`scales`、`eulers`、`floats`、`pptrs`。Transform 曲线保存 path + keyframes，Humanoid muscle 保存 attribute + keyframes，数值仍是 Unity serialized 空间。
 - `gltfPlaybackStatus`。Humanoid/Muscle 动画会标为 `RequiresHumanoidSolverOrBake`，表示它已经是可复用 Unity 动画资产，但还不能直接保证 glTF 播放正确。
 
 `asset_catalog.jsonl`、`animation_bindings.jsonl`、`model_animations.json` 会带上 `animationAsset` 路径，后续预览、打包或 Unity/Blender 转换器都应该优先读取这个 sidecar，而不是靠动画文件名猜测语义。

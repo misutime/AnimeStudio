@@ -310,12 +310,12 @@ model_validation.json
 
 ### 2. glTF 动画仍偏基础
 
-当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。普通 Transform 曲线可以直接生成可播放动画；Unity Humanoid/Muscle 动画不能靠简单近似直接定版。当前策略改为先生成可复用动画资产：保留 Unity `.anim` YAML，同时为每个 AnimationClip 生成 `.animation_asset.json`，结构化记录 binding、Humanoid muscle、root motion、MuscleClip flags 和曲线容器信息。后续 glTF/GLB 预览或动画合集必须基于这些 Unity 语义资产进行 bake/验证。
+当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。普通 Transform 曲线可以直接生成可播放动画；Unity Humanoid/Muscle 动画不能靠简单近似直接定版。当前策略改为先生成可复用动画资产：保留 Unity `.anim` YAML，同时为每个 AnimationClip 生成 `.animation_asset.json`，结构化记录 binding、Humanoid muscle、root motion、MuscleClip flags、曲线容器信息和解码后的 Unity serialized 空间 keyframes。后续 glTF/GLB 预览或动画合集必须基于这些 Unity 语义资产进行 bake/验证。
 
 缺口：
 
 - blendshape 动画未写入 `weights` channel。
-- Humanoid/Muscle 动画现在能作为 Unity 语义资产落盘：`.anim` 保存曲线，`.animation_asset.json` 保存可读 binding 和 MuscleClip 元数据。
+- Humanoid/Muscle 动画现在能作为 Unity 语义资产落盘：`.anim` 保存原始 YAML，`.animation_asset.json` 保存可读 binding、MuscleClip 元数据和 decoded curves/keyframes。
 - `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`。下一步应实现 Unity Humanoid/Muscle 求解，或调用 Unity/Blender 等外部 bake 流程把 `.anim` + Avatar 转成骨骼 TRS。
 - 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
 - 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。

@@ -1141,9 +1141,215 @@ namespace AnimeStudio.CLI
                 },
                 transformBindingPaths = animationInfo.transformBindingPaths,
                 humanoid = BuildHumanoidAnimationAsset(clip, animationInfo, muscleBindings),
+                decoded = BuildDecodedAnimationCurves(clip),
                 bindings = bindingAssets.Take(1024).ToArray(),
                 truncatedBindings = bindings.Count > 1024,
             };
+        }
+
+        private static object BuildDecodedAnimationCurves(AnimationClip clip)
+        {
+            try
+            {
+                if (!clip.m_Legacy && clip.m_MuscleClip != null)
+                {
+                    var decoded = AnimationClipConverter.Process(clip);
+                    return new
+                    {
+                        status = "ok",
+                        coordinateSpace = "UnitySerialized",
+                        note = "Decoded from Unity ACL/streamed/dense/constant clip data before model-space export conversion.",
+                        curveCounts = new
+                        {
+                            translations = decoded.Translations?.Count ?? 0,
+                            rotations = decoded.Rotations?.Count ?? 0,
+                            scales = decoded.Scales?.Count ?? 0,
+                            eulers = decoded.Eulers?.Count ?? 0,
+                            floats = decoded.Floats?.Count ?? 0,
+                            pptrs = decoded.PPtrs?.Count ?? 0,
+                            keyframes =
+                                CountVector3Keyframes(decoded.Translations)
+                                + CountQuaternionKeyframes(decoded.Rotations)
+                                + CountVector3Keyframes(decoded.Scales)
+                                + CountVector3Keyframes(decoded.Eulers)
+                                + CountFloatKeyframes(decoded.Floats)
+                                + CountPPtrKeyframes(decoded.PPtrs),
+                        },
+                        translations = ToVector3CurveAssets(decoded.Translations),
+                        rotations = ToQuaternionCurveAssets(decoded.Rotations),
+                        scales = ToVector3CurveAssets(decoded.Scales),
+                        eulers = ToVector3CurveAssets(decoded.Eulers),
+                        floats = ToFloatCurveAssets(decoded.Floats),
+                        pptrs = ToPPtrCurveAssets(decoded.PPtrs),
+                    };
+                }
+
+                return new
+                {
+                    status = "ok",
+                    coordinateSpace = "UnitySerialized",
+                    note = "Decoded from legacy AnimationClip curve containers.",
+                    curveCounts = new
+                    {
+                        translations = clip.m_PositionCurves?.Count ?? 0,
+                        rotations = clip.m_RotationCurves?.Count ?? 0,
+                        scales = clip.m_ScaleCurves?.Count ?? 0,
+                        eulers = clip.m_EulerCurves?.Count ?? 0,
+                        floats = clip.m_FloatCurves?.Count ?? 0,
+                        pptrs = clip.m_PPtrCurves?.Count ?? 0,
+                        keyframes =
+                            CountVector3Keyframes(clip.m_PositionCurves)
+                            + CountQuaternionKeyframes(clip.m_RotationCurves)
+                            + CountVector3Keyframes(clip.m_ScaleCurves)
+                            + CountVector3Keyframes(clip.m_EulerCurves)
+                            + CountFloatKeyframes(clip.m_FloatCurves)
+                            + CountPPtrKeyframes(clip.m_PPtrCurves),
+                    },
+                    translations = ToVector3CurveAssets(clip.m_PositionCurves),
+                    rotations = ToQuaternionCurveAssets(clip.m_RotationCurves),
+                    scales = ToVector3CurveAssets(clip.m_ScaleCurves),
+                    eulers = ToVector3CurveAssets(clip.m_EulerCurves),
+                    floats = ToFloatCurveAssets(clip.m_FloatCurves),
+                    pptrs = ToPPtrCurveAssets(clip.m_PPtrCurves),
+                };
+            }
+            catch (Exception ex)
+            {
+                return new
+                {
+                    status = "error",
+                    coordinateSpace = "UnitySerialized",
+                    error = ex.Message,
+                    note = "The raw .anim file and binding metadata were still exported; only decoded JSON curves failed.",
+                };
+            }
+        }
+
+        private static object[] ToVector3CurveAssets(IEnumerable<Vector3Curve> curves)
+        {
+            return curves?
+                .OrderBy(x => x.path, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    path = x.path,
+                    keyframes = x.curve?.m_Curve?.Select(ToVector3KeyframeAsset).ToArray() ?? Array.Empty<object>(),
+                })
+                .Cast<object>()
+                .ToArray() ?? Array.Empty<object>();
+        }
+
+        private static object[] ToQuaternionCurveAssets(IEnumerable<QuaternionCurve> curves)
+        {
+            return curves?
+                .OrderBy(x => x.path, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    path = x.path,
+                    keyframes = x.curve?.m_Curve?.Select(ToQuaternionKeyframeAsset).ToArray() ?? Array.Empty<object>(),
+                })
+                .Cast<object>()
+                .ToArray() ?? Array.Empty<object>();
+        }
+
+        private static object[] ToFloatCurveAssets(IEnumerable<FloatCurve> curves)
+        {
+            return curves?
+                .OrderBy(x => x.path, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.attribute, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    path = x.path,
+                    attribute = x.attribute,
+                    classID = x.classID.ToString(),
+                    flags = x.flags,
+                    category = x.classID == ClassIDType.Animator ? "HumanoidMuscleOrAnimator" :
+                        x.classID == ClassIDType.SkinnedMeshRenderer ? "BlendShapeOrRenderer" : "Float",
+                    keyframes = x.curve?.m_Curve?.Select(ToFloatKeyframeAsset).ToArray() ?? Array.Empty<object>(),
+                })
+                .Cast<object>()
+                .ToArray() ?? Array.Empty<object>();
+        }
+
+        private static object[] ToPPtrCurveAssets(IEnumerable<PPtrCurve> curves)
+        {
+            return curves?
+                .OrderBy(x => x.path, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.attribute, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    path = x.path,
+                    attribute = x.attribute,
+                    classID = ((ClassIDType)x.classID).ToString(),
+                    flags = x.flags,
+                    keyframes = x.curve?.Select(x => new
+                    {
+                        time = x.time,
+                        value = new
+                        {
+                            fileId = x.value?.m_FileID,
+                            pathId = x.value?.m_PathID,
+                            name = x.value?.Name,
+                        },
+                    }).ToArray() ?? Array.Empty<object>(),
+                })
+                .Cast<object>()
+                .ToArray() ?? Array.Empty<object>();
+        }
+
+        private static object ToVector3KeyframeAsset(Keyframe<Vector3> keyframe)
+        {
+            return new
+            {
+                time = keyframe.time,
+                value = ToJsonVector3(keyframe.value),
+                inSlope = ToJsonVector3(keyframe.inSlope),
+                outSlope = ToJsonVector3(keyframe.outSlope),
+                weightedMode = keyframe.weightedMode,
+            };
+        }
+
+        private static object ToQuaternionKeyframeAsset(Keyframe<Quaternion> keyframe)
+        {
+            return new
+            {
+                time = keyframe.time,
+                value = ToJsonQuaternion(keyframe.value),
+                inSlope = ToJsonQuaternion(keyframe.inSlope),
+                outSlope = ToJsonQuaternion(keyframe.outSlope),
+                weightedMode = keyframe.weightedMode,
+            };
+        }
+
+        private static object ToFloatKeyframeAsset(Keyframe<Float> keyframe)
+        {
+            return new
+            {
+                time = keyframe.time,
+                value = keyframe.value.Value,
+                inSlope = keyframe.inSlope.Value,
+                outSlope = keyframe.outSlope.Value,
+                weightedMode = keyframe.weightedMode,
+            };
+        }
+
+        private static int CountVector3Keyframes(IEnumerable<Vector3Curve> curves)
+        {
+            return curves?.Sum(x => x.curve?.m_Curve?.Count ?? 0) ?? 0;
+        }
+
+        private static int CountQuaternionKeyframes(IEnumerable<QuaternionCurve> curves)
+        {
+            return curves?.Sum(x => x.curve?.m_Curve?.Count ?? 0) ?? 0;
+        }
+
+        private static int CountFloatKeyframes(IEnumerable<FloatCurve> curves)
+        {
+            return curves?.Sum(x => x.curve?.m_Curve?.Count ?? 0) ?? 0;
+        }
+
+        private static int CountPPtrKeyframes(IEnumerable<PPtrCurve> curves)
+        {
+            return curves?.Sum(x => x.curve?.Count ?? 0) ?? 0;
         }
 
         private static JObject BuildAnimationBindingAsset(GenericBinding binding, int index, Dictionary<uint, string> tos)
