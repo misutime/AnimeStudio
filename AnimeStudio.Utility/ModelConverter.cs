@@ -1437,13 +1437,14 @@ namespace AnimeStudio
 
             animation.HumanoidBakeDiagnostics = new ImportedHumanoidBakeDiagnostics
             {
-                Mode = "ApproximateHumanoidMuscleV1",
-                Solver = "HeuristicMuscleToEulerScale",
+                Mode = "ApproximateHumanoidMuscleV2",
+                Solver = "HeuristicMuscleToEulerScale_DeltaBeforeRest_NoRootTranslation",
                 HumanBoneCount = avatar.m_HumanDescription.m_Human.Count,
                 TargetCount = HumanoidMuscleBakeTarget.Targets.Length,
                 Notes = new[]
                 {
                     "This bake is diagnostic and approximate. It does not apply Unity Avatar axes, pre/post rotations, muscle limits, or the native Humanoid solver.",
+                    "RootT is intentionally not baked into Hips translation because Unity Humanoid root motion needs a separate coordinate/root-motion solve.",
                     "Use this output to inspect mapping coverage; do not treat it as final animation correctness.",
                 },
             };
@@ -1524,32 +1525,11 @@ namespace AnimeStudio
                     var y = SampleCurve(curves, target.YAttribute, time) * target.YScale;
                     var z = SampleCurve(curves, target.ZAttribute, time) * target.ZScale;
                     var delta = EulerDegreesToQuaternion(new Vector3(x, y, z));
-                    track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(Multiply(rest, delta))));
+                    track.Rotations.Add(new ImportedKeyframe<Quaternion>(time, NormalizeQuaternion(Multiply(delta, rest))));
                     bakedKeyframeCount++;
                 }
                 bakedTrackCount++;
                 diagnostic.Status = "baked_approximate";
-            }
-
-            if (humanBoneToFrame.TryGetValue("Hips", out var hipsFrame))
-            {
-                var tx = SampleCurve(curves, "RootT.x", times[0]);
-                var ty = SampleCurve(curves, "RootT.y", times[0]);
-                var tz = SampleCurve(curves, "RootT.z", times[0]);
-                var hasRootTranslation = curves.ContainsKey("RootT.x") || curves.ContainsKey("RootT.y") || curves.ContainsKey("RootT.z");
-                if (hasRootTranslation)
-                {
-                    var track = animation.FindTrack(hipsFrame.Path);
-                    foreach (var time in times)
-                    {
-                        tx = SampleCurve(curves, "RootT.x", time);
-                        ty = SampleCurve(curves, "RootT.y", time);
-                        tz = SampleCurve(curves, "RootT.z", time);
-                        track.Translations.Add(new ImportedKeyframe<Vector3>(time, hipsFrame.LocalPosition + new Vector3(-tx, ty, tz)));
-                        bakedKeyframeCount++;
-                    }
-                    bakedTrackCount++;
-                }
             }
 
             animation.HumanoidBakeDiagnostics.MappedTargetCount = animation.HumanoidBakeDiagnostics.Targets.Count(x => x.Status == "baked_approximate");
@@ -1558,7 +1538,7 @@ namespace AnimeStudio
             if (bakedTrackCount > 0)
             {
                 animation.HumanoidMusclesBaked = true;
-                animation.HumanoidBakeMode = "ApproximateHumanoidMuscleV1";
+                animation.HumanoidBakeMode = "ApproximateHumanoidMuscleV2";
                 animation.HumanoidBakedTrackCount = bakedTrackCount;
                 animation.HumanoidBakedKeyframeCount = bakedKeyframeCount;
                 animation.HumanoidBakeDiagnostics.Status = "experimental_baked";
