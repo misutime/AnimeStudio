@@ -267,12 +267,15 @@ humanoid.keyframeCount: 3177
 - AssetStudio 原版 FBX 导出和 AnimeStudio 当前 FBX 在 Bill 样本上的核心骨架指标一致：`Bip001` 单根、78 个 Blender bones、Unity Humanoid 映射完整。
 - AssetStudio 原版在 Blender 中同样会出现大量 `disconnected` bones，因此“Blender 骨锥没连起来”不是判断 Unity 骨架错误的充分证据。
 - `AsFbxSetJointsNode_BoneInPath` 应保持和 AssetStudio 一致：当前节点及其父节点都标记为 `FbxSkeleton::eLimbNode`。
+- Bill 样本的默认 FBX 在 Blender 中，手臂/腿/脊柱的 bone display tail 与真实 child joint 方向约为 `90°`，这是 FBX/Blender 骨骼可视化轴问题；同一条 Unity frame hierarchy 中的 child joint 位置和 Avatar HumanDescription 关系是连通的。
+- 作为 DCC 友好预览层，可以用 Blender 后处理把 edit-bone tail 对齐到人体 child joint。Bill 样本验证后，关键人体链 display-to-child angle 可从 `90°` 降到 `0°`，mesh bounding box 不变。这类输出只能标为 preview/inspection asset，不能替代默认 Unity 关系源文件。
 
 已尝试但不作为默认方案：
 
 - 给 FBX SDK `FbxSkeleton.LimbLength` 手动设置 `1.0`：对 Blender 导入后的骨骼显示没有实际改善，不保留。
 - Blender `ignore_leaf_bones`：会减少骨骼数量，可能损失手指、末端骨和附件骨，不符合“完整素材库”目标，不作为默认处理。
 - Blender `automatic_bone_orientation` / `force_connect_children`：可作为 DCC 友好预览/打包层实验，不能替代 Unity 关系导出的核心骨架。
+- 直接修改默认 FBX 的骨骼 local axes 来“看起来连起来”：会改变 DCC 里的骨骼 rest orientation，可能影响后续动画/重定向判断；默认素材库不这样做。需要人眼验收时，生成单独的 connected-bone preview。
 
 FBX 人工验收默认使用 `scaleFactor=100`。这会把 Freedunk/Bill 这类角色导入 Blender 后保持在约 2 米高的可见尺寸；如果某个测试要保留原始 Unity 单位，必须在命令里显式写 `--fbx_scale_factor 1`，并在样本说明里标注。
 
