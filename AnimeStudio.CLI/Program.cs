@@ -42,7 +42,8 @@ namespace AnimeStudio.CLI
                         o.GameName,
                         o.PreviewModel,
                         o.PreviewAnimation,
-                        o.PreviewOutput?.FullName
+                        o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName
                     );
                     return;
                 }
@@ -55,7 +56,8 @@ namespace AnimeStudio.CLI
                         o.PreviewModel,
                         o.PackAnimations,
                         o.PackOutput?.FullName,
-                        o.PackLimit
+                        o.PackLimit,
+                        o.PreviewSourceRoot?.FullName
                     );
                     return;
                 }

@@ -17,7 +17,8 @@ namespace AnimeStudio.CLI
             string gameName,
             string modelSelector,
             string animationSelector,
-            string outputDirectory
+            string outputDirectory,
+            string sourceRootOverride = null
         )
         {
             if (string.IsNullOrWhiteSpace(gameName))
@@ -41,8 +42,8 @@ namespace AnimeStudio.CLI
 
             var modelName = (string)selection.Model["model"]?["name"];
             var animationName = (string)selection.Animation["name"];
-            var modelSource = (string)selection.Model["model"]?["source"];
-            var animationSource = (string)selection.Animation["source"];
+            var modelSource = ResolveSourcePath((string)selection.Model["model"]?["source"], sourceRootOverride);
+            var animationSource = ResolveSourcePath((string)selection.Animation["source"], sourceRootOverride);
             if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(animationName))
             {
                 Logger.Error("Selected preview entry is missing model or animation name.");
@@ -139,7 +140,8 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            var report = GltfPreviewValidator.Validate(gltfPath, modelName, animationName, selection.Model, selection.Animation);
+            var exportIssues = ExtractExportIssues(stdout, stderr);
+            var report = GltfPreviewValidator.Validate(gltfPath, modelName, animationName, selection.Model, selection.Animation, exportIssues);
             var reportPath = Path.Combine(output, "preview_validation.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Preview glTF: {gltfPath}");
@@ -152,7 +154,8 @@ namespace AnimeStudio.CLI
             string modelSelector,
             string animationSelectors,
             string outputDirectory,
-            int limit
+            int limit,
+            string sourceRootOverride = null
         )
         {
             if (string.IsNullOrWhiteSpace(gameName))
@@ -202,7 +205,7 @@ namespace AnimeStudio.CLI
             {
                 var animationName = (string)animation["name"];
                 var itemOutput = Path.Combine(output, SafeName(animationName ?? "Animation"));
-                Generate(indexPath, gameName, modelName, $"^{Regex.Escape(animationName ?? string.Empty)}$", itemOutput);
+                Generate(indexPath, gameName, modelName, $"^{Regex.Escape(animationName ?? string.Empty)}$", itemOutput, sourceRootOverride);
 
                 var validationPath = Path.Combine(itemOutput, "preview_validation.json");
                 JObject validation = null;
@@ -227,7 +230,9 @@ namespace AnimeStudio.CLI
                     bakeMode = (string)validation?["humanoid"]?["bakeMode"],
                     bakedTrackCount = (int?)validation?["humanoid"]?["bakedTrackCount"] ?? 0,
                     bakedKeyframeCount = (int?)validation?["humanoid"]?["bakedKeyframeCount"] ?? 0,
+                    exportIssueCount = (int?)validation?["exportIssues"]?["count"] ?? 0,
                     humanoid = validation?["humanoid"],
+                    exportIssues = validation?["exportIssues"],
                     notes = validation?["notes"],
                 });
             }
@@ -237,6 +242,7 @@ namespace AnimeStudio.CLI
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 rule = "Each item is a reusable playable model+single-animation glTF generated from Unity relation indexes. Use these assets for small-scope validation before creating larger animation bundles.",
                 index = indexPath,
+                sourceRootOverride,
                 model = modelInfo,
                 requestedAnimations = animationSelectors,
                 count = results.Count,
@@ -366,6 +372,77 @@ namespace AnimeStudio.CLI
             return Regex.Escape(withoutExtension).Replace("/", "[\\\\/]");
         }
 
+        private static string ResolveSourcePath(string indexedSourcePath, string sourceRootOverride)
+        {
+            if (string.IsNullOrWhiteSpace(sourceRootOverride))
+            {
+                return indexedSourcePath;
+            }
+            if (string.IsNullOrWhiteSpace(indexedSourcePath))
+            {
+                return indexedSourcePath;
+            }
+            if (!Directory.Exists(sourceRootOverride))
+            {
+                Logger.Warning($"--preview_source_root does not exist: {sourceRootOverride}");
+                return indexedSourcePath;
+            }
+
+            var normalizedSource = indexedSourcePath.Replace('\\', '/');
+            var lowerSource = normalizedSource.ToLowerInvariant();
+            var anchors = new[]
+            {
+                "/streamingassets/",
+                "/assets/",
+                "/graphics/",
+            };
+            foreach (var anchor in anchors)
+            {
+                var index = lowerSource.IndexOf(anchor, StringComparison.Ordinal);
+                if (index < 0)
+                {
+                    continue;
+                }
+                var relative = normalizedSource[(index + 1)..].Replace('/', Path.DirectorySeparatorChar);
+                var candidate = Path.Combine(sourceRootOverride, relative);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            var fileName = Path.GetFileName(indexedSourcePath);
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return indexedSourcePath;
+            }
+            var matches = Directory.EnumerateFiles(sourceRootOverride, fileName, SearchOption.AllDirectories)
+                .Take(2)
+                .ToArray();
+            if (matches.Length == 1)
+            {
+                return matches[0];
+            }
+            Logger.Warning(matches.Length == 0
+                ? $"Unable to resolve indexed source under --preview_source_root: {indexedSourcePath}"
+                : $"Multiple files named {fileName} found under --preview_source_root; keeping indexed source path.");
+            return indexedSourcePath;
+        }
+
+        private static string[] ExtractExportIssues(params string[] logs)
+        {
+            return logs
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .SelectMany(x => x.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
+                .Where(line =>
+                    line.IndexOf("Unable to resolve", StringComparison.OrdinalIgnoreCase) >= 0
+                    || line.IndexOf("missing", StringComparison.OrdinalIgnoreCase) >= 0 && line.IndexOf("mesh", StringComparison.OrdinalIgnoreCase) >= 0
+                )
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(128)
+                .ToArray();
+        }
+
         private static string SafeName(string value)
         {
             var name = string.IsNullOrWhiteSpace(value) ? "preview" : value;
@@ -386,7 +463,7 @@ namespace AnimeStudio.CLI
 
     internal static class GltfPreviewValidator
     {
-        public static object Validate(string gltfPath, string expectedModelName, string expectedAnimationName, JObject modelIndex, JObject animationIndex)
+        public static object Validate(string gltfPath, string expectedModelName, string expectedAnimationName, JObject modelIndex, JObject animationIndex, string[] exportIssues)
         {
             var gltf = JObject.Parse(File.ReadAllText(gltfPath));
             var directory = Path.GetDirectoryName(Path.GetFullPath(gltfPath));
@@ -422,15 +499,21 @@ namespace AnimeStudio.CLI
             var bbox = meshNode == null
                 ? null
                 : ComputeBounds(gltf, buffers, nodes, meshNode.index);
-            var status = animations.Length > 0
+            exportIssues ??= Array.Empty<string>();
+            var hasExperimentalHumanoidBake = humanoid?.baked == true
+                && (humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase);
+            var structurallyOk = animations.Length > 0
                 && channels.Length > 0
                 && invalidChannels == 0
                 && skins.Length > 0
                 && coverage.coreBoneChannelCount > 0
                 && coverage.coreBoneNodeCount >= 3
-                && bbox?.skinnedSizeLooksReasonable != false
-                    ? "ok"
-                    : "warning";
+                && bbox?.skinnedSizeLooksReasonable != false;
+            var status = !structurallyOk || exportIssues.Length > 0
+                ? "warning"
+                : hasExperimentalHumanoidBake
+                    ? "experimental"
+                    : "ok";
 
             return new
             {
@@ -451,11 +534,16 @@ namespace AnimeStudio.CLI
                     channels = channels.Length,
                     invalidChannels,
                 },
+                exportIssues = new
+                {
+                    count = exportIssues.Length,
+                    items = exportIssues,
+                },
                 animationCoverage = coverage,
                 humanoid,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, humanoid, bbox),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, humanoid, bbox, exportIssues),
             };
         }
 
@@ -554,13 +642,17 @@ namespace AnimeStudio.CLI
             return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, HumanoidAnimationReport humanoid, BoundsReport bounds)
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
             if (channelCount == 0) notes.Add("The embedded animation has no valid glTF channels.");
             if (skinCount == 0) notes.Add("No skin was exported for the preview model.");
             if (invalidChannels > 0) notes.Add($"{invalidChannels} animation channel(s) target missing nodes.");
+            if (exportIssues?.Length > 0)
+            {
+                notes.Add($"{exportIssues.Length} export issue(s) were reported while generating the preview; inspect exportIssues before trusting the asset.");
+            }
             if (humanoid?.requiresBake == true)
             {
                 notes.Add($"Unity Humanoid/Muscle curves are present ({humanoid.muscleCurveCount} curves, {humanoid.keyframeCount} keyframes); they must be baked to skeleton TRS before the body animation can play in glTF.");
@@ -568,6 +660,10 @@ namespace AnimeStudio.CLI
             else if (humanoid?.baked == true)
             {
                 notes.Add($"Unity Humanoid/Muscle curves were baked with {humanoid.bakeMode ?? "unknown"} into {humanoid.bakedTrackCount} skeleton track(s), {humanoid.bakedKeyframeCount} keyframes.");
+                if ((humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase))
+                {
+                    notes.Add("This Humanoid/Muscle bake is approximate and experimental; it is useful for debugging channel generation, but it is not accepted as a correct reusable animation asset until visual/solver validation passes.");
+                }
             }
             if (coverage.coreBoneChannelCount == 0)
             {

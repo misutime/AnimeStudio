@@ -104,6 +104,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.PreviewModel,
                 optionsBinder.PreviewAnimation,
                 optionsBinder.PreviewOutput,
+                optionsBinder.PreviewSourceRoot,
                 optionsBinder.PackModelAnimations,
                 optionsBinder.PackAnimations,
                 optionsBinder.PackOutput,
@@ -161,6 +162,7 @@ namespace AnimeStudio.CLI
         public string PreviewModel { get; set; }
         public string PreviewAnimation { get; set; }
         public DirectoryInfo PreviewOutput { get; set; }
+        public DirectoryInfo PreviewSourceRoot { get; set; }
         public FileInfo PackModelAnimations { get; set; }
         public string PackAnimations { get; set; }
         public DirectoryInfo PackOutput { get; set; }
@@ -213,6 +215,7 @@ namespace AnimeStudio.CLI
         public readonly Option<string> PreviewModel;
         public readonly Option<string> PreviewAnimation;
         public readonly Option<DirectoryInfo> PreviewOutput;
+        public readonly Option<DirectoryInfo> PreviewSourceRoot;
         public readonly Option<FileInfo> PackModelAnimations;
         public readonly Option<string> PackAnimations;
         public readonly Option<DirectoryInfo> PackOutput;
@@ -263,6 +266,7 @@ namespace AnimeStudio.CLI
             PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with --generate_preview_gltf.");
             PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with --generate_preview_gltf.");
             PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for --generate_preview_gltf. Defaults to Previews/<model>__<animation> next to the index.");
+            PreviewSourceRoot = new Option<DirectoryInfo>("--preview_source_root", "Full Unity game/source root used by preview and animation-pack commands to resolve dependencies instead of reusing possibly incomplete indexed sample paths.").LegalFilePathsOnly();
             PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
             PackAnimations = new Option<string>("--pack_animations", "Comma-separated animation names or regexes used with --pack_model_animations. If omitted, top candidates are used.");
             PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for --pack_model_animations.");
@@ -400,6 +404,7 @@ namespace AnimeStudio.CLI
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
                 PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),
                 PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
+                PreviewSourceRoot = bindingContext.ParseResult.GetValueForOption(PreviewSourceRoot),
                 PackModelAnimations = bindingContext.ParseResult.GetValueForOption(PackModelAnimations),
                 PackAnimations = bindingContext.ParseResult.GetValueForOption(PackAnimations),
                 PackOutput = bindingContext.ParseResult.GetValueForOption(PackOutput),

@@ -175,6 +175,16 @@ Models\...\<model>.gltf
 
 Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，预览 glTF 现在会把 Unity Humanoid/Muscle 曲线烘焙成目标骨架的 rotation/translation channel。`animations[].extras.unityHumanoid` 会记录原始 muscle 数据和 bake 状态；`preview_validation.json` 的 `humanoid.baked`、`bakeMode`、`bakedTrackCount`、`bakedKeyframeCount` 用于判断本次预览是否已经生成可播放骨骼动画。当前 bake 模式为 `ApproximateHumanoidMuscleV1`，目标是先生成可播放素材库预览；后续仍需要继续逼近 Unity 原生 Humanoid solver 的高保真 retarget。
 
+如果 `model_animations.json` 来自一个临时小样本目录，预览/打包时必须传完整 Unity 源目录，避免旧样本缺少外部 CAB 依赖导致脸、附件、材质或 Mesh 再次断链：
+
+```powershell
+--preview_source_root "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data"
+```
+
+预览命令会使用完整 source root 重新定位索引里的 source 文件，并用完整 CAB map 解析外部 PPtr。`preview_validation.json` 也会记录 `exportIssues`；只要导出日志出现 `Unable to resolve ...` 这类依赖错误，状态就不能是 `ok`。
+
+注意：`ApproximateHumanoidMuscleV1` 仍是实验 bake。它只能说明“Muscle 曲线被写成了 glTF channel”，不能说明动作姿态正确。凡是使用该 bake 的预览会标为 `experimental`，不能作为最终可复用动画资产验收。
+
 ### 批量生成模型动画验证包
 
 当已经有 `model_animations.json`，并想小范围验证一个模型的多条候选动画时，可以使用 `--pack_model_animations`：
@@ -183,6 +193,7 @@ Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `Mi
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --pack_model_animations "D:\Assets\Freedunk_Data_Dev\SkeletonIndexV1Sample\model_animations.json" `
   --game Normal `
+  --preview_source_root "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data" `
   --preview_model "Bill_01_00_ingame" `
   --pack_animations "NORMALMOVE_STAND_01,DASH_01,DEFENSEMOVE_RUN_0_01" `
   --pack_output "D:\Assets\Freedunk_Data_Dev\Bill_AnimationPack_V1" `

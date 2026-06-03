@@ -316,6 +316,7 @@ model_validation.json
 
 - blendshape 动画未写入 `weights` channel。
 - Humanoid/Muscle 动画已有近似 bake v1，Freedunk 角色身体动作可写出主体骨骼 channel；后续需要继续提高与 Unity 原生 Humanoid solver 的一致性。
+- `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`，下一步应实现 Unity Humanoid/Muscle 求解或改用 Unity `.anim`/metadata 作为可复用动画资产的中间形态。
 - 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
 - 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
