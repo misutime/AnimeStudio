@@ -970,11 +970,11 @@ CLI 支持：
 把当前过滤范围内所有 AnimationClip 都传给 FBX，适合小范围测试。
 
 ```powershell
---fbx_scale_factor 1
+--fbx_scale_factor 100
 --fbx_bone_size 10
 ```
 
-覆盖 FBX 缩放和骨骼显示尺寸。
+覆盖 FBX 缩放和骨骼显示尺寸。CLI 默认 `scaleFactor=100`，目标是让 FBX 在 Blender/F3D/Unity 等 DCC 工具里以可见、可验收的人物尺寸打开；如果需要保留原始 Unity 单位比例，可以显式使用 `--fbx_scale_factor 1`。
 
 ## 材质和 Shader 边界
 

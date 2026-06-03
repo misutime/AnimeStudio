@@ -274,6 +274,8 @@ humanoid.keyframeCount: 3177
 - Blender `ignore_leaf_bones`：会减少骨骼数量，可能损失手指、末端骨和附件骨，不符合“完整素材库”目标，不作为默认处理。
 - Blender `automatic_bone_orientation` / `force_connect_children`：可作为 DCC 友好预览/打包层实验，不能替代 Unity 关系导出的核心骨架。
 
+FBX 人工验收默认使用 `scaleFactor=100`。这会把 Freedunk/Bill 这类角色导入 Blender 后保持在约 2 米高的可见尺寸；如果某个测试要保留原始 Unity 单位，必须在命令里显式写 `--fbx_scale_factor 1`，并在样本说明里标注。
+
 ## Unity bake + FBX 验收样本
 
 动画资产进入人工验收时，优先使用成熟工具链：

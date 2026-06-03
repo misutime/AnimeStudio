@@ -49,7 +49,7 @@ namespace AnimeStudio.CLI.Properties {
         public decimal boneSize => AppSettings.Get("boneSize", (decimal)10);
         public int fbxVersion => AppSettings.Get("fbxVersion", 3);
         public int fbxFormat => AppSettings.Get("fbxFormat", 0);
-        public decimal scaleFactor => AppSettings.Get("scaleFactor", (decimal)1);
+        public decimal scaleFactor => AppSettings.Get("scaleFactor", (decimal)100);
         public bool exportBlendShape => AppSettings.Get("exportBlendShape", true);
         public bool castToBone => AppSettings.Get("castToBone", false);
         public bool restoreExtensionName => AppSettings.Get("restoreExtensionName", true);
