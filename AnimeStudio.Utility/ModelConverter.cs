@@ -1385,7 +1385,47 @@ namespace AnimeStudio
                 }
 
                 BakeHumanoidMusclesToSkeleton(iAnim);
+                PruneAuxiliaryTracksForExplicitHumanoidAnimation(iAnim);
             }
+        }
+
+        private void PruneAuxiliaryTracksForExplicitHumanoidAnimation(ImportedKeyframedAnimation animation)
+        {
+            if (!options.preferBakedHumanoidBodyAnimation
+                || animation?.HumanoidMusclesBaked != true
+                || animation.HumanoidBakeDiagnostics?.Targets == null
+                || animation.TrackList == null)
+            {
+                return;
+            }
+
+            var keepPaths = animation.HumanoidBakeDiagnostics.Targets
+                .Where(x => string.Equals(x.Status, "baked_approximate", StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.SkeletonPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToHashSet(StringComparer.Ordinal);
+            if (avatar?.m_HumanDescription?.m_Human != null)
+            {
+                var hipsPath = avatar.m_HumanDescription.m_Human
+                    .Where(x => string.Equals(x.m_HumanName, "Hips", StringComparison.OrdinalIgnoreCase))
+                    .Select(x => RootFrame?.FindFrame(x.m_BoneName)?.Path)
+                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+                if (!string.IsNullOrWhiteSpace(hipsPath))
+                {
+                    keepPaths.Add(hipsPath);
+                }
+            }
+
+            if (keepPaths.Count == 0)
+            {
+                return;
+            }
+
+            animation.TrackList = animation.TrackList
+                .Where(track =>
+                    track.BlendShape != null
+                    || (!string.IsNullOrWhiteSpace(track.Path) && keepPaths.Contains(track.Path)))
+                .ToList();
         }
 
         private void BakeHumanoidMusclesToSkeleton(ImportedKeyframedAnimation animation)
@@ -1857,6 +1897,7 @@ namespace AnimeStudio
             public Game game;
             public bool collectAnimations;
             public bool exportAnimations = true;
+            public bool preferBakedHumanoidBodyAnimation;
             public bool exportMaterials;
             public HashSet<Material> materials;
             public Dictionary<string, (bool, int)> uvs;
