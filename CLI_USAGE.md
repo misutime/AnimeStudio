@@ -976,6 +976,24 @@ CLI 支持：
 
 覆盖 FBX 缩放和骨骼显示尺寸。CLI 默认 `scaleFactor=100`，目标是让 FBX 在 Blender/F3D/Unity 等 DCC 工具里以可见、可验收的人物尺寸打开；如果需要保留原始 Unity 单位比例，可以显式使用 `--fbx_scale_factor 1`。
 
+### Core Humanoid 骨架预览
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --generate_skeleton_guide "D:\Assets\Freedunk_Data_Dev\DirectFbx_Bill_Static_SkeletonValidation_Png\assets\graphics\character\pc\bill_01_00\Bill_01_00_ingame\Bill_01_00_ingame.fbx" `
+  --preview_output "D:\Assets\Freedunk_Data_Dev\DirectFbx_Bill_Static_CoreSkeletonGuide_CLI\assets\graphics\character\pc\bill_01_00\Bill_01_00_ingame"
+```
+
+`--generate_skeleton_guide` 是非破坏性诊断命令：它不会修改或重导出原 FBX，只会复制一份 `*.canonical.fbx`，并生成一个 `*_core_skeleton_guide.blend`。这个 `.blend` 会隐藏原始 FBX armature，用粗红色管线和黄色关节点显示 Unity Avatar `HumanDescription` 解出的 Core Humanoid 主链，适合人工判断人体骨架是否正确。
+
+命令会优先从 FBX 所在目录向上查找 `asset_catalog.jsonl`，并使用其中的 Unity Avatar 关系；也可以显式传：
+
+```powershell
+--skeleton_guide_catalog "D:\Assets\Freedunk_Data_Dev\DirectFbx_Bill_Static_SkeletonValidation_Png\asset_catalog.jsonl"
+```
+
+报告写入 `core_skeleton_guide_report.json`。重点看 `relationSource` 是否为 `unity_avatar_human_description`、`missingEdgeCount` 是否为 `0`。如果找不到 Unity Avatar 关系，命令会退回常见 `Bip001` 名称作为诊断 fallback，但这种结果不能当成最终骨架验收。
+
 ## 材质和 Shader 边界
 
 CLI 的 FBX 导出目标是“Blender 可打开、基础材质可见”，不是完整还原游戏自定义 shader。

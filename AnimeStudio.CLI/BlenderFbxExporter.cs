@@ -93,7 +93,7 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        private static string ResolveBlender(string blenderPath)
+        internal static string ResolveBlender(string blenderPath)
         {
             if (!string.IsNullOrWhiteSpace(blenderPath) && File.Exists(blenderPath))
             {

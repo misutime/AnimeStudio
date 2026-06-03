@@ -278,6 +278,7 @@ humanoid.keyframeCount: 3177
 - 直接修改默认 FBX 的骨骼 local axes 来“看起来连起来”：会改变 DCC 里的骨骼 rest orientation，可能影响后续动画/重定向判断；默认素材库不这样做。需要人眼验收时，生成单独的 connected-bone preview。
 - `ConnectedBonePreview` 仅作为失败实验/诊断样本保留，不能作为生产素材输出。Bill 样本中它只把 17 根核心 Humanoid 链的 edit-bone tail 对齐到 child joint；脸 mesh 顶点数和面数没有减少，但 Blender 二次导出 FBX 后会重建 `.fbm` 贴图目录和材质节点，导致脸部透明、双面或贴图表现可能变坏。后续如果需要可读骨架，应生成不改动模型本体的骨骼预览或 core skeleton guide，而不是重导出模型 FBX。
 - 人工看骨架时要区分两类骨：`CoreHumanoid` 是 Unity Avatar HumanDescription 映射出的头、脊柱、手臂、腿等主链；`Accessory/Helper/Twist/Finger/Cloth` 是手指、twist、附件、衣物、挂点或辅助节点。后者可能在 Blender 里显示成短小、横向或垂直的骨骼锥体，不等价于主骨架错误。默认验收先看 `skeletonValidation` 和 CoreHumanoid 主链，预览工具再做降噪显示。
+- `--generate_skeleton_guide` 已固化为正式诊断命令。它优先读取 `asset_catalog.jsonl` 的 Unity Avatar `HumanDescription`，生成不修改原 FBX 的 `.blend` 骨架验收文件；Bill 样本验收通过时应看到 `relationSource=unity_avatar_human_description`、`createdEdgeCount=21`、`missingEdgeCount=0`。
 
 FBX 人工验收默认使用 `scaleFactor=100`。这会把 Freedunk/Bill 这类角色导入 Blender 后保持在约 2 米高的可见尺寸；如果某个测试要保留原始 Unity 单位，必须在命令里显式写 `--fbx_scale_factor 1`，并在样本说明里标注。
 

@@ -122,6 +122,8 @@ namespace AnimeStudio.CLI
                 optionsBinder.ApplyUnityBakeResult,
                 optionsBinder.BakedGltfOutput,
                 optionsBinder.BakedFbxOutput,
+                optionsBinder.GenerateSkeletonGuide,
+                optionsBinder.SkeletonGuideCatalog,
                 optionsBinder.Blender,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
@@ -194,6 +196,8 @@ namespace AnimeStudio.CLI
         public FileInfo ApplyUnityBakeResult { get; set; }
         public FileInfo BakedGltfOutput { get; set; }
         public FileInfo BakedFbxOutput { get; set; }
+        public FileInfo GenerateSkeletonGuide { get; set; }
+        public FileInfo SkeletonGuideCatalog { get; set; }
         public FileInfo Blender { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
@@ -261,6 +265,8 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> ApplyUnityBakeResult;
         public readonly Option<FileInfo> BakedGltfOutput;
         public readonly Option<FileInfo> BakedFbxOutput;
+        public readonly Option<FileInfo> GenerateSkeletonGuide;
+        public readonly Option<FileInfo> SkeletonGuideCatalog;
         public readonly Option<FileInfo> Blender;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
@@ -326,6 +332,8 @@ namespace AnimeStudio.CLI
             ApplyUnityBakeResult = new Option<FileInfo>("--apply_unity_bake_result", "Apply unity_bake_result.json or unity_bake_request.json to the source glTF and write a baked playable preview glTF.").LegalFilePathsOnly();
             BakedGltfOutput = new Option<FileInfo>("--baked_gltf_output", "Output glTF path for --apply_unity_bake_result. Defaults to BakedPreview/<model>__<clip>.gltf next to the bake request/result.");
             BakedFbxOutput = new Option<FileInfo>("--baked_fbx_output", "Optional FBX output path. AnimeStudio first writes the baked glTF, then asks Blender to export a mature FBX package.");
+            GenerateSkeletonGuide = new Option<FileInfo>("--generate_skeleton_guide", "Generate a non-destructive Blender CoreHumanoid skeleton guide from an exported FBX. Uses asset_catalog.jsonl Unity Avatar relations when available.").LegalFilePathsOnly();
+            SkeletonGuideCatalog = new Option<FileInfo>("--skeleton_guide_catalog", "Optional asset_catalog.jsonl used by --generate_skeleton_guide. If omitted, AnimeStudio walks up from the FBX path.").LegalFilePathsOnly();
             Blender = new Option<FileInfo>("--blender", "Blender executable path used for mature glTF-to-FBX packaging after Unity bake.").LegalFilePathsOnly();
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
@@ -480,6 +488,8 @@ namespace AnimeStudio.CLI
                 ApplyUnityBakeResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeResult),
                 BakedGltfOutput = bindingContext.ParseResult.GetValueForOption(BakedGltfOutput),
                 BakedFbxOutput = bindingContext.ParseResult.GetValueForOption(BakedFbxOutput),
+                GenerateSkeletonGuide = bindingContext.ParseResult.GetValueForOption(GenerateSkeletonGuide),
+                SkeletonGuideCatalog = bindingContext.ParseResult.GetValueForOption(SkeletonGuideCatalog),
                 Blender = bindingContext.ParseResult.GetValueForOption(Blender),
                 DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
                 Input = bindingContext.ParseResult.GetValueForArgument(Input),
