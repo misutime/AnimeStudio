@@ -119,15 +119,18 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            ((JArray)(gltf["animations"] ??= new JArray())).Add(animation);
+            // 预览文件只保留当前烘焙动画，避免 F3D/Blender 默认播放旧的表情或辅助动画，
+            // 让用户打开文件时看到的就是这次选择的模型 + 动作。
+            gltf["animations"] = new JArray(animation);
             ((JArray)(gltf["buffers"]))[0]["byteLength"] = bufferBytes.Count;
             File.WriteAllBytes(bufferFile, bufferBytes.ToArray());
             File.WriteAllText(outputGltfPath, JsonConvert.SerializeObject(gltf, Formatting.Indented));
+            var skinReport = BuildSkinAnimationReport(gltf);
 
             var report = new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
-                status = skippedTracks.Count == 0 ? "ok" : "warning",
+                status = skippedTracks.Count == 0 && skinReport.TargetNotJointCount == 0 ? "ok" : "warning",
                 sourceGltf,
                 outputGltf = outputGltfPath,
                 request = requestPath,
@@ -136,6 +139,7 @@ namespace AnimeStudio.CLI
                 writtenTracks,
                 skippedTrackCount = skippedTracks.Count,
                 skippedTracks = skippedTracks.Take(128).ToArray(),
+                skinAnimation = skinReport,
             };
             var reportPath = Path.Combine(outputDir, "unity_bake_apply_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
@@ -225,6 +229,78 @@ namespace AnimeStudio.CLI
                 paths[Build(i)] = i;
             }
             return paths;
+        }
+
+        private static SkinAnimationReport BuildSkinAnimationReport(JObject gltf)
+        {
+            var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var skins = gltf["skins"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var animations = gltf["animations"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var meshSkinNodes = nodes
+                .Select((node, index) => new { node, index })
+                .Where(x => x.node["mesh"] != null && x.node["skin"] != null)
+                .Select(x => new MeshSkinNode(x.index, (string)x.node["name"], (int?)x.node["mesh"] ?? -1, (int?)x.node["skin"] ?? -1))
+                .ToArray();
+            var joints = skins
+                .SelectMany(skin => skin["joints"]?.Values<int>() ?? Enumerable.Empty<int>())
+                .Where(x => x >= 0 && x < nodes.Length)
+                .Distinct()
+                .ToHashSet();
+            var targets = animations
+                .SelectMany(animation => animation["channels"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                .Select(channel => (int?)channel["target"]?["node"])
+                .Where(x => x.HasValue && x.Value >= 0 && x.Value < nodes.Length)
+                .Select(x => x.Value)
+                .Distinct()
+                .ToHashSet();
+            var targetNotJoint = targets
+                .Where(x => !joints.Contains(x))
+                .Select(x => new NodeRef(x, BuildNodePath(nodes, x)))
+                .OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var jointNotTarget = joints
+                .Where(x => !targets.Contains(x))
+                .Select(x => new NodeRef(x, BuildNodePath(nodes, x)))
+                .OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
+                .Take(128)
+                .ToArray();
+
+            return new SkinAnimationReport(
+                Nodes: nodes.Length,
+                Skins: skins.Length,
+                SkinJoints: joints.Count,
+                AnimationTargets: targets.Count,
+                TargetNotJointCount: targetNotJoint.Length,
+                JointNotTargetCount: joints.Count - targets.Count(x => joints.Contains(x)),
+                MeshSkinNodes: meshSkinNodes,
+                TargetNotJoint: targetNotJoint,
+                JointNotTargetSample: jointNotTarget,
+                Rule: "UnityGLTF-style check: skin.joints should be exported from SkinnedMeshRenderer.bones, and baked animation channels should target the same bone node graph. Non-joint parent targets can still affect child joints through hierarchy, but they are reported for inspection."
+            );
+        }
+
+        private static string BuildNodePath(JObject[] nodes, int index)
+        {
+            var parents = new int?[nodes.Length];
+            for (var i = 0; i < nodes.Length; i++)
+            {
+                foreach (var child in nodes[i]["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+                {
+                    if (child >= 0 && child < parents.Length)
+                    {
+                        parents[child] = i;
+                    }
+                }
+            }
+
+            var stack = new Stack<string>();
+            int? current = index;
+            while (current.HasValue)
+            {
+                stack.Push((string)nodes[current.Value]["name"] ?? $"node_{current.Value}");
+                current = parents[current.Value];
+            }
+            return string.Join("/", stack);
         }
 
         private static string NormalizeBakePath(string bakePath, JObject[] nodes)
@@ -328,5 +404,22 @@ namespace AnimeStudio.CLI
             }
             return name;
         }
+
+        private sealed record SkinAnimationReport(
+            int Nodes,
+            int Skins,
+            int SkinJoints,
+            int AnimationTargets,
+            int TargetNotJointCount,
+            int JointNotTargetCount,
+            MeshSkinNode[] MeshSkinNodes,
+            NodeRef[] TargetNotJoint,
+            NodeRef[] JointNotTargetSample,
+            string Rule
+        );
+
+        private sealed record MeshSkinNode(int Node, string Name, int Mesh, int Skin);
+
+        private sealed record NodeRef(int Node, string Path);
     }
 }
