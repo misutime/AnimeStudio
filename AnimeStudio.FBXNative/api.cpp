@@ -578,6 +578,9 @@ AS_API(FbxSurfacePhong*) AsFbxCreateMaterial(AsFbxContext* pContext, const char*
 	pMat->Emissive.Set(FbxDouble3(emissiveR, emissiveG, emissiveB));
 	pMat->Specular.Set(FbxDouble3(specularR, specularG, specularB));
 	pMat->Reflection.Set(FbxDouble3(reflectR, reflectG, reflectB));
+	pMat->EmissiveFactor.Set(FbxDouble(0.0));
+	pMat->SpecularFactor.Set(FbxDouble(0.2));
+	pMat->ReflectionFactor.Set(FbxDouble(0.0));
 	pMat->Shininess.Set(FbxDouble(shininess));
 	pMat->TransparencyFactor.Set(FbxDouble(transparency));
 	pMat->ShadingModel.Set("Phong");

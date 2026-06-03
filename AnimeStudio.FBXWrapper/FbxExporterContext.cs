@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -368,8 +369,11 @@ namespace AnimeStudio.FbxInterop
                             var emissive = mat.Emissive;
                             var specular = mat.Specular;
                             var reflection = mat.Reflection;
+                            var shininess = mat.Shininess;
 
-                            pMat = AsFbxCreateMaterial(_pContext, mat.Name, in diffuse, in ambient, in emissive, in specular, in reflection, mat.Shininess, mat.Transparency);
+                            NormalizeMaterialForFbxPreview(mat, ref diffuse, ref ambient, ref emissive, ref specular, ref reflection, ref shininess);
+
+                            pMat = AsFbxCreateMaterial(_pContext, mat.Name, in diffuse, in ambient, in emissive, in specular, in reflection, shininess, mat.Transparency);
 
                             _createdMaterials.Add(new KeyValuePair<string, IntPtr>(mat.Name, pMat));
                         }
@@ -512,6 +516,30 @@ namespace AnimeStudio.FbxInterop
             {
                 AsFbxMeshDisposeClusterArray(ref pClusterArray);
             }
+        }
+
+        private static void NormalizeMaterialForFbxPreview(
+            ImportedMaterial mat,
+            ref Color diffuse,
+            ref Color ambient,
+            ref Color emissive,
+            ref Color specular,
+            ref Color reflection,
+            ref float shininess)
+        {
+            if (mat?.Textures == null || !mat.Textures.Any(x => x.Dest == 0))
+            {
+                return;
+            }
+
+            // Unity shader properties do not map cleanly to FBX Phong. When a base color texture
+            // exists, keep that texture authoritative and avoid Blender importing white emissive/metallic-looking materials.
+            diffuse = new Color(1f, 1f, 1f, diffuse.A <= 0f ? 1f : diffuse.A);
+            ambient = new Color(0.2f, 0.2f, 0.2f, 1f);
+            emissive = new Color(0f, 0f, 0f, 1f);
+            specular = new Color(0.04f, 0.04f, 0.04f, 1f);
+            reflection = new Color(0f, 0f, 0f, 1f);
+            shininess = Math.Min(Math.Max(shininess, 1f), 20f);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
