@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
+using Newtonsoft.Json.Linq;
 
 namespace AnimeStudio.CLI
 {
@@ -880,6 +881,8 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.Ordinal)
                 .ToArray() ?? Array.Empty<string>();
 
+            var avatarInfo = GetModelAvatarInfo(source);
+            var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
             var entry = new
             {
                 kind = "Model",
@@ -906,13 +909,14 @@ namespace AnimeStudio.CLI
                 boneCount = bonePaths.Length,
                 bonePaths = bonePaths.Take(512).ToArray(),
                 bonePathsTruncated = bonePaths.Length > 512,
-                skeletonHash = bonePaths.Length == 0 ? null : HashText(string.Join("\n", bonePaths)),
-                avatar = GetModelAvatarInfo(source),
+                skeletonHash = (string)skeletonInfo?["libraryId"],
+                skeleton = skeletonInfo,
+                avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
         }
 
-        private static object GetModelAvatarInfo(object source)
+        private static JObject GetModelAvatarInfo(object source)
         {
             var modelAsset = source is AssetItem item ? item.Asset : source as AnimeStudio.Object;
             var animator = modelAsset switch
@@ -926,7 +930,18 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
-            return new
+            var humanBones = avatar.m_HumanDescription?.m_Human?
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_HumanName) && !string.IsNullOrWhiteSpace(x.m_BoneName))
+                .Select(x => $"{x.m_HumanName}:{x.m_BoneName}")
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+            var skeletonBones = avatar.m_HumanDescription?.m_Skeleton?
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_Name))
+                .Select(x => string.IsNullOrWhiteSpace(x.m_ParentName) ? x.m_Name : $"{x.m_ParentName}/{x.m_Name}")
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+
+            return JObject.FromObject(new
             {
                 name = avatar.m_Name,
                 source = avatar.assetsFile?.originalPath ?? avatar.assetsFile?.fileName,
@@ -935,7 +950,90 @@ namespace AnimeStudio.CLI
                 humanBoneCount = avatar.m_HumanDescription?.m_Human?.Count ?? 0,
                 skeletonBoneCount = avatar.m_HumanDescription?.m_Skeleton?.Count ?? 0,
                 avatarSkeletonNodeCount = avatar.m_Avatar?.m_AvatarSkeleton?.m_Node?.Count ?? 0,
-            };
+                humanBoneMapHash = humanBones.Length == 0 ? null : HashText(string.Join("\n", humanBones)),
+                skeletonBoneNameHash = skeletonBones.Length == 0 ? null : HashText(string.Join("\n", skeletonBones)),
+                humanBones = humanBones.Take(128).ToArray(),
+            });
+        }
+
+        private static JObject BuildSkeletonInfo(IImported imported, string[] bonePaths, JObject avatarInfo)
+        {
+            var namePathHash = bonePaths.Length == 0 ? null : HashText(string.Join("\n", bonePaths));
+            var hierarchySignature = imported.RootFrame == null ? null : BuildFrameHierarchySignature(imported.RootFrame);
+            var hierarchyHash = string.IsNullOrWhiteSpace(hierarchySignature) ? null : HashText(hierarchySignature);
+            var bindPoseSignature = BuildBindPoseSignature(imported);
+            var bindPoseHash = string.IsNullOrWhiteSpace(bindPoseSignature) ? null : HashText(bindPoseSignature);
+            var avatarHumanHash = (string)avatarInfo?["humanBoneMapHash"];
+            var avatarSkeletonNameHash = (string)avatarInfo?["skeletonBoneNameHash"];
+            var librarySeed = avatarHumanHash
+                ?? (namePathHash != null && bindPoseHash != null ? $"{namePathHash}:{bindPoseHash}" : null)
+                ?? namePathHash
+                ?? hierarchyHash;
+            if (librarySeed == null)
+            {
+                return null;
+            }
+
+            return JObject.FromObject(new
+            {
+                libraryId = HashText(librarySeed),
+                namePathHash,
+                hierarchyHash,
+                bindPoseHash,
+                avatarHumanHash,
+                avatarSkeletonNameHash,
+                boneCount = bonePaths.Length,
+                nodeCount = CountFrames(imported.RootFrame),
+                fingerprintVersion = 1,
+                relationBasis = avatarHumanHash != null
+                    ? "AvatarHumanDescription"
+                    : bindPoseHash != null
+                    ? "BonePathsAndBindPose"
+                    : "BonePathsOrHierarchy",
+            });
+        }
+
+        private static string BuildFrameHierarchySignature(ImportedFrame frame)
+        {
+            if (frame == null)
+            {
+                return null;
+            }
+
+            var childSignatures = new List<string>();
+            for (var i = 0; i < frame.Count; i++)
+            {
+                childSignatures.Add(BuildFrameHierarchySignature(frame[i]));
+            }
+            childSignatures.Sort(StringComparer.Ordinal);
+            return $"{NormalizeSkeletonName(frame.Name)}({string.Join(",", childSignatures)})";
+        }
+
+        private static string BuildBindPoseSignature(IImported imported)
+        {
+            var bones = imported.MeshList?
+                .SelectMany(x => x.BoneList ?? Enumerable.Empty<ImportedBone>())
+                .Where(x => !string.IsNullOrWhiteSpace(x.Path))
+                .GroupBy(x => x.Path, StringComparer.Ordinal)
+                .Select(x => $"{x.Key}:{QuantizeMatrix(x.First().Matrix)}")
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
+            return bones.Length == 0 ? null : string.Join("\n", bones);
+        }
+
+        private static string QuantizeMatrix(Matrix4x4 matrix)
+        {
+            var values = new string[16];
+            for (var i = 0; i < values.Length; i++)
+            {
+                values[i] = Math.Round(matrix[i], 4).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+            }
+            return string.Join(",", values);
+        }
+
+        private static string NormalizeSkeletonName(string name)
+        {
+            return Regex.Replace((name ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
         private static Animator FindAnimatorInHierarchy(GameObject root)

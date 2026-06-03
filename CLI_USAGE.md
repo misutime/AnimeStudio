@@ -434,16 +434,17 @@ asset_catalog.jsonl
 asset_summary.json
 animation_bindings.jsonl
 model_animations.json
+skeletons.json
 model_validation.json
 ```
 
 每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
 
-`asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数和 `skeletonHash`。
+`asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数、`skeletonHash` 和 `skeleton`。`skeletonHash` 是素材库骨架 ID；`skeleton` 里会记录 `namePathHash`、`hierarchyHash`、`bindPoseHash`、`avatarHumanHash`、`avatarSkeletonNameHash` 和 `relationBasis`，用于判断哪些模型/动画共享同一套 Unity 骨架或 Humanoid Avatar 关系。
 
 AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、BlendShape 动画，还是只作用在 socket/helper 上的辅助动画。
 
-`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`model_validation.json` 是静态模型验收报告，检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
+`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`model_validation.json` 是静态模型验收报告，检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。`skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
 
 默认还会写入性能日志：
 

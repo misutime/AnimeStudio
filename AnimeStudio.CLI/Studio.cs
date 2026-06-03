@@ -986,6 +986,7 @@ namespace AnimeStudio.CLI
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
             var explicitAnimationLinks = BuildExplicitUnityAnimationLinks(models, animations);
+            GenerateSkeletonLibraryIndex(savePath, models, explicitAnimationLinks);
             var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
             using var writer = new StreamWriter(bindingsPath, false);
             foreach (var animation in animations)
@@ -1043,6 +1044,7 @@ namespace AnimeStudio.CLI
                 relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
                 relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                 relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
+                skeletonIndex = Path.Combine(savePath, "skeletons.json"),
                 models = models
                     .OrderBy(x => (string)x["resourceKind"])
                     .ThenBy(x => (string)x["name"])
@@ -1072,6 +1074,123 @@ namespace AnimeStudio.CLI
             File.WriteAllText(
                 Path.Combine(savePath, "model_animations.json"),
                 JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
+            );
+        }
+
+        private static void GenerateSkeletonLibraryIndex(string savePath, List<JObject> models, ExplicitAnimationLinks animationLinks)
+        {
+            var skeletonGroups = models
+                .Select(model => new
+                {
+                    Model = model,
+                    Skeleton = model["skeleton"] as JObject,
+                    SkeletonId = (string)model["skeleton"]?["libraryId"] ?? (string)model["skeletonHash"],
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x.SkeletonId))
+                .GroupBy(x => x.SkeletonId, StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(x => x.Count())
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
+                {
+                    var groupModels = group.Select(x => x.Model).ToArray();
+                    var browsableModels = groupModels
+                        .Where(x => ((int?)x["meshCount"] ?? 0) > 0)
+                        .ToArray();
+                    var sourceSkeletonModels = groupModels
+                        .Where(x => ((int?)x["meshCount"] ?? 0) == 0)
+                        .ToArray();
+                    var visibleModels = browsableModels.Length > 0 ? browsableModels : groupModels;
+                    var firstSkeleton = group.Select(x => x.Skeleton).FirstOrDefault(x => x != null);
+                    var candidateLinks = groupModels
+                        .SelectMany(model =>
+                        {
+                            var modelKey = GetCatalogKey(model);
+                            return animationLinks.ByModel.TryGetValue(modelKey, out var links)
+                                ? links
+                                : Enumerable.Empty<ExplicitModelAnimationLink>();
+                        })
+                        .GroupBy(x => GetCatalogKey(x.Animation), StringComparer.OrdinalIgnoreCase)
+                        .Select(x => x
+                            .OrderByDescending(link => link.Score)
+                            .ThenBy(link => link.ModelName, StringComparer.OrdinalIgnoreCase)
+                            .First())
+                        .OrderByDescending(x => x.Score)
+                        .ThenBy(x => (string)x.Animation["name"], StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+
+                    return new
+                    {
+                        skeletonId = group.Key,
+                        relationBasis = (string)firstSkeleton?["relationBasis"],
+                        fingerprintVersion = (int?)firstSkeleton?["fingerprintVersion"] ?? 1,
+                        hashes = new
+                        {
+                            namePathHash = (string)firstSkeleton?["namePathHash"],
+                            hierarchyHash = (string)firstSkeleton?["hierarchyHash"],
+                            bindPoseHash = (string)firstSkeleton?["bindPoseHash"],
+                            avatarHumanHash = (string)firstSkeleton?["avatarHumanHash"],
+                            avatarSkeletonNameHash = (string)firstSkeleton?["avatarSkeletonNameHash"],
+                        },
+                        modelCount = browsableModels.Length,
+                        sourceSkeletonCount = sourceSkeletonModels.Length,
+                        totalIndexedModelLikeCount = groupModels.Length,
+                        resourceKinds = visibleModels
+                            .Select(x => (string)x["resourceKind"] ?? "Unknown")
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                            .ToArray(),
+                        models = visibleModels
+                            .OrderBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                            .Select(model => new
+                            {
+                                name = (string)model["name"],
+                                resourceKind = (string)model["resourceKind"],
+                                output = (string)model["output"],
+                                source = (string)model["source"],
+                                container = (string)model["container"],
+                                boneCount = (int?)model["boneCount"] ?? 0,
+                                meshCount = (int?)model["meshCount"] ?? 0,
+                                textureCount = (int?)model["textureCount"] ?? 0,
+                                avatar = model["avatar"] == null ? null : new
+                                {
+                                    name = (string)model["avatar"]?["name"],
+                                    humanBoneCount = (int?)model["avatar"]?["humanBoneCount"] ?? 0,
+                                    skeletonBoneCount = (int?)model["avatar"]?["skeletonBoneCount"] ?? 0,
+                                },
+                            })
+                            .ToArray(),
+                        animationCandidateCount = candidateLinks.Length,
+                        animationCandidates = candidateLinks
+                            .Take(512)
+                            .Select(link => new
+                            {
+                                name = (string)link.Animation["name"],
+                                resourceKind = (string)link.Animation["resourceKind"],
+                                output = (string)link.Animation["output"],
+                                source = (string)link.Animation["source"],
+                                container = (string)link.Animation["container"],
+                                animationType = (string)link.Animation["animationType"],
+                                score = link.Score,
+                                confidence = link.Confidence,
+                                relation = link.Relation,
+                                requiresHumanoidBake = link.RequiresHumanoidBake,
+                                matchedModel = link.ModelName,
+                            })
+                            .ToArray(),
+                    };
+                })
+                .ToArray();
+
+            var index = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                rule = "Skeleton groups are generated from Unity-derived skeleton fingerprints. They are the preferred bridge between clean model library assets and reusable animation assets.",
+                skeletonCount = skeletonGroups.Length,
+                skeletons = skeletonGroups,
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "skeletons.json"),
+                JsonConvert.SerializeObject(index, Newtonsoft.Json.Formatting.Indented)
             );
         }
 
@@ -1393,6 +1512,7 @@ namespace AnimeStudio.CLI
                 source = (string)entry["source"],
                 container = (string)entry["container"],
                 skeletonHash = (string)entry["skeletonHash"],
+                skeleton = entry["skeleton"],
                 boneCount = (int?)entry["boneCount"] ?? 0,
                 meshCount = (int?)entry["meshCount"] ?? 0,
                 textureCount = (int?)entry["textureCount"] ?? 0,

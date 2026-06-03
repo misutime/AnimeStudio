@@ -123,7 +123,7 @@ CAB / PPtr 依赖索引策略：
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
-| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 只放组合模型，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录 | 75% |
+| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 只放组合模型，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录；新增 `skeletons.json` 从骨架视角聚合可浏览模型和候选动画 | 78% |
 
 ## 已有关键能力
 
@@ -253,7 +253,7 @@ asset_catalog.jsonl
 export_profile.jsonl
 ```
 
-`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数和 skeletonHash；动画会作为独立资产登记，实验 shader 只在 `--include_shaders` 时登记。
+`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数、skeletonHash 和 skeleton 多维指纹；动画会作为独立资产登记，实验 shader 只在 `--include_shaders` 时登记。当前 skeleton 指纹包含 `namePathHash`、`hierarchyHash`、`bindPoseHash`、`avatarHumanHash`、`avatarSkeletonNameHash` 和 `relationBasis`，优先使用 Unity Avatar/HumanDescription，其次使用骨骼路径、层级和 bindpose。
 
 AnimationClip 条目会额外记录：
 
@@ -271,12 +271,13 @@ AnimationClip 条目会额外记录：
 asset_summary.json
 animation_bindings.jsonl
 model_animations.json
+skeletons.json
 unity_relations.jsonl
 unity_relation_summary.json
 model_validation.json
 ```
 
-`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`model_validation.json` 检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽；这是动画前的静态模型验收门。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。默认候选必须从 Unity 关系图或等价的内存 Unity 引用解析结果派生；`resourceKind`、资源路径和角色/场景线索只能在显式 fallback 模式中作为带标注的补充线索。
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`model_validation.json` 检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽；这是动画前的静态模型验收门。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。`skeletons.json` 为每个素材库骨架聚合可浏览模型和候选动画；动画 FBX 等无 mesh 的源骨架保留为 `sourceSkeletonCount`，不混入 `models` 浏览列表。默认候选必须从 Unity 关系图或等价的内存 Unity 引用解析结果派生；`resourceKind`、资源路径和角色/场景线索只能在显式 fallback 模式中作为带标注的补充线索。
 
 `export_profile.jsonl` 已记录：
 
