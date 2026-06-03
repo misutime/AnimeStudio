@@ -292,6 +292,48 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf"
 ```
 
+### Unity bake 后导出 FBX
+
+当前动画验收优先采用“Unity bake + Blender FBX”成熟工具链：
+
+1. AnimeStudio 解析 Unity 资源关系，导出干净模型、贴图、骨架和独立 AnimationClip。
+2. Unity Editor 使用 Animator/Avatar/PlayableGraph 把 Humanoid/Muscle 动画采样成目标骨架 local TRS。
+3. AnimeStudio 把采样结果写入 baked glTF。
+4. Blender 重新导入 baked glTF，并用成熟 FBX exporter 输出可在 Blender/Unity/DCC 中检查的 FBX。
+
+这条路径的意义是：不要让 AnimeStudio 自己硬猜 Humanoid retarget 细节；Humanoid/Avatar 交给 Unity，FBX 打包交给 Blender。glTF 仍保留为中间预览和标准格式，但当前“模型 + 骨骼 + 动画”人工验收优先看 FBX。
+
+一键从已有 bake request/result 生成 baked glTF + FBX：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --apply_unity_bake_result "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\unity_bake_request.json" `
+  --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf" `
+  --baked_fbx_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.fbx" `
+  --blender "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"
+```
+
+也可以在 `--run_unity_bake` 时直接生成 FBX：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --generate_unity_bake_request "D:\Assets\Freedunk_Data_Dev\AnimationBindingV1Sample\model_animations.json" `
+  --preview_model "Bill_01_00_ingame" `
+  --preview_animation "NORMALMOVE_STAND_01" `
+  --preview_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove" `
+  --unity_project "D:\Assets\Freedunk_Data_Dev\UnityBakeProject" `
+  --unity_editor "C:\Program Files\Unity\Hub\Editor\<version>\Editor\Unity.exe" `
+  --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf" `
+  --baked_fbx_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.fbx" `
+  --blender "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" `
+  --run_unity_bake
+```
+
+输出报告：
+
+- `unity_bake_apply_report.json`：baked glTF 写入结果、skin/joint/animation target 验证。
+- `blender_fbx_export_report.json`：Blender 导入 glTF、导出 FBX 的对象、mesh、armature、action 和进程日志摘要。
+
 当前边界：自动 prefab fallback 只重建骨架和 Avatar，用于正确采样 Humanoid 动画；它不是完整 Unity prefab 复原。模型、贴图、材质仍来自 AnimeStudio 已导出的 glTF，后续还要继续做结果验证和动画包批处理。
 
 实现原则：

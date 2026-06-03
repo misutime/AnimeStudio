@@ -77,17 +77,23 @@ namespace AnimeStudio.CLI
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
                         o.RunUnityBake,
-                        o.BakedGltfOutput?.FullName
+                        o.BakedGltfOutput?.FullName,
+                        o.BakedFbxOutput?.FullName,
+                        o.Blender?.FullName
                     );
                     return;
                 }
 
                 if (o.ApplyUnityBakeResult != null)
                 {
-                    UnityBakeResultApplier.Apply(
+                    var bakedGltf = UnityBakeResultApplier.Apply(
                         o.ApplyUnityBakeResult.FullName,
                         o.BakedGltfOutput?.FullName
                     );
+                    if (!string.IsNullOrWhiteSpace(o.BakedFbxOutput?.FullName))
+                    {
+                        BlenderFbxExporter.Export(bakedGltf, o.BakedFbxOutput.FullName, o.Blender?.FullName);
+                    }
                     return;
                 }
 

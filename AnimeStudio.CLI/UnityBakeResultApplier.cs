@@ -10,12 +10,12 @@ namespace AnimeStudio.CLI
 {
     internal static class UnityBakeResultApplier
     {
-        public static void Apply(string requestOrResultPath, string outputGltfPath)
+        public static string Apply(string requestOrResultPath, string outputGltfPath)
         {
             if (string.IsNullOrWhiteSpace(requestOrResultPath) || !File.Exists(requestOrResultPath))
             {
                 Logger.Error($"Unity bake request/result not found: {requestOrResultPath}");
-                return;
+                return null;
             }
 
             var input = JObject.Parse(File.ReadAllText(requestOrResultPath));
@@ -23,7 +23,7 @@ namespace AnimeStudio.CLI
             if (requestPath == null || !File.Exists(requestPath))
             {
                 Logger.Error("Unable to find unity_bake_request.json. Apply needs the request so it can locate the source glTF.");
-                return;
+                return null;
             }
 
             var request = JObject.Parse(File.ReadAllText(requestPath));
@@ -33,21 +33,21 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(resultPath) || !File.Exists(resultPath))
             {
                 Logger.Error($"Unity bake result not found: {resultPath}");
-                return;
+                return null;
             }
 
             var result = JObject.Parse(File.ReadAllText(resultPath));
             if (!string.Equals((string)result["status"], "ok", StringComparison.OrdinalIgnoreCase))
             {
                 Logger.Error($"Unity bake result is not ok: {(string)result["message"]}");
-                return;
+                return null;
             }
 
             var sourceGltf = (string)request["animeStudioAssets"]?["model"]?["gltf"];
             if (string.IsNullOrWhiteSpace(sourceGltf) || !File.Exists(sourceGltf))
             {
                 Logger.Error($"Source glTF not found in request: {sourceGltf}");
-                return;
+                return null;
             }
 
             var clipName = (string)result["clipName"] ?? (string)request["animeStudioAssets"]?["animation"]?["name"] ?? "UnityBaked";
@@ -60,7 +60,7 @@ namespace AnimeStudio.CLI
             if (bufferFile == null)
             {
                 Logger.Error("Only file-buffer glTF is currently supported for Unity bake apply.");
-                return;
+                return null;
             }
 
             var bufferBytes = File.ReadAllBytes(bufferFile).ToList();
@@ -116,7 +116,7 @@ namespace AnimeStudio.CLI
             if (writtenTracks == 0)
             {
                 Logger.Error("No baked tracks matched glTF nodes; inspect path mapping before trusting this output.");
-                return;
+                return null;
             }
 
             // 预览文件只保留当前烘焙动画，避免 F3D/Blender 默认播放旧的表情或辅助动画，
@@ -145,6 +145,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Baked glTF preview: {outputGltfPath}");
             Logger.Info($"Baked apply report: {reportPath}");
+            return outputGltfPath;
         }
 
         private static bool IsRequest(JObject value) => value["animeStudioAssets"] != null && value["outputJson"] != null;

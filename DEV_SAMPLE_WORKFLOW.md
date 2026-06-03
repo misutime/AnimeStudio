@@ -250,6 +250,40 @@ humanoid.keyframeCount: 3177
 
 这说明动画数据已经被读取并保留到 glTF `animations[].extras.unityHumanoid`；下一步不是再找动画文件，而是实现 Humanoid/Muscle -> skeleton TRS bake。
 
+## Unity bake + FBX 验收样本
+
+动画资产进入人工验收时，优先使用成熟工具链：
+
+```text
+AnimeStudio Unity 关系索引
+  -> Unity Editor Animator/Avatar bake
+  -> AnimeStudio 写入 baked glTF
+  -> Blender 导出 FBX
+```
+
+当前固定样本输出：
+
+```text
+D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\CliFbxPreview
+```
+
+正式 CLI 命令：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --apply_unity_bake_result "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\unity_bake_request.json" `
+  --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\CliFbxPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf" `
+  --baked_fbx_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\CliFbxPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.fbx" `
+  --blender "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"
+```
+
+验收重点：
+
+- `unity_bake_apply_report.json`：确认 `writtenTracks` 非 0，`skippedTrackCount` 为 0 或有明确说明。
+- `blender_fbx_export_report.json`：确认 FBX 导出 `status: ok`，并记录 mesh、armature、action。
+- 用 Blender/F3D/Unity 打开 `.fbx` 人工检查模型、脸、贴图、骨架和动作。
+- 如果 glTF 预览和 FBX 表现不一致，优先以 FBX 作为当前动画验收格式；glTF 问题单独归入 glTF runtime/viewer 兼容性排查。
+
 ## 完整模型动画样本
 
 当需要验证“模型 + PNG 贴图 + skin/bones + 可播放身体动画”时，使用固定小输入样本，不要直接扫完整 `Freedunk_Data`：

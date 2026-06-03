@@ -24,7 +24,9 @@ namespace AnimeStudio.CLI
             string unityBakeOutput,
             int frameRate,
             bool runUnityBake,
-            string bakedGltfOutput = null
+            string bakedGltfOutput = null,
+            string bakedFbxOutput = null,
+            string blender = null
         )
         {
             if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
@@ -126,7 +128,11 @@ namespace AnimeStudio.CLI
             {
                 if (RunUnity(requestPath, unityProject, unityEditor, logPath))
                 {
-                    UnityBakeResultApplier.Apply(requestPath, bakedGltfOutput);
+                    var bakedGltf = UnityBakeResultApplier.Apply(requestPath, bakedGltfOutput);
+                    if (!string.IsNullOrWhiteSpace(bakedFbxOutput))
+                    {
+                        BlenderFbxExporter.Export(bakedGltf, bakedFbxOutput, blender);
+                    }
                 }
             }
         }

@@ -120,6 +120,8 @@ namespace AnimeStudio.CLI
                 optionsBinder.RunUnityBake,
                 optionsBinder.ApplyUnityBakeResult,
                 optionsBinder.BakedGltfOutput,
+                optionsBinder.BakedFbxOutput,
+                optionsBinder.Blender,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -189,6 +191,8 @@ namespace AnimeStudio.CLI
         public bool RunUnityBake { get; set; }
         public FileInfo ApplyUnityBakeResult { get; set; }
         public FileInfo BakedGltfOutput { get; set; }
+        public FileInfo BakedFbxOutput { get; set; }
+        public FileInfo Blender { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -253,6 +257,8 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> RunUnityBake;
         public readonly Option<FileInfo> ApplyUnityBakeResult;
         public readonly Option<FileInfo> BakedGltfOutput;
+        public readonly Option<FileInfo> BakedFbxOutput;
+        public readonly Option<FileInfo> Blender;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -315,6 +321,8 @@ namespace AnimeStudio.CLI
             RunUnityBake = new Option<bool>("--run_unity_bake", "Run Unity Editor batchmode immediately after writing the bake request.");
             ApplyUnityBakeResult = new Option<FileInfo>("--apply_unity_bake_result", "Apply unity_bake_result.json or unity_bake_request.json to the source glTF and write a baked playable preview glTF.").LegalFilePathsOnly();
             BakedGltfOutput = new Option<FileInfo>("--baked_gltf_output", "Output glTF path for --apply_unity_bake_result. Defaults to BakedPreview/<model>__<clip>.gltf next to the bake request/result.");
+            BakedFbxOutput = new Option<FileInfo>("--baked_fbx_output", "Optional FBX output path. AnimeStudio first writes the baked glTF, then asks Blender to export a mature FBX package.");
+            Blender = new Option<FileInfo>("--blender", "Blender executable path used for mature glTF-to-FBX packaging after Unity bake.").LegalFilePathsOnly();
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -466,6 +474,8 @@ namespace AnimeStudio.CLI
                 RunUnityBake = bindingContext.ParseResult.GetValueForOption(RunUnityBake),
                 ApplyUnityBakeResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeResult),
                 BakedGltfOutput = bindingContext.ParseResult.GetValueForOption(BakedGltfOutput),
+                BakedFbxOutput = bindingContext.ParseResult.GetValueForOption(BakedFbxOutput),
+                Blender = bindingContext.ParseResult.GetValueForOption(Blender),
                 DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
                 Input = bindingContext.ParseResult.GetValueForArgument(Input),
                 Output = bindingContext.ParseResult.GetValueForArgument(Output)
