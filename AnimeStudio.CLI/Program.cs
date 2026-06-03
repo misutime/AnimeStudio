@@ -62,9 +62,38 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.GenerateUnityBakeRequest != null)
+                {
+                    UnityBakeRequestGenerator.Generate(
+                        o.GenerateUnityBakeRequest.FullName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName,
+                        o.UnityProject?.FullName,
+                        o.UnityEditor?.FullName,
+                        o.UnityBakeModelPrefab,
+                        o.UnityBakeAnimationClip,
+                        o.UnityBakeOutput?.FullName,
+                        o.UnityBakeFps,
+                        o.RunUnityBake,
+                        o.BakedGltfOutput?.FullName
+                    );
+                    return;
+                }
+
+                if (o.ApplyUnityBakeResult != null)
+                {
+                    UnityBakeResultApplier.Apply(
+                        o.ApplyUnityBakeResult.FullName,
+                        o.BakedGltfOutput?.FullName
+                    );
+                    return;
+                }
+
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, or --pack_model_animations for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, or --apply_unity_bake_result for post-export commands.");
                     return;
                 }
 

@@ -110,6 +110,16 @@ namespace AnimeStudio.CLI
                 optionsBinder.PackAnimations,
                 optionsBinder.PackOutput,
                 optionsBinder.PackLimit,
+                optionsBinder.GenerateUnityBakeRequest,
+                optionsBinder.UnityProject,
+                optionsBinder.UnityEditor,
+                optionsBinder.UnityBakeModelPrefab,
+                optionsBinder.UnityBakeAnimationClip,
+                optionsBinder.UnityBakeOutput,
+                optionsBinder.UnityBakeFps,
+                optionsBinder.RunUnityBake,
+                optionsBinder.ApplyUnityBakeResult,
+                optionsBinder.BakedGltfOutput,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -169,6 +179,16 @@ namespace AnimeStudio.CLI
         public string PackAnimations { get; set; }
         public DirectoryInfo PackOutput { get; set; }
         public int PackLimit { get; set; }
+        public FileInfo GenerateUnityBakeRequest { get; set; }
+        public DirectoryInfo UnityProject { get; set; }
+        public FileInfo UnityEditor { get; set; }
+        public string UnityBakeModelPrefab { get; set; }
+        public string UnityBakeAnimationClip { get; set; }
+        public FileInfo UnityBakeOutput { get; set; }
+        public int UnityBakeFps { get; set; }
+        public bool RunUnityBake { get; set; }
+        public FileInfo ApplyUnityBakeResult { get; set; }
+        public FileInfo BakedGltfOutput { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -223,6 +243,16 @@ namespace AnimeStudio.CLI
         public readonly Option<string> PackAnimations;
         public readonly Option<DirectoryInfo> PackOutput;
         public readonly Option<int> PackLimit;
+        public readonly Option<FileInfo> GenerateUnityBakeRequest;
+        public readonly Option<DirectoryInfo> UnityProject;
+        public readonly Option<FileInfo> UnityEditor;
+        public readonly Option<string> UnityBakeModelPrefab;
+        public readonly Option<string> UnityBakeAnimationClip;
+        public readonly Option<FileInfo> UnityBakeOutput;
+        public readonly Option<int> UnityBakeFps;
+        public readonly Option<bool> RunUnityBake;
+        public readonly Option<FileInfo> ApplyUnityBakeResult;
+        public readonly Option<FileInfo> BakedGltfOutput;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -275,6 +305,16 @@ namespace AnimeStudio.CLI
             PackAnimations = new Option<string>("--pack_animations", "Comma-separated animation names or regexes used with --pack_model_animations. If omitted, top candidates are used.");
             PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for --pack_model_animations.");
             PackLimit = new Option<int>("--pack_limit", "Maximum number of animations to pack when --pack_animations is omitted.");
+            GenerateUnityBakeRequest = new Option<FileInfo>("--generate_unity_bake_request", "Generate a Unity Editor bake request from model_animations.json. Unity then samples Animator/Avatar through PlayableGraph and writes baked skeleton TRS.").LegalFilePathsOnly();
+            UnityProject = new Option<DirectoryInfo>("--unity_project", "Unity project that contains the AnimeStudio.UnityBake helper scripts. Required when --run_unity_bake is used.").LegalFilePathsOnly();
+            UnityEditor = new Option<FileInfo>("--unity_editor", "Unity.exe path used with --run_unity_bake. If omitted, only the request JSON is written.").LegalFilePathsOnly();
+            UnityBakeModelPrefab = new Option<string>("--unity_model_prefab", "Unity project asset path for the prepared model prefab, for example Assets/AnimeStudioBake/Input/Bill.prefab.");
+            UnityBakeAnimationClip = new Option<string>("--unity_animation_clip", "Unity project asset path for the prepared AnimationClip, for example Assets/AnimeStudioBake/Input/NORMALMOVE_STAND_01.anim.");
+            UnityBakeOutput = new Option<FileInfo>("--unity_bake_output", "Output JSON path for Unity baked TRS animation. Defaults to unity_bake_result.json next to the request.");
+            UnityBakeFps = new Option<int>("--unity_bake_fps", "Frame rate used by the Unity bake helper.");
+            RunUnityBake = new Option<bool>("--run_unity_bake", "Run Unity Editor batchmode immediately after writing the bake request.");
+            ApplyUnityBakeResult = new Option<FileInfo>("--apply_unity_bake_result", "Apply unity_bake_result.json or unity_bake_request.json to the source glTF and write a baked playable preview glTF.").LegalFilePathsOnly();
+            BakedGltfOutput = new Option<FileInfo>("--baked_gltf_output", "Output glTF path for --apply_unity_bake_result. Defaults to BakedPreview/<model>__<clip>.gltf next to the bake request/result.");
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -325,6 +365,7 @@ namespace AnimeStudio.CLI
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
             UpdateGltfTextureRefs.SetDefaultValue(true);
             PackLimit.SetDefaultValue(5);
+            UnityBakeFps.SetDefaultValue(30);
             MapOp.SetDefaultValue(MapOpType.None);
             MapType.SetDefaultValue(ExportListType.XML);
         }
@@ -415,6 +456,16 @@ namespace AnimeStudio.CLI
                 PackAnimations = bindingContext.ParseResult.GetValueForOption(PackAnimations),
                 PackOutput = bindingContext.ParseResult.GetValueForOption(PackOutput),
                 PackLimit = bindingContext.ParseResult.GetValueForOption(PackLimit),
+                GenerateUnityBakeRequest = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequest),
+                UnityProject = bindingContext.ParseResult.GetValueForOption(UnityProject),
+                UnityEditor = bindingContext.ParseResult.GetValueForOption(UnityEditor),
+                UnityBakeModelPrefab = bindingContext.ParseResult.GetValueForOption(UnityBakeModelPrefab),
+                UnityBakeAnimationClip = bindingContext.ParseResult.GetValueForOption(UnityBakeAnimationClip),
+                UnityBakeOutput = bindingContext.ParseResult.GetValueForOption(UnityBakeOutput),
+                UnityBakeFps = bindingContext.ParseResult.GetValueForOption(UnityBakeFps),
+                RunUnityBake = bindingContext.ParseResult.GetValueForOption(RunUnityBake),
+                ApplyUnityBakeResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeResult),
+                BakedGltfOutput = bindingContext.ParseResult.GetValueForOption(BakedGltfOutput),
                 DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
                 Input = bindingContext.ParseResult.GetValueForArgument(Input),
                 Output = bindingContext.ParseResult.GetValueForArgument(Output)

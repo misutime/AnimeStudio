@@ -194,7 +194,7 @@ Animations\...\NORMALMOVE_STAND_01.animation_asset.json
 
 `asset_catalog.jsonl`、`animation_bindings.jsonl`、`model_animations.json` 会带上 `animationAsset` 路径，后续预览、打包或 Unity/Blender 转换器都应该优先读取这个 sidecar，而不是靠动画文件名猜测语义。
 
-Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，核心数据在 Unity Humanoid/Muscle 曲线中。`ApproximateHumanoidMuscleV1` 只能用于生成实验 channel 和调试报告，不能作为最终动画资产验收。当前优先级是先把 `.anim` + `.animation_asset.json` 作为可复用动画资产稳定落盘，再逐步实现 Unity Humanoid solver 或外部 bake 流程。
+Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，核心数据在 Unity Humanoid/Muscle 曲线中。`ApproximateHumanoidMuscleV1` 只能用于生成实验 channel 和调试报告，不能作为最终动画资产验收。当前优先级是先把 `.anim` + `.animation_asset.json` 作为可复用动画资产稳定落盘，再通过 Unity Editor bake 流程把 Humanoid 动画采样成目标骨架 TRS。
 
 如果 `model_animations.json` 来自一个临时小样本目录，预览/打包时必须传完整 Unity 源目录，避免旧样本缺少外部 CAB 依赖导致脸、附件、材质或 Mesh 再次断链：
 
@@ -237,6 +237,62 @@ Bill_AnimationPack_V1\
 这个命令会对每个动画复用按需预览流程，生成“同一个模型 + 单条动画”的可播放 glTF，并汇总 `animation_pack_report.json`。报告会列出 `status`、`channels`、`coreBoneNodes`、`invalidChannels`、`baked`、`bakeMode`、`bakedTrackCount`、`bakedKeyframeCount` 和输出 glTF 路径。
 
 当前 `--pack_model_animations` 的定位是“可复用动画验证包”：用于确认某个模型能否播放一组候选动画、快速筛选动作、给后续动画合集打包提供已验证输入。它不是最终的 animation-only 资产格式。最终素材库仍应继续向“干净模型 + 独立动画资产 + 绑定索引 + 按需合并/预览”推进。
+
+### Unity Humanoid 烘焙请求
+
+Unity Humanoid/Muscle 动画不能靠 AnimeStudio 在本机侧硬猜旋转。正式路径是参照 UnityGLTF：让 Unity Editor 用 `Animator`、`Avatar` 和 `PlayableGraph` 对目标模型逐帧采样，再把采样后的骨骼 local TRS 写回 AnimeStudio 后续合成 glTF/GLB。
+
+先从 `model_animations.json` 生成请求：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --generate_unity_bake_request "D:\Assets\Freedunk_Data_Dev\AnimationBindingV1Sample\model_animations.json" `
+  --preview_model "Bill_01_00_ingame" `
+  --preview_animation "NORMALMOVE_STAND_01" `
+  --preview_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove" `
+  --unity_project "D:\Assets\Freedunk_Data_Dev\UnityBakeProject" `
+  --unity_model_prefab "Assets/AnimeStudioBake/Input/Bill_01_00_ingame.prefab" `
+  --unity_animation_clip "Assets/AnimeStudioBake/Input/NORMALMOVE_STAND_01.anim"
+```
+
+这会输出：
+
+- `unity_bake_request.json`：AnimeStudio 选中的模型、动画、Avatar/骨架信息，以及 Unity 工程中的 prefab/clip 路径。
+- `unity_bake_result.json`：Unity helper 运行后生成的逐帧骨骼 TRS 结果。
+
+如果 Unity 工程和资源已经准备好，可以直接运行：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --generate_unity_bake_request "D:\Assets\Freedunk_Data_Dev\AnimationBindingV1Sample\model_animations.json" `
+  --preview_model "Bill_01_00_ingame" `
+  --preview_animation "NORMALMOVE_STAND_01" `
+  --preview_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove" `
+  --unity_project "D:\Assets\Freedunk_Data_Dev\UnityBakeProject" `
+  --unity_editor "C:\Program Files\Unity\Hub\Editor\<version>\Editor\Unity.exe" `
+  --unity_model_prefab "Assets/AnimeStudioBake/Input/Bill_01_00_ingame.prefab" `
+  --unity_animation_clip "Assets/AnimeStudioBake/Input/NORMALMOVE_STAND_01.anim" `
+  --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf" `
+  --run_unity_bake
+```
+
+Unity helper 脚本在 `AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor`。把这个目录复制进 Unity 工程的 `Assets` 后，batchmode 会调用 `AnimeStudio.UnityBake.AnimeStudioBakeCli.Run`。
+
+如果 `--unity_model_prefab` 或 `--unity_animation_clip` 为空，helper 会优先使用 request 里的 AnimeStudio 资产：
+
+- 从 glTF 节点层级和 local TRS 重建采样骨架。
+- 从 Unity Avatar/HumanDescription 的 `humanBones` 映射构建 Human Avatar。
+- 把 AnimeStudio 导出的 `.anim` 复制进 Unity 工程并作为 AnimationClip 导入。
+
+`--run_unity_bake` 成功后会自动把 `unity_bake_result.json` 合进源 glTF，输出带标准 glTF animation channel 的 baked preview，并写出 `unity_bake_apply_report.json`。也可以单独执行：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --apply_unity_bake_result "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\unity_bake_request.json" `
+  --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove\BakedPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf"
+```
+
+当前边界：自动 prefab fallback 只重建骨架和 Avatar，用于正确采样 Humanoid 动画；它不是完整 Unity prefab 复原。模型、贴图、材质仍来自 AnimeStudio 已导出的 glTF，后续还要继续做结果验证和动画包批处理。
 
 实现原则：
 

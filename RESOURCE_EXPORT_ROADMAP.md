@@ -316,7 +316,7 @@ model_validation.json
 
 - blendshape 动画未写入 `weights` channel。
 - Humanoid/Muscle 动画现在能作为 Unity 语义资产落盘：`.anim` 保存原始 YAML，`.animation_asset.json` 保存可读 binding、MuscleClip 元数据和 decoded curves/keyframes。
-- `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`。下一步应实现 Unity Humanoid/Muscle 求解，或调用 Unity/Blender 等外部 bake 流程把 `.anim` + Avatar 转成骨骼 TRS。
+- `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`。下一步采用 UnityGLTF 式 Unity Editor bake 流程，把 `.anim` + Avatar 通过 Unity Animator 采样成目标骨架 TRS。
 - 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
 - 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
@@ -327,7 +327,7 @@ Freedunk 当前验证结论：
 - `D:\Assets\Freedunk_Data_Dev\AnimationTypeScan` 小样本扫描 594 个 `AnimationClip`，全部是 `MixedHumanoidTransform`。
 - `NORMALMOVE_STAND_01` / `DASH_01` 已能导出 `.anim` 和 `.animation_asset.json`。sidecar 中可见 `MixedHumanoidTransform`、160/140 条 Humanoid muscle binding、root/foot motion 以及 `RequiresHumanoidSolverOrBake` 状态。
 - 用户实际验证过近似 bake 预览会出现人物姿态扭曲，因此 `ApproximateHumanoidMuscleV1` 只能作为实验报告，不再作为“可播放正确”的验收依据。
-- 这说明 Freedunk 角色身体动作的主路径确实是 Humanoid/Muscle；下一阶段是基于 Avatar/HumanDescription 实现真实 Humanoid solver，或构建 Unity/Blender 外部 bake 管线。
+- 这说明 Freedunk 角色身体动作的主路径确实是 Humanoid/Muscle；下一阶段采用 UnityGLTF 式路径：AnimeStudio 生成 `unity_bake_request.json`，Unity Editor helper 用 `Animator`、`Avatar`、`PlayableGraph`/`AnimationClipPlayable` 采样，输出目标骨架 TRS，再由 AnimeStudio 合成 glTF/GLB。
 
 优先级：P0
 
