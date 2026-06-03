@@ -890,6 +890,7 @@ namespace AnimeStudio.CLI
 
             var avatarInfo = GetModelAvatarInfo(source);
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
+            var skeletonValidation = BuildHumanoidSkeletonValidation(imported, avatarInfo);
             var entry = new
             {
                 kind = "Model",
@@ -918,6 +919,7 @@ namespace AnimeStudio.CLI
                 bonePathsTruncated = bonePaths.Length > 512,
                 skeletonHash = (string)skeletonInfo?["libraryId"],
                 skeleton = skeletonInfo,
+                skeletonValidation,
                 avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
@@ -998,6 +1000,191 @@ namespace AnimeStudio.CLI
                     ? "BonePathsAndBindPose"
                     : "BonePathsOrHierarchy",
             });
+        }
+
+        private static JObject BuildHumanoidSkeletonValidation(IImported imported, JObject avatarInfo)
+        {
+            var humanBoneMap = ParseAvatarHumanBoneMap(avatarInfo);
+            var frameByName = new Dictionary<string, ImportedFrame>(StringComparer.OrdinalIgnoreCase);
+            CollectFrames(imported.RootFrame, frameByName);
+
+            var requiredHumanBones = new[]
+            {
+                "Hips",
+                "Spine",
+                "Chest",
+                "Neck",
+                "Head",
+                "LeftShoulder",
+                "LeftUpperArm",
+                "LeftLowerArm",
+                "LeftHand",
+                "RightShoulder",
+                "RightUpperArm",
+                "RightLowerArm",
+                "RightHand",
+                "LeftUpperLeg",
+                "LeftLowerLeg",
+                "LeftFoot",
+                "RightUpperLeg",
+                "RightLowerLeg",
+                "RightFoot",
+            };
+            var optionalHumanBones = new[]
+            {
+                "UpperChest",
+                "LeftToes",
+                "RightToes",
+                "Left Thumb Proximal",
+                "Left Index Proximal",
+                "Left Middle Proximal",
+                "Left Ring Proximal",
+                "Left Little Proximal",
+                "Right Thumb Proximal",
+                "Right Index Proximal",
+                "Right Middle Proximal",
+                "Right Ring Proximal",
+                "Right Little Proximal",
+            };
+            var chains = new (string Name, string[] HumanBones)[]
+            {
+                ("spine", new[] { "Hips", "Spine", "Chest", "Neck", "Head" }),
+                ("leftArm", new[] { "LeftShoulder", "LeftUpperArm", "LeftLowerArm", "LeftHand" }),
+                ("rightArm", new[] { "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand" }),
+                ("leftLeg", new[] { "Hips", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot" }),
+                ("rightLeg", new[] { "Hips", "RightUpperLeg", "RightLowerLeg", "RightFoot" }),
+            };
+
+            var missingHumanBones = requiredHumanBones
+                .Where(x => !humanBoneMap.ContainsKey(x))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var missingFrames = requiredHumanBones
+                .Where(x => humanBoneMap.TryGetValue(x, out var boneName) && !frameByName.ContainsKey(boneName))
+                .Select(x => $"{x}:{humanBoneMap[x]}")
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var optionalPresent = optionalHumanBones
+                .Count(x => humanBoneMap.TryGetValue(x, out var boneName) && frameByName.ContainsKey(boneName));
+            var chainResults = chains
+                .Select(x => BuildHumanoidChainValidation(x.Name, x.HumanBones, humanBoneMap, frameByName))
+                .ToArray();
+            var validChainCount = chainResults.Count(x => (bool)x["ok"]);
+            var status = missingHumanBones.Length == 0 && missingFrames.Length == 0 && validChainCount == chains.Length
+                ? "ok"
+                : missingHumanBones.Length <= 2 && missingFrames.Length <= 2 && validChainCount >= chains.Length - 1
+                    ? "warning"
+                    : "failed";
+
+            return JObject.FromObject(new
+            {
+                status,
+                rule = "Humanoid skeleton validation derived from Unity Avatar HumanDescription plus exported frame hierarchy. This validates reusable human bone structure before animation binding.",
+                hasAvatarHumanDescription = humanBoneMap.Count > 0,
+                mappedHumanBoneCount = humanBoneMap.Count,
+                requiredHumanBoneCount = requiredHumanBones.Length,
+                requiredPresentCount = requiredHumanBones.Length - missingHumanBones.Length,
+                requiredFramePresentCount = requiredHumanBones.Length - missingFrames.Length,
+                optionalPresentCount = optionalPresent,
+                chainCount = chains.Length,
+                validChainCount,
+                missingHumanBones,
+                missingFrames,
+                chains = chainResults,
+            });
+        }
+
+        private static Dictionary<string, string> ParseAvatarHumanBoneMap(JObject avatarInfo)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var humanBones = avatarInfo?["humanBones"]?.Values<string>() ?? Enumerable.Empty<string>();
+            foreach (var item in humanBones)
+            {
+                var separator = item.IndexOf(':');
+                if (separator <= 0 || separator >= item.Length - 1)
+                {
+                    continue;
+                }
+
+                var humanBone = item.Substring(0, separator);
+                var skeletonBone = item.Substring(separator + 1);
+                result[humanBone] = skeletonBone;
+            }
+
+            return result;
+        }
+
+        private static JObject BuildHumanoidChainValidation(
+            string name,
+            string[] humanBones,
+            Dictionary<string, string> humanBoneMap,
+            Dictionary<string, ImportedFrame> frameByName)
+        {
+            var mappedBones = humanBones
+                .Select(x => humanBoneMap.TryGetValue(x, out var boneName) ? $"{x}:{boneName}" : $"{x}:<missing>")
+                .ToArray();
+            var missing = humanBones
+                .Where(x => !humanBoneMap.TryGetValue(x, out var boneName) || !frameByName.ContainsKey(boneName))
+                .ToArray();
+            var brokenLinks = new List<string>();
+            for (var i = 1; i < humanBones.Length; i++)
+            {
+                if (!humanBoneMap.TryGetValue(humanBones[i - 1], out var parentBoneName)
+                    || !humanBoneMap.TryGetValue(humanBones[i], out var childBoneName)
+                    || !frameByName.TryGetValue(parentBoneName, out var parentFrame)
+                    || !frameByName.TryGetValue(childBoneName, out var childFrame))
+                {
+                    continue;
+                }
+
+                if (!IsDescendantOf(childFrame, parentFrame))
+                {
+                    brokenLinks.Add($"{humanBones[i - 1]}->{humanBones[i]}");
+                }
+            }
+
+            return JObject.FromObject(new
+            {
+                name,
+                ok = missing.Length == 0 && brokenLinks.Count == 0,
+                mappedBones,
+                missing,
+                brokenLinks,
+            });
+        }
+
+        private static void CollectFrames(ImportedFrame frame, Dictionary<string, ImportedFrame> frameByName)
+        {
+            if (frame == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(frame.Name) && !frameByName.ContainsKey(frame.Name))
+            {
+                frameByName.Add(frame.Name, frame);
+            }
+
+            for (var i = 0; i < frame.Count; i++)
+            {
+                CollectFrames(frame[i], frameByName);
+            }
+        }
+
+        private static bool IsDescendantOf(ImportedFrame child, ImportedFrame ancestor)
+        {
+            var current = child?.Parent;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, ancestor))
+                {
+                    return true;
+                }
+
+                current = current.Parent;
+            }
+
+            return false;
         }
 
         private static string BuildFrameHierarchySignature(ImportedFrame frame)

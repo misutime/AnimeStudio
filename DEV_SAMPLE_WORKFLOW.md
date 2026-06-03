@@ -250,6 +250,30 @@ humanoid.keyframeCount: 3177
 
 这说明动画数据已经被读取并保留到 glTF `animations[].extras.unityHumanoid`；下一步不是再找动画文件，而是实现 Humanoid/Muscle -> skeleton TRS bake。
 
+## 骨骼验收准则
+
+骨骼阶段先验收 Unity 关系和人体结构，不直接用 Blender 里骨骼锥形是否首尾相连作为唯一判断。FBX importer 会按自己的骨骼显示规则生成 head/tail/use_connect，可能出现视觉上“手臂没连起来”，但这不等价于 Unity 骨架层级或 skin bindpose 错误。
+
+默认验收项：
+
+- `asset_catalog.jsonl` 中模型条目的 `skeletonValidation.status` 应为 `ok`。
+- `skeletonValidation.hasAvatarHumanDescription` 为 `true` 时，优先使用 Unity `Avatar HumanDescription` 验证人体骨架。
+- 核心人体骨必须覆盖 Hips、Spine、Chest、Neck、Head、左右肩、左右上臂、左右前臂、左右手、左右大腿、左右小腿、左右脚。
+- 脊柱、左臂、右臂、左腿、右腿 5 条人体链必须能在导出的 frame hierarchy 中由父子/祖先关系连通。
+- 动画阶段只能在 `skeletonValidation.status == ok` 的模型上继续推进；否则先修模型/骨架。
+
+已验证参考结论：
+
+- AssetStudio 原版 FBX 导出和 AnimeStudio 当前 FBX 在 Bill 样本上的核心骨架指标一致：`Bip001` 单根、78 个 Blender bones、Unity Humanoid 映射完整。
+- AssetStudio 原版在 Blender 中同样会出现大量 `disconnected` bones，因此“Blender 骨锥没连起来”不是判断 Unity 骨架错误的充分证据。
+- `AsFbxSetJointsNode_BoneInPath` 应保持和 AssetStudio 一致：当前节点及其父节点都标记为 `FbxSkeleton::eLimbNode`。
+
+已尝试但不作为默认方案：
+
+- 给 FBX SDK `FbxSkeleton.LimbLength` 手动设置 `1.0`：对 Blender 导入后的骨骼显示没有实际改善，不保留。
+- Blender `ignore_leaf_bones`：会减少骨骼数量，可能损失手指、末端骨和附件骨，不符合“完整素材库”目标，不作为默认处理。
+- Blender `automatic_bone_orientation` / `force_connect_children`：可作为 DCC 友好预览/打包层实验，不能替代 Unity 关系导出的核心骨架。
+
 ## Unity bake + FBX 验收样本
 
 动画资产进入人工验收时，优先使用成熟工具链：
