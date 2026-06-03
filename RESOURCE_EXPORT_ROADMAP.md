@@ -310,24 +310,24 @@ model_validation.json
 
 ### 2. glTF 动画仍偏基础
 
-当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。普通 Transform 曲线可以直接生成可播放动画；Unity Humanoid/Muscle 动画现在已有 `ApproximateHumanoidMuscleV1`，会把主要 muscle 曲线近似烘焙到目标骨架 rotation/translation channel，优先满足素材库预览和动作筛选。它还不是 Unity 原生 Humanoid solver 的完整复刻，高保真 retarget 仍需继续完善 Avatar axes、limit、pre/post rotation 和手指/TDoF 细节。
+当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。普通 Transform 曲线可以直接生成可播放动画；Unity Humanoid/Muscle 动画不能靠简单近似直接定版。当前策略改为先生成可复用动画资产：保留 Unity `.anim` YAML，同时为每个 AnimationClip 生成 `.animation_asset.json`，结构化记录 binding、Humanoid muscle、root motion、MuscleClip flags 和曲线容器信息。后续 glTF/GLB 预览或动画合集必须基于这些 Unity 语义资产进行 bake/验证。
 
 缺口：
 
 - blendshape 动画未写入 `weights` channel。
-- Humanoid/Muscle 动画已有近似 bake v1，Freedunk 角色身体动作可写出主体骨骼 channel；后续需要继续提高与 Unity 原生 Humanoid solver 的一致性。
-- `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`，下一步应实现 Unity Humanoid/Muscle 求解或改用 Unity `.anim`/metadata 作为可复用动画资产的中间形态。
+- Humanoid/Muscle 动画现在能作为 Unity 语义资产落盘：`.anim` 保存曲线，`.animation_asset.json` 保存可读 binding 和 MuscleClip 元数据。
+- `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`。下一步应实现 Unity Humanoid/Muscle 求解，或调用 Unity/Blender 等外部 bake 流程把 `.anim` + Avatar 转成骨骼 TRS。
 - 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
 - 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。
 - 未对动画 clip 做可读命名、角色归属、重复去重。
-- 已有 `--pack_model_animations` 初版，可从 `model_animations.json` 批量生成“同一模型 + 单条动画”的可播放 glTF 验证包，并汇总 `animation_pack_report.json`；真正的 animation-only glTF/GLB 和多动画合集 GLB 仍需继续实现。
+- 已有 `--pack_model_animations` 初版，可从 `model_animations.json` 批量生成“同一模型 + 单条动画”的验证包，并汇总 `animation_pack_report.json`；真正可靠的 animation-only glTF/GLB 和多动画合集 GLB 仍需在 Humanoid solver/bake 流程成熟后实现。
 
 Freedunk 当前验证结论：
 
 - `D:\Assets\Freedunk_Data_Dev\AnimationTypeScan` 小样本扫描 594 个 `AnimationClip`，全部是 `MixedHumanoidTransform`。
-- `NORMALMOVE_STAND_01` 使用 `ApproximateHumanoidMuscleV1` 预览后，`preview_validation.json` 为 `status: ok`，67 个 animation channel、22 个主体骨骼节点、0 个无效 channel，`humanoid.baked: true`，`bakedTrackCount: 22`，`bakedKeyframeCount: 1100`。
-- `DASH_01` 使用同一 bake 路径预览后，`status: ok`，67 个 animation channel、22 个主体骨骼节点、0 个无效 channel，`bakedTrackCount: 22`，`bakedKeyframeCount: 396`。
-- 这说明 Freedunk 角色身体动作的主路径确实是 Humanoid/Muscle bake；当前 v1 已能生成可播放预览，下一阶段是提升 retarget 精度和动画合集打包。
+- `NORMALMOVE_STAND_01` / `DASH_01` 已能导出 `.anim` 和 `.animation_asset.json`。sidecar 中可见 `MixedHumanoidTransform`、160/140 条 Humanoid muscle binding、root/foot motion 以及 `RequiresHumanoidSolverOrBake` 状态。
+- 用户实际验证过近似 bake 预览会出现人物姿态扭曲，因此 `ApproximateHumanoidMuscleV1` 只能作为实验报告，不再作为“可播放正确”的验收依据。
+- 这说明 Freedunk 角色身体动作的主路径确实是 Humanoid/Muscle；下一阶段是基于 Avatar/HumanDescription 实现真实 Humanoid solver，或构建 Unity/Blender 外部 bake 管线。
 
 优先级：P0
 

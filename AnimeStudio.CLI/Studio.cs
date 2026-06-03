@@ -1167,6 +1167,7 @@ namespace AnimeStudio.CLI
                                 name = (string)link.Animation["name"],
                                 resourceKind = (string)link.Animation["resourceKind"],
                                 output = (string)link.Animation["output"],
+                                animationAsset = (string)link.Animation["animationAsset"],
                                 source = (string)link.Animation["source"],
                                 container = (string)link.Animation["container"],
                                 animationType = (string)link.Animation["animationType"],
@@ -1487,6 +1488,7 @@ namespace AnimeStudio.CLI
                 name = (string)entry["name"],
                 resourceKind = (string)entry["resourceKind"],
                 output = (string)entry["output"],
+                animationAsset = (string)entry["animationAsset"],
                 source = (string)entry["source"],
                 sampleRate = (float?)entry["sampleRate"],
                 duration = (float?)entry["duration"],
@@ -1530,6 +1532,7 @@ namespace AnimeStudio.CLI
                 name = (string)animation["name"],
                 resourceKind = (string)animation["resourceKind"],
                 output = (string)animation["output"],
+                animationAsset = (string)animation["animationAsset"],
                 source = (string)animation["source"],
                 container = (string)animation["container"],
                 sampleRate = (float?)animation["sampleRate"],
@@ -1671,6 +1674,7 @@ namespace AnimeStudio.CLI
             public string name { get; set; }
             public string resourceKind { get; set; }
             public string output { get; set; }
+            public string animationAsset { get; set; }
             public string source { get; set; }
             public string container { get; set; }
             public float? sampleRate { get; set; }

@@ -563,7 +563,8 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrEmpty(str))
                 return false;
             File.WriteAllText(exportFullPath, str);
-            AppendAssetCatalog(item, exportFullPath, "Animation");
+            var animationAssetPath = WriteAnimationAssetJson(item, m_AnimationClip, exportFullPath);
+            AppendAssetCatalog(item, exportFullPath, "Animation", animationAssetPath);
             return true;
         }
 
@@ -1065,7 +1066,256 @@ namespace AnimeStudio.CLI
             return null;
         }
 
-        private static void AppendAssetCatalog(AssetItem item, string outputPath, string kind)
+        private static string WriteAnimationAssetJson(AssetItem item, AnimationClip clip, string animOutputPath)
+        {
+            if (clip == null || string.IsNullOrWhiteSpace(animOutputPath))
+            {
+                return null;
+            }
+
+            var sidecarPath = Path.Combine(
+                Path.GetDirectoryName(animOutputPath),
+                $"{Path.GetFileNameWithoutExtension(animOutputPath)}.animation_asset.json"
+            );
+            var animationInfo = AnalyzeAnimationClip(clip);
+            var asset = BuildAnimationAssetJson(item, clip, animOutputPath, animationInfo);
+            File.WriteAllText(sidecarPath, JsonConvert.SerializeObject(asset, Formatting.Indented));
+            return sidecarPath;
+        }
+
+        private static object BuildAnimationAssetJson(
+            AssetItem item,
+            AnimationClip clip,
+            string animOutputPath,
+            AnimationClipInfo animationInfo
+        )
+        {
+            var bindings = clip.m_ClipBindingConstant?.genericBindings ?? new List<GenericBinding>();
+            var tos = clip.FindTOS();
+            var bindingAssets = bindings
+                .Select((binding, index) => BuildAnimationBindingAsset(binding, index, tos))
+                .ToArray();
+            var muscleBindings = bindingAssets
+                .Where(x => string.Equals((string)x["category"], "HumanoidMuscle", StringComparison.OrdinalIgnoreCase))
+                .Take(256)
+                .ToArray();
+
+            return new
+            {
+                kind = "AnimationAsset",
+                schemaVersion = 1,
+                exportedAt = DateTime.UtcNow.ToString("O"),
+                name = item.Text,
+                sourceType = item.TypeString,
+                container = item.Container,
+                source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                pathId = item.m_PathID,
+                output = animOutputPath,
+                sampleRate = clip.m_SampleRate,
+                duration = GetAnimationDuration(clip),
+                legacy = clip.m_Legacy,
+                wrapMode = clip.m_WrapMode,
+                animationType = animationInfo.animationType,
+                classificationNotes = animationInfo.classificationNotes,
+                bindingSummary = new
+                {
+                    genericBindingCount = bindings.Count,
+                    transformBindingCount = animationInfo.transformBindingCount,
+                    coreTransformBindingCount = animationInfo.coreTransformBindingCount,
+                    humanoidBindingCount = animationInfo.humanoidBindingCount,
+                    blendShapeBindingCount = animationInfo.blendShapeBindingCount,
+                    auxiliaryBindingCount = animationInfo.auxiliaryBindingCount,
+                    unknownBindingCount = animationInfo.unknownBindingCount,
+                    pptrCurveCount = clip.m_PPtrCurves?.Count ?? 0,
+                    eventCount = clip.m_Events?.Count ?? 0,
+                },
+                curveContainers = new
+                {
+                    rotationCurves = clip.m_RotationCurves?.Count ?? 0,
+                    compressedRotationCurves = clip.m_CompressedRotationCurves?.Count ?? 0,
+                    eulerCurves = clip.m_EulerCurves?.Count ?? 0,
+                    positionCurves = clip.m_PositionCurves?.Count ?? 0,
+                    scaleCurves = clip.m_ScaleCurves?.Count ?? 0,
+                    floatCurves = clip.m_FloatCurves?.Count ?? 0,
+                    pptrCurves = clip.m_PPtrCurves?.Count ?? 0,
+                },
+                transformBindingPaths = animationInfo.transformBindingPaths,
+                humanoid = BuildHumanoidAnimationAsset(clip, animationInfo, muscleBindings),
+                bindings = bindingAssets.Take(1024).ToArray(),
+                truncatedBindings = bindings.Count > 1024,
+            };
+        }
+
+        private static JObject BuildAnimationBindingAsset(GenericBinding binding, int index, Dictionary<uint, string> tos)
+        {
+            var path = ResolveAnimationBindingPath(binding, tos);
+            var category = ResolveAnimationBindingCategory(binding);
+            var attributeName = ResolveAnimationBindingAttribute(binding, category);
+
+            return JObject.FromObject(new
+            {
+                index,
+                pathHash = binding.path,
+                path,
+                typeID = binding.typeID.ToString(),
+                customType = binding.customType,
+                customTypeName = Enum.IsDefined(typeof(BindingCustomType), binding.customType)
+                    ? ((BindingCustomType)binding.customType).ToString()
+                    : null,
+                attribute = binding.attribute,
+                attributeName,
+                category,
+                isPPtrCurve = binding.isPPtrCurve != 0,
+                isIntCurve = binding.isIntCurve != 0,
+            });
+        }
+
+        private static object BuildHumanoidAnimationAsset(
+            AnimationClip clip,
+            AnimationClipInfo animationInfo,
+            JObject[] muscleBindings
+        )
+        {
+            var muscleClip = clip.m_MuscleClip;
+            return new
+            {
+                present = animationInfo.humanoidBindingCount > 0 || muscleClip != null,
+                hasMuscleClip = muscleClip != null,
+                reusableAssetStatus = animationInfo.humanoidBindingCount > 0 || muscleClip != null
+                    ? "UnityHumanoidOrMuscleDataCaptured"
+                    : "NotHumanoid",
+                gltfPlaybackStatus = animationInfo.humanoidBindingCount > 0 || muscleClip != null
+                    ? "RequiresHumanoidSolverOrBake"
+                    : "DirectTransformIfBindingsExist",
+                muscleBindingCount = muscleBindings.Length,
+                muscleBindings = muscleBindings,
+                muscleClip = muscleClip == null
+                    ? null
+                    : new
+                    {
+                        startTime = muscleClip.m_StartTime,
+                        stopTime = muscleClip.m_StopTime,
+                        duration = Math.Max(0, muscleClip.m_StopTime - muscleClip.m_StartTime),
+                        averageSpeed = ToJsonVector3(muscleClip.m_AverageSpeed),
+                        averageAngularSpeed = muscleClip.m_AverageAngularSpeed,
+                        orientationOffsetY = muscleClip.m_OrientationOffsetY,
+                        level = muscleClip.m_Level,
+                        cycleOffset = muscleClip.m_CycleOffset,
+                        startX = ToJsonXForm(muscleClip.m_StartX),
+                        stopX = ToJsonXForm(muscleClip.m_StopX),
+                        leftFootStartX = ToJsonXForm(muscleClip.m_LeftFootStartX),
+                        rightFootStartX = ToJsonXForm(muscleClip.m_RightFootStartX),
+                        motionStartX = ToJsonXForm(muscleClip.m_MotionStartX),
+                        motionStopX = ToJsonXForm(muscleClip.m_MotionStopX),
+                        indexArrayCount = muscleClip.m_IndexArray?.Length ?? 0,
+                        valueArrayDeltaCount = muscleClip.m_ValueArrayDelta?.Count ?? 0,
+                        valueArrayReferencePoseCount = muscleClip.m_ValueArrayReferencePose?.Length ?? 0,
+                        flags = new
+                        {
+                            mirror = muscleClip.m_Mirror,
+                            loopTime = muscleClip.m_LoopTime,
+                            loopBlend = muscleClip.m_LoopBlend,
+                            loopBlendOrientation = muscleClip.m_LoopBlendOrientation,
+                            loopBlendPositionY = muscleClip.m_LoopBlendPositionY,
+                            loopBlendPositionXZ = muscleClip.m_LoopBlendPositionXZ,
+                            startAtOrigin = muscleClip.m_StartAtOrigin,
+                            keepOriginalOrientation = muscleClip.m_KeepOriginalOrientation,
+                            keepOriginalPositionY = muscleClip.m_KeepOriginalPositionY,
+                            keepOriginalPositionXZ = muscleClip.m_KeepOriginalPositionXZ,
+                            heightFromFeet = muscleClip.m_HeightFromFeet,
+                            reducedDeltaValue = muscleClip.m_ReducedDeltaValue,
+                        },
+                    },
+            };
+        }
+
+        private static string ResolveAnimationBindingCategory(GenericBinding binding)
+        {
+            if (binding == null)
+            {
+                return "Unknown";
+            }
+            if ((BindingCustomType)binding.customType == BindingCustomType.AnimatorMuscle)
+            {
+                return "HumanoidMuscle";
+            }
+            if ((BindingCustomType)binding.customType == BindingCustomType.BlendShape
+                || binding.typeID == ClassIDType.SkinnedMeshRenderer)
+            {
+                return "BlendShapeOrRenderer";
+            }
+            if (binding.typeID == ClassIDType.Transform)
+            {
+                return "Transform";
+            }
+            if (binding.isPPtrCurve != 0)
+            {
+                return "PPtr";
+            }
+            return "Unknown";
+        }
+
+        private static string ResolveAnimationBindingAttribute(GenericBinding binding, string category)
+        {
+            if (binding == null)
+            {
+                return null;
+            }
+            try
+            {
+                if (string.Equals(category, "HumanoidMuscle", StringComparison.OrdinalIgnoreCase))
+                {
+                    return binding.GetHumanoidMuscle().ToAttributeString();
+                }
+            }
+            catch
+            {
+                return $"HumanoidMuscle_{binding.attribute}";
+            }
+
+            if (binding.typeID == ClassIDType.Transform)
+            {
+                return binding.attribute switch
+                {
+                    1 => "localPosition",
+                    2 => "localRotation",
+                    3 => "localScale",
+                    4 => "localEulerAngles",
+                    _ => $"TransformAttribute_{binding.attribute}",
+                };
+            }
+
+            if (string.Equals(category, "BlendShapeOrRenderer", StringComparison.OrdinalIgnoreCase))
+            {
+                return ((BindingCustomType)binding.customType) == BindingCustomType.BlendShape
+                    ? $"blendShape_{binding.attribute}"
+                    : $"rendererOrSkinnedMeshAttribute_{binding.attribute}";
+            }
+
+            return $"attribute_{binding.attribute}";
+        }
+
+        private static object ToJsonVector3(Vector3 value)
+        {
+            return new[] { value.X, value.Y, value.Z };
+        }
+
+        private static object ToJsonQuaternion(Quaternion value)
+        {
+            return new[] { value.X, value.Y, value.Z, value.W };
+        }
+
+        private static object ToJsonXForm(XForm value)
+        {
+            return new
+            {
+                t = ToJsonVector3(value.t),
+                q = ToJsonQuaternion(value.q),
+                s = ToJsonVector3(value.s),
+            };
+        }
+
+        private static void AppendAssetCatalog(AssetItem item, string outputPath, string kind, string animationAssetPath = null)
         {
             if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
             {
@@ -1084,6 +1334,7 @@ namespace AnimeStudio.CLI
                 source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
                 pathId = item.m_PathID,
                 output = outputPath,
+                animationAsset = animationAssetPath,
                 sampleRate = item.Asset is AnimationClip clip ? clip.m_SampleRate : (float?)null,
                 duration = item.Asset is AnimationClip durationClip ? GetAnimationDuration(durationClip) : (float?)null,
                 curveCount = item.Asset is AnimationClip curveClip ? GetAnimationCurveCount(curveClip) : (int?)null,

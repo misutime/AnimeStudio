@@ -173,7 +173,27 @@ Models\...\<model>.gltf
 
 `preview_validation.json` 会记录 animation channel 数、无效 channel 数、skin/joint 数、主体骨骼覆盖率、raw bbox 和 skinned bbox。只有当动画写入成功、channel 指向有效节点、skin 存在、命中主体骨骼且 skinned bbox 没有明显异常时，预览状态才会是 `ok`。如果只命中 `Ball_Point`、socket、twist/helper 这类辅助节点，报告会标为 `warning`。
 
-Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，预览 glTF 现在会把 Unity Humanoid/Muscle 曲线烘焙成目标骨架的 rotation/translation channel。`animations[].extras.unityHumanoid` 会记录原始 muscle 数据和 bake 状态；`preview_validation.json` 的 `humanoid.baked`、`bakeMode`、`bakedTrackCount`、`bakedKeyframeCount` 用于判断本次预览是否已经生成可播放骨骼动画。当前 bake 模式为 `ApproximateHumanoidMuscleV1`，目标是先生成可播放素材库预览；后续仍需要继续逼近 Unity 原生 Humanoid solver 的高保真 retarget。
+### 独立动画资产
+
+默认 Library 导出会把动画作为独立资产保存，而不是直接塞进模型：
+
+```text
+Animations\...\NORMALMOVE_STAND_01.anim
+Animations\...\NORMALMOVE_STAND_01.animation_asset.json
+```
+
+`.anim` 是从 Unity `AnimationClip` 转出的 YAML 资产，保留原始曲线数据。`.animation_asset.json` 是给工具链和团队阅读用的结构化 sidecar，会记录：
+
+- AnimationClip 的 source、container、pathId、sampleRate、duration、eventCount。
+- `animationType`、Transform/Humanoid/BlendShape/辅助节点 binding 数量。
+- 每条 `genericBinding` 的 Unity path hash、解析后的 path、typeID、customType、attribute 和可读 `attributeName`。
+- Humanoid/Muscle 的 `RootT.y`、`LeftFootQ.x`、`Spine Front-Back` 等 Unity muscle 语义。
+- `m_MuscleClip` 的 start/stop time、root motion、foot start、averageSpeed、loop/root-motion flags。
+- `gltfPlaybackStatus`。Humanoid/Muscle 动画会标为 `RequiresHumanoidSolverOrBake`，表示它已经是可复用 Unity 动画资产，但还不能直接保证 glTF 播放正确。
+
+`asset_catalog.jsonl`、`animation_bindings.jsonl`、`model_animations.json` 会带上 `animationAsset` 路径，后续预览、打包或 Unity/Blender 转换器都应该优先读取这个 sidecar，而不是靠动画文件名猜测语义。
+
+Freedunk 当前已确认的情况：`NORMALMOVE_STAND_01`、`DASH_01` 属于 `MixedHumanoidTransform`，核心数据在 Unity Humanoid/Muscle 曲线中。`ApproximateHumanoidMuscleV1` 只能用于生成实验 channel 和调试报告，不能作为最终动画资产验收。当前优先级是先把 `.anim` + `.animation_asset.json` 作为可复用动画资产稳定落盘，再逐步实现 Unity Humanoid solver 或外部 bake 流程。
 
 如果 `model_animations.json` 来自一个临时小样本目录，预览/打包时必须传完整 Unity 源目录，避免旧样本缺少外部 CAB 依赖导致脸、附件、材质或 Mesh 再次断链：
 
