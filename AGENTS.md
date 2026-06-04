@@ -39,6 +39,7 @@
 - Unity 关系优先级固定为：1. 显式引用，包括 `Animator`、`Animation`、`AnimatorController`、`AnimatorOverrideController`、`PPtr`；2. 结构兼容，包括 `Avatar`、`HumanDescription`、`SkinnedMeshRenderer bones`、`AnimationClip binding path/type/property`、blendshape channel；3. 实际导出验证，包括 glTF channel、skin/joint、主体骨骼覆盖、bbox。container、目录名、资源名、游戏 profile 只能作为显式标注的 fallback，不能进入默认绑定结果。
 - 精准导出时可以用 `--containers`、`--names` 过滤导出候选，但 CAB / PPtr 依赖图必须来自完整源目录。不要为了样本变快而只复制少量 bundle 当输入；Unity 游戏常把脸、附件、材质或 Mesh 拆到外部 CAB，裁掉依赖源会导致模型缺件。
 - 默认 `Library` 模型来源使用 `PrefabPrimary`：`Models/` 只放 prefab、Animator 或完整 GameObject 组合模型；raw fbx 身体、face、附件等 source parts 默认不作为可浏览模型导出，但必须进入 `asset_catalog.jsonl`，标记为 `SourcePart` / `RawModel` / `AttachmentSource`。只有显式 `--model_source PrefabAndParts` 或 `RawPartsOnly` 时才导出零散部件；没有被任何组合模型覆盖的 raw fbx 可放入 `Models/RawUnreferenced`。
+- glTF/GLB 是模型、骨骼、材质和动画预览的主格式；FBX 只作为兼容旧流程、特定 DCC 或对照验证的可选/实验输出。默认正确性验证以 glTF 的节点、skin、material、animation channel、bbox 和 Unity 关系索引为准，不以 FBX 导入器表现作为核心基准。
 - 模型和动画的默认规则是：模型保持干净，动画独立入库，绑定关系通过 Unity 关系图、索引、预览验证和显式打包建立。不要默认把一个模型可能引用到的所有动画塞进 glTF/GLB。
 - Humanoid/Muscle 动画需要作为可复用身体动画验收时，必须优先通过 Unity Editor 的 `Animator`、`Avatar`、`PlayableGraph`/`AnimationClipPlayable` 采样烘焙成目标骨架 TRS。AnimeStudio 内部的近似 muscle 求解只能用于诊断和报告，不能作为最终正确动画导出路径。
 - 材质和 shader 还原也必须从 Unity `Material.m_SavedProperties`、Renderer 材质槽、贴图 PPtr、shader 引用和渲染状态出发。默认导出应优先把 Unity 的透明、裁剪、双面、基础贴图槽映射到 glTF 标准；无法标准表达的自定义 shader slot/float/color 必须保留在材质 JSON 和 glTF `extras.unityMaterial`，作为后续材质重建或贴图烘焙依据，不能按单个游戏名称硬猜。
