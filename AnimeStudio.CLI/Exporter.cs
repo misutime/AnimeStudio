@@ -949,6 +949,19 @@ namespace AnimeStudio.CLI
                 .Select(x => string.IsNullOrWhiteSpace(x.m_ParentName) ? x.m_Name : $"{x.m_ParentName}/{x.m_Name}")
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToArray() ?? Array.Empty<string>();
+            var skeletonBonePose = avatar.m_HumanDescription?.m_Skeleton?
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_Name))
+                .Select(x => new
+                {
+                    name = x.m_Name,
+                    parentName = x.m_ParentName,
+                    position = new { x = x.m_Position.X, y = x.m_Position.Y, z = x.m_Position.Z },
+                    rotation = new { x = x.m_Rotation.X, y = x.m_Rotation.Y, z = x.m_Rotation.Z, w = x.m_Rotation.W },
+                    scale = new { x = x.m_Scale.X, y = x.m_Scale.Y, z = x.m_Scale.Z },
+                })
+                .Take(256)
+                .ToArray() ?? Array.Empty<object>();
+            var humanDescription = avatar.m_HumanDescription;
 
             return JObject.FromObject(new
             {
@@ -962,6 +975,22 @@ namespace AnimeStudio.CLI
                 humanBoneMapHash = humanBones.Length == 0 ? null : HashText(string.Join("\n", humanBones)),
                 skeletonBoneNameHash = skeletonBones.Length == 0 ? null : HashText(string.Join("\n", skeletonBones)),
                 humanBones = humanBones.Take(128).ToArray(),
+                skeletonBones = skeletonBonePose,
+                humanDescription = humanDescription == null ? null : new
+                {
+                    armTwist = humanDescription.m_ArmTwist,
+                    foreArmTwist = humanDescription.m_ForeArmTwist,
+                    upperLegTwist = humanDescription.m_UpperLegTwist,
+                    legTwist = humanDescription.m_LegTwist,
+                    armStretch = humanDescription.m_ArmStretch,
+                    legStretch = humanDescription.m_LegStretch,
+                    feetSpacing = humanDescription.m_FeetSpacing,
+                    globalScale = humanDescription.m_GlobalScale,
+                    rootMotionBoneName = humanDescription.m_RootMotionBoneName,
+                    hasTranslationDoF = humanDescription.m_HasTranslationDoF,
+                    hasExtraRoot = humanDescription.m_HasExtraRoot,
+                    skeletonHasParents = humanDescription.m_SkeletonHasParents,
+                },
             });
         }
 

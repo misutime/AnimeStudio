@@ -280,9 +280,11 @@ Unity helper 脚本在 `AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Edito
 
 如果 `--unity_model_prefab` 或 `--unity_animation_clip` 为空，helper 会优先使用 request 里的 AnimeStudio 资产：
 
-- 从 glTF 节点层级和 local TRS 重建采样骨架。
-- 从 Unity Avatar/HumanDescription 的 `humanBones` 映射构建 Human Avatar。
+- 从 glTF 节点层级和 local TRS 重建采样骨架，并在 glTF 与 Unity 本地坐标之间做显式 TRS 基坐标转换。
+- 从 Unity Avatar/HumanDescription 的 `humanBones`、原始 `skeletonBones` pose、twist/stretch 等参数构建 Human Avatar。
 - 把 AnimeStudio 导出的 `.anim` 复制进 Unity 工程并作为 AnimationClip 导入。
+
+注意：`humanBones` 只说明“哪根骨头对应哪个人体部位”，不能单独作为 Humanoid 动画正确性的验收依据。Humanoid bake 必须尽量使用 Unity 原始 Avatar 参考姿态；如果只用 glTF 当前骨架姿态临时构建 Avatar，Unity 仍可能给出有效 Avatar，但手臂、腿部方向会明显错误。缺少完整 `humanBones` 的旧索引会被请求生成阶段直接拒绝，避免生成看似成功但动作错误的结果。
 
 `--run_unity_bake` 成功后会自动把 `unity_bake_result.json` 合进源 glTF，输出带标准 glTF animation channel 的 baked preview，并写出 `unity_bake_apply_report.json`。也可以单独执行：
 
@@ -302,6 +304,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 4. 用 glTF 的 node、skin、animation channel、bbox 和验证报告作为默认正确性基准。
 
 这条路径的意义是：不要让 AnimeStudio 自己硬猜 Humanoid retarget 细节；Humanoid/Avatar 交给 Unity，动画结果写回开放、可检查、适合批量验证的 glTF/GLB。FBX 只作为兼容旧流程、特定 DCC 或对照验证的可选输出，不作为默认正确性基准。
+
+V3 AvatarPose 流程已用 Freedunk `Bill_01_00_ingame` 人工确认：`DASH_01` 和 `FACEUPMOVE_RUN_STANDARD_01` baked glTF 动作正常。关键修正是导出并复用 Unity 原始 `HumanDescription.skeletonBones` 参考姿态；仅靠 `humanBones` 映射或 glTF 当前 local TRS 会导致“背手”“腿方向交叉”等错误动作。
 
 从已有 bake request/result 生成 baked glTF：
 
@@ -329,10 +333,10 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 输出报告：
 
-- `unity_bake_apply_report.json`：baked glTF 写入结果、skin/joint/animation target 验证。
+- `unity_bake_apply_report.json`：baked glTF 写入结果、skin/joint/animation target 验证。`InvalidTargets` 必须为 `0`；`HierarchyParentTargets` 表示动画写到了含 skinned joint 子孙的层级父节点，属于有效的 glTF 层级传播，不应算作错误。
 - `blender_fbx_export_report.json`：仅在指定 `--baked_fbx_output` 时生成，记录 Blender 导入 glTF、导出 FBX 的对象、mesh、armature、action 和进程日志摘要。
 
-当前边界：自动 prefab fallback 只重建骨架和 Avatar，用于正确采样 Humanoid 动画；它不是完整 Unity prefab 复原。模型、贴图、材质仍来自 AnimeStudio 已导出的 glTF，后续还要继续做结果验证和动画包批处理。
+当前边界：自动 prefab fallback 只重建骨架和 Avatar，用于正确采样 Humanoid 动画；它不是完整 Unity prefab 复原。模型、贴图、材质仍来自 AnimeStudio 已导出的 glTF。bake 合并时会把 Unity 采样结果转换回 glTF 本地坐标，并把 `*_AnimeStudioBake` 根节点 track 映射回原 glTF root，以保留 DASH 等 root motion。
 
 实现原则：
 
@@ -599,7 +603,7 @@ model_validation.json
 
 每成功导出一个模型追加一行 JSON，便于统计进度、排查中断位置和后续做恢复导出。
 
-`asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数、`skeletonHash` 和 `skeleton`。`skeletonHash` 是素材库骨架 ID；`skeleton` 里会记录 `namePathHash`、`hierarchyHash`、`bindPoseHash`、`avatarHumanHash`、`avatarSkeletonNameHash` 和 `relationBasis`，用于判断哪些模型/动画共享同一套 Unity 骨架或 Humanoid Avatar 关系。
+`asset_catalog.jsonl` 面向素材库浏览和自动验收。模型条目会记录资源分类、mesh 数、顶点数、材质数、贴图数、动画数、骨骼数、`skeletonHash` 和 `skeleton`。`skeletonHash` 是素材库骨架 ID；`skeleton` 里会记录 `namePathHash`、`hierarchyHash`、`bindPoseHash`、`avatarHumanHash`、`avatarSkeletonNameHash` 和 `relationBasis`，用于判断哪些模型/动画共享同一套 Unity 骨架或 Humanoid Avatar 关系。Humanoid 模型还会把 Avatar 的 `humanBones`、原始 `skeletonBones` pose 和 HumanDescription 参数带入 `model_animations.json`，供 Unity bake 复建正确 Avatar 使用。
 
 AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、BlendShape 动画，还是只作用在 socket/helper 上的辅助动画。
 
