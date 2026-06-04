@@ -503,6 +503,13 @@ namespace AnimeStudio.CLI
             exportIssues ??= Array.Empty<string>();
             var hasExperimentalHumanoidBake = humanoid?.baked == true
                 && (humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase);
+            var nonCharacterTransformOk = string.Equals(
+                    (string)animationIndex?["animationCapability"],
+                    "NonCharacterTransformPreviewReady",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && channels.Length > 0
+                && invalidChannels == 0;
             var morphOk = morph.expected
                 && morph.meshTargetCount > 0
                 && morph.targetCount > 0
@@ -512,6 +519,7 @@ namespace AnimeStudio.CLI
                 && channels.Length > 0
                 && invalidChannels == 0
                 && (morphOk
+                    || nonCharacterTransformOk
                     || (skins.Length > 0
                         && coverage.coreBoneChannelCount > 0
                         && coverage.coreBoneNodeCount >= 3))
@@ -550,10 +558,17 @@ namespace AnimeStudio.CLI
                 },
                 animationCoverage = coverage,
                 morph,
+                nonCharacterTransform = new
+                {
+                    expected = nonCharacterTransformOk,
+                    capability = (string)animationIndex?["animationCapability"],
+                    channelCount = channels.Length,
+                    invalidChannels,
+                },
                 humanoid,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, morph, humanoid, bbox, exportIssues),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, morph, nonCharacterTransformOk, humanoid, bbox, exportIssues),
             };
         }
 
@@ -690,12 +705,12 @@ namespace AnimeStudio.CLI
             return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, MorphReport morph, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, MorphReport morph, bool nonCharacterTransformOk, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
             if (channelCount == 0) notes.Add("The embedded animation has no valid glTF channels.");
-            if (skinCount == 0) notes.Add("No skin was exported for the preview model.");
+            if (skinCount == 0 && !nonCharacterTransformOk) notes.Add("No skin was exported for the preview model.");
             if (invalidChannels > 0) notes.Add($"{invalidChannels} animation channel(s) target missing nodes.");
             if (exportIssues?.Length > 0)
             {
@@ -711,6 +726,10 @@ namespace AnimeStudio.CLI
                 {
                     notes.Add($"BlendShape bindings were expected ({morph.expectedBindingCount}), but glTF morph targets or weights channels are missing.");
                 }
+            }
+            if (nonCharacterTransformOk)
+            {
+                notes.Add("Non-character Transform animation channels target exported glTF nodes.");
             }
             if (humanoid?.requiresBake == true)
             {
@@ -729,11 +748,11 @@ namespace AnimeStudio.CLI
                     notes.Add($"Humanoid bake diagnostics: {diagnosticsStatus}, mapped {(int?)humanoid.diagnostics?["mappedTargetCount"] ?? 0}/{(int?)humanoid.diagnostics?["targetCount"] ?? 0} target bone(s), sample times {(int?)humanoid.diagnostics?["sampleTimeCount"] ?? 0}.");
                 }
             }
-            if (coverage.coreBoneChannelCount == 0 && morph?.weightChannelCount == 0)
+            if (coverage.coreBoneChannelCount == 0 && morph?.weightChannelCount == 0 && !nonCharacterTransformOk)
             {
                 notes.Add("No core body bone channels were written; the preview animation currently affects only helper/accessory/twist nodes.");
             }
-            else if (coverage.coreBoneNodeCount < 3)
+            else if (coverage.coreBoneNodeCount < 3 && !nonCharacterTransformOk)
             {
                 notes.Add("Very few core body bones were animated; inspect whether this is an auxiliary clip rather than a body animation.");
             }

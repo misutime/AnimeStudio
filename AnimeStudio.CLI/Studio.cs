@@ -873,7 +873,7 @@ namespace AnimeStudio.CLI
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
-            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)(pc|player)(/|$)"))
+            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)characterprefabs?(/|$)|(^|/)(pc|player)(/|$)"))
             {
                 return "Character";
             }
@@ -892,6 +892,10 @@ namespace AnimeStudio.CLI
             if (Regex.IsMatch(text, @"(^|/)trophy|prop|props|object|item|weapon"))
             {
                 return "Prop";
+            }
+            if (Regex.IsMatch(text, @"(^|/)animation|\.anim$"))
+            {
+                return "Animation";
             }
             return "Unknown";
         }
@@ -1159,9 +1163,12 @@ namespace AnimeStudio.CLI
                 skeletonLibraryId = (string)model["skeleton"]?["libraryId"],
                 animationTarget = ClassifyModelAnimationTarget(model),
                 boneCount = (int?)model["boneCount"] ?? 0,
+                nodeCount = (int?)model["nodeCount"] ?? 0,
                 meshCount = (int?)model["meshCount"] ?? 0,
                 textureCount = (int?)model["textureCount"] ?? 0,
                 morphCount = (int?)model["morphCount"] ?? 0,
+                nodePaths = model["nodePaths"]?.ToObject<string[]>()?.Take(128).ToArray(),
+                nodePathsTruncated = (bool?)model["nodePathsTruncated"] ?? false,
                 avatar = BuildCompactAvatarSummary(model["avatar"] as JObject),
             }).ToArray();
 
@@ -1439,8 +1446,9 @@ namespace AnimeStudio.CLI
             foreach (var model in models)
             {
                 var modelKey = GetCatalogKey(model);
-                var modelBonePaths = GetModelBonePaths(model);
-                if (modelBonePaths.Length == 0)
+                var usesNodeBindingPaths = GetModelBonePaths(model).Length == 0;
+                var modelBindingPaths = GetModelAnimationBindingPaths(model);
+                if (modelBindingPaths.Length == 0)
                 {
                     continue;
                 }
@@ -1459,7 +1467,7 @@ namespace AnimeStudio.CLI
                     }
 
                     var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
-                    var match = AnalyzeStructuralAnimationMatch(modelBonePaths, animationPaths);
+                    var match = AnalyzeStructuralAnimationMatch(modelBindingPaths, animationPaths, usesNodeBindingPaths);
                     if (!match.IsCandidate)
                     {
                         var humanoidMatch = AnalyzeHumanoidAnimationMatch(model, animation);
@@ -1650,9 +1658,9 @@ namespace AnimeStudio.CLI
                 Confidence = "structural_unity_binding",
                 Reasons = new[]
                 {
-                    $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone path(s).",
+                    $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone/node path(s).",
                     $"Core body binding matches: {match.CoreMatchedPathCount}.",
-                    "This uses Unity AnimationClip binding paths and exported model bone paths, not name/path fallback.",
+                    "This uses Unity AnimationClip binding paths and exported model bone/node paths, not name/path fallback.",
                 },
                 MatchedBindingPaths = match.MatchedPaths,
                 UnmatchedBindingPaths = match.UnmatchedPaths,
@@ -1725,6 +1733,7 @@ namespace AnimeStudio.CLI
                 textureCount = (int?)entry["textureCount"] ?? 0,
                 animationCount = (int?)entry["animationCount"] ?? 0,
                 bonePaths = entry["bonePaths"]?.ToObject<string[]>(),
+                nodePaths = entry["nodePaths"]?.ToObject<string[]>(),
                 avatar = entry["avatar"],
             };
         }
@@ -1831,6 +1840,14 @@ namespace AnimeStudio.CLI
                 return "LegacyNotPlayableYet";
             }
 
+            if (!isCharacter
+                && link?.MatchedBindingPaths != null
+                && link.MatchedBindingPaths.Length > 0
+                && (isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation))
+            {
+                return "NonCharacterTransformPreviewReady";
+            }
+
             if (!isCharacter && (isTransformAnimation || isAuxiliaryAnimation))
             {
                 return "NonCharacterTransformNeedsMapping";
@@ -1863,6 +1880,7 @@ namespace AnimeStudio.CLI
                 "HumanoidBodyBakeReady" => "generate_unity_bake_request",
                 "TransformBodyPreviewReady" => "generate_preview_gltf",
                 "BlendShapePreviewReady" => "generate_preview_gltf",
+                "NonCharacterTransformPreviewReady" => "generate_preview_gltf",
                 "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
                 "LegacyNotPlayableYet" => "implement_legacy_clip_sampling",
                 "NonCharacterTransformNeedsMapping" => "implement_non_character_transform_mapping",
@@ -1878,6 +1896,7 @@ namespace AnimeStudio.CLI
                 "HumanoidBodyBakeReady" => "Humanoid/Avatar body motion can use Unity bake, but trusted playback still requires the generated bake/apply reports.",
                 "TransformBodyPreviewReady" => "Transform body bindings look playable without Humanoid retargeting, but the preview glTF report must still validate target channels.",
                 "BlendShapePreviewReady" => "BlendShape/morph animation can be written as glTF morph targets and weights channels; preview validation must confirm morph target and weights channel counts.",
+                "NonCharacterTransformPreviewReady" => "Non-character Transform animation has Unity binding paths matched to exported glTF nodes; generate a preview glTF and validate channel targets.",
                 "BlendShapeLegacyNotImplemented" => "This looks like legacy face/blendshape animation. It needs legacy clip sampling before morph target channel export.",
                 "LegacyNotPlayableYet" => "This clip is legacy; Unity Playables cannot use it directly in the current helper path.",
                 "NonCharacterTransformNeedsMapping" => "This is non-character or low-core Transform animation. It needs original prefab/node path mapping before glTF playback can be trusted.",
@@ -1894,9 +1913,28 @@ namespace AnimeStudio.CLI
                 .ToArray() ?? Array.Empty<string>();
         }
 
-        private static StructuralAnimationMatch AnalyzeStructuralAnimationMatch(string[] modelBonePaths, string[] animationPaths)
+        private static string[] GetModelNodePaths(JObject model)
         {
-            var modelKeys = modelBonePaths
+            return model["nodePaths"]?.ToObject<string[]>()?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static string[] GetModelAnimationBindingPaths(JObject model)
+        {
+            var bonePaths = GetModelBonePaths(model);
+            if (bonePaths.Length > 0)
+            {
+                return bonePaths;
+            }
+
+            return GetModelNodePaths(model);
+        }
+
+        private static StructuralAnimationMatch AnalyzeStructuralAnimationMatch(string[] modelBindingPaths, string[] animationPaths, bool allowNodePathMatch)
+        {
+            var modelKeys = modelBindingPaths
                 .SelectMany(GetComparableBonePathKeys)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1921,8 +1959,12 @@ namespace AnimeStudio.CLI
             }
 
             var coreMatched = matched.Count(IsCoreAnimationPath);
-            var score = Math.Min(95, coreMatched * 10 + matched.Count * 2);
-            var isCandidate = matched.Count >= 4 && coreMatched >= 2;
+            var score = allowNodePathMatch
+                ? Math.Min(80, 50 + matched.Count * 10)
+                : Math.Min(95, coreMatched * 10 + matched.Count * 2);
+            var isCandidate = allowNodePathMatch
+                ? matched.Count > 0
+                : matched.Count >= 4 && coreMatched >= 2;
             return new StructuralAnimationMatch(
                 isCandidate,
                 score,

@@ -887,6 +887,7 @@ namespace AnimeStudio.CLI
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(x => x, StringComparer.Ordinal)
                 .ToArray() ?? Array.Empty<string>();
+            var nodePaths = CollectFramePaths(imported.RootFrame);
 
             var avatarInfo = GetModelAvatarInfo(source);
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
@@ -917,6 +918,8 @@ namespace AnimeStudio.CLI
                 boneCount = bonePaths.Length,
                 bonePaths = bonePaths.Take(512).ToArray(),
                 bonePathsTruncated = bonePaths.Length > 512,
+                nodePaths = nodePaths.Take(1024).ToArray(),
+                nodePathsTruncated = nodePaths.Length > 1024,
                 skeletonHash = (string)skeletonInfo?["libraryId"],
                 skeleton = skeletonInfo,
                 skeletonValidation,
@@ -1976,7 +1979,7 @@ namespace AnimeStudio.CLI
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
-            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)(pc|player)(/|$)"))
+            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)characterprefabs?(/|$)|(^|/)(pc|player)(/|$)"))
             {
                 return "Character";
             }
@@ -2020,6 +2023,36 @@ namespace AnimeStudio.CLI
                 count += CountFrames(frame[i]);
             }
             return count;
+        }
+
+        private static string[] CollectFramePaths(ImportedFrame frame)
+        {
+            if (frame == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var paths = new List<string>();
+            CollectFramePaths(frame, paths);
+            return paths
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        private static void CollectFramePaths(ImportedFrame frame, List<string> paths)
+        {
+            if (frame == null)
+            {
+                return;
+            }
+
+            paths.Add(frame.Path);
+            for (var i = 0; i < frame.Count; i++)
+            {
+                CollectFramePaths(frame[i], paths);
+            }
         }
 
         private static string HashText(string text)

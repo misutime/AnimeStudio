@@ -646,6 +646,7 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 - `HumanoidBodyBakeReady`：Humanoid/Muscle 身体动画，走 Unity bake 请求和 glTF 合并验证。
 - `TransformBodyPreviewReady`：普通 Transform 身体动画，可以进入直接预览/打包流程。
 - `BlendShapePreviewReady`：表情或 morph 动画，glTF 会写入 morph targets 和 `weights` animation channel，可进入预览验证。
+- `NonCharacterTransformPreviewReady`：非角色 Transform 动画已经通过 Unity binding path 匹配到导出模型的 node path，可以进入 glTF 预览验证。
 - `BlendShapeLegacyNotImplemented`：legacy 表情或 morph 动画，后续需要先补 legacy clip sampling。
 - `LegacyNotPlayableYet`：legacy AnimationClip，后续需要单独采样。
 - `NonCharacterTransformNeedsMapping`：非角色物件/道具/场景 Transform 动画，需要按 Unity node path 映射后验证。
@@ -653,7 +654,7 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 `skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
 
-结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。它必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。Humanoid/Avatar 候选同样只接受 `Character` 或未知类型动画，避免场景、篮筐、道具等非角色 Transform 动画误走人物 bake 流程。
+结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。它必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。Humanoid/Avatar 候选同样只接受 `Character` 或未知类型动画，避免场景、篮筐、道具等非角色 Transform 动画误走人物 bake 流程。带骨骼模型优先使用 `bonePaths` 建立动画关系；无骨骼道具、场景、相机等模型使用 `nodePaths`，例如 AnimationClip 绑定 `Camera001` 时可匹配导出节点 `BlackBox/Camera001`。
 
 默认还会写入性能日志：
 
