@@ -307,6 +307,12 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 V3 AvatarPose 流程已用 Freedunk `Bill_01_00_ingame` 人工确认：`DASH_01` 和 `FACEUPMOVE_RUN_STANDARD_01` baked glTF 动作正常。关键修正是导出并复用 Unity 原始 `HumanDescription.skeletonBones` 参考姿态；仅靠 `humanBones` 映射或 glTF 当前 local TRS 会导致“背手”“腿方向交叉”等错误动作。
 
+Freedunk 小批量回归基线：
+
+- `D:\Assets\Freedunk_Data_Dev\UnityBake_MultiChar_PublicNormal_V3_AvatarPose`：4 个角色 x 2 条动作，`DASH_01`、`FACEUPMOVE_RUN_STANDARD_01`，人工确认自然。
+- `D:\Assets\Freedunk_Data_Dev\UnityBake_MultiChar_PublicNormal_V3_MoreAnimations`：4 个角色 x 6 条动作成功，`NORMALMOVE_STAND_01`、`DEFENSEMOVE_RUN_0_01`、`HANDSUP_STAND_01`、`HANDSUP_RUN_0_01`、`BOXOUT_STAND_01`、`SLIDESTEP_01`，人工确认自然。
+- `D:\Assets\Freedunk_Data_Dev\UnityBake_MultiChar_PublicNormal_V3_StaticPoseFix`：`JUMPBALL_READY_NORMAL`、`SCREEN_01` 属于极短/静态姿态类 clip；Unity helper 需要把采样姿态同时与原始 rest pose 比较，不能只比较帧间变化。修正后 4 个角色 x 2 条动作全部 `status=ok`、`InvalidTargetCount=0`。
+
 从已有 bake request/result 生成 baked glTF：
 
 ```powershell
