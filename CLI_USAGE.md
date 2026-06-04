@@ -984,7 +984,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --preview_output "D:\Assets\Freedunk_Data_Dev\DirectFbx_Bill_Static_CoreSkeletonGuide_CLI\assets\graphics\character\pc\bill_01_00\Bill_01_00_ingame"
 ```
 
-`--generate_skeleton_guide` 是非破坏性诊断命令：它不会修改或重导出原 FBX，只会复制一份 `*.canonical.fbx`，并生成一个 `*_core_skeleton_guide.blend`。这个 `.blend` 会隐藏原始 FBX armature，用粗红色管线和黄色关节点显示 Unity Avatar `HumanDescription` 解出的 Core Humanoid 主链，适合人工判断人体骨架是否正确。
+`--generate_skeleton_guide` 是非破坏性诊断命令，支持 `.fbx`、`.gltf`、`.glb` 作为底图输入。它不会修改或重导出原模型，只会复制一份 `*.canonical.*`，并生成一个 `*_core_skeleton_guide.blend`。如果输入是 `.gltf`，命令会同时复制 glTF 引用的 `.bin` 和图片依赖。这个 `.blend` 会隐藏原始 armature，用粗红色管线和黄色关节点显示 Unity Avatar `HumanDescription` 解出的 Core Humanoid 主链，适合人工判断人体骨架是否正确。
 
 命令会优先从 FBX 所在目录向上查找 `asset_catalog.jsonl`，并使用其中的 Unity Avatar 关系；也可以显式传：
 
@@ -993,6 +993,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```
 
 报告写入 `core_skeleton_guide_report.json`。重点看 `relationSource` 是否为 `unity_avatar_human_description`、`missingEdgeCount` 是否为 `0`。如果找不到 Unity Avatar 关系，命令会退回常见 `Bip001` 名称作为诊断 fallback，但这种结果不能当成最终骨架验收。
+
+如果某个 FBX 触发 Blender importer 兼容问题，可以改用同一模型的 glTF 作为底图输入，并继续通过 `--skeleton_guide_catalog` 指向原 FBX/素材库导出的 `asset_catalog.jsonl`。这样骨架关系仍来自 Unity Avatar，底图只负责可视化。
 
 ## 材质和 Shader 边界
 

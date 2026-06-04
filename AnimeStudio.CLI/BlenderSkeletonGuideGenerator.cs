@@ -11,11 +11,11 @@ namespace AnimeStudio.CLI
 {
     internal static class BlenderSkeletonGuideGenerator
     {
-        public static bool Generate(string inputFbx, string outputDir, string catalogPath, string blenderPath)
+        public static bool Generate(string inputModel, string outputDir, string catalogPath, string blenderPath)
         {
-            if (string.IsNullOrWhiteSpace(inputFbx) || !File.Exists(inputFbx))
+            if (string.IsNullOrWhiteSpace(inputModel) || !File.Exists(inputModel))
             {
-                Logger.Error($"FBX not found for skeleton guide: {inputFbx}");
+                Logger.Error($"Model not found for skeleton guide: {inputModel}");
                 return false;
             }
 
@@ -26,7 +26,13 @@ namespace AnimeStudio.CLI
                 return false;
             }
 
-            var inputFullPath = Path.GetFullPath(inputFbx);
+            var inputFullPath = Path.GetFullPath(inputModel);
+            var extension = Path.GetExtension(inputFullPath).ToLowerInvariant();
+            if (extension != ".fbx" && extension != ".gltf" && extension != ".glb")
+            {
+                Logger.Error("--generate_skeleton_guide supports .fbx, .gltf, and .glb inputs.");
+                return false;
+            }
             outputDir = string.IsNullOrWhiteSpace(outputDir)
                 ? Path.Combine(Path.GetDirectoryName(inputFullPath), "SkeletonGuide")
                 : Path.GetFullPath(outputDir);
@@ -34,17 +40,14 @@ namespace AnimeStudio.CLI
 
             var modelName = Path.GetFileNameWithoutExtension(inputFullPath);
             var blendPath = Path.Combine(outputDir, $"{modelName}_core_skeleton_guide.blend");
-            var canonicalCopy = Path.Combine(outputDir, $"{modelName}.canonical.fbx");
+            var canonicalCopy = Path.Combine(outputDir, $"{modelName}.canonical{extension}");
             var reportPath = Path.Combine(outputDir, "core_skeleton_guide_report.json");
-            if (!File.Exists(canonicalCopy))
-            {
-                File.Copy(inputFullPath, canonicalCopy, false);
-            }
+            CopyCanonicalModel(inputFullPath, canonicalCopy, extension);
 
             var relation = ResolveSkeletonRelation(inputFullPath, catalogPath);
             var edges = relation.Edges.Count == 0 ? BuildFallbackBip001Edges() : relation.Edges;
             var scriptPath = Path.Combine(Path.GetTempPath(), $"animestudio_skeleton_guide_{Guid.NewGuid():N}.py");
-            File.WriteAllText(scriptPath, BuildScript(inputFullPath, blendPath, reportPath, canonicalCopy, edges, relation), Encoding.UTF8);
+            File.WriteAllText(scriptPath, BuildScript(inputFullPath, extension, blendPath, reportPath, canonicalCopy, edges, relation), Encoding.UTF8);
 
             var startInfo = new ProcessStartInfo
             {
@@ -83,7 +86,7 @@ namespace AnimeStudio.CLI
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 status = ok ? "ok" : "error",
                 blender = blenderPath,
-                inputFbx = inputFullPath,
+                inputModel = inputFullPath,
                 outputBlend = blendPath,
                 canonicalCopy,
                 relationSource = relation.Source,
@@ -108,15 +111,15 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        private static SkeletonRelation ResolveSkeletonRelation(string inputFbx, string catalogPath)
+        private static SkeletonRelation ResolveSkeletonRelation(string inputModel, string catalogPath)
         {
-            catalogPath = ResolveCatalogPath(inputFbx, catalogPath);
+            catalogPath = ResolveCatalogPath(inputModel, catalogPath);
             if (string.IsNullOrWhiteSpace(catalogPath))
             {
                 return new SkeletonRelation("fallback_bip001", null, new List<SkeletonEdge>());
             }
 
-            var inputFullPath = Path.GetFullPath(inputFbx);
+            var inputFullPath = Path.GetFullPath(inputModel);
             var inputName = Path.GetFileNameWithoutExtension(inputFullPath);
             JObject best = null;
             foreach (var line in File.ReadLines(catalogPath))
@@ -172,14 +175,14 @@ namespace AnimeStudio.CLI
             );
         }
 
-        private static string ResolveCatalogPath(string inputFbx, string catalogPath)
+        private static string ResolveCatalogPath(string inputModel, string catalogPath)
         {
             if (!string.IsNullOrWhiteSpace(catalogPath) && File.Exists(catalogPath))
             {
                 return Path.GetFullPath(catalogPath);
             }
 
-            var dir = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(inputFbx)));
+            var dir = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(inputModel)));
             while (dir != null)
             {
                 var candidate = Path.Combine(dir.FullName, "asset_catalog.jsonl");
@@ -190,6 +193,65 @@ namespace AnimeStudio.CLI
                 dir = dir.Parent;
             }
             return null;
+        }
+
+        private static void CopyCanonicalModel(string inputFullPath, string canonicalCopy, string extension)
+        {
+            if (!File.Exists(canonicalCopy))
+            {
+                File.Copy(inputFullPath, canonicalCopy, false);
+            }
+
+            if (extension != ".gltf")
+            {
+                return;
+            }
+
+            JObject gltf;
+            try
+            {
+                gltf = JObject.Parse(File.ReadAllText(inputFullPath));
+            }
+            catch
+            {
+                return;
+            }
+
+            var inputDir = Path.GetDirectoryName(inputFullPath);
+            var outputDir = Path.GetDirectoryName(canonicalCopy);
+            var uris = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var uri in gltf["buffers"]?.Children<JObject>().Select(x => (string)x["uri"]) ?? Enumerable.Empty<string>())
+            {
+                uris.Add(uri);
+            }
+            foreach (var uri in gltf["images"]?.Children<JObject>().Select(x => (string)x["uri"]) ?? Enumerable.Empty<string>())
+            {
+                uris.Add(uri);
+            }
+
+            foreach (var uri in uris)
+            {
+                if (string.IsNullOrWhiteSpace(uri)
+                    || uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                    || Uri.TryCreate(uri, UriKind.Absolute, out _))
+                {
+                    continue;
+                }
+
+                var relativePath = uri.Replace('/', Path.DirectorySeparatorChar);
+                var source = Path.GetFullPath(Path.Combine(inputDir, relativePath));
+                if (!File.Exists(source))
+                {
+                    continue;
+                }
+
+                var target = Path.GetFullPath(Path.Combine(outputDir, relativePath));
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                if (!File.Exists(target))
+                {
+                    File.Copy(source, target, false);
+                }
+            }
         }
 
         private static Dictionary<string, string> ParseHumanBoneMap(JArray humanBones)
@@ -301,13 +363,15 @@ namespace AnimeStudio.CLI
 
         private static string BuildScript(
             string inputFbx,
+            string extension,
             string blendPath,
             string reportPath,
             string canonicalCopy,
             IReadOnlyList<SkeletonEdge> edges,
             SkeletonRelation relation)
         {
-            var fbxLiteral = JsonConvert.SerializeObject(inputFbx);
+            var modelLiteral = JsonConvert.SerializeObject(inputFbx);
+            var extensionLiteral = JsonConvert.SerializeObject(extension);
             var blendLiteral = JsonConvert.SerializeObject(blendPath);
             var reportLiteral = JsonConvert.SerializeObject(reportPath);
             var copyLiteral = JsonConvert.SerializeObject(canonicalCopy);
@@ -317,7 +381,8 @@ namespace AnimeStudio.CLI
             return $@"
 import bpy, json
 
-input_fbx = {fbxLiteral}
+input_model = {modelLiteral}
+input_extension = {extensionLiteral}
 output_blend = {blendLiteral}
 report_path = {reportLiteral}
 canonical_copy = {copyLiteral}
@@ -327,7 +392,12 @@ catalog_path = {catalogLiteral}
 
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete()
-bpy.ops.import_scene.fbx(filepath=input_fbx, use_custom_normals=True)
+if input_extension == '.fbx':
+    bpy.ops.import_scene.fbx(filepath=input_model, use_custom_normals=True)
+elif input_extension in {{'.gltf', '.glb'}}:
+    bpy.ops.import_scene.gltf(filepath=input_model)
+else:
+    raise RuntimeError('Unsupported skeleton guide input: ' + input_model)
 
 arm = next((o for o in bpy.context.scene.objects if o.type == 'ARMATURE'), None)
 if arm is None:
@@ -425,7 +495,7 @@ bpy.context.scene.unit_settings.system = 'METRIC'
 
 report = {{
     'status': 'ok',
-    'inputFbx': input_fbx,
+    'inputModel': input_model,
     'outputBlend': output_blend,
     'canonicalCopy': canonical_copy,
     'mode': 'non_destructive_visible_core_humanoid_guide',
@@ -443,7 +513,7 @@ report = {{
         for obj in bpy.context.scene.objects
         if obj.type == 'MESH' and not obj.name.startswith('CORE_')
     ],
-    'note': 'Canonical FBX is copied but not re-exported. Inspect red tubes and yellow spheres for CoreHumanoid structure.',
+    'note': 'Canonical model file is copied but not re-exported. Inspect red tubes and yellow spheres for CoreHumanoid structure.',
 }}
 with open(report_path, 'w', encoding='utf-8') as f:
     json.dump(report, f, ensure_ascii=False, indent=2)
