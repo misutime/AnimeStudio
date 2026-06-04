@@ -1151,12 +1151,12 @@ namespace AnimeStudio.CLI
                                 boneCount = (int?)model["boneCount"] ?? 0,
                                 meshCount = (int?)model["meshCount"] ?? 0,
                                 textureCount = (int?)model["textureCount"] ?? 0,
-                                avatar = model["avatar"] == null ? null : new
+                                avatar = model["avatar"] is JObject avatar ? new
                                 {
-                                    name = (string)model["avatar"]?["name"],
-                                    humanBoneCount = (int?)model["avatar"]?["humanBoneCount"] ?? 0,
-                                    skeletonBoneCount = (int?)model["avatar"]?["skeletonBoneCount"] ?? 0,
-                                },
+                                    name = (string)avatar["name"],
+                                    humanBoneCount = (int?)avatar["humanBoneCount"] ?? 0,
+                                    skeletonBoneCount = (int?)avatar["skeletonBoneCount"] ?? 0,
+                                } : null,
                             })
                             .ToArray(),
                         animationCandidateCount = candidateLinks.Length,

@@ -344,6 +344,22 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 当前边界：自动 prefab fallback 只重建骨架和 Avatar，用于正确采样 Humanoid 动画；它不是完整 Unity prefab 复原。模型、贴图、材质仍来自 AnimeStudio 已导出的 glTF。bake 合并时会把 Unity 采样结果转换回 glTF 本地坐标，并把 `*_AnimeStudioBake` 根节点 track 映射回原 glTF root，以保留 DASH 等 root motion。
 
+### Freedunk 富动作验证记录
+
+2026-06-04 使用 `D:\Assets\Freedunk_Data_Dev\AnimationBindingV3_BodyTypes_RichActions_FixedIndex` 扩大了角色和动作覆盖：
+
+- 角色体型样本：`Bill_01_00_ingame`、`Emma_01_00_ingame`、`Gary_01_00_ingame`、`Frorin_01_00_ingame`、`Uncle_01_00_ingame`、`Thompson_02_00_ingame`、`Qiqi_03_00_ingame`、`Kiara_01_00_ingame`。
+- 动作包覆盖：`02_dribble`、`03_shot`、`04_receive`、`05_pass`、`06_rebound`、`07_block`、`08_steal`、`09_collision`、`11_hopstep`、`12_tipin`、`13_pivot`、`14_anklebreak`、`15_alleyoop`、`16_shakeandbake`、`19_etc`、`outgame/lobby/_universal/celebration`。
+- 索引能识别到持球/运球、投篮/扣篮/上篮、传接球、篮板、盖帽/抢断、碰撞/受击、庆祝/入场等候选动作；这些候选仍然必须经过 bake 和 glTF 写入报告验证。
+- `D:\Assets\Freedunk_Data_Dev\UnityBake_RichAction_BodyTypes_V1` 中，8 个角色的 `HOLDBALL_01` 和 Bill 的 `AIMSHOT_STANDING_01`、`DRIVINGDUNK_01`、`KNOCKDOWN_NORMALMOVE_01`、`CEREMONY_CHEER_Bill_01_LOBBY` 已通过 Unity bake。报告显示 `status=ok`、`InvalidTargetCount=0`、`Skipped=0`，说明当前 Humanoid AvatarPose 流程可以覆盖更丰富的身体动作。
+- `face_happy` 当前失败，Unity 报告为 legacy clip 不能直接用于 Playables。表情/BlendShape 不能假装已被 Humanoid TRS bake 覆盖，后续需要单独处理 legacy AnimationClip、blendshape curve 和 glTF morph target channel。
+
+非角色动画探针位于 `D:\Assets\Freedunk_Data_Dev\NonCharacterAnimationProbe_V1`：
+
+- 当前能收集并导出球、奖杯/杯体、抽卡/舞台物件、篮筐/篮网相关动画等资源，`asset_summary.json` 中可见 `Ball`、`Prop`、`Stage`、`Character` 分类。
+- `BlackBox`、`AnimationModel`、`Stage_ChouKa` 等 prefab 能从 Unity `Animator`/controller 建立候选关系，但直接套用当前 Unity bake 流程时 `changedTrackCount=0`。这说明非角色 Transform/legacy/材质/激活类动画需要独立完善采样和 glTF node path 映射，不能按 Humanoid 角色流程硬套。
+- 后续做索引结构时，应把角色 Humanoid 动画、角色 Transform/BlendShape 表情动画、非角色 Transform 动画、材质/激活/事件类动画分开标注能力状态，避免素材库把“已收集”误显示成“已可播放验证”。
+
 实现原则：
 
 - 默认导出阶段可以收集动画线索，但不默认嵌入动画。

@@ -46,4 +46,5 @@
 - Unity bake 判断 Transform track 是否有效时，必须同时比较采样姿态相对原始 rest pose 的变化和帧间变化。很多短动作或定格姿态 clip 第一帧已经是目标姿态，但帧间没有变化；只比较第一帧和后续帧会把这类有效动画误判为空。
 - 材质和 shader 还原也必须从 Unity `Material.m_SavedProperties`、Renderer 材质槽、贴图 PPtr、shader 引用和渲染状态出发。默认导出应优先把 Unity 的透明、裁剪、双面、基础贴图槽映射到 glTF 标准；无法标准表达的自定义 shader slot/float/color 必须保留在材质 JSON 和 glTF `extras.unityMaterial`，作为后续材质重建或贴图烘焙依据，不能按单个游戏名称硬猜。
 - 角色、NPC、道具、机关、场景物件都可能有动画。动画适配逻辑必须基于 Unity component/controller/clip binding/avatar/bone path 等通用关系，不能只服务角色动画。
+- 表情/BlendShape、legacy AnimationClip、非角色 Transform 动画、材质/激活/事件类动画要和 Humanoid 身体动画分开标注、分开验证。不能因为 Humanoid bake 成功，就把这些动画类型默认标成“可播放已验证”。
 - 如果确实需要针对某个游戏做特殊适配，必须默认关闭或放入 profile/config，并在文档里标明它是游戏 profile 规则，不是 `Normal` 通用 Unity 导出路径的一部分。
