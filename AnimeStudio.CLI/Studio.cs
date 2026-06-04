@@ -1453,6 +1453,11 @@ namespace AnimeStudio.CLI
                         continue;
                     }
 
+                    if (!IsStructuralBindingResourceCompatible(model, animation))
+                    {
+                        continue;
+                    }
+
                     var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
                     var match = AnalyzeStructuralAnimationMatch(modelBonePaths, animationPaths);
                     if (!match.IsCandidate)
@@ -1812,6 +1817,10 @@ namespace AnimeStudio.CLI
             var coreTransformCount = (int?)animation["coreTransformBindingCount"] ?? 0;
             var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
             var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+            var isCharacter = string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase);
+            var isTransformAnimation = string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase);
+            var isAuxiliaryAnimation = string.Equals(animationType, "AuxiliaryAnimation", StringComparison.OrdinalIgnoreCase);
+            var isTransformBodyAnimation = string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase);
 
             if (blendShapeCount > 0)
             {
@@ -1821,20 +1830,25 @@ namespace AnimeStudio.CLI
             {
                 return "LegacyNotPlayableYet";
             }
-            if (link?.RequiresHumanoidBake == true || humanoidBindingCount > 0 || hasMuscleClip)
+
+            if (!isCharacter && (isTransformAnimation || isAuxiliaryAnimation))
+            {
+                return "NonCharacterTransformNeedsMapping";
+            }
+
+            if (link?.RequiresHumanoidBake == true || (isCharacter && (humanoidBindingCount > 0 || hasMuscleClip)))
             {
                 return "HumanoidBodyBakeReady";
             }
-            if (string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase) && coreTransformCount >= 3)
+            if (isTransformBodyAnimation && coreTransformCount >= 3)
             {
-                return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                return isCharacter
                     ? "TransformBodyPreviewReady"
                     : "NonCharacterTransformNeedsMapping";
             }
-            if (string.Equals(animationType, "AuxiliaryAnimation", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase))
+            if (isAuxiliaryAnimation || isTransformAnimation)
             {
-                return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                return isCharacter
                     ? "AuxiliaryTransformNeedsMapping"
                     : "NonCharacterTransformNeedsMapping";
             }
@@ -1923,9 +1937,12 @@ namespace AnimeStudio.CLI
         {
             var avatar = model["avatar"] as JObject;
             var hasHumanAvatar = avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false);
+            var animationResourceKind = (string)animation["resourceKind"] ?? string.Empty;
+            var animationCanBeHumanoid = string.IsNullOrWhiteSpace(animationResourceKind)
+                || string.Equals(animationResourceKind, "Character", StringComparison.OrdinalIgnoreCase);
             var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
             var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
-            var isCandidate = hasHumanAvatar && (humanoidBindingCount > 0 || hasMuscleClip);
+            var isCandidate = hasHumanAvatar && animationCanBeHumanoid && (humanoidBindingCount > 0 || hasMuscleClip);
             var score = isCandidate ? Math.Min(80, 50 + Math.Min(30, humanoidBindingCount / 5)) : 0;
             return new HumanoidAnimationMatch(
                 isCandidate,
@@ -1933,6 +1950,18 @@ namespace AnimeStudio.CLI
                 (string)avatar?["name"],
                 humanoidBindingCount
             );
+        }
+
+        private static bool IsStructuralBindingResourceCompatible(JObject model, JObject animation)
+        {
+            var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
+            var animationResourceKind = ((string)animation["resourceKind"] ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(modelResourceKind) || string.IsNullOrWhiteSpace(animationResourceKind))
+            {
+                return true;
+            }
+
+            return string.Equals(modelResourceKind, animationResourceKind, StringComparison.OrdinalIgnoreCase);
         }
 
         private static IEnumerable<string> GetComparableBonePathKeys(string path)

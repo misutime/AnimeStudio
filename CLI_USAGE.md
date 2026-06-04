@@ -653,6 +653,8 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 `skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
 
+结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。它必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。Humanoid/Avatar 候选同样只接受 `Character` 或未知类型动画，避免场景、篮筐、道具等非角色 Transform 动画误走人物 bake 流程。
+
 默认还会写入性能日志：
 
 ```text
