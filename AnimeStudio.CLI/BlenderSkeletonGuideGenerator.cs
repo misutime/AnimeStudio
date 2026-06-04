@@ -399,12 +399,28 @@ elif input_extension in {{'.gltf', '.glb'}}:
 else:
     raise RuntimeError('Unsupported skeleton guide input: ' + input_model)
 
-arm = next((o for o in bpy.context.scene.objects if o.type == 'ARMATURE'), None)
+removed_import_helper_objects = []
+for collection in bpy.data.collections:
+    if collection.name == 'glTF_not_exported' or collection.name.startswith('glTF_not_exported.'):
+        for obj in list(collection.objects):
+            removed_import_helper_objects.append(obj.name)
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+edge_bone_names = {{name for edge in edges for name in edge}}
+armatures = [o for o in bpy.context.scene.objects if o.type == 'ARMATURE']
+arm = max(
+    armatures,
+    key=lambda o: sum(1 for name in edge_bone_names if o.data.bones.get(name) is not None),
+    default=None,
+)
 if arm is None:
     raise RuntimeError('No armature found')
 
-arm.hide_viewport = True
-arm.hide_render = True
+hidden_original_armatures = []
+for original_armature in armatures:
+    original_armature.hide_viewport = True
+    original_armature.hide_render = True
+    hidden_original_armatures.append(original_armature.name)
 
 coll = bpy.data.collections.new('AnimeStudio_CoreHumanoid_Guide_VISIBLE')
 bpy.context.scene.collection.children.link(coll)
@@ -478,9 +494,10 @@ for start, end in edges:
     points[end] = b
 
 for name, point in points.items():
-    bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=8, radius=0.035, location=point)
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=8, radius=0.022, location=point)
     obj = bpy.context.object
     obj.name = 'CORE_JOINT_VISIBLE ' + name
+    obj.data.name = 'CORE_JOINT_VISIBLE ' + name + '_mesh'
     obj.data.materials.append(joint_mat)
     link_to_guide(obj)
 
@@ -492,6 +509,7 @@ light.data.size = 5
 bpy.ops.object.camera_add(location=(0, -4.0, 1.35), rotation=(1.5708, 0, 0))
 bpy.context.scene.camera = bpy.context.object
 bpy.context.scene.unit_settings.system = 'METRIC'
+bpy.ops.object.select_all(action='DESELECT')
 
 report = {{
     'status': 'ok',
@@ -502,16 +520,21 @@ report = {{
     'relationSource': relation_source,
     'catalog': catalog_path,
     'originalArmatureHidden': True,
+    'sourceArmature': arm.name,
+    'hiddenOriginalArmatures': hidden_original_armatures,
     'createdEdgeCount': len(created),
     'createdJointCount': len(points),
     'missingEdgeCount': len(missing),
     'createdEdges': created,
     'missingEdges': missing,
     'armatureBoneCount': len(arm.data.bones),
+    'removedImportHelperObjects': removed_import_helper_objects,
     'meshObjects': [
         {{'name': obj.name, 'verts': len(obj.data.vertices), 'polys': len(obj.data.polygons)}}
         for obj in bpy.context.scene.objects
-        if obj.type == 'MESH' and not obj.name.startswith('CORE_')
+        if obj.type == 'MESH'
+        and not obj.name.startswith('CORE_')
+        and not any(c.name == 'glTF_not_exported' or c.name.startswith('glTF_not_exported.') for c in obj.users_collection)
     ],
     'note': 'Canonical model file is copied but not re-exported. Inspect red tubes and yellow spheres for CoreHumanoid structure.',
 }}

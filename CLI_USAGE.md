@@ -994,7 +994,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 报告写入 `core_skeleton_guide_report.json`。重点看 `relationSource` 是否为 `unity_avatar_human_description`、`missingEdgeCount` 是否为 `0`。如果找不到 Unity Avatar 关系，命令会退回常见 `Bip001` 名称作为诊断 fallback，但这种结果不能当成最终骨架验收。
 
-如果某个 FBX 触发 Blender importer 兼容问题，可以改用同一模型的 glTF 作为底图输入，并继续通过 `--skeleton_guide_catalog` 指向原 FBX/素材库导出的 `asset_catalog.jsonl`。这样骨架关系仍来自 Unity Avatar，底图只负责可视化。
+如果某个 FBX 触发 Blender importer 兼容问题，可以改用同一模型的 glTF 作为底图输入，并继续通过 `--skeleton_guide_catalog` 指向原 FBX/素材库导出的 `asset_catalog.jsonl`。这样骨架关系仍来自 Unity Avatar，底图只负责可视化。使用 glTF 底图时，Blender importer 可能生成 `glTF_not_exported` 辅助集合；CLI 会从骨架预览 `.blend` 中移除这些非资源对象，避免低模占位球等辅助物遮挡角色本体。对于 `Face_dummy` 这类脸部父级 armature，CLI 会保留层级但隐藏原始 armature 显示，只显示红黄 CoreHumanoid guide。
 
 ## 材质和 Shader 边界
 
