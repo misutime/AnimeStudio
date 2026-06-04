@@ -940,7 +940,39 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            var entries = File.ReadLines(catalogPath)
+            var entries = LoadCatalogEntries(catalogPath);
+            WriteAssetSummary(savePath, catalogPath, entries);
+            UnityRelationGraph.Generate(savePath, assetsManager, exportableAssets);
+            ModelLibraryValidator.Generate(savePath);
+
+            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+            var explicitAnimationLinks = BuildExplicitUnityAnimationLinks(models, animations);
+            WriteAnimationIndexes(savePath, catalogPath, models, animations, explicitAnimationLinks);
+        }
+
+        public static void RebuildLibraryIndexes(string savePath)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                throw new FileNotFoundException("asset_catalog.jsonl was not found. Rebuild requires a previous Library export.", catalogPath);
+            }
+
+            var entries = LoadCatalogEntries(catalogPath);
+            WriteAssetSummary(savePath, catalogPath, entries);
+            ModelLibraryValidator.Generate(savePath);
+
+            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+            var structuralLinks = BuildStructuralUnityAnimationLinks(models, animations);
+            WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). Explicit Animator/Animation relations require a fresh export; structural Unity binding links were rebuilt.");
+        }
+
+        private static List<JObject> LoadCatalogEntries(string catalogPath)
+        {
+            return File.ReadLines(catalogPath)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Select(x =>
                 {
@@ -955,7 +987,10 @@ namespace AnimeStudio.CLI
                 })
                 .Where(x => x != null)
                 .ToList();
+        }
 
+        private static void WriteAssetSummary(string savePath, string catalogPath, List<JObject> entries)
+        {
             var summary = new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
@@ -980,12 +1015,15 @@ namespace AnimeStudio.CLI
                 Path.Combine(savePath, "asset_summary.json"),
                 JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
             );
-            UnityRelationGraph.Generate(savePath, assetsManager, exportableAssets);
-            ModelLibraryValidator.Generate(savePath);
+        }
 
-            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
-            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-            var explicitAnimationLinks = BuildExplicitUnityAnimationLinks(models, animations);
+        private static void WriteAnimationIndexes(
+            string savePath,
+            string catalogPath,
+            List<JObject> models,
+            List<JObject> animations,
+            ExplicitAnimationLinks explicitAnimationLinks)
+        {
             GenerateSkeletonLibraryIndex(savePath, models, explicitAnimationLinks);
             var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
             using var writer = new StreamWriter(bindingsPath, false);
@@ -1386,6 +1424,13 @@ namespace AnimeStudio.CLI
 
             AddStructuralUnityBindingLinks(links, models, animations);
 
+            return links;
+        }
+
+        private static ExplicitAnimationLinks BuildStructuralUnityAnimationLinks(List<JObject> models, List<JObject> animations)
+        {
+            var links = new ExplicitAnimationLinks();
+            AddStructuralUnityBindingLinks(links, models, animations);
             return links;
         }
 

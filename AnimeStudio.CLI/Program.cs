@@ -108,9 +108,15 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.RebuildLibraryIndexes != null)
+                {
+                    Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName);
+                    return;
+                }
+
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, or --generate_skeleton_guide for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, or --rebuild_library_indexes for post-export commands.");
                     return;
                 }
 

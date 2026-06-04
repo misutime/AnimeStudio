@@ -661,6 +661,28 @@ export_profile.jsonl
 --profile_log "D:\Assets\Freedunk_Data_Dev\profile.jsonl"
 ```
 
+### 快速重建素材库索引
+
+如果只是改了索引结构、候选排序、`animationCapability` 分类或验证报告逻辑，不需要重新解包和导出模型，可以直接从已有 Library 导出目录重建索引：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --rebuild_library_indexes "D:\Assets\Freedunk_Data_Dev\AnimationCompactIndexSmoke_Bill"
+```
+
+这个命令会读取已有 `asset_catalog.jsonl`，重写：
+
+```text
+asset_summary.json
+model_validation.json
+skeletons.json
+animation_bindings.jsonl
+model_animations.json
+model_animations.compact.json
+```
+
+它不会加载原始 Unity 游戏目录，也不会重新导出模型、贴图或动画；小样本通常能从数分钟缩短到数秒。限制是：导出时内存里才能拿到的 Animator/Animation 显式引用无法凭空恢复，离线重建会复算 catalog 中可恢复的结构兼容关系。需要刷新 Unity 关系图、CAB/PPtr 依赖、显式 Animator Controller 引用或新增素材时，仍然要重新跑 Library 导出。
+
 ## 特殊模型扫描命令
 
 只想快速扫描模型候选、不需要默认素材库结构时，可以显式使用 `SplitObjects`：
