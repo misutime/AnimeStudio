@@ -619,6 +619,7 @@ asset_catalog.jsonl
 asset_summary.json
 animation_bindings.jsonl
 model_animations.json
+model_animations.compact.json
 skeletons.json
 model_validation.json
 ```
@@ -629,7 +630,18 @@ model_validation.json
 
 AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、BlendShape 动画，还是只作用在 socket/helper 上的辅助动画。
 
-`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`model_validation.json` 是静态模型验收报告，检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。`skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
+`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`model_validation.json` 是静态模型验收报告，检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。`model_animations.compact.json` 是规范化紧凑索引：模型、动画、模型-动画候选引用分表保存，避免把完整动画对象重复写进每个模型。后续素材库浏览、搜索、批量 bake、UI 和性能优化应优先读取 compact 文件；verbose `model_animations.json` 保留给人工排查和兼容旧命令。
+
+`model_animations.json` 和 `model_animations.compact.json` 都会记录 `animationCapability`。它只表示下一步安全处理路径，不等于动画已经视觉验证通过：
+
+- `HumanoidBodyBakeReady`：Humanoid/Muscle 身体动画，走 Unity bake 请求和 glTF 合并验证。
+- `TransformBodyPreviewReady`：普通 Transform 身体动画，可以进入直接预览/打包流程。
+- `BlendShapeNotImplemented` / `BlendShapeLegacyNotImplemented`：表情或 morph 动画，后续需要单独实现 BlendShape channel。
+- `LegacyNotPlayableYet`：legacy AnimationClip，后续需要单独采样。
+- `NonCharacterTransformNeedsMapping`：非角色物件/道具/场景 Transform 动画，需要按 Unity node path 映射后验证。
+- `AuxiliaryTransformNeedsMapping` / `UnknownNeedsInspection`：socket、helper、材质/事件类或未知动画，需要先检查绑定目标。
+
+`skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
 
 默认还会写入性能日志：
 

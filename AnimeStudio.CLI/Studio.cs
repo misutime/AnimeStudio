@@ -1042,6 +1042,8 @@ namespace AnimeStudio.CLI
                 catalog = catalogPath,
                 rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
                 relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
+                capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
                 relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                 relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
                 skeletonIndex = Path.Combine(savePath, "skeletons.json"),
@@ -1075,6 +1077,158 @@ namespace AnimeStudio.CLI
                 Path.Combine(savePath, "model_animations.json"),
                 JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
             );
+            GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
+        }
+
+        private static void GenerateCompactModelAnimationIndex(
+            string savePath,
+            string catalogPath,
+            List<JObject> models,
+            List<JObject> animations,
+            ExplicitAnimationLinks explicitAnimationLinks)
+        {
+            var orderedModels = models
+                .OrderBy(x => (string)x["resourceKind"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(GetCatalogKey, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var orderedAnimations = animations
+                .OrderBy(x => (string)x["resourceKind"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(GetCatalogKey, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var modelIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var animationIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < orderedModels.Length; i++)
+            {
+                modelIds[GetCatalogKey(orderedModels[i])] = $"m{i}";
+            }
+            for (var i = 0; i < orderedAnimations.Length; i++)
+            {
+                animationIds[GetCatalogKey(orderedAnimations[i])] = $"a{i}";
+            }
+
+            var compactModels = orderedModels.Select(model => new
+            {
+                id = modelIds[GetCatalogKey(model)],
+                name = (string)model["name"],
+                resourceKind = (string)model["resourceKind"],
+                output = (string)model["output"],
+                source = (string)model["source"],
+                container = (string)model["container"],
+                skeletonHash = (string)model["skeletonHash"],
+                skeletonLibraryId = (string)model["skeleton"]?["libraryId"],
+                animationTarget = ClassifyModelAnimationTarget(model),
+                boneCount = (int?)model["boneCount"] ?? 0,
+                meshCount = (int?)model["meshCount"] ?? 0,
+                textureCount = (int?)model["textureCount"] ?? 0,
+                morphCount = (int?)model["morphCount"] ?? 0,
+                avatar = BuildCompactAvatarSummary(model["avatar"] as JObject),
+            }).ToArray();
+
+            var compactAnimations = orderedAnimations.Select(animation => new
+            {
+                id = animationIds[GetCatalogKey(animation)],
+                name = (string)animation["name"],
+                resourceKind = (string)animation["resourceKind"],
+                output = (string)animation["output"],
+                animationAsset = (string)animation["animationAsset"],
+                source = (string)animation["source"],
+                container = (string)animation["container"],
+                sampleRate = (float?)animation["sampleRate"],
+                duration = (float?)animation["duration"],
+                curveCount = (int?)animation["curveCount"] ?? 0,
+                eventCount = (int?)animation["eventCount"] ?? 0,
+                legacy = (bool?)animation["legacy"],
+                animationType = (string)animation["animationType"],
+                animationCapability = ClassifyAnimationCapability(animation, null),
+                hasMuscleClip = (bool?)animation["hasMuscleClip"],
+                coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
+                humanoidBindingCount = (int?)animation["humanoidBindingCount"],
+                blendShapeBindingCount = (int?)animation["blendShapeBindingCount"],
+                auxiliaryBindingCount = (int?)animation["auxiliaryBindingCount"],
+                classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
+            }).ToArray();
+
+            var modelAnimationRefs = orderedModels.Select(model =>
+            {
+                var modelKey = GetCatalogKey(model);
+                explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var links);
+                var candidates = (links ?? new List<ExplicitModelAnimationLink>())
+                    .OrderByDescending(x => x.Score)
+                    .ThenBy(x => (string)x.Animation["name"], StringComparer.OrdinalIgnoreCase)
+                    .Where(x => animationIds.ContainsKey(GetCatalogKey(x.Animation)))
+                    .Select(x => new
+                    {
+                        animationId = animationIds[GetCatalogKey(x.Animation)],
+                        score = x.Score,
+                        confidence = x.Confidence,
+                        relation = x.Relation,
+                        relationSource = x.Source,
+                        requiresHumanoidBake = x.RequiresHumanoidBake,
+                        animationCapability = ClassifyAnimationCapability(x.Animation, x),
+                        nextAction = GetAnimationNextAction(x.Animation, x),
+                        matchReasons = x.Reasons,
+                        matchedBindingPaths = TruncateArray(x.MatchedBindingPaths, 16),
+                        unmatchedBindingPaths = TruncateArray(x.UnmatchedBindingPaths, 16),
+                    })
+                    .ToArray();
+
+                return new
+                {
+                    modelId = modelIds[modelKey],
+                    candidateCount = candidates.Length,
+                    candidates,
+                };
+            }).ToArray();
+
+            var compact = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                version = 1,
+                catalog = catalogPath,
+                rule = "Normalized compact model-animation index for tools and browsing. Full verbose objects stay in model_animations.json for compatibility and diagnostics.",
+                relationRule = "Candidates are still Unity explicit/structural relations; this file removes repeated full animation/model payloads.",
+                capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
+                relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
+                relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
+                skeletonIndex = Path.Combine(savePath, "skeletons.json"),
+                models = compactModels,
+                animations = compactAnimations,
+                modelAnimationRefs,
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "model_animations.compact.json"),
+                JsonConvert.SerializeObject(compact, Newtonsoft.Json.Formatting.None)
+            );
+        }
+
+        private static object BuildCompactAvatarSummary(JObject avatar)
+        {
+            if (avatar == null)
+            {
+                return null;
+            }
+
+            return new
+            {
+                name = (string)avatar["name"],
+                hasHumanDescription = (bool?)avatar["hasHumanDescription"] ?? false,
+                humanBoneCount = avatar["humanBones"] is JArray humanBones ? humanBones.Count : 0,
+                skeletonBoneCount = avatar["skeletonBones"] is JArray skeletonBones ? skeletonBones.Count : 0,
+                humanDescriptionHash = (string)avatar["humanDescriptionHash"],
+            };
+        }
+
+        private static string[] TruncateArray(string[] values, int maxCount)
+        {
+            if (values == null || values.Length <= maxCount)
+            {
+                return values;
+            }
+            return values.Take(maxCount).ToArray();
         }
 
         private static void GenerateSkeletonLibraryIndex(string savePath, List<JObject> models, ExplicitAnimationLinks animationLinks)
@@ -1494,6 +1648,7 @@ namespace AnimeStudio.CLI
                 duration = (float?)entry["duration"],
                 curveCount = (int?)entry["curveCount"] ?? 0,
                 animationType = (string)entry["animationType"],
+                animationCapability = ClassifyAnimationCapability(entry, null),
                 hasMuscleClip = (bool?)entry["hasMuscleClip"],
                 coreTransformBindingCount = (int?)entry["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)entry["humanoidBindingCount"],
@@ -1541,6 +1696,7 @@ namespace AnimeStudio.CLI
                 eventCount = (int?)animation["eventCount"] ?? 0,
                 legacy = (bool?)animation["legacy"],
                 animationType = (string)animation["animationType"],
+                animationCapability = ClassifyAnimationCapability(animation, link),
                 hasMuscleClip = (bool?)animation["hasMuscleClip"],
                 coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)animation["humanoidBindingCount"],
@@ -1559,13 +1715,113 @@ namespace AnimeStudio.CLI
                 {
                     status = link.Confidence,
                     channelCount = (int?)null,
-                    note = link.RequiresHumanoidBake
-                        ? "This candidate is Humanoid/Avatar compatible but still needs bake-to-skeleton before a body animation preview can be trusted."
-                        : link.Source == "explicit"
-                        ? "This candidate comes from a Unity Animator/Animation reference. Preview glTF still needs to validate playable channels and skin coverage."
-                        : "This candidate comes from Unity AnimationClip binding paths matching exported model bone paths. Preview glTF still needs to validate playable channels and skin coverage.",
+                    note = BuildAnimationCapabilityNote(animation, link),
                 },
-                nextAction = "generate_preview_gltf",
+                nextAction = GetAnimationNextAction(animation, link),
+            };
+        }
+
+        private static object BuildAnimationCapabilitySummary(List<JObject> models, List<JObject> animations)
+        {
+            var animationCapabilities = animations
+                .GroupBy(x => ClassifyAnimationCapability(x, null), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+            var modelCapabilities = models
+                .GroupBy(ClassifyModelAnimationTarget, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+            return new
+            {
+                animationCapabilities,
+                modelCapabilities,
+                rule = "Humanoid body motion, Transform body motion, BlendShape/face motion, non-character Transform motion, and legacy/material/event motion are separate implementation paths.",
+            };
+        }
+
+        private static string ClassifyModelAnimationTarget(JObject model)
+        {
+            var resourceKind = (string)model["resourceKind"] ?? string.Empty;
+            var avatar = model["avatar"] as JObject;
+            if (avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false))
+            {
+                return "HumanoidCharacterTarget";
+            }
+            if (((int?)model["boneCount"] ?? 0) > 0)
+            {
+                return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                    ? "GenericCharacterSkeletonTarget"
+                    : "NonCharacterSkeletonTarget";
+            }
+            return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                ? "CharacterStaticTarget"
+                : "NonCharacterStaticTarget";
+        }
+
+        private static string ClassifyAnimationCapability(JObject animation, ExplicitModelAnimationLink link)
+        {
+            var animationType = (string)animation["animationType"] ?? "UnknownAnimation";
+            var resourceKind = (string)animation["resourceKind"] ?? string.Empty;
+            var legacy = (bool?)animation["legacy"] ?? false;
+            var blendShapeCount = (int?)animation["blendShapeBindingCount"] ?? 0;
+            var coreTransformCount = (int?)animation["coreTransformBindingCount"] ?? 0;
+            var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
+            var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+
+            if (blendShapeCount > 0)
+            {
+                return legacy ? "BlendShapeLegacyNotImplemented" : "BlendShapeNotImplemented";
+            }
+            if (legacy)
+            {
+                return "LegacyNotPlayableYet";
+            }
+            if (link?.RequiresHumanoidBake == true || humanoidBindingCount > 0 || hasMuscleClip)
+            {
+                return "HumanoidBodyBakeReady";
+            }
+            if (string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase) && coreTransformCount >= 3)
+            {
+                return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                    ? "TransformBodyPreviewReady"
+                    : "NonCharacterTransformNeedsMapping";
+            }
+            if (string.Equals(animationType, "AuxiliaryAnimation", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                    ? "AuxiliaryTransformNeedsMapping"
+                    : "NonCharacterTransformNeedsMapping";
+            }
+
+            return "UnknownNeedsInspection";
+        }
+
+        private static string GetAnimationNextAction(JObject animation, ExplicitModelAnimationLink link)
+        {
+            return ClassifyAnimationCapability(animation, link) switch
+            {
+                "HumanoidBodyBakeReady" => "generate_unity_bake_request",
+                "TransformBodyPreviewReady" => "generate_preview_gltf",
+                "BlendShapeNotImplemented" or "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
+                "LegacyNotPlayableYet" => "implement_legacy_clip_sampling",
+                "NonCharacterTransformNeedsMapping" => "implement_non_character_transform_mapping",
+                "AuxiliaryTransformNeedsMapping" => "inspect_auxiliary_transform_targets",
+                _ => "inspect_animation_bindings",
+            };
+        }
+
+        private static string BuildAnimationCapabilityNote(JObject animation, ExplicitModelAnimationLink link)
+        {
+            return ClassifyAnimationCapability(animation, link) switch
+            {
+                "HumanoidBodyBakeReady" => "Humanoid/Avatar body motion can use Unity bake, but trusted playback still requires the generated bake/apply reports.",
+                "TransformBodyPreviewReady" => "Transform body bindings look playable without Humanoid retargeting, but the preview glTF report must still validate target channels.",
+                "BlendShapeNotImplemented" or "BlendShapeLegacyNotImplemented" => "This looks like face/blendshape animation. It needs morph target channel export instead of Humanoid TRS bake.",
+                "LegacyNotPlayableYet" => "This clip is legacy; Unity Playables cannot use it directly in the current helper path.",
+                "NonCharacterTransformNeedsMapping" => "This is non-character or low-core Transform animation. It needs original prefab/node path mapping before glTF playback can be trusted.",
+                "AuxiliaryTransformNeedsMapping" => "Bindings mainly target helper/socket/auxiliary nodes; inspect targets before exposing as body animation.",
+                _ => "Animation type is not mapped to a trusted export path yet.",
             };
         }
 
@@ -1683,6 +1939,7 @@ namespace AnimeStudio.CLI
             public int eventCount { get; set; }
             public bool? legacy { get; set; }
             public string animationType { get; set; }
+            public string animationCapability { get; set; }
             public bool? hasMuscleClip { get; set; }
             public int? coreTransformBindingCount { get; set; }
             public int? humanoidBindingCount { get; set; }
