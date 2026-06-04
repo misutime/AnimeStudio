@@ -492,6 +492,7 @@ namespace AnimeStudio.CLI
             var coverage = AnalyzeAnimationCoverage(channelTargets.Select(x => (x.nodeName, x.path)));
             var morph = AnalyzeMorphTargets(meshes, channels, animationIndex);
             var skinJointCount = skins.Sum(x => x["joints"]?.Count() ?? 0);
+            var visibleTransformChannelCount = CountChannelsAffectingVisibleMeshes(nodes, skins, channels);
             var meshNode = nodes
                 .Select((node, index) => new { node, index })
                 .FirstOrDefault(x => x.node["mesh"] != null && x.node["skin"] != null)
@@ -509,7 +510,8 @@ namespace AnimeStudio.CLI
                     StringComparison.OrdinalIgnoreCase
                 )
                 && channels.Length > 0
-                && invalidChannels == 0;
+                && invalidChannels == 0
+                && visibleTransformChannelCount > 0;
             var morphOk = morph.expected
                 && morph.meshTargetCount > 0
                 && morph.targetCount > 0
@@ -563,6 +565,7 @@ namespace AnimeStudio.CLI
                     expected = nonCharacterTransformOk,
                     capability = (string)animationIndex?["animationCapability"],
                     channelCount = channels.Length,
+                    visibleTransformChannelCount,
                     invalidChannels,
                 },
                 humanoid,
@@ -765,6 +768,47 @@ namespace AnimeStudio.CLI
             return index.HasValue && index.Value >= 0 && index.Value < nodes.Length
                 ? (string)nodes[index.Value]["name"]
                 : null;
+        }
+
+        private static int CountChannelsAffectingVisibleMeshes(JObject[] nodes, JObject[] skins, JObject[] channels)
+        {
+            var skinJoints = skins
+                .SelectMany(skin => skin["joints"]?.Values<int>() ?? Enumerable.Empty<int>())
+                .ToHashSet();
+            var count = 0;
+            foreach (var channel in channels)
+            {
+                var nodeIndex = (int?)channel["target"]?["node"];
+                if (nodeIndex == null || nodeIndex < 0 || nodeIndex >= nodes.Length)
+                {
+                    continue;
+                }
+                if (skinJoints.Contains(nodeIndex.Value) || NodeOrDescendantHasMesh(nodes, nodeIndex.Value))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private static bool NodeOrDescendantHasMesh(JObject[] nodes, int nodeIndex)
+        {
+            if (nodeIndex < 0 || nodeIndex >= nodes.Length)
+            {
+                return false;
+            }
+            if (nodes[nodeIndex]["mesh"] != null)
+            {
+                return true;
+            }
+            foreach (var childIndex in nodes[nodeIndex]["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+            {
+                if (NodeOrDescendantHasMesh(nodes, childIndex))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static byte[][] LoadBuffers(JObject gltf, string directory)

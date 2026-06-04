@@ -888,6 +888,12 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.Ordinal)
                 .ToArray() ?? Array.Empty<string>();
             var nodePaths = CollectFramePaths(imported.RootFrame);
+            var meshPaths = imported.MeshList?
+                .Select(x => x.Path)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
 
             var avatarInfo = GetModelAvatarInfo(source);
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
@@ -920,6 +926,8 @@ namespace AnimeStudio.CLI
                 bonePathsTruncated = bonePaths.Length > 512,
                 nodePaths = nodePaths.Take(1024).ToArray(),
                 nodePathsTruncated = nodePaths.Length > 1024,
+                meshPaths = meshPaths.Take(512).ToArray(),
+                meshPathsTruncated = meshPaths.Length > 512,
                 skeletonHash = (string)skeletonInfo?["libraryId"],
                 skeleton = skeletonInfo,
                 skeletonValidation,

@@ -1169,6 +1169,8 @@ namespace AnimeStudio.CLI
                 morphCount = (int?)model["morphCount"] ?? 0,
                 nodePaths = model["nodePaths"]?.ToObject<string[]>()?.Take(128).ToArray(),
                 nodePathsTruncated = (bool?)model["nodePathsTruncated"] ?? false,
+                meshPaths = model["meshPaths"]?.ToObject<string[]>()?.Take(128).ToArray(),
+                meshPathsTruncated = (bool?)model["meshPathsTruncated"] ?? false,
                 avatar = BuildCompactAvatarSummary(model["avatar"] as JObject),
             }).ToArray();
 
@@ -1216,6 +1218,7 @@ namespace AnimeStudio.CLI
                         nextAction = GetAnimationNextAction(x.Animation, x),
                         matchReasons = x.Reasons,
                         matchedBindingPaths = TruncateArray(x.MatchedBindingPaths, 16),
+                        matchedVisibleMeshBindingPaths = TruncateArray(x.MatchedVisibleMeshBindingPaths, 16),
                         unmatchedBindingPaths = TruncateArray(x.UnmatchedBindingPaths, 16),
                     })
                     .ToArray();
@@ -1446,7 +1449,9 @@ namespace AnimeStudio.CLI
             foreach (var model in models)
             {
                 var modelKey = GetCatalogKey(model);
-                var usesNodeBindingPaths = GetModelBonePaths(model).Length == 0;
+                var modelResourceKind = (string)model["resourceKind"] ?? string.Empty;
+                var usesNodeBindingPaths = GetModelBonePaths(model).Length == 0
+                    || !string.Equals(modelResourceKind, "Character", StringComparison.OrdinalIgnoreCase);
                 var modelBindingPaths = GetModelAnimationBindingPaths(model);
                 if (modelBindingPaths.Length == 0)
                 {
@@ -1663,6 +1668,7 @@ namespace AnimeStudio.CLI
                     "This uses Unity AnimationClip binding paths and exported model bone/node paths, not name/path fallback.",
                 },
                 MatchedBindingPaths = match.MatchedPaths,
+                MatchedVisibleMeshBindingPaths = GetMatchedVisibleMeshBindingPaths(model, match.MatchedPaths),
                 UnmatchedBindingPaths = match.UnmatchedPaths,
             };
         }
@@ -1734,6 +1740,7 @@ namespace AnimeStudio.CLI
                 animationCount = (int?)entry["animationCount"] ?? 0,
                 bonePaths = entry["bonePaths"]?.ToObject<string[]>(),
                 nodePaths = entry["nodePaths"]?.ToObject<string[]>(),
+                meshPaths = entry["meshPaths"]?.ToObject<string[]>(),
                 avatar = entry["avatar"],
             };
         }
@@ -1768,6 +1775,7 @@ namespace AnimeStudio.CLI
                 score = link.Score,
                 matchReasons = link.Reasons,
                 matchedBindingPaths = link.MatchedBindingPaths,
+                matchedVisibleMeshBindingPaths = link.MatchedVisibleMeshBindingPaths,
                 unmatchedBindingPaths = link.UnmatchedBindingPaths,
                 requiresHumanoidBake = link.RequiresHumanoidBake,
                 verification = new
@@ -1843,6 +1851,8 @@ namespace AnimeStudio.CLI
             if (!isCharacter
                 && link?.MatchedBindingPaths != null
                 && link.MatchedBindingPaths.Length > 0
+                && link.MatchedVisibleMeshBindingPaths != null
+                && link.MatchedVisibleMeshBindingPaths.Length > 0
                 && (isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation))
             {
                 return "NonCharacterTransformPreviewReady";
@@ -1924,12 +1934,63 @@ namespace AnimeStudio.CLI
         private static string[] GetModelAnimationBindingPaths(JObject model)
         {
             var bonePaths = GetModelBonePaths(model);
+            var resourceKind = (string)model["resourceKind"] ?? string.Empty;
+            if (!string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase))
+            {
+                return bonePaths
+                    .Concat(GetModelNodePaths(model))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+
             if (bonePaths.Length > 0)
             {
                 return bonePaths;
             }
 
             return GetModelNodePaths(model);
+        }
+
+        private static string[] GetModelMeshPaths(JObject model)
+        {
+            return model["meshPaths"]?.ToObject<string[]>()?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static string[] GetMatchedVisibleMeshBindingPaths(JObject model, string[] matchedBindingPaths)
+        {
+            var meshPaths = GetModelMeshPaths(model);
+            if (meshPaths.Length == 0 || matchedBindingPaths == null || matchedBindingPaths.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            return matchedBindingPaths
+                .Where(bindingPath => meshPaths.Any(meshPath => BindingPathAffectsMesh(bindingPath, meshPath)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static bool BindingPathAffectsMesh(string bindingPath, string meshPath)
+        {
+            var bindingKeys = GetComparableBonePathKeys(bindingPath).ToArray();
+            var meshKeys = GetComparableBonePathKeys(meshPath).ToArray();
+            foreach (var bindingKey in bindingKeys)
+            {
+                foreach (var meshKey in meshKeys)
+                {
+                    if (string.Equals(meshKey, bindingKey, StringComparison.OrdinalIgnoreCase)
+                        || meshKey.StartsWith(bindingKey + "/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private static StructuralAnimationMatch AnalyzeStructuralAnimationMatch(string[] modelBindingPaths, string[] animationPaths, bool allowNodePathMatch)
@@ -2070,6 +2131,7 @@ namespace AnimeStudio.CLI
             public int score { get; set; }
             public string[] matchReasons { get; set; }
             public string[] matchedBindingPaths { get; set; }
+            public string[] matchedVisibleMeshBindingPaths { get; set; }
             public string[] unmatchedBindingPaths { get; set; }
             public bool requiresHumanoidBake { get; set; }
             public object verification { get; set; }
@@ -2127,6 +2189,7 @@ namespace AnimeStudio.CLI
             public int Score { get; set; }
             public string[] Reasons { get; set; }
             public string[] MatchedBindingPaths { get; set; }
+            public string[] MatchedVisibleMeshBindingPaths { get; set; }
             public string[] UnmatchedBindingPaths { get; set; }
             public bool RequiresHumanoidBake { get; set; }
         }
