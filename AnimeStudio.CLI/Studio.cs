@@ -1627,6 +1627,27 @@ namespace AnimeStudio.CLI
 
         private static ExplicitModelAnimationLink BuildExplicitLink(JObject model, JObject animation, ExplicitAnimationRelation relation)
         {
+            var modelResourceKind = (string)model["resourceKind"] ?? string.Empty;
+            var usesNodeBindingPaths = GetModelBonePaths(model).Length == 0
+                || !string.Equals(modelResourceKind, "Character", StringComparison.OrdinalIgnoreCase);
+            var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
+            var match = AnalyzeStructuralAnimationMatch(GetModelAnimationBindingPaths(model), animationPaths, usesNodeBindingPaths);
+            var matchedPaths = match.MatchedPaths?.Length > 0 ? match.MatchedPaths : null;
+            var matchedVisibleMeshPaths = matchedPaths != null
+                ? GetMatchedVisibleMeshBindingPaths(model, matchedPaths)
+                : null;
+            var unmatchedPaths = match.UnmatchedPaths?.Length > 0 ? match.UnmatchedPaths : null;
+            var reasons = relation.Reasons ?? Array.Empty<string>();
+            if (match.MatchedPathCount > 0)
+            {
+                reasons = reasons
+                    .Concat(new[]
+                    {
+                        $"Explicit Unity reference also matches {match.MatchedPathCount} AnimationClip binding path(s) to exported model node/bone paths.",
+                    })
+                    .ToArray();
+            }
+
             return new ExplicitModelAnimationLink
             {
                 ModelName = (string)model["name"],
@@ -1641,7 +1662,10 @@ namespace AnimeStudio.CLI
                 Source = "explicit",
                 Score = 100,
                 Confidence = "explicit_unity_reference",
-                Reasons = relation.Reasons,
+                Reasons = reasons,
+                MatchedBindingPaths = matchedPaths,
+                MatchedVisibleMeshBindingPaths = matchedVisibleMeshPaths,
+                UnmatchedBindingPaths = unmatchedPaths,
             };
         }
 

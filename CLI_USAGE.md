@@ -368,6 +368,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - 当前能收集并导出球、奖杯/杯体、抽卡/舞台物件、篮筐/篮网相关动画等资源，`asset_summary.json` 中可见 `Ball`、`Prop`、`Stage`、`Character` 分类。
 - `BlackBox`、`AnimationModel`、`Stage_ChouKa` 等 prefab 能从 Unity `Animator`/controller 建立候选关系，但直接套用当前 Unity bake 流程时 `changedTrackCount=0`。这说明非角色 Transform/legacy/材质/激活类动画需要独立完善采样和 glTF node path 映射，不能按 Humanoid 角色流程硬套。
 - 非角色 Transform 预览必须证明动画影响可见内容：除了匹配 Unity binding path 和导出 node path，还要命中导出模型的 `meshPaths` 或 skinned mesh joint。只命中 `Camera`、`Dummy`、helper/socket 的动画只能保留为 `NonCharacterTransformNeedsMapping` 或辅助线索，不能让用户验证一个看不出变化的预览。
+- 显式 Unity `AnimatorController` / `Animation` 引用也要继续做 binding path 可见性分析。显式引用只能证明“这个模型会用这个 clip”，不能单独证明“导出的 glTF 里能看到这个 clip 的运动”。例如抽卡舞台的 clip 绑定路径可能是相对 Animator 根节点的 `Models/SprayCan`，需要匹配到导出节点 `Stage_ChouKa/AnimationModel/Models/SprayCan` 后才可预览。
 - 后续做索引结构时，应把角色 Humanoid 动画、角色 Transform/BlendShape 表情动画、非角色 Transform 动画、材质/激活/事件类动画分开标注能力状态，避免素材库把“已收集”误显示成“已可播放验证”。
 
 实现原则：
