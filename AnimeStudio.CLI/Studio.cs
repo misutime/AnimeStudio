@@ -1858,10 +1858,12 @@ namespace AnimeStudio.CLI
             var coreTransformCount = (int?)animation["coreTransformBindingCount"] ?? 0;
             var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
             var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+            var duration = (float?)animation["duration"];
             var isCharacter = string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase);
             var isTransformAnimation = string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase);
             var isAuxiliaryAnimation = string.Equals(animationType, "AuxiliaryAnimation", StringComparison.OrdinalIgnoreCase);
             var isTransformBodyAnimation = string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase);
+            var isTransformLike = isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation;
 
             if (blendShapeCount > 0)
             {
@@ -1871,13 +1873,17 @@ namespace AnimeStudio.CLI
             {
                 return "LegacyNotPlayableYet";
             }
+            if (duration.HasValue && duration.Value <= 0.0001f && isTransformLike)
+            {
+                return "StaticPoseOnly";
+            }
 
             if (!isCharacter
                 && link?.MatchedBindingPaths != null
                 && link.MatchedBindingPaths.Length > 0
                 && link.MatchedVisibleMeshBindingPaths != null
                 && link.MatchedVisibleMeshBindingPaths.Length > 0
-                && (isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation))
+                && isTransformLike)
             {
                 return "NonCharacterTransformPreviewReady";
             }
@@ -1915,6 +1921,7 @@ namespace AnimeStudio.CLI
                 "TransformBodyPreviewReady" => "generate_preview_gltf",
                 "BlendShapePreviewReady" => "generate_preview_gltf",
                 "NonCharacterTransformPreviewReady" => "generate_preview_gltf",
+                "StaticPoseOnly" => "treat_as_static_model",
                 "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
                 "LegacyNotPlayableYet" => "implement_legacy_clip_sampling",
                 "NonCharacterTransformNeedsMapping" => "implement_non_character_transform_mapping",
@@ -1931,6 +1938,7 @@ namespace AnimeStudio.CLI
                 "TransformBodyPreviewReady" => "Transform body bindings look playable without Humanoid retargeting, but the preview glTF report must still validate target channels.",
                 "BlendShapePreviewReady" => "BlendShape/morph animation can be written as glTF morph targets and weights channels; preview validation must confirm morph target and weights channel counts.",
                 "NonCharacterTransformPreviewReady" => "Non-character Transform animation has Unity binding paths matched to exported glTF nodes; generate a preview glTF and validate channel targets.",
+                "StaticPoseOnly" => "This Transform clip has no effective duration; keep it as a static pose/static model signal instead of exposing it as playable animation.",
                 "BlendShapeLegacyNotImplemented" => "This looks like legacy face/blendshape animation. It needs legacy clip sampling before morph target channel export.",
                 "LegacyNotPlayableYet" => "This clip is legacy; Unity Playables cannot use it directly in the current helper path.",
                 "NonCharacterTransformNeedsMapping" => "This is non-character or low-core Transform animation. It needs original prefab/node path mapping before glTF playback can be trusted.",

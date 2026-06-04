@@ -113,6 +113,12 @@ CLI 生成索引时，关系优先级应为：
 3. 实际导出验证：glTF channel、skin/joint、主体骨骼覆盖、bbox。
 4. 显式 fallback：container、目录名、资源名、游戏 profile。fallback 必须明确标注，不能进入默认绑定结果。
 
+跨游戏验证准则：
+
+- 默认规则必须在多个 Unity 游戏上交叉验证，不能为了某个游戏的目录或命名做核心逻辑特判。
+- Freedunk 用于验证篮球人物、球场、道具和 Humanoid/Transform/BlendShape 动画；VRising、Valheim 等其他 PC Unity 游戏用于验证通用资源入口、bundle/SerializedFile 发现、模型/贴图/骨骼/动画索引规则。
+- 跨游戏初期可以接受只还原 80% 左右的高价值开发素材，但已导出的结果必须尽量准确。对动画尤其严格：没有驱动可见 mesh 的候选宁可降级为静态或待检查，也不要污染素材库。
+
 ### 模型来源规则
 
 默认 `Library` 使用 `--model_source PrefabPrimary`：
@@ -368,6 +374,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - 当前能收集并导出球、奖杯/杯体、抽卡/舞台物件、篮筐/篮网相关动画等资源，`asset_summary.json` 中可见 `Ball`、`Prop`、`Stage`、`Character` 分类。
 - `BlackBox`、`AnimationModel`、`Stage_ChouKa` 等 prefab 能从 Unity `Animator`/controller 建立候选关系，但直接套用当前 Unity bake 流程时 `changedTrackCount=0`。这说明非角色 Transform/legacy/材质/激活类动画需要独立完善采样和 glTF node path 映射，不能按 Humanoid 角色流程硬套。
 - 非角色 Transform 预览必须证明动画影响可见内容：除了匹配 Unity binding path 和导出 node path，还要命中导出模型的 `meshPaths` 或 skinned mesh joint。只命中 `Camera`、`Dummy`、helper/socket 的动画只能保留为 `NonCharacterTransformNeedsMapping` 或辅助线索，不能让用户验证一个看不出变化的预览。
+- 预览验证还会检查 glTF sampler 的时间跨度和输出变化量。`Stage_ChouKa/Idle` 这类虽然能写出 channel、但 `maxDuration=0` 且 `movingChannelCount=0` 的结果，应标记为静态姿态，不进入可播放动画库。
+- 篮球、武器、道具等物件本身可以是静态模型；它们在游戏中的移动可能来自角色 socket、物理、代码事件或场景节点动画。只有当 AnimationClip 的绑定路径实际驱动导出的可见 mesh 或 skinned joint 时，才把它当作可播放动画。
 - 显式 Unity `AnimatorController` / `Animation` 引用也要继续做 binding path 可见性分析。显式引用只能证明“这个模型会用这个 clip”，不能单独证明“导出的 glTF 里能看到这个 clip 的运动”。例如抽卡舞台的 clip 绑定路径可能是相对 Animator 根节点的 `Models/SprayCan`，需要匹配到导出节点 `Stage_ChouKa/AnimationModel/Models/SprayCan` 后才可预览。
 - 后续做索引结构时，应把角色 Humanoid 动画、角色 Transform/BlendShape 表情动画、非角色 Transform 动画、材质/激活/事件类动画分开标注能力状态，避免素材库把“已收集”误显示成“已可播放验证”。
 
@@ -649,6 +657,7 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 - `TransformBodyPreviewReady`：普通 Transform 身体动画，可以进入直接预览/打包流程。
 - `BlendShapePreviewReady`：表情或 morph 动画，glTF 会写入 morph targets 和 `weights` animation channel，可进入预览验证。
 - `NonCharacterTransformPreviewReady`：非角色 Transform 动画已经通过 Unity binding path 匹配到导出模型的 node path，并且至少命中一个可见 mesh 路径或 skinned mesh joint，可以进入 glTF 预览验证。
+- `StaticPoseOnly`：Transform 类 clip 没有有效时长，或预览采样没有产生可见运动。保留为静态姿态/静态模型线索，不作为可播放动画展示。
 - `BlendShapeLegacyNotImplemented`：legacy 表情或 morph 动画，后续需要先补 legacy clip sampling。
 - `LegacyNotPlayableYet`：legacy AnimationClip，后续需要单独采样。
 - `NonCharacterTransformNeedsMapping`：非角色物件/道具/场景 Transform 动画，需要按 Unity node path 映射后验证。

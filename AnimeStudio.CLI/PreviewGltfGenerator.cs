@@ -493,6 +493,7 @@ namespace AnimeStudio.CLI
             var morph = AnalyzeMorphTargets(meshes, channels, animationIndex);
             var skinJointCount = skins.Sum(x => x["joints"]?.Count() ?? 0);
             var visibleTransformChannelCount = CountChannelsAffectingVisibleMeshes(nodes, skins, channels);
+            var motion = AnalyzeAnimationMotion(gltf, buffers, nodes, skins, animation, channels);
             var meshNode = nodes
                 .Select((node, index) => new { node, index })
                 .FirstOrDefault(x => x.node["mesh"] != null && x.node["skin"] != null)
@@ -511,15 +512,18 @@ namespace AnimeStudio.CLI
                 )
                 && channels.Length > 0
                 && invalidChannels == 0
-                && visibleTransformChannelCount > 0;
+                && visibleTransformChannelCount > 0
+                && motion.visibleMovingChannelCount > 0;
             var morphOk = morph.expected
                 && morph.meshTargetCount > 0
                 && morph.targetCount > 0
                 && morph.weightChannelCount > 0
-                && invalidChannels == 0;
+                && invalidChannels == 0
+                && motion.movingChannelCount > 0;
             var structurallyOk = animations.Length > 0
                 && channels.Length > 0
                 && invalidChannels == 0
+                && motion.movingChannelCount > 0
                 && (morphOk
                     || nonCharacterTransformOk
                     || (skins.Length > 0
@@ -568,10 +572,11 @@ namespace AnimeStudio.CLI
                     visibleTransformChannelCount,
                     invalidChannels,
                 },
+                motion,
                 humanoid,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, morph, nonCharacterTransformOk, humanoid, bbox, exportIssues),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, morph, nonCharacterTransformOk, motion, humanoid, bbox, exportIssues),
             };
         }
 
@@ -708,13 +713,21 @@ namespace AnimeStudio.CLI
             return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, MorphReport morph, bool nonCharacterTransformOk, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, MorphReport morph, bool nonCharacterTransformOk, AnimationMotionReport motion, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
             if (channelCount == 0) notes.Add("The embedded animation has no valid glTF channels.");
             if (skinCount == 0 && !nonCharacterTransformOk) notes.Add("No skin was exported for the preview model.");
             if (invalidChannels > 0) notes.Add($"{invalidChannels} animation channel(s) target missing nodes.");
+            if (channelCount > 0 && motion.movingChannelCount == 0)
+            {
+                notes.Add("Animation channels were written, but all sampled outputs are static or zero-duration; treat this as a static pose, not a playable animation.");
+            }
+            else if (nonCharacterTransformOk && motion.visibleMovingChannelCount == 0)
+            {
+                notes.Add("Non-character animation channels exist, but none of the moving channels affect visible meshes.");
+            }
             if (exportIssues?.Length > 0)
             {
                 notes.Add($"{exportIssues.Length} export issue(s) were reported while generating the preview; inspect exportIssues before trusting the asset.");
@@ -809,6 +822,104 @@ namespace AnimeStudio.CLI
                 }
             }
             return false;
+        }
+
+        private static AnimationMotionReport AnalyzeAnimationMotion(JObject gltf, byte[][] buffers, JObject[] nodes, JObject[] skins, JObject animation, JObject[] channels)
+        {
+            var samplers = animation?["samplers"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            if (samplers.Length == 0 || channels.Length == 0)
+            {
+                return new AnimationMotionReport(0, 0, 0, 0, 0, Array.Empty<string>());
+            }
+
+            var movingSamplers = new HashSet<int>();
+            var maxDuration = 0.0f;
+            var maxOutputDelta = 0.0f;
+            for (var i = 0; i < samplers.Length; i++)
+            {
+                var inputAccessor = (int?)samplers[i]["input"];
+                var outputAccessor = (int?)samplers[i]["output"];
+                if (inputAccessor == null || outputAccessor == null)
+                {
+                    continue;
+                }
+
+                var input = ReadAccessor(gltf, buffers, inputAccessor.Value);
+                var output = ReadAccessor(gltf, buffers, outputAccessor.Value);
+                var duration = input.Length == 0 ? 0 : input.Max(x => x[0]) - input.Min(x => x[0]);
+                var delta = MaxOutputDelta(output);
+                maxDuration = Math.Max(maxDuration, duration);
+                maxOutputDelta = Math.Max(maxOutputDelta, delta);
+                if (duration > 0.0001f && delta > 0.0001f)
+                {
+                    movingSamplers.Add(i);
+                }
+            }
+
+            var movingChannelCount = 0;
+            var visibleMovingChannelCount = 0;
+            var visibleTargets = new List<string>();
+            foreach (var channel in channels)
+            {
+                var samplerIndex = (int?)channel["sampler"];
+                if (samplerIndex == null || !movingSamplers.Contains(samplerIndex.Value))
+                {
+                    continue;
+                }
+
+                movingChannelCount++;
+                var nodeIndex = (int?)channel["target"]?["node"];
+                var nodeName = NodeName(nodes, nodeIndex);
+                if (NodeAffectsVisibleMesh(nodes, skins, nodeIndex))
+                {
+                    visibleMovingChannelCount++;
+                    if (!string.IsNullOrWhiteSpace(nodeName))
+                    {
+                        visibleTargets.Add(nodeName);
+                    }
+                }
+            }
+
+            return new AnimationMotionReport(
+                maxDuration,
+                maxOutputDelta,
+                movingSamplers.Count,
+                movingChannelCount,
+                visibleMovingChannelCount,
+                visibleTargets.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(128).ToArray()
+            );
+        }
+
+        private static bool NodeAffectsVisibleMesh(JObject[] nodes, JObject[] skins, int? nodeIndex)
+        {
+            if (nodeIndex == null || nodeIndex < 0 || nodeIndex >= nodes.Length)
+            {
+                return false;
+            }
+
+            var skinJoints = skins
+                .SelectMany(skin => skin["joints"]?.Values<int>() ?? Enumerable.Empty<int>())
+                .ToHashSet();
+            return skinJoints.Contains(nodeIndex.Value) || NodeOrDescendantHasMesh(nodes, nodeIndex.Value);
+        }
+
+        private static float MaxOutputDelta(float[][] rows)
+        {
+            if (rows.Length < 2)
+            {
+                return 0;
+            }
+
+            var first = rows[0];
+            var max = 0.0f;
+            foreach (var row in rows.Skip(1))
+            {
+                for (var i = 0; i < Math.Min(first.Length, row.Length); i++)
+                {
+                    max = Math.Max(max, Math.Abs(row[i] - first[i]));
+                }
+            }
+            return max;
         }
 
         private static byte[][] LoadBuffers(JObject gltf, string directory)
@@ -984,6 +1095,15 @@ namespace AnimeStudio.CLI
             int keyframeCount,
             string[] attributes,
             JObject diagnostics
+        );
+
+        private sealed record AnimationMotionReport(
+            float maxDuration,
+            float maxOutputDelta,
+            int movingSamplerCount,
+            int movingChannelCount,
+            int visibleMovingChannelCount,
+            string[] visibleMovingTargets
         );
 
         private sealed record Bounds(float[] min, float[] max, float[] size)
