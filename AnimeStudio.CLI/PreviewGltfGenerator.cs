@@ -490,6 +490,7 @@ namespace AnimeStudio.CLI
                 })
                 .ToArray();
             var coverage = AnalyzeAnimationCoverage(channelTargets.Select(x => (x.nodeName, x.path)));
+            var morph = AnalyzeMorphTargets(meshes, channels, animationIndex);
             var skinJointCount = skins.Sum(x => x["joints"]?.Count() ?? 0);
             var meshNode = nodes
                 .Select((node, index) => new { node, index })
@@ -502,12 +503,18 @@ namespace AnimeStudio.CLI
             exportIssues ??= Array.Empty<string>();
             var hasExperimentalHumanoidBake = humanoid?.baked == true
                 && (humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase);
+            var morphOk = morph.expected
+                && morph.meshTargetCount > 0
+                && morph.targetCount > 0
+                && morph.weightChannelCount > 0
+                && invalidChannels == 0;
             var structurallyOk = animations.Length > 0
                 && channels.Length > 0
                 && invalidChannels == 0
-                && skins.Length > 0
-                && coverage.coreBoneChannelCount > 0
-                && coverage.coreBoneNodeCount >= 3
+                && (morphOk
+                    || (skins.Length > 0
+                        && coverage.coreBoneChannelCount > 0
+                        && coverage.coreBoneNodeCount >= 3))
                 && bbox?.skinnedSizeLooksReasonable != false;
             var status = !structurallyOk || exportIssues.Length > 0
                 ? "warning"
@@ -533,6 +540,8 @@ namespace AnimeStudio.CLI
                     animations = animations.Length,
                     channels = channels.Length,
                     invalidChannels,
+                    morphTargets = morph.targetCount,
+                    weightChannels = morph.weightChannelCount,
                 },
                 exportIssues = new
                 {
@@ -540,10 +549,11 @@ namespace AnimeStudio.CLI
                     items = exportIssues,
                 },
                 animationCoverage = coverage,
+                morph,
                 humanoid,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, humanoid, bbox, exportIssues),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, morph, humanoid, bbox, exportIssues),
             };
         }
 
@@ -605,6 +615,43 @@ namespace AnimeStudio.CLI
             );
         }
 
+        private static MorphReport AnalyzeMorphTargets(JObject[] meshes, JObject[] channels, JObject animationIndex)
+        {
+            var meshTargetCount = 0;
+            var targetCount = 0;
+            var targetNames = new List<string>();
+            foreach (var mesh in meshes)
+            {
+                var meshHasTargets = false;
+                foreach (var primitive in mesh["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var targets = primitive["targets"] as JArray;
+                    if (targets == null || targets.Count == 0)
+                    {
+                        continue;
+                    }
+                    meshHasTargets = true;
+                    targetCount += targets.Count;
+                }
+                if (meshHasTargets)
+                {
+                    meshTargetCount++;
+                    targetNames.AddRange(mesh["extras"]?["targetNames"]?.Values<string>() ?? Enumerable.Empty<string>());
+                }
+            }
+
+            var weightChannelCount = channels.Count(x => string.Equals((string)x["target"]?["path"], "weights", StringComparison.OrdinalIgnoreCase));
+            var expectedBindingCount = (int?)animationIndex?["blendShapeBindingCount"] ?? 0;
+            return new MorphReport(
+                expectedBindingCount > 0 || weightChannelCount > 0,
+                expectedBindingCount,
+                meshTargetCount,
+                targetCount,
+                weightChannelCount,
+                targetNames.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(128).ToArray()
+            );
+        }
+
         private static bool IsCoreAnimatedBone(string nodeName)
         {
             var name = NormalizeBoneName(nodeName);
@@ -643,7 +690,7 @@ namespace AnimeStudio.CLI
             return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, MorphReport morph, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
@@ -653,6 +700,17 @@ namespace AnimeStudio.CLI
             if (exportIssues?.Length > 0)
             {
                 notes.Add($"{exportIssues.Length} export issue(s) were reported while generating the preview; inspect exportIssues before trusting the asset.");
+            }
+            if (morph?.expected == true)
+            {
+                if (morph.meshTargetCount > 0 && morph.weightChannelCount > 0)
+                {
+                    notes.Add($"BlendShape/morph animation is present: {morph.targetCount} morph target(s), {morph.weightChannelCount} glTF weights channel(s).");
+                }
+                else
+                {
+                    notes.Add($"BlendShape bindings were expected ({morph.expectedBindingCount}), but glTF morph targets or weights channels are missing.");
+                }
             }
             if (humanoid?.requiresBake == true)
             {
@@ -671,7 +729,7 @@ namespace AnimeStudio.CLI
                     notes.Add($"Humanoid bake diagnostics: {diagnosticsStatus}, mapped {(int?)humanoid.diagnostics?["mappedTargetCount"] ?? 0}/{(int?)humanoid.diagnostics?["targetCount"] ?? 0} target bone(s), sample times {(int?)humanoid.diagnostics?["sampleTimeCount"] ?? 0}.");
                 }
             }
-            if (coverage.coreBoneChannelCount == 0)
+            if (coverage.coreBoneChannelCount == 0 && morph?.weightChannelCount == 0)
             {
                 notes.Add("No core body bone channels were written; the preview animation currently affects only helper/accessory/twist nodes.");
             }
@@ -841,6 +899,15 @@ namespace AnimeStudio.CLI
             string[] coreBoneNodes,
             string[] twistOrHelperNodes,
             string[] accessoryPointNodes
+        );
+
+        private sealed record MorphReport(
+            bool expected,
+            int expectedBindingCount,
+            int meshTargetCount,
+            int targetCount,
+            int weightChannelCount,
+            string[] targetNames
         );
 
         private sealed record HumanoidAnimationReport(

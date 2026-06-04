@@ -173,6 +173,15 @@ Models\...\<model>.gltf
 
 `preview_validation.json` 会记录 animation channel 数、无效 channel 数、skin/joint 数、主体骨骼覆盖率、raw bbox 和 skinned bbox。只有当动画写入成功、channel 指向有效节点、skin 存在、命中主体骨骼且 skinned bbox 没有明显异常时，预览状态才会是 `ok`。如果只命中 `Ball_Point`、socket、twist/helper 这类辅助节点，报告会标为 `warning`。
 
+BlendShape/表情动画使用 glTF morph target 路径，不按 Humanoid 身体骨骼规则验收。预览报告里的 `morph` 会记录：
+
+- `expectedBindingCount`：Unity AnimationClip 中识别到的 BlendShape binding 数。
+- `targetCount`：glTF mesh primitive 写出的 morph target 数。
+- `weightChannelCount`：glTF animation 中写出的 `weights` channel 数。
+- `targetNames`：导出的 morph target 名称。
+
+如果 `targetCount > 0`、`weightChannelCount > 0` 且 `invalidChannels = 0`，说明表情/形变动画结构已经写入 glTF。注意：Unity 一个 BlendShape channel 如果有多帧形态，当前 glTF 主线先取最后一帧作为 morph target；权重曲线仍按 AnimationClip 播放。后续如遇到真正依赖多帧形态插值的模型，再扩展为“一条 Unity channel 多个 glTF target”的高级模式。
+
 ### 独立动画资产
 
 默认 Library 导出会把动画作为独立资产保存，而不是直接塞进模型：
@@ -636,7 +645,8 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 - `HumanoidBodyBakeReady`：Humanoid/Muscle 身体动画，走 Unity bake 请求和 glTF 合并验证。
 - `TransformBodyPreviewReady`：普通 Transform 身体动画，可以进入直接预览/打包流程。
-- `BlendShapeNotImplemented` / `BlendShapeLegacyNotImplemented`：表情或 morph 动画，后续需要单独实现 BlendShape channel。
+- `BlendShapePreviewReady`：表情或 morph 动画，glTF 会写入 morph targets 和 `weights` animation channel，可进入预览验证。
+- `BlendShapeLegacyNotImplemented`：legacy 表情或 morph 动画，后续需要先补 legacy clip sampling。
 - `LegacyNotPlayableYet`：legacy AnimationClip，后续需要单独采样。
 - `NonCharacterTransformNeedsMapping`：非角色物件/道具/场景 Transform 动画，需要按 Unity node path 映射后验证。
 - `AuxiliaryTransformNeedsMapping` / `UnknownNeedsInspection`：socket、helper、材质/事件类或未知动画，需要先检查绑定目标。

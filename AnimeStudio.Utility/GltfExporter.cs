@@ -47,6 +47,8 @@ namespace AnimeStudio
         private readonly Dictionary<string, int> _materialMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _textureMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _skinMap = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly Dictionary<string, Dictionary<string, int>> _morphTargetMap = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _morphTargetCountMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<Dictionary<string, object>> _nodes = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> _meshes = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> _materials = new List<Dictionary<string, object>>();
@@ -233,6 +235,7 @@ namespace AnimeStudio
                     ["indices"] = WriteUIntAccessor(indices),
                     ["mode"] = 4,
                 };
+                AddMorphTargets(mesh, primitive);
 
                 var material = GetMaterialIndex(submesh.Material);
                 if (material >= 0)
@@ -247,10 +250,111 @@ namespace AnimeStudio
                 ["name"] = Path.GetFileName(mesh.Path),
                 ["primitives"] = primitives,
             };
+            AddMorphTargetNames(mesh, gltfMesh);
             var meshIndex = _meshes.Count;
             _meshes.Add(gltfMesh);
             _meshMap[mesh.Path] = meshIndex;
             return meshIndex;
+        }
+
+        private void AddMorphTargets(ImportedMesh mesh, Dictionary<string, object> primitive)
+        {
+            var morph = FindMorph(mesh.Path);
+            if (morph?.Channels == null || morph.Channels.Count == 0)
+            {
+                return;
+            }
+
+            var targets = new List<Dictionary<string, object>>();
+            var channelMap = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var channel in morph.Channels)
+            {
+                var keyframe = channel.KeyframeList?.LastOrDefault(x => x?.VertexList != null && x.VertexList.Count > 0);
+                if (keyframe == null)
+                {
+                    continue;
+                }
+
+                var positions = new Vector3[mesh.VertexList.Count];
+                var normals = keyframe.hasNormals ? new Vector3[mesh.VertexList.Count] : null;
+                var tangents = keyframe.hasTangents ? new Vector3[mesh.VertexList.Count] : null;
+                foreach (var morphVertex in keyframe.VertexList)
+                {
+                    var index = (int)morphVertex.Index;
+                    if (index < 0 || index >= mesh.VertexList.Count || morphVertex.Vertex == null)
+                    {
+                        continue;
+                    }
+
+                    var baseVertex = mesh.VertexList[index];
+                    positions[index] = morphVertex.Vertex.Vertex - baseVertex.Vertex;
+                    if (normals != null)
+                    {
+                        normals[index] = morphVertex.Vertex.Normal - baseVertex.Normal;
+                    }
+                    if (tangents != null)
+                    {
+                        var tangent = morphVertex.Vertex.Tangent - baseVertex.Tangent;
+                        tangents[index] = new Vector3(tangent.X, tangent.Y, tangent.Z);
+                    }
+                }
+
+                var target = new Dictionary<string, object>
+                {
+                    ["POSITION"] = WriteVec3Accessor(positions, false),
+                };
+                if (normals != null)
+                {
+                    target["NORMAL"] = WriteVec3Accessor(normals, false);
+                }
+                if (tangents != null)
+                {
+                    target["TANGENT"] = WriteVec3Accessor(tangents, false);
+                }
+
+                var channelName = channel.Name ?? $"morph_{targets.Count}";
+                channelMap[channelName] = targets.Count;
+                targets.Add(target);
+            }
+
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
+            primitive["targets"] = targets;
+            _morphTargetMap[mesh.Path] = channelMap;
+            _morphTargetCountMap[mesh.Path] = targets.Count;
+        }
+
+        private void AddMorphTargetNames(ImportedMesh mesh, Dictionary<string, object> gltfMesh)
+        {
+            var morph = FindMorph(mesh.Path);
+            if (morph?.Channels == null || !_morphTargetMap.TryGetValue(mesh.Path, out var targetMap) || targetMap.Count == 0)
+            {
+                return;
+            }
+
+            var names = targetMap
+                .OrderBy(x => x.Value)
+                .Select(x => x.Key)
+                .ToArray();
+            gltfMesh["weights"] = names.Select(_ => 0.0f).ToArray();
+            gltfMesh["extras"] = new Dictionary<string, object>
+            {
+                ["targetNames"] = names,
+                ["unityMorph"] = new Dictionary<string, object>
+                {
+                    ["path"] = morph.Path,
+                    ["channelCount"] = names.Length,
+                    ["note"] = "glTF morph targets store one shape target per Unity BlendShape channel; multi-frame Unity blend shape channels currently use the last shape frame as the target.",
+                },
+            };
+        }
+
+        private ImportedMorph FindMorph(string path)
+        {
+            return _imported.MorphList?.FirstOrDefault(x => string.Equals(x.Path, path, StringComparison.Ordinal));
         }
 
         private int BuildSkin(ImportedMesh mesh)
@@ -310,6 +414,7 @@ namespace AnimeStudio
                     AddAnimationChannel(track.Rotations, "rotation", nodeIndex, samplers, channels, WriteQuatAccessor);
                     AddAnimationChannel(track.Scalings, "scale", nodeIndex, samplers, channels, WriteVec3Accessor);
                 }
+                AddBlendShapeAnimationChannels(animation, samplers, channels);
 
                 if (channels.Count > 0)
                 {
@@ -427,6 +532,116 @@ namespace AnimeStudio
                     ["path"] = path,
                 },
             });
+        }
+
+        private void AddBlendShapeAnimationChannels(
+            ImportedKeyframedAnimation animation,
+            List<Dictionary<string, object>> samplers,
+            List<Dictionary<string, object>> channels)
+        {
+            var blendShapeTracks = animation.TrackList?
+                .Where(x => x.BlendShape?.Keyframes != null && x.BlendShape.Keyframes.Count > 0)
+                .GroupBy(x => x.Path, StringComparer.Ordinal)
+                .ToArray();
+            if (blendShapeTracks == null || blendShapeTracks.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var group in blendShapeTracks)
+            {
+                if (!_pathNodeMap.TryGetValue(group.Key, out var nodeIndex)
+                    || !_morphTargetMap.TryGetValue(group.Key, out var targetMap)
+                    || !_morphTargetCountMap.TryGetValue(group.Key, out var targetCount)
+                    || targetCount <= 0)
+                {
+                    continue;
+                }
+
+                var usableTracks = group
+                    .Where(x => !string.IsNullOrWhiteSpace(x.BlendShape?.ChannelName)
+                        && targetMap.ContainsKey(x.BlendShape.ChannelName))
+                    .ToArray();
+                if (usableTracks.Length == 0)
+                {
+                    continue;
+                }
+
+                var times = usableTracks
+                    .SelectMany(x => x.BlendShape.Keyframes.Select(k => k.time))
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .ToArray();
+                if (times.Length == 0)
+                {
+                    continue;
+                }
+
+                var weights = new List<float>(times.Length * targetCount);
+                foreach (var time in times)
+                {
+                    var values = new float[targetCount];
+                    foreach (var track in usableTracks)
+                    {
+                        var targetIndex = targetMap[track.BlendShape.ChannelName];
+                        values[targetIndex] = EvaluateFloatCurve(track.BlendShape.Keyframes, time) / 100.0f;
+                    }
+                    weights.AddRange(values);
+                }
+
+                var input = WriteFloatAccessor(times, true);
+                var output = WriteFloatAccessor(weights, false);
+                var samplerIndex = samplers.Count;
+                samplers.Add(new Dictionary<string, object>
+                {
+                    ["input"] = input,
+                    ["output"] = output,
+                    ["interpolation"] = "LINEAR",
+                });
+                channels.Add(new Dictionary<string, object>
+                {
+                    ["sampler"] = samplerIndex,
+                    ["target"] = new Dictionary<string, object>
+                    {
+                        ["node"] = nodeIndex,
+                        ["path"] = "weights",
+                    },
+                });
+            }
+        }
+
+        private static float EvaluateFloatCurve(List<ImportedKeyframe<float>> keys, float time)
+        {
+            if (keys == null || keys.Count == 0)
+            {
+                return 0.0f;
+            }
+
+            var ordered = keys.OrderBy(x => x.time).ToArray();
+            if (time <= ordered[0].time)
+            {
+                return ordered[0].value;
+            }
+            for (var i = 1; i < ordered.Length; i++)
+            {
+                if (time > ordered[i].time)
+                {
+                    continue;
+                }
+
+                var previous = ordered[i - 1];
+                var next = ordered[i];
+                var span = next.time - previous.time;
+                if (span <= 0.000001f)
+                {
+                    return next.value;
+                }
+
+                var t = (time - previous.time) / span;
+                return previous.value + (next.value - previous.value) * t;
+            }
+
+            return ordered[^1].value;
         }
 
         private int GetMaterialIndex(string name)

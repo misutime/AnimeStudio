@@ -1815,7 +1815,7 @@ namespace AnimeStudio.CLI
 
             if (blendShapeCount > 0)
             {
-                return legacy ? "BlendShapeLegacyNotImplemented" : "BlendShapeNotImplemented";
+                return legacy ? "BlendShapeLegacyNotImplemented" : "BlendShapePreviewReady";
             }
             if (legacy)
             {
@@ -1848,7 +1848,8 @@ namespace AnimeStudio.CLI
             {
                 "HumanoidBodyBakeReady" => "generate_unity_bake_request",
                 "TransformBodyPreviewReady" => "generate_preview_gltf",
-                "BlendShapeNotImplemented" or "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
+                "BlendShapePreviewReady" => "generate_preview_gltf",
+                "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
                 "LegacyNotPlayableYet" => "implement_legacy_clip_sampling",
                 "NonCharacterTransformNeedsMapping" => "implement_non_character_transform_mapping",
                 "AuxiliaryTransformNeedsMapping" => "inspect_auxiliary_transform_targets",
@@ -1862,7 +1863,8 @@ namespace AnimeStudio.CLI
             {
                 "HumanoidBodyBakeReady" => "Humanoid/Avatar body motion can use Unity bake, but trusted playback still requires the generated bake/apply reports.",
                 "TransformBodyPreviewReady" => "Transform body bindings look playable without Humanoid retargeting, but the preview glTF report must still validate target channels.",
-                "BlendShapeNotImplemented" or "BlendShapeLegacyNotImplemented" => "This looks like face/blendshape animation. It needs morph target channel export instead of Humanoid TRS bake.",
+                "BlendShapePreviewReady" => "BlendShape/morph animation can be written as glTF morph targets and weights channels; preview validation must confirm morph target and weights channel counts.",
+                "BlendShapeLegacyNotImplemented" => "This looks like legacy face/blendshape animation. It needs legacy clip sampling before morph target channel export.",
                 "LegacyNotPlayableYet" => "This clip is legacy; Unity Playables cannot use it directly in the current helper path.",
                 "NonCharacterTransformNeedsMapping" => "This is non-character or low-core Transform animation. It needs original prefab/node path mapping before glTF playback can be trusted.",
                 "AuxiliaryTransformNeedsMapping" => "Bindings mainly target helper/socket/auxiliary nodes; inspect targets before exposing as body animation.",
