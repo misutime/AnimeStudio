@@ -653,8 +653,8 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 `model_animations.json` 和 `model_animations.compact.json` 都会记录 `animationCapability`。它只表示下一步安全处理路径，不等于动画已经视觉验证通过：
 
-- `HumanoidBodyBakeReady`：Humanoid/Muscle 身体动画，走 Unity bake 请求和 glTF 合并验证。
-- `TransformBodyPreviewReady`：普通 Transform 身体动画，可以进入直接预览/打包流程。
+- `HumanoidBodyBakeReady`：带 Unity `humanBones` 映射的 Humanoid/Muscle 身体动画，走 Unity bake 请求和 glTF 合并验证。
+- `TransformBodyPreviewReady`：普通 Transform 身体动画，或没有 Humanoid `humanBones` 但 AnimationClip 直接包含骨骼 Transform binding 的 Generic 角色动画，可以进入直接预览/打包流程。
 - `BlendShapePreviewReady`：表情或 morph 动画，glTF 会写入 morph targets 和 `weights` animation channel，可进入预览验证。
 - `NonCharacterTransformPreviewReady`：非角色 Transform 动画已经通过 Unity binding path 匹配到导出模型的 node path，并且至少命中一个可见 mesh 路径或 skinned mesh joint，可以进入 glTF 预览验证。
 - `StaticPoseOnly`：Transform 类 clip 没有有效时长，或预览采样没有产生可见运动。保留为静态姿态/静态模型线索，不作为可播放动画展示。
@@ -665,7 +665,7 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 `skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
 
-结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。它必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。`Unknown` 不是通配类型，不能参与自动结构绑定；这类模型或动画必须先通过 Unity 显式引用、Avatar/Humanoid 关系、可见 mesh motion 验证或资源分类补全，才能进入可播放候选。Humanoid/Avatar 候选同样只接受 `Character` 或未知类型动画，避免场景、篮筐、道具等非角色 Transform 动画误走人物 bake 流程。带骨骼模型优先使用 `bonePaths` 建立动画关系；非角色模型会同时使用 `bonePaths` 和 `nodePaths`，但只有命中可见 mesh 或 skinned joint 的 binding 才能升为可预览。`BlackBox/Camera001` 这类只驱动相机或 dummy 的关系会被记录下来，但不会作为可验证动画预览。
+结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。默认必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。`Unknown` 不是通配类型，普通 Unknown 部件不能参与自动结构绑定。例外只有两类：一是模型带完整 Humanoid `humanBones` 映射，动画带 Humanoid/Muscle 数据，可进入 `HumanoidBodyBakeReady`；二是模型有 Unity Avatar/Animator 上下文、骨架结构明显是人形、动画有核心骨骼 Transform binding，可作为 Generic 角色进入 `TransformBodyPreviewReady`。仅“挂了完整骨架的头发/脸/配件”不能因为骨骼路径相似就获得身体动画候选。带骨骼模型优先使用 `bonePaths` 建立动画关系；非角色模型会同时使用 `bonePaths` 和 `nodePaths`，但只有命中可见 mesh 或 skinned joint 的 binding 才能升为可预览。`BlackBox/Camera001` 这类只驱动相机或 dummy 的关系会被记录下来，但不会作为可验证动画预览。
 
 默认还会写入性能日志：
 
@@ -738,7 +738,7 @@ unity_file_inspect.json
 当前交叉验证结论：
 
 - Freedunk：模型、PNG 贴图、核心 Humanoid 骨架、Unity bake 后的人物身体动画、BlendShape 表情、小部分非角色 Transform 动画已经有可验证样本。
-- VRising：ContentArchives 中存在纯动画包、纯模型包和混合包；严格索引会避免把 `Unknown` 脸部/头发局部模型自动挂上上千条身体动画。
+- VRising：ContentArchives 中存在纯动画包、纯模型包和混合包；严格索引会避免把 `Unknown` 脸部/头发局部模型自动挂上上千条身体动画。`HYB_VampireFemale_CustomizationScreen_Prefab` 验证出另一条通用路径：Avatar 没有 Humanoid `humanBones` 时不能走 Humanoid bake，但可通过 AnimationClip Transform binding 生成 Generic 骨骼动画预览。
 - Valheim：Unity 6000 包能被识别，但当前 SkinnedMeshRenderer 解析仍有兼容问题，后续应优先补 Unity 6000 类型支持。
 
 ## 特殊模型扫描命令

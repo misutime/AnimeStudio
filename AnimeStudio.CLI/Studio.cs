@@ -1449,9 +1449,9 @@ namespace AnimeStudio.CLI
             foreach (var model in models)
             {
                 var modelKey = GetCatalogKey(model);
-                var modelResourceKind = (string)model["resourceKind"] ?? string.Empty;
-                var usesNodeBindingPaths = GetModelBonePaths(model).Length == 0
-                    || !string.Equals(modelResourceKind, "Character", StringComparison.OrdinalIgnoreCase);
+                var usesNodeBindingPaths = ShouldUseNodeBindingPathsForAnimationMatch(model);
+                var modelAnimationTarget = ClassifyModelAnimationTarget(model);
+                var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
                 var modelBindingPaths = GetModelAnimationBindingPaths(model);
                 if (modelBindingPaths.Length == 0)
                 {
@@ -1466,7 +1466,7 @@ namespace AnimeStudio.CLI
                         continue;
                     }
 
-                    if (!IsStructuralBindingResourceCompatible(model, animation))
+                    if (!IsStructuralBindingResourceCompatible(modelAnimationTarget, modelResourceKind, animation))
                     {
                         continue;
                     }
@@ -1627,9 +1627,7 @@ namespace AnimeStudio.CLI
 
         private static ExplicitModelAnimationLink BuildExplicitLink(JObject model, JObject animation, ExplicitAnimationRelation relation)
         {
-            var modelResourceKind = (string)model["resourceKind"] ?? string.Empty;
-            var usesNodeBindingPaths = GetModelBonePaths(model).Length == 0
-                || !string.Equals(modelResourceKind, "Character", StringComparison.OrdinalIgnoreCase);
+            var usesNodeBindingPaths = ShouldUseNodeBindingPathsForAnimationMatch(model);
             var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
             var match = AnalyzeStructuralAnimationMatch(GetModelAnimationBindingPaths(model), animationPaths, usesNodeBindingPaths);
             var matchedPaths = match.MatchedPaths?.Length > 0 ? match.MatchedPaths : null;
@@ -1694,6 +1692,7 @@ namespace AnimeStudio.CLI
                 MatchedBindingPaths = match.MatchedPaths,
                 MatchedVisibleMeshBindingPaths = GetMatchedVisibleMeshBindingPaths(model, match.MatchedPaths),
                 UnmatchedBindingPaths = match.UnmatchedPaths,
+                RequiresHumanoidBake = IsHumanoidCharacterTarget(model) && IsHumanoidAnimationAsset(animation),
             };
         }
 
@@ -1841,13 +1840,15 @@ namespace AnimeStudio.CLI
         {
             var resourceKind = (string)model["resourceKind"] ?? string.Empty;
             var avatar = model["avatar"] as JObject;
-            if (avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false))
+            if (avatar != null && ((int?)avatar["humanBoneCount"] ?? 0) > 0)
             {
                 return "HumanoidCharacterTarget";
             }
             if (((int?)model["boneCount"] ?? 0) > 0)
             {
+                var hasAvatarContext = avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false);
                 return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                    || (hasAvatarContext && LooksLikeHumanCharacterSkeleton(model))
                     ? "GenericCharacterSkeletonTarget"
                     : "NonCharacterSkeletonTarget";
             }
@@ -1867,10 +1868,12 @@ namespace AnimeStudio.CLI
             var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
             var duration = (float?)animation["duration"];
             var isCharacter = string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase);
+            var isHumanoidLike = hasMuscleClip || humanoidBindingCount > 0;
             var isTransformAnimation = string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase);
             var isAuxiliaryAnimation = string.Equals(animationType, "AuxiliaryAnimation", StringComparison.OrdinalIgnoreCase);
             var isTransformBodyAnimation = string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase);
-            var isTransformLike = isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation;
+            var isMixedHumanoidTransform = string.Equals(animationType, "MixedHumanoidTransform", StringComparison.OrdinalIgnoreCase);
+            var isTransformLike = isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation || isMixedHumanoidTransform;
 
             if (blendShapeCount > 0)
             {
@@ -1900,7 +1903,7 @@ namespace AnimeStudio.CLI
                 return "NonCharacterTransformNeedsMapping";
             }
 
-            if (link?.RequiresHumanoidBake == true || (isCharacter && (humanoidBindingCount > 0 || hasMuscleClip)))
+            if (link?.RequiresHumanoidBake == true || (isCharacter && isHumanoidLike))
             {
                 return "HumanoidBodyBakeReady";
             }
@@ -1910,6 +1913,14 @@ namespace AnimeStudio.CLI
                     ? "TransformBodyPreviewReady"
                     : "NonCharacterTransformNeedsMapping";
             }
+            if (link?.Source == "structural"
+                && isMixedHumanoidTransform
+                && coreTransformCount >= 3
+                && link.MatchedBindingPaths != null
+                && link.MatchedBindingPaths.Length >= 4)
+            {
+                return "TransformBodyPreviewReady";
+            }
             if (isAuxiliaryAnimation || isTransformAnimation)
             {
                 return isCharacter
@@ -1918,6 +1929,56 @@ namespace AnimeStudio.CLI
             }
 
             return "UnknownNeedsInspection";
+        }
+
+        private static bool ShouldUseNodeBindingPathsForAnimationMatch(JObject model)
+        {
+            var modelResourceKind = (string)model["resourceKind"] ?? string.Empty;
+            return GetModelBonePaths(model).Length == 0
+                || (!IsHumanoidCharacterTarget(model)
+                    && !string.Equals(modelResourceKind, "Character", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsHumanoidCharacterTarget(JObject model)
+        {
+            return string.Equals(ClassifyModelAnimationTarget(model), "HumanoidCharacterTarget", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsGenericCharacterSkeletonTarget(JObject model)
+        {
+            return string.Equals(ClassifyModelAnimationTarget(model), "GenericCharacterSkeletonTarget", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool LooksLikeHumanCharacterSkeleton(JObject model)
+        {
+            var keys = GetModelBonePaths(model)
+                .SelectMany(GetComparableBonePathKeys)
+                .Select(NormalizeAnimationPath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            static bool HasAny(HashSet<string> values, params string[] names)
+            {
+                return names.Any(name => values.Contains(NormalizeAnimationPath(name)));
+            }
+
+            var hasSpine = HasAny(keys, "spine", "spine_jnt", "bip001 spine", "bip001 spine1");
+            var hasHead = HasAny(keys, "head", "head_jnt", "bip001 head");
+            var hasLeftArm = HasAny(keys, "left_shoulder_jnt", "left_elbow_jnt", "left_wrist_jnt", "bip001 l upperarm", "bip001 l forearm", "bip001 l hand");
+            var hasRightArm = HasAny(keys, "right_shoulder_jnt", "right_elbow_jnt", "right_wrist_jnt", "bip001 r upperarm", "bip001 r forearm", "bip001 r hand");
+            var hasLeftLeg = HasAny(keys, "left_hip_jnt", "left_knee_jnt", "left_ankle_jnt", "bip001 l thigh", "bip001 l calf", "bip001 l foot");
+            var hasRightLeg = HasAny(keys, "right_hip_jnt", "right_knee_jnt", "right_ankle_jnt", "bip001 r thigh", "bip001 r calf", "bip001 r foot");
+
+            return hasSpine && hasHead && hasLeftArm && hasRightArm && hasLeftLeg && hasRightLeg;
+        }
+
+        private static bool IsHumanoidAnimationAsset(JObject animation)
+        {
+            var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+            var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
+            var animationType = (string)animation["animationType"] ?? string.Empty;
+            return hasMuscleClip
+                || humanoidBindingCount > 0
+                || animationType.IndexOf("Humanoid", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string GetAnimationNextAction(JObject animation, ExplicitModelAnimationLink link)
@@ -2079,12 +2140,9 @@ namespace AnimeStudio.CLI
         {
             var avatar = model["avatar"] as JObject;
             var hasHumanAvatar = avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false);
-            var animationResourceKind = (string)animation["resourceKind"] ?? string.Empty;
-            var animationCanBeHumanoid = string.IsNullOrWhiteSpace(animationResourceKind)
-                || string.Equals(animationResourceKind, "Character", StringComparison.OrdinalIgnoreCase);
             var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
             var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
-            var isCandidate = hasHumanAvatar && animationCanBeHumanoid && (humanoidBindingCount > 0 || hasMuscleClip);
+            var isCandidate = hasHumanAvatar && (humanoidBindingCount > 0 || hasMuscleClip);
             var score = isCandidate ? Math.Min(80, 50 + Math.Min(30, humanoidBindingCount / 5)) : 0;
             return new HumanoidAnimationMatch(
                 isCandidate,
@@ -2097,13 +2155,40 @@ namespace AnimeStudio.CLI
         private static bool IsStructuralBindingResourceCompatible(JObject model, JObject animation)
         {
             var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
+            var modelAnimationTarget = ClassifyModelAnimationTarget(model);
+            return IsStructuralBindingResourceCompatible(modelAnimationTarget, modelResourceKind, animation);
+        }
+
+        private static bool IsStructuralBindingResourceCompatible(string modelAnimationTarget, string modelResourceKind, JObject animation)
+        {
             var animationResourceKind = ((string)animation["resourceKind"] ?? string.Empty).Trim();
+            if (string.Equals(modelAnimationTarget, "HumanoidCharacterTarget", StringComparison.OrdinalIgnoreCase)
+                && IsHumanoidAnimationAsset(animation))
+            {
+                return true;
+            }
+            if (string.Equals(modelAnimationTarget, "GenericCharacterSkeletonTarget", StringComparison.OrdinalIgnoreCase)
+                && IsTransformBodyAnimationAsset(animation))
+            {
+                return true;
+            }
+
             if (IsUnknownResourceKind(modelResourceKind) || IsUnknownResourceKind(animationResourceKind))
             {
                 return false;
             }
 
             return string.Equals(modelResourceKind, animationResourceKind, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTransformBodyAnimationAsset(JObject animation)
+        {
+            var animationType = (string)animation["animationType"] ?? string.Empty;
+            var coreTransformBindingCount = (int?)animation["coreTransformBindingCount"] ?? 0;
+            return coreTransformBindingCount >= 3
+                && (string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationType, "MixedHumanoidTransform", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool IsUnknownResourceKind(string resourceKind)
