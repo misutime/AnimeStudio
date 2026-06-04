@@ -1742,7 +1742,8 @@ namespace AnimeStudio.CLI
                 humanoidBindingCount = (int?)entry["humanoidBindingCount"],
                 blendShapeBindingCount = (int?)entry["blendShapeBindingCount"],
                 auxiliaryBindingCount = (int?)entry["auxiliaryBindingCount"],
-                transformBindingPaths = entry["transformBindingPaths"]?.ToObject<string[]>(),
+                transformBindingPaths = TruncateArray(entry["transformBindingPaths"]?.ToObject<string[]>(), 64),
+                transformBindingPathsTruncated = (entry["transformBindingPaths"] as JArray)?.Count > 64,
                 classificationNotes = entry["classificationNotes"]?.ToObject<string[]>(),
             };
         }
@@ -1762,9 +1763,12 @@ namespace AnimeStudio.CLI
                 meshCount = (int?)entry["meshCount"] ?? 0,
                 textureCount = (int?)entry["textureCount"] ?? 0,
                 animationCount = (int?)entry["animationCount"] ?? 0,
-                bonePaths = entry["bonePaths"]?.ToObject<string[]>(),
-                nodePaths = entry["nodePaths"]?.ToObject<string[]>(),
-                meshPaths = entry["meshPaths"]?.ToObject<string[]>(),
+                bonePaths = TruncateArray(entry["bonePaths"]?.ToObject<string[]>(), 64),
+                bonePathsTruncated = (entry["bonePaths"] as JArray)?.Count > 64,
+                nodePaths = TruncateArray(entry["nodePaths"]?.ToObject<string[]>(), 96),
+                nodePathsTruncated = (entry["nodePaths"] as JArray)?.Count > 96,
+                meshPaths = TruncateArray(entry["meshPaths"]?.ToObject<string[]>(), 64),
+                meshPathsTruncated = (entry["meshPaths"] as JArray)?.Count > 64,
                 avatar = entry["avatar"],
             };
         }
@@ -1798,9 +1802,12 @@ namespace AnimeStudio.CLI
                 relationSource = link.Source,
                 score = link.Score,
                 matchReasons = link.Reasons,
-                matchedBindingPaths = link.MatchedBindingPaths,
-                matchedVisibleMeshBindingPaths = link.MatchedVisibleMeshBindingPaths,
-                unmatchedBindingPaths = link.UnmatchedBindingPaths,
+                matchedBindingPaths = TruncateArray(link.MatchedBindingPaths, 32),
+                matchedBindingPathsTruncated = link.MatchedBindingPaths?.Length > 32,
+                matchedVisibleMeshBindingPaths = TruncateArray(link.MatchedVisibleMeshBindingPaths, 32),
+                matchedVisibleMeshBindingPathsTruncated = link.MatchedVisibleMeshBindingPaths?.Length > 32,
+                unmatchedBindingPaths = TruncateArray(link.UnmatchedBindingPaths, 32),
+                unmatchedBindingPathsTruncated = link.UnmatchedBindingPaths?.Length > 32,
                 requiresHumanoidBake = link.RequiresHumanoidBake,
                 verification = new
                 {
@@ -2091,12 +2098,18 @@ namespace AnimeStudio.CLI
         {
             var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
             var animationResourceKind = ((string)animation["resourceKind"] ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(modelResourceKind) || string.IsNullOrWhiteSpace(animationResourceKind))
+            if (IsUnknownResourceKind(modelResourceKind) || IsUnknownResourceKind(animationResourceKind))
             {
-                return true;
+                return false;
             }
 
             return string.Equals(modelResourceKind, animationResourceKind, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsUnknownResourceKind(string resourceKind)
+        {
+            return string.IsNullOrWhiteSpace(resourceKind)
+                || string.Equals(resourceKind, "Unknown", StringComparison.OrdinalIgnoreCase);
         }
 
         private static IEnumerable<string> GetComparableBonePathKeys(string path)
@@ -2163,8 +2176,11 @@ namespace AnimeStudio.CLI
             public int score { get; set; }
             public string[] matchReasons { get; set; }
             public string[] matchedBindingPaths { get; set; }
+            public bool? matchedBindingPathsTruncated { get; set; }
             public string[] matchedVisibleMeshBindingPaths { get; set; }
+            public bool? matchedVisibleMeshBindingPathsTruncated { get; set; }
             public string[] unmatchedBindingPaths { get; set; }
+            public bool? unmatchedBindingPathsTruncated { get; set; }
             public bool requiresHumanoidBake { get; set; }
             public object verification { get; set; }
             public string nextAction { get; set; }

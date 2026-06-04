@@ -289,18 +289,27 @@ namespace AnimeStudio.CLI
                 Logger.Info("Scanning for files...");
                 var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
                 var dependencyMapFiles = files;
+                var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
+                    ? o.Input.FullName
+                    : Path.GetDirectoryName(o.Input.FullName);
                 var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.Profile3D, o.ContainerExcludeFilter);
                 var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.Profile3D, o.NameExcludeFilter);
                 if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
                 {
                     var originalCount = files.Length;
-                    files = files.Where(x => !containerExcludeFilters.Any(y => y.IsMatch(x))).ToArray();
+                    files = files
+                        .Where(x =>
+                        {
+                            var filterPath = NormalizeFilterPath(x, inputBaseFolder);
+                            return !containerExcludeFilters.Any(y => y.IsMatch(filterPath));
+                        })
+                        .ToArray();
                     Logger.Info($"Excluded {originalCount - files.Length} file(s) by 3D path filters.");
                 }
                 if (o.WorkMode != WorkMode.Export && !o.ContainerFilter.IsNullOrEmpty())
                 {
                     var matchedFiles = files
-                        .Where(x => o.ContainerFilter.Any(y => y.IsMatch(NormalizeFilterPath(x))))
+                        .Where(x => o.ContainerFilter.Any(y => y.IsMatch(NormalizeFilterPath(x, inputBaseFolder))))
                         .ToArray();
                     if (matchedFiles.Length > 0 && matchedFiles.Length < files.Length)
                     {
@@ -314,12 +323,9 @@ namespace AnimeStudio.CLI
                     Logger.Warning("No files left after applying filters.");
                     return;
                 }
-                var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
-                    ? o.Input.FullName
-                    : Path.GetDirectoryName(o.Input.FullName);
                 var mapName = ResolveMapName(o.MapName, game, inputBaseFolder);
                 Logger.Info($"Using map name {mapName}");
-                var needsModelDependencies = ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport();
+                var needsModelDependencies = !o.InspectUnityFiles && (ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport());
                 var cabMapSourceFiles = needsModelDependencies ? dependencyMapFiles : files;
                 var expectedCabMapFileCount = cabMapSourceFiles.Length;
 
@@ -404,6 +410,7 @@ namespace AnimeStudio.CLI
                 if (o.MapOp.Equals(MapOpType.None) || o.MapOp.HasFlag(MapOpType.Load))
                 {
                     var i = 0;
+                    var inspectReports = new List<object>();
 
                     var path = Path.GetDirectoryName(Path.GetFullPath(files[0]));
                     ImportHelper.MergeSplitAssets(path);
@@ -419,6 +426,12 @@ namespace AnimeStudio.CLI
                         }))
                         {
                             assetsManager.LoadFiles(batch.ToArray());
+                        }
+                        if (o.InspectUnityFiles)
+                        {
+                            inspectReports.AddRange(BuildUnityFileInspect(assetsManager, batch));
+                            assetsManager.Clear();
+                            continue;
                         }
                         if (assetsManager.assetsFileList.Count > 0)
                         {
@@ -458,6 +471,10 @@ namespace AnimeStudio.CLI
                             assetsManager.Clear();
                         }
                     }
+                    if (o.InspectUnityFiles)
+                    {
+                        WriteUnityFileInspect(o.Output.FullName, inspectReports);
+                    }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
                 {
@@ -486,6 +503,64 @@ namespace AnimeStudio.CLI
             var key = $"{game.Type}|{fullPath}".ToLowerInvariant();
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
             return $"auto_{game.Type}_{hash}";
+        }
+
+        private static IEnumerable<object> BuildUnityFileInspect(AssetsManager assetsManager, IReadOnlyCollection<string> batch)
+        {
+            foreach (var assetsFile in assetsManager.assetsFileList)
+            {
+                var rawTypeCounts = assetsFile.m_Objects
+                    .GroupBy(x => Enum.IsDefined(typeof(ClassIDType), x.classID) ? ((ClassIDType)x.classID).ToString() : $"Unknown_{x.classID}")
+                    .OrderByDescending(x => x.Count())
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count());
+                var parsedTypeCounts = assetsFile.Objects
+                    .GroupBy(x => x.type.ToString())
+                    .OrderByDescending(x => x.Count())
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count());
+                var sampleNames = assetsFile.Objects
+                    .Where(x => x is NamedObject && !string.IsNullOrWhiteSpace(x.Name))
+                    .GroupBy(x => x.type.ToString())
+                    .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x
+                            .Select(y => y.Name)
+                            .Where(y => !string.IsNullOrWhiteSpace(y))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Take(30)
+                            .ToArray()
+                    );
+
+                yield return new
+                {
+                    source = assetsFile.originalPath ?? assetsFile.fullName,
+                    file = assetsFile.fileName,
+                    unityVersion = assetsFile.unityVersion,
+                    platform = assetsFile.m_TargetPlatform.ToString(),
+                    rawObjectCount = assetsFile.m_Objects.Count,
+                    parsedObjectCount = assetsFile.Objects.Count,
+                    rawTypeCounts,
+                    parsedTypeCounts,
+                    sampleNames,
+                    batch = batch.ToArray(),
+                };
+            }
+        }
+
+        private static void WriteUnityFileInspect(string outputFolder, IReadOnlyCollection<object> reports)
+        {
+            Directory.CreateDirectory(outputFolder);
+            var output = Path.Combine(outputFolder, "unity_file_inspect.json");
+            var summary = new
+            {
+                generatedAt = DateTime.UtcNow,
+                fileCount = reports.Count,
+                files = reports,
+            };
+            File.WriteAllText(output, JsonConvert.SerializeObject(summary, Formatting.Indented));
+            Logger.Info($"Wrote Unity file inspect report: {output}");
         }
 
         private static Regex[] GetContainerExcludeFilters(
@@ -541,9 +616,31 @@ namespace AnimeStudio.CLI
             return filters.ToArray();
         }
 
-        private static string NormalizeFilterPath(string path)
+        private static string NormalizeFilterPath(string path, string baseFolder = null)
         {
-            return path?.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/') ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+
+            var filterPath = path;
+            if (!string.IsNullOrWhiteSpace(baseFolder))
+            {
+                try
+                {
+                    filterPath = Path.GetRelativePath(baseFolder, path);
+                    if (filterPath.StartsWith("..", StringComparison.Ordinal))
+                    {
+                        filterPath = path;
+                    }
+                }
+                catch
+                {
+                    filterPath = path;
+                }
+            }
+
+            return filterPath.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
         }
 
         private static Regex[] GetNameExcludeFilters(WorkMode workMode, Model3DProfile profile3D, Regex[] userExcludeFilters)

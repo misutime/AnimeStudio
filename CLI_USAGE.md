@@ -665,7 +665,7 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 `skeletons.json` 从骨架视角聚合模型和候选动画：`models` 只放可浏览的带 mesh 模型，动画 FBX 等无 mesh 的源骨架会计入 `sourceSkeletonCount`，避免污染模型浏览列表。默认候选必须来自 Unity 显式引用或结构兼容关系；路径、名称、resourceKind 只能在后续显式 fallback 模式里作为带标注的补充线索。
 
-结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。它必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。Humanoid/Avatar 候选同样只接受 `Character` 或未知类型动画，避免场景、篮筐、道具等非角色 Transform 动画误走人物 bake 流程。带骨骼模型优先使用 `bonePaths` 建立动画关系；非角色模型会同时使用 `bonePaths` 和 `nodePaths`，但只有命中可见 mesh 或 skinned joint 的 binding 才能升为可预览。`BlackBox/Camera001` 这类只驱动相机或 dummy 的关系会被记录下来，但不会作为可验证动画预览。
+结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。它必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。`Unknown` 不是通配类型，不能参与自动结构绑定；这类模型或动画必须先通过 Unity 显式引用、Avatar/Humanoid 关系、可见 mesh motion 验证或资源分类补全，才能进入可播放候选。Humanoid/Avatar 候选同样只接受 `Character` 或未知类型动画，避免场景、篮筐、道具等非角色 Transform 动画误走人物 bake 流程。带骨骼模型优先使用 `bonePaths` 建立动画关系；非角色模型会同时使用 `bonePaths` 和 `nodePaths`，但只有命中可见 mesh 或 skinned joint 的 binding 才能升为可预览。`BlackBox/Camera001` 这类只驱动相机或 dummy 的关系会被记录下来，但不会作为可验证动画预览。
 
 默认还会写入性能日志：
 
@@ -706,6 +706,40 @@ model_animations.compact.json
 ```
 
 它不会加载原始 Unity 游戏目录，也不会重新导出模型、贴图或动画；小样本通常能从数分钟缩短到数秒。限制是：导出时内存里才能拿到的 Animator/Animation 显式引用无法凭空恢复，离线重建会复算 catalog 中可恢复的结构兼容关系。需要刷新 Unity 关系图、CAB/PPtr 依赖、显式 Animator Controller 引用或新增素材时，仍然要重新跑 Library 导出。
+
+### 快速检查 Unity 文件类型
+
+跨游戏验证或面对 Addressables/ContentArchives 这类散列文件名目录时，先用 inspection 模式看每个 Unity 文件里到底有什么，再决定导出范围：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data\StreamingAssets\ContentArchives\5a4456c55e8ba14e483859c278648dc7" `
+  "D:\Assets\Freedunk_Data_Dev\CrossGame_VRising_Inspect" `
+  --inspect_unity_files `
+  --game Normal `
+  --mode Library `
+  --profile_3d All `
+  --batch_files 1
+```
+
+输出：
+
+```text
+unity_file_inspect.json
+```
+
+这个文件会记录 Unity 版本、平台、原始对象数、解析成功对象数、各类型数量和少量样本名称。它不会导出模型/贴图/动画，也不会为了模型导出提前构建 CAB map，适合快速区分：
+
+- 纯动画/AnimatorController 包：可以作为动画库输入，但不能凭空生成模型。
+- 模型/材质/贴图包：适合继续跑 Library 导出。
+- 混合包：先检查是否有完整 Prefab/Animator/GameObject，避免只命中 face、hair、accessory 等 SourcePart。
+- 新 Unity 版本包：如果解析报错，优先补 Unity 类型解析，而不是写游戏名特判。
+
+当前交叉验证结论：
+
+- Freedunk：模型、PNG 贴图、核心 Humanoid 骨架、Unity bake 后的人物身体动画、BlendShape 表情、小部分非角色 Transform 动画已经有可验证样本。
+- VRising：ContentArchives 中存在纯动画包、纯模型包和混合包；严格索引会避免把 `Unknown` 脸部/头发局部模型自动挂上上千条身体动画。
+- Valheim：Unity 6000 包能被识别，但当前 SkinnedMeshRenderer 解析仍有兼容问题，后续应优先补 Unity 6000 类型支持。
 
 ## 特殊模型扫描命令
 
