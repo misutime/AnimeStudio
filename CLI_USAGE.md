@@ -129,6 +129,33 @@ CLI 生成索引时，关系优先级应为：
 - 如果某个 raw fbx/source part 没有对应的 prefab/Animator 组合模型，它会作为 `libraryRole=RawUnreferenced` 导出到 `Models/RawUnreferenced`。
 - 需要研究零散部件时显式使用 `--model_source PrefabAndParts`；只看 raw 部件时使用 `--model_source RawPartsOnly`。
 
+### 材质和 ColorMask/Tint 规则
+
+默认 glTF 导出会优先生成“可浏览、可复用”的标准材质，而不是尝试完整复刻每个游戏的 Unity shader。标准 PBR 能表达的内容会直接写入 glTF，例如基础贴图、透明/裁剪、双面、法线贴图等。
+
+很多 Unity 游戏的角色换色不是单纯一张成品贴图，而是：
+
+- `_BaseColorMap`：灰度或中性基础贴图。
+- `_ColorMask` / `_MaskMap`：告诉 shader 哪些区域应该染色。
+- 材质 color/float 或角色 customization 配置：运行时决定皮肤、衣服、头发等颜色。
+
+AnimeStudio 的默认策略是：
+
+1. 保留 Unity 原始材质关系。
+   glTF `extras.unityMaterial` 会记录材质贴图槽、float、color、源 CAB/PathID 等信息。
+2. 建立 ColorMask/Tint 索引。
+   如果发现 `_ColorMask`、`_MaskMap`、`_BaseColorMap` 等槽位，会在 `extras.animeStudioMaterial` 写入 `workflow=ColorMaskTint`。
+3. 能确定颜色时才烘焙预览贴图。
+   找到明确 tint 参数或后续 customization 配置后，可以生成预览用 base color，方便作为素材库直接查看。
+4. 不能确定时不硬猜。
+   如果只有 mask 和基础贴图，没有可用颜色配置，会标记 `status=needsCustomizationTint`。这表示模型和贴图关系是完整的，但需要后续解析 shader/customization tint 才能恢复最终配色。
+
+以 VRising 为例，身体材质可能显示为灰色，但 glTF 里已经保留 `_BaseColorMap`、`_ColorMask`、`_MaskMap` 和 `_NormalMap`。这不是贴图丢失，而是游戏运行时的 tint 配置还没有还原。后续应继续解析 Unity 配置或角色 customization 数据，再按通用 ColorMask/Tint 管线生成预览贴图。
+
+每个 glTF/GLB 模型目录还会生成 `MATERIAL_REPORT.md`。这是给人看的材质说明，会列出材质状态、Unity 贴图槽、mask、需要特殊处理的原因和建议；机器可读的完整数据仍以 glTF `extras` 和材质 JSON 为准。
+
+每个模型目录还会生成 `ASSET_README.md`。这是模型使用入口，会汇总基础信息、材质状态、动画候选、模块/头发/头部/附件组装关系和使用建议。正常浏览素材时先看 `ASSET_README.md`，需要材质细节时再看 `MATERIAL_REPORT.md`。
+
 ### 模型和动画规则
 
 一个模型可能支持很多动画，尤其是角色资源：私有表情动画、角色展示动画、通用身体动作、职业/性别动作、Animator Controller 引用动作、外部公共动作库等。默认不能把这些动画全部嵌进每个模型，否则会产生巨大、重复、难浏览的 glTF。

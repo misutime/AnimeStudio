@@ -809,11 +809,17 @@ namespace AnimeStudio
                     iMat.Transparency = 0f;
                     iMat.UnityFloats = mat.m_SavedProperties.m_Floats.ToDictionary(x => x.Key, x => x.Value);
                     iMat.UnityColors = mat.m_SavedProperties.m_Colors.ToDictionary(x => x.Key, x => x.Value);
+                    var hasColor = false;
                     foreach (var col in mat.m_SavedProperties.m_Colors)
                     {
                         switch (col.Key)
                         {
                             case "_Color":
+                                iMat.Diffuse = col.Value;
+                                hasColor = true;
+                                break;
+                            case "_BaseColor" when !hasColor:
+                                // 很多 SRP/HDRP 材质用 _BaseColor 表示基础色；没有 _Color 时用它保证 glTF 预览可见。
                                 iMat.Diffuse = col.Value;
                                 break;
                             case "_SColor":

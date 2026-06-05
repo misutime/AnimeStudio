@@ -23,6 +23,15 @@ It's an up-to-date fork of Razmoth's one. After his repo was discontinued, bugs 
 
 ---
 
+# Project docs
+
+- [通用 Unity 资源导出规范](PROJECT_EXPORT_STANDARDS.md)
+- [CLI 通用资源导出说明](CLI_USAGE.md)
+- [开发样本工作流](DEV_SAMPLE_WORKFLOW.md)
+- [资源导出工具开发规划](RESOURCE_EXPORT_ROADMAP.md)
+
+---
+
 # What changed ?
 
 This is a non-exhaustive list of modifications :

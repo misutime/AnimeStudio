@@ -1121,6 +1121,7 @@ namespace AnimeStudio.CLI
             );
             GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
             CharacterAssemblyIndexGenerator.Generate(savePath, models);
+            AssetReadmeGenerator.Generate(savePath);
         }
 
         private static void GenerateCompactModelAnimationIndex(
