@@ -19,6 +19,13 @@ namespace AnimeStudio.CLI
             int batchFiles,
             string indexPath = null)
         {
+            using var totalProfile = ProfileLogger.Measure("source_index_total", new Dictionary<string, object>
+            {
+                ["inputPath"] = inputPath,
+                ["outputPath"] = outputPath,
+                ["batchFiles"] = batchFiles,
+            });
+
             if (game == null)
             {
                 throw new ArgumentNullException(nameof(game));
@@ -42,12 +49,20 @@ namespace AnimeStudio.CLI
                 File.Delete(dbPath);
             }
 
-            var sourceRoot = Directory.Exists(inputPath)
-                ? Path.GetFullPath(inputPath)
-                : Path.GetDirectoryName(Path.GetFullPath(inputPath));
-            var files = Directory.Exists(inputPath)
-                ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray()
-                : new[] { Path.GetFullPath(inputPath) };
+            string sourceRoot;
+            string[] files;
+            using (ProfileLogger.Measure("source_index_scan_files", new Dictionary<string, object>
+            {
+                ["inputPath"] = inputPath,
+            }))
+            {
+                sourceRoot = Directory.Exists(inputPath)
+                    ? Path.GetFullPath(inputPath)
+                    : Path.GetDirectoryName(Path.GetFullPath(inputPath));
+                files = Directory.Exists(inputPath)
+                    ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray()
+                    : new[] { Path.GetFullPath(inputPath) };
+            }
 
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
             {
@@ -61,12 +76,17 @@ namespace AnimeStudio.CLI
             };
 
             using var connection = new SqliteConnection($"Data Source={dbPath}");
-            connection.Open();
-            Execute(connection, "PRAGMA journal_mode = WAL;");
-            Execute(connection, "PRAGMA synchronous = NORMAL;");
-            CreateSchema(connection);
-            using (var transaction = connection.BeginTransaction())
+            using (ProfileLogger.Measure("source_index_init_db", new Dictionary<string, object>
             {
+                ["dbPath"] = dbPath,
+                ["fileCount"] = files.Length,
+            }))
+            {
+                connection.Open();
+                Execute(connection, "PRAGMA journal_mode = WAL;");
+                Execute(connection, "PRAGMA synchronous = NORMAL;");
+                CreateSchema(connection);
+                using var transaction = connection.BeginTransaction();
                 InsertMetadata(connection, transaction, "schemaVersion", "1");
                 InsertMetadata(connection, transaction, "kind", "unity_source_index");
                 InsertMetadata(connection, transaction, "sourceRoot", sourceRoot);
@@ -74,7 +94,13 @@ namespace AnimeStudio.CLI
                 InsertMetadata(connection, transaction, "unityVersionOverride", unityVersion ?? string.Empty);
                 InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
                 InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。This database indexes Unity source files, SerializedFiles, objects, PPtr relations, and animation bindings without exporting assets.");
-                InsertSourceFiles(connection, transaction, sourceRoot, files);
+                using (ProfileLogger.Measure("source_index_insert_source_files", new Dictionary<string, object>
+                {
+                    ["fileCount"] = files.Length,
+                }))
+                {
+                    InsertSourceFiles(connection, transaction, sourceRoot, files);
+                }
                 transaction.Commit();
             }
 
@@ -94,10 +120,29 @@ namespace AnimeStudio.CLI
 
                 try
                 {
-                    manager.LoadFiles(batch);
-                    using var transaction = connection.BeginTransaction();
-                    IndexLoadedAssets(connection, transaction, sourceRoot, manager, counts);
-                    transaction.Commit();
+                    using (ProfileLogger.Measure("source_index_load_batch", new Dictionary<string, object>
+                    {
+                        ["batchIndex"] = batchIndex + 1,
+                        ["totalBatches"] = totalBatches,
+                        ["batchFileCount"] = batch.Length,
+                        ["batchBytes"] = batch.Sum(x => new FileInfo(x).Length),
+                    }))
+                    {
+                        manager.LoadFiles(batch);
+                    }
+
+                    using (ProfileLogger.Measure("source_index_write_batch", new Dictionary<string, object>
+                    {
+                        ["batchIndex"] = batchIndex + 1,
+                        ["serializedFileCount"] = manager.assetsFileList.Count,
+                        ["objectCount"] = manager.assetsFileList.Sum(x => x.m_Objects?.Count ?? 0),
+                        ["parsedObjectCount"] = manager.assetsFileList.Sum(x => x.Objects?.Count ?? 0),
+                    }))
+                    {
+                        using var transaction = connection.BeginTransaction();
+                        IndexLoadedAssets(connection, transaction, sourceRoot, manager, counts);
+                        transaction.Commit();
+                    }
                 }
                 catch (Exception e)
                 {
@@ -106,12 +151,33 @@ namespace AnimeStudio.CLI
                 }
                 finally
                 {
-                    manager.Clear();
+                    using (ProfileLogger.Measure("source_index_clear_batch", new Dictionary<string, object>
+                    {
+                        ["batchIndex"] = batchIndex + 1,
+                    }))
+                    {
+                        manager.Clear();
+                    }
                 }
             }
 
-            CreateIndexes(connection);
-            WriteSummary(outputRoot, dbPath, sourceRoot, files.Length, counts);
+            using (ProfileLogger.Measure("source_index_create_sql_indexes", new Dictionary<string, object>
+            {
+                ["dbPath"] = dbPath,
+            }))
+            {
+                CreateIndexes(connection);
+            }
+
+            using (ProfileLogger.Measure("source_index_write_summary", new Dictionary<string, object>
+            {
+                ["dbPath"] = dbPath,
+                ["sourceObjects"] = counts["sourceObjects"],
+                ["sourceRelations"] = counts["sourceRelations"],
+            }))
+            {
+                WriteSummary(outputRoot, dbPath, sourceRoot, files.Length, counts);
+            }
             Logger.Info($"SQLite Unity source index written: {dbPath}");
             return dbPath;
         }
@@ -559,6 +625,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 "这是完整 Unity 源目录索引，不是导出结果索引。它用于一次性记录源文件、SerializedFile、Object、external CAB/PPtr、Animator/Animation/Renderer/Skin/AnimationClip binding 等关系。\n\n" +
                 "核心原则：索引要全，导出要精。源索引中出现的对象不代表默认素材库会导出，也不代表视觉验收通过。\n\n" +
                 "主要表：`source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。\n\n" +
+                "性能日志：启用 `--profile_log` 后，重点比较 `source_index_load_batch`、`source_index_write_batch`、`source_index_create_sql_indexes` 和 `source_index_total`。\n\n" +
                 "第二阶段当前重点是建好可查询底座；后续导出器可以逐步改为读取这个数据库来减少重复扫描。\n");
         }
 

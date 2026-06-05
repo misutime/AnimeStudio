@@ -97,6 +97,7 @@ SQLite 源索引规则：
 - 源索引至少包含 `source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。
 - 跨 bundle 关系不能依赖当前批次是否已加载目标对象；必须记录原始 PPtr 的 `fileID`、`pathID` 和 external `fileName/pathName`，避免分批加载切断 Unity 引用。
 - 源索引是后续导出加速和调试底座，不替代 `model_validation.json`、`preview_validation.json` 和人工验收。
+- 源索引全量构建必须保留 profile 日志。默认推荐 `--profile_log source_index_profile.jsonl`，用于拆分扫描、加载批次、写 SQLite、清理、创建 SQL 索引和摘要写出耗时。源索引不转 PNG；贴图转换和模型写出性能要在实际 Library 导出 profile 中分析。
 
 音频素材库是独立 profile，不属于默认 3D Library：
 

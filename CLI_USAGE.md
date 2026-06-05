@@ -278,7 +278,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "D:\Assets\Freedunk_Data_Dev\SQLiteSourceIndex_VRising_Full" `
   --game Normal `
   --build_source_sqlite_index `
-  --batch_files 4
+  --batch_files 4 `
+  --profile_log source_index_profile.jsonl
 ```
 
 默认输出：
@@ -287,6 +288,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 unity_source_index.db
 unity_source_index_summary.json
 UNITY_SOURCE_INDEX_README.md
+source_index_profile.jsonl
 ```
 
 也可以显式指定数据库路径：
@@ -312,6 +314,22 @@ source_animation_bindings
 ```
 
 `--batch_files` 控制每批加载多少源文件。批次越大，跨文件对象解析机会越多，但内存占用更高；批次越小，内存更稳。源索引会直接记录 PPtr 的 `fileID/pathID/external fileName`，因此即使目标对象不在当前批次，也不会丢掉 Unity 引用关系。
+
+源索引用 `--profile_log` 记录耗时和内存。全量游戏源索引较慢时，优先看这些 stage：
+
+```text
+source_index_scan_files
+source_index_init_db
+source_index_insert_source_files
+source_index_load_batch
+source_index_write_batch
+source_index_clear_batch
+source_index_create_sql_indexes
+source_index_write_summary
+source_index_total
+```
+
+其中 `source_index_load_batch` 代表 Unity 文件加载/解析耗时，`source_index_write_batch` 代表对象、PPtr 关系、动画 binding 写入 SQLite 的耗时，`source_index_create_sql_indexes` 代表最后创建 SQL 查询索引的耗时。源索引只建关系数据库，不导出模型和贴图，因此不会出现 PNG 转换耗时；PNG、raw texture、模型写出等瓶颈要在后续实际 `Library` 导出时看 `model_texture`、`model_texture_raw`、`model_write` 等 profile stage。
 
 ### 模型和动画规则
 
