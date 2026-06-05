@@ -138,6 +138,7 @@ namespace AnimeStudio.CLI
                     SpecifyUnityVersion = unityVersion,
                     ResolveDependencies = false,
                     LoadSerializedFileExternals = false,
+                    ObjectParseFilter = ShouldParseObjectForSourceIndex,
                     Silent = true,
                 };
 
@@ -160,7 +161,8 @@ namespace AnimeStudio.CLI
                             batch.Length,
                             batchBytes,
                             MakeRelativeOrName(sourceRoot, largest?.Path),
-                            largest?.Bytes ?? 0);
+                            largest?.Bytes ?? 0,
+                            manager);
                         manager.LoadFiles(batch);
                     }
 
@@ -714,9 +716,26 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             int batchFileCount,
             long batchBytes,
             string largestFile,
-            long largestFileBytes)
+            long largestFileBytes,
+            AssetsManager manager)
         {
-            return new SourceIndexHeartbeat(batchIndex, totalBatches, batchFileCount, batchBytes, largestFile, largestFileBytes);
+            return new SourceIndexHeartbeat(batchIndex, totalBatches, batchFileCount, batchBytes, largestFile, largestFileBytes, manager);
+        }
+
+        private static bool ShouldParseObjectForSourceIndex(ClassIDType type)
+        {
+            return type is ClassIDType.GameObject
+                or ClassIDType.Transform
+                or ClassIDType.RectTransform
+                or ClassIDType.Animator
+                or ClassIDType.Animation
+                or ClassIDType.AnimatorController
+                or ClassIDType.AnimatorOverrideController
+                or ClassIDType.MeshFilter
+                or ClassIDType.AnimationClip
+                or ClassIDType.Avatar
+                or ClassIDType.AssetBundle
+                or ClassIDType.ResourceManager;
         }
 
         private sealed class SourceIndexHeartbeat : IDisposable
@@ -730,6 +749,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             private readonly long batchBytes;
             private readonly string largestFile;
             private readonly long largestFileBytes;
+            private readonly AssetsManager manager;
 
             public SourceIndexHeartbeat(
                 int batchIndex,
@@ -737,7 +757,8 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 int batchFileCount,
                 long batchBytes,
                 string largestFile,
-                long largestFileBytes)
+                long largestFileBytes,
+                AssetsManager manager)
             {
                 this.batchIndex = batchIndex;
                 this.totalBatches = totalBatches;
@@ -745,6 +766,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 this.batchBytes = batchBytes;
                 this.largestFile = largestFile;
                 this.largestFileBytes = largestFileBytes;
+                this.manager = manager;
                 task = Task.Run(Run);
             }
 
@@ -782,6 +804,14 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
 
                     var process = Process.GetCurrentProcess();
                     var elapsed = stopwatch.Elapsed;
+                    var serializedFileCount = manager.assetsFileList.Count;
+                    var objectInfoCount = manager.assetsFileList.Sum(x => x.m_Objects?.Count ?? 0);
+                    var parsedObjectCount = manager.assetsFileList.Sum(x => x.Objects?.Count ?? 0);
+                    var currentFile = manager.CurrentReadAssetsFile ?? string.Empty;
+                    var currentType = manager.CurrentReadType.ToString();
+                    var currentObjectIndex = manager.CurrentReadObjectIndex;
+                    var currentObjectCount = manager.CurrentReadObjectCount;
+                    var currentPathId = manager.CurrentReadPathId;
                     ProfileLogger.Event("source_index_load_batch_heartbeat", new Dictionary<string, object>
                     {
                         ["batchIndex"] = batchIndex,
@@ -791,10 +821,20 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         ["largestFile"] = largestFile ?? string.Empty,
                         ["largestFileBytes"] = largestFileBytes,
                         ["elapsedMs"] = elapsed.TotalMilliseconds,
+                        ["serializedFileCount"] = serializedFileCount,
+                        ["objectInfoCount"] = objectInfoCount,
+                        ["parsedObjectCount"] = parsedObjectCount,
+                        ["currentFile"] = currentFile,
+                        ["currentType"] = currentType,
+                        ["currentObjectIndex"] = currentObjectIndex,
+                        ["currentObjectCount"] = currentObjectCount,
+                        ["currentPathId"] = currentPathId,
                     });
                     ForceInfo(
                         $"[source-index {batchIndex}/{totalBatches}] Still loading after {FormatDuration(elapsed)}; " +
                         $"{batchFileCount} file(s), {FormatBytes(batchBytes)}; largest {largestFile} ({FormatBytes(largestFileBytes)}); " +
+                        $"serialized {serializedFileCount}, objectInfos {objectInfoCount}, parsed {parsedObjectCount}; " +
+                        $"current {currentFile} {currentObjectIndex}/{currentObjectCount} {currentType} pathId {currentPathId}; " +
                         $"workingSet {FormatBytes(process.WorkingSet64)}, private {FormatBytes(process.PrivateMemorySize64)}, managed {FormatBytes(GC.GetTotalMemory(false))}.");
                 }
             }

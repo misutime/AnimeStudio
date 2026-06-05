@@ -17,9 +17,15 @@ namespace AnimeStudio
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
         public bool LoadSerializedFileExternals = true;
+        public Func<ClassIDType, bool> ObjectParseFilter;
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
+        public string CurrentReadAssetsFile { get; private set; }
+        public int CurrentReadObjectIndex { get; private set; }
+        public int CurrentReadObjectCount { get; private set; }
+        public long CurrentReadPathId { get; private set; }
+        public ClassIDType CurrentReadType { get; private set; }
 
         internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
@@ -664,9 +670,16 @@ namespace AnimeStudio
                     }
 
                     var objectReader = new ObjectReader(assetsFile.reader, assetsFile, objectInfo, Game);
+                    CurrentReadAssetsFile = assetsFile.fileName;
+                    CurrentReadObjectIndex = i + 1;
+                    CurrentReadObjectCount = progressCount;
+                    CurrentReadPathId = objectInfo.m_PathID;
+                    CurrentReadType = objectReader.type;
                     try
                     {
-                        Object obj = objectReader.type switch
+                        Object obj = ObjectParseFilter != null && !ObjectParseFilter(objectReader.type)
+                            ? new Object(objectReader)
+                            : objectReader.type switch
                         {
                             ClassIDType.Animation when ClassIDType.Animation.CanParse() => new Animation(objectReader),
                             ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanParse() => new AnimationClip(objectReader),
