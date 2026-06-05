@@ -42,7 +42,7 @@ namespace AnimeStudio.CLI
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
-        private const long FullStructuralAnimationPairLimit = 1_000_000;
+        private const long FullStructuralAnimationPairLimit = 100_000;
         private static readonly Regex[] ModelRootExcludePatterns =
         {
             new Regex(@"^Cs_", RegexOptions.IgnoreCase | RegexOptions.Compiled),

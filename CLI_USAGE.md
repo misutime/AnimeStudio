@@ -982,6 +982,8 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 结构兼容关系是弱关系，只用于补足没有直接 Animator/Animation 引用的候选。默认必须同时满足 Unity AnimationClip binding path 与模型骨骼/节点路径匹配，并且模型与动画的 `resourceKind` 一致；跨 `Character`、`Stage`、`Prop`、`Ball` 等类型的关系不能只靠结构相似建立。`Unknown` 不是通配类型，普通 Unknown 部件不能参与自动结构绑定。例外只有两类：一是模型带完整 Humanoid `humanBones` 映射，动画带 Humanoid/Muscle 数据，可进入 `HumanoidBodyBakeReady`；二是模型有 Unity Avatar/Animator 上下文、骨架结构明显是人形、动画有核心骨骼 Transform binding，可作为 Generic 角色进入 `TransformBodyPreviewReady`。仅“挂了完整骨架的头发/脸/配件”不能因为骨骼路径相似就获得身体动画候选。带骨骼模型优先使用 `bonePaths` 建立动画关系；非角色模型会同时使用 `bonePaths` 和 `nodePaths`，但只有命中可见 mesh 或 skinned joint 的 binding 才能升为可预览。`BlackBox/Camera001` 这类只驱动相机或 dummy 的关系会被记录下来，但不会作为可验证动画预览。
 
+全量 Library 不做海量模型 × 动画组合搜索。结构候选匹配只服务于小样本或过滤导出；默认保护阈值为 `100000` 组 pair，超过后 `model_animations.json` 会写入 deferred 说明，模型和动画仍保持独立入库。想验证某个角色有哪些动画时，使用定向预览、打包或后续 UI 查询，而不是让全库暴力配对。
+
 默认还会写入性能日志：
 
 ```text
