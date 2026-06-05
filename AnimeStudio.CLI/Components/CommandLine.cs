@@ -103,10 +103,12 @@ namespace AnimeStudio.CLI
                 optionsBinder.ConvertTextureFormat,
                 optionsBinder.UpdateGltfTextureRefs,
                 optionsBinder.GeneratePreviewGltf,
+                optionsBinder.GenerateAssembledPreviewGltf,
                 optionsBinder.PreviewModel,
                 optionsBinder.PreviewAnimation,
                 optionsBinder.PreviewOutput,
                 optionsBinder.PreviewSourceRoot,
+                optionsBinder.AssemblyModules,
                 optionsBinder.PackModelAnimations,
                 optionsBinder.PackAnimations,
                 optionsBinder.PackOutput,
@@ -179,10 +181,12 @@ namespace AnimeStudio.CLI
         public AnimeStudio.ImageFormat ConvertTextureFormat { get; set; }
         public bool UpdateGltfTextureRefs { get; set; }
         public FileInfo GeneratePreviewGltf { get; set; }
+        public FileInfo GenerateAssembledPreviewGltf { get; set; }
         public string PreviewModel { get; set; }
         public string PreviewAnimation { get; set; }
         public DirectoryInfo PreviewOutput { get; set; }
         public DirectoryInfo PreviewSourceRoot { get; set; }
+        public string AssemblyModules { get; set; }
         public FileInfo PackModelAnimations { get; set; }
         public string PackAnimations { get; set; }
         public DirectoryInfo PackOutput { get; set; }
@@ -250,10 +254,12 @@ namespace AnimeStudio.CLI
         public readonly Option<AnimeStudio.ImageFormat> ConvertTextureFormat;
         public readonly Option<bool> UpdateGltfTextureRefs;
         public readonly Option<FileInfo> GeneratePreviewGltf;
+        public readonly Option<FileInfo> GenerateAssembledPreviewGltf;
         public readonly Option<string> PreviewModel;
         public readonly Option<string> PreviewAnimation;
         public readonly Option<DirectoryInfo> PreviewOutput;
         public readonly Option<DirectoryInfo> PreviewSourceRoot;
+        public readonly Option<string> AssemblyModules;
         public readonly Option<FileInfo> PackModelAnimations;
         public readonly Option<string> PackAnimations;
         public readonly Option<DirectoryInfo> PackOutput;
@@ -319,10 +325,12 @@ namespace AnimeStudio.CLI
             ConvertTextureFormat = new Option<AnimeStudio.ImageFormat>("--texture_output_format", "Output image format for --convert_model_textures.");
             UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
             GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Generate a playable preview glTF from model_animations.json by re-exporting one model with one selected animation.").LegalFilePathsOnly();
+            GenerateAssembledPreviewGltf = new Option<FileInfo>("--generate_assembled_preview_gltf", "Generate a playable preview glTF and non-destructively add compatible modular character parts such as face, hair, or accessories when their Unity joints can be remapped.").LegalFilePathsOnly();
             PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with --generate_preview_gltf.");
             PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with --generate_preview_gltf.");
             PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for --generate_preview_gltf. Defaults to Previews/<model>__<animation> next to the index.");
             PreviewSourceRoot = new Option<DirectoryInfo>("--preview_source_root", "Full Unity game/source root used by preview and animation-pack commands to resolve dependencies instead of reusing possibly incomplete indexed sample paths.").LegalFilePathsOnly();
+            AssemblyModules = new Option<string>("--assembly_modules", "Comma-separated module roles or selectors for --generate_assembled_preview_gltf. Defaults to Face,Hair,Accessory.");
             PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
             PackAnimations = new Option<string>("--pack_animations", "Comma-separated animation names or regexes used with --pack_model_animations. If omitted, top candidates are used.");
             PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for --pack_model_animations.");
@@ -477,10 +485,12 @@ namespace AnimeStudio.CLI
                 ConvertTextureFormat = bindingContext.ParseResult.GetValueForOption(ConvertTextureFormat),
                 UpdateGltfTextureRefs = bindingContext.ParseResult.GetValueForOption(UpdateGltfTextureRefs),
                 GeneratePreviewGltf = bindingContext.ParseResult.GetValueForOption(GeneratePreviewGltf),
+                GenerateAssembledPreviewGltf = bindingContext.ParseResult.GetValueForOption(GenerateAssembledPreviewGltf),
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
                 PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),
                 PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
                 PreviewSourceRoot = bindingContext.ParseResult.GetValueForOption(PreviewSourceRoot),
+                AssemblyModules = bindingContext.ParseResult.GetValueForOption(AssemblyModules),
                 PackModelAnimations = bindingContext.ParseResult.GetValueForOption(PackModelAnimations),
                 PackAnimations = bindingContext.ParseResult.GetValueForOption(PackAnimations),
                 PackOutput = bindingContext.ParseResult.GetValueForOption(PackOutput),

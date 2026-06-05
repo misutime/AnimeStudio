@@ -12,7 +12,7 @@ namespace AnimeStudio.CLI
 {
     internal static class PreviewGltfGenerator
     {
-        public static void Generate(
+        public static string Generate(
             string indexPath,
             string gameName,
             string modelSelector,
@@ -24,12 +24,12 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(gameName))
             {
                 Logger.Error("--game is required with --generate_preview_gltf.");
-                return;
+                return null;
             }
             if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
             {
                 Logger.Error($"model_animations.json not found: {indexPath}");
-                return;
+                return null;
             }
 
             var index = JObject.Parse(File.ReadAllText(indexPath));
@@ -37,7 +37,7 @@ namespace AnimeStudio.CLI
             if (selection == null)
             {
                 Logger.Error("No model/animation candidate matched the preview selectors.");
-                return;
+                return null;
             }
 
             var modelName = (string)selection.Model["model"]?["name"];
@@ -47,14 +47,14 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(animationName))
             {
                 Logger.Error("Selected preview entry is missing model or animation name.");
-                return;
+                return null;
             }
             if (!File.Exists(modelSource) || !File.Exists(animationSource))
             {
                 Logger.Error("Selected preview entry source files no longer exist. Re-run the Library export from an accessible game/source folder.");
                 Logger.Error($"Model source: {modelSource}");
                 Logger.Error($"Animation source: {animationSource}");
-                return;
+                return null;
             }
 
             var output = string.IsNullOrWhiteSpace(outputDirectory)
@@ -79,7 +79,7 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
             {
                 Logger.Error("Unable to resolve current CLI executable path.");
-                return;
+                return null;
             }
 
             Logger.Info($"Generating preview glTF: {modelName} + {animationName}");
@@ -127,7 +127,7 @@ namespace AnimeStudio.CLI
             if (process.ExitCode != 0)
             {
                 Logger.Error($"Preview export failed with exit code {process.ExitCode}.");
-                return;
+                return null;
             }
 
             var gltfPath = Directory
@@ -137,7 +137,7 @@ namespace AnimeStudio.CLI
             if (gltfPath == null)
             {
                 Logger.Error($"Preview export did not produce a glTF file in {output}.");
-                return;
+                return null;
             }
 
             var exportIssues = ExtractExportIssues(stdout, stderr);
@@ -146,6 +146,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Preview glTF: {gltfPath}");
             Logger.Info($"Preview validation: {reportPath}");
+            return gltfPath;
         }
 
         public static void GeneratePack(

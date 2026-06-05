@@ -108,6 +108,20 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.GenerateAssembledPreviewGltf != null)
+                {
+                    ModularPreviewAssembler.Generate(
+                        o.GenerateAssembledPreviewGltf.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName,
+                        o.AssemblyModules
+                    );
+                    return;
+                }
+
                 if (o.RebuildLibraryIndexes != null)
                 {
                     Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName);

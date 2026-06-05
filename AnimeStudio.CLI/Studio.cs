@@ -1120,6 +1120,7 @@ namespace AnimeStudio.CLI
                 JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
             );
             GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
+            CharacterAssemblyIndexGenerator.Generate(savePath, models);
         }
 
         private static void GenerateCompactModelAnimationIndex(

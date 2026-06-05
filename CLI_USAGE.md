@@ -145,6 +145,8 @@ CLI 生成索引时，关系优先级应为：
    看到某个模型后，再选择某个动画生成临时可播放 glTF，用于查看动作效果。
 5. 可选打包动画合集。
    确认一组动画属于某个模型后，再显式生成带动画合集的 glTF/GLB。
+6. 模块化角色保持模块化。
+   换脸、换发、配件、披风、武器等模块默认不强行合并进主体模型；Library 会记录可组合关系，浏览/验证时再生成 assembled preview。
 
 推荐工作流：
 
@@ -154,8 +156,44 @@ CLI 生成索引时，关系优先级应为：
   -> 生成绑定索引
   -> 选中模型和动画
   -> 生成预览 glTF
+  -> 可选生成模块化角色组装预览
   -> 可选打包动画合集
 ```
+
+### 模块化角色组装规则
+
+很多 Unity 游戏不会把“完整角色”保存成一个单一 prefab。常见结构是身体/衣服作为主体，脸、头发、面具、配件、武器等作为独立 prefab 或换装模块。素材库默认必须保留这种模块化结构：
+
+- 默认 `Library`：不强行合并，`Models` 里保留 body、face、hair、accessory 等原始模块。
+- 自动索引：生成 `character_assemblies.json`，记录哪些 body 可以搭配哪些 face/hair/accessory。
+- 关系依据：优先使用 Unity 导出的节点/骨骼关系；模块的 skin/bone joints 必须能按同名 Unity joint 映射到主体骨架，才允许自动组装预览。
+- 浏览预览：用 `--generate_assembled_preview_gltf` 生成临时完整角色 glTF，方便快速查看。
+- 成品导出：后续可以基于同一索引选择 body + face + hair + accessory + animation，生成用户指定组合的 assembled glTF/GLB。
+
+这条规则避免两类问题：一是把某个默认脸/头发误认为唯一正确版本；二是把无法确定 attachment 的模块硬塞进角色，导致素材库不准确。宁可把模块标为候选，也不要默认生成看似完整但关系不可靠的角色。
+
+生成组装预览示例：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --generate_assembled_preview_gltf "D:\Assets\Freedunk_Data_Dev\CrossGame_VRising_CustomizationExport_V2\model_animations.json" `
+  --game Normal `
+  --preview_model "HYB_VampireFemale_CustomizationScreen_Prefab" `
+  --preview_animation "^VampireFemale_1H_Idle$" `
+  --preview_output "D:\Assets\Freedunk_Data_Dev\CrossGame_VRising_AssembledPreview_V3" `
+  --assembly_modules "Face,Hair,Accessory"
+```
+
+输出仍然是临时预览，不改变默认素材库：
+
+```text
+CrossGame_VRising_AssembledPreview_V3\
+  preview_validation.json
+  Models\...\HYB_VampireFemale_CustomizationScreen_Prefab.gltf
+  Models\...\assembly_report.json
+```
+
+`assembly_report.json` 会记录每个模块的角色、来源 glTF、是否可组装、缺失 joint 数、实际新增 mesh node 数、最终 glTF 的 mesh/skin/animation/channel 检查结果。只有 `MissingJointCount = 0` 且 `invalidChannels = 0`、`invalidSkinJoints = 0` 的模块化预览，才适合作为可视验证结果。
 
 ### 按需生成动画预览
 
@@ -649,7 +687,7 @@ model_validation.json
 
 AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、BlendShape 动画，还是只作用在 socket/helper 上的辅助动画。
 
-`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`model_validation.json` 是静态模型验收报告，检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。`model_animations.compact.json` 是规范化紧凑索引：模型、动画、模型-动画候选引用分表保存，避免把完整动画对象重复写进每个模型。后续素材库浏览、搜索、批量 bake、UI 和性能优化应优先读取 compact 文件；verbose `model_animations.json` 保留给人工排查和兼容旧命令。
+`asset_summary.json` 是总览报告，记录模型、动画、实验 shader 的数量和模型是否带贴图、骨骼、morph。`model_validation.json` 是静态模型验收报告，检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`animation_bindings.jsonl` 从动画视角列出候选模型，`model_animations.json` 从模型视角列出候选动画、匹配依据、匹配分数和下一步动作。`model_animations.compact.json` 是规范化紧凑索引：模型、动画、模型-动画候选引用分表保存，避免把完整动画对象重复写进每个模型。`character_assemblies.json` 记录模块化角色的 body/face/hair/accessory 候选和推荐组合；它只描述可组装关系，不改变默认 Library 中的原始模块输出。后续素材库浏览、搜索、批量 bake、UI、模块化预览和性能优化应优先读取 compact/assembly 索引；verbose `model_animations.json` 保留给人工排查和兼容旧命令。
 
 `model_animations.json` 和 `model_animations.compact.json` 都会记录 `animationCapability`。它只表示下一步安全处理路径，不等于动画已经视觉验证通过：
 
