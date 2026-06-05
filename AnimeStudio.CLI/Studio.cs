@@ -42,6 +42,7 @@ namespace AnimeStudio.CLI
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
+        private const long FullStructuralAnimationPairLimit = 1_000_000;
         private static readonly Regex[] ModelRootExcludePatterns =
         {
             new Regex(@"^Cs_", RegexOptions.IgnoreCase | RegexOptions.Compiled),
@@ -1006,14 +1007,53 @@ namespace AnimeStudio.CLI
                 ["catalogPath"] = catalogPath,
             }))
             {
-                var entries = LoadCatalogEntries(catalogPath);
-                WriteAssetSummary(savePath, catalogPath, entries);
-                ModelLibraryValidator.Generate(savePath);
+                List<JObject> entries;
+                using (ProfileLogger.Measure("library_index_load_catalog", new Dictionary<string, object>
+                {
+                    ["catalogPath"] = catalogPath,
+                }))
+                {
+                    entries = LoadCatalogEntries(catalogPath);
+                }
+
+                using (ProfileLogger.Measure("library_index_write_summary", new Dictionary<string, object>
+                {
+                    ["entryCount"] = entries.Count,
+                }))
+                {
+                    WriteAssetSummary(savePath, catalogPath, entries);
+                }
+
+                using (ProfileLogger.Measure("library_index_validate_models", new Dictionary<string, object>
+                {
+                    ["entryCount"] = entries.Count,
+                }))
+                {
+                    ModelLibraryValidator.Generate(savePath);
+                }
 
                 var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
                 var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-                var structuralLinks = BuildStructuralUnityAnimationLinks(models, animations);
-                WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+                ExplicitAnimationLinks structuralLinks;
+                using (ProfileLogger.Measure("library_index_build_animation_links", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                    ["animationCount"] = animations.Count,
+                    ["pairCount"] = (long)models.Count * animations.Count,
+                    ["pairLimit"] = FullStructuralAnimationPairLimit,
+                }))
+                {
+                    structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
+                }
+
+                using (ProfileLogger.Measure("library_index_write_animation_indexes", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                    ["animationCount"] = animations.Count,
+                }))
+                {
+                    WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+                }
                 Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
             }
         }
@@ -1032,7 +1072,7 @@ namespace AnimeStudio.CLI
 
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-            var structuralLinks = BuildStructuralUnityAnimationLinks(models, animations);
+            var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
             WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
             Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). Explicit Animator/Animation relations require a fresh export; structural Unity binding links were rebuilt.");
         }
@@ -1091,100 +1131,174 @@ namespace AnimeStudio.CLI
             List<JObject> animations,
             ExplicitAnimationLinks explicitAnimationLinks)
         {
-            GenerateSkeletonLibraryIndex(savePath, models, explicitAnimationLinks);
-            var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
-            using var writer = new StreamWriter(bindingsPath, false);
-            foreach (var animation in animations)
+            using (ProfileLogger.Measure("library_index_write_skeletons", new Dictionary<string, object>
             {
-                var animationKey = GetCatalogKey(animation);
-                explicitAnimationLinks.ByAnimation.TryGetValue(animationKey, out var linkedModels);
-                var candidates = (linkedModels ?? new List<ExplicitModelAnimationLink>())
-                    .OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (candidates.Count == 0)
-                {
-                    var unbound = new
-                    {
-                        animation = BuildBindingAsset(animation),
-                        candidateCount = 0,
-                        candidates = Array.Empty<object>(),
-                        note = "No exported model has an explicit Unity Animator/Animation reference to this clip in the current loaded files.",
-                    };
-                    writer.WriteLine(JsonConvert.SerializeObject(unbound));
-                    continue;
-                }
-
-                var binding = new
-                {
-                    animation = BuildBindingAsset(animation),
-                    candidateCount = candidates.Count,
-                    candidates = candidates.Take(16).Select(link => new
-                    {
-                        name = link.ModelName,
-                        resourceKind = link.ModelResourceKind,
-                        output = link.ModelOutput,
-                        skeletonHash = link.ModelSkeletonHash,
-                        boneCount = link.ModelBoneCount,
-                        meshCount = link.ModelMeshCount,
-                        textureCount = link.ModelTextureCount,
-                        relationSource = link.Source,
-                        score = link.Score,
-                        confidence = link.Confidence,
-                        relation = link.Relation,
-                        matchReasons = link.Reasons,
-                        matchedBindingPaths = link.MatchedBindingPaths,
-                        unmatchedBindingPaths = link.UnmatchedBindingPaths,
-                        requiresHumanoidBake = link.RequiresHumanoidBake,
-                    }).ToArray(),
-                };
-                writer.WriteLine(JsonConvert.SerializeObject(binding));
+                ["modelCount"] = models.Count,
+                ["animationCount"] = animations.Count,
+                ["matchingDeferred"] = explicitAnimationLinks.MatchingDeferred,
+            }))
+            {
+                GenerateSkeletonLibraryIndex(savePath, models, explicitAnimationLinks);
             }
 
-            var modelAnimations = new
+            var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
+            using (ProfileLogger.Measure("library_index_write_animation_bindings", new Dictionary<string, object>
             {
-                generatedAt = DateTime.UtcNow.ToString("O"),
-                catalog = catalogPath,
-                rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
-                relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
-                capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
-                capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
-                relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
-                relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
-                skeletonIndex = Path.Combine(savePath, "skeletons.json"),
-                models = models
-                    .OrderBy(x => (string)x["resourceKind"])
-                    .ThenBy(x => (string)x["name"])
-                    .Select(model =>
-                    {
-                        var modelKey = GetCatalogKey(model);
-                        explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var linkedAnimations);
-                        var candidates = (linkedAnimations ?? new List<ExplicitModelAnimationLink>())
-                            .Select(BuildExplicitModelAnimationCandidate)
-                            .OrderByDescending(x => x.score)
-                            .ThenBy(x => x.name)
-                            .ToArray();
+                ["animationCount"] = animations.Count,
+                ["matchingDeferred"] = explicitAnimationLinks.MatchingDeferred,
+            }))
+            {
+                using var writer = new StreamWriter(bindingsPath, false);
+                foreach (var animation in animations)
+                {
+                    var animationKey = GetCatalogKey(animation);
+                    explicitAnimationLinks.ByAnimation.TryGetValue(animationKey, out var linkedModels);
+                    var candidates = (linkedModels ?? new List<ExplicitModelAnimationLink>())
+                        .OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
 
-                        return new
+                    if (candidates.Count == 0)
+                    {
+                        var unbound = new
                         {
-                            model = BuildModelBindingAsset(model),
-                            candidateCount = candidates.Length,
-                            embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
-                            candidates,
-                            notes = candidates.Length == 0
-                                ? new[] { "No explicit Unity Animator/Animation clip reference was found for this exported model in the current loaded files." }
-                                : Array.Empty<string>(),
+                            animation = BuildBindingAsset(animation),
+                            candidateCount = 0,
+                            candidates = Array.Empty<object>(),
+                            note = explicitAnimationLinks.MatchingDeferred
+                                ? explicitAnimationLinks.DeferredReason
+                                : "No exported model has an explicit Unity Animator/Animation reference to this clip in the current loaded files.",
                         };
-                    })
-                    .ToArray(),
-            };
-            File.WriteAllText(
-                Path.Combine(savePath, "model_animations.json"),
-                JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
-            );
-            GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
-            CharacterAssemblyIndexGenerator.Generate(savePath, models);
-            AssetReadmeGenerator.Generate(savePath);
+                        writer.WriteLine(JsonConvert.SerializeObject(unbound));
+                        continue;
+                    }
+
+                    var binding = new
+                    {
+                        animation = BuildBindingAsset(animation),
+                        candidateCount = candidates.Count,
+                        candidates = candidates.Take(16).Select(link => new
+                        {
+                            name = link.ModelName,
+                            resourceKind = link.ModelResourceKind,
+                            output = link.ModelOutput,
+                            skeletonHash = link.ModelSkeletonHash,
+                            boneCount = link.ModelBoneCount,
+                            meshCount = link.ModelMeshCount,
+                            textureCount = link.ModelTextureCount,
+                            relationSource = link.Source,
+                            score = link.Score,
+                            confidence = link.Confidence,
+                            relation = link.Relation,
+                            matchReasons = link.Reasons,
+                            matchedBindingPaths = link.MatchedBindingPaths,
+                            unmatchedBindingPaths = link.UnmatchedBindingPaths,
+                            requiresHumanoidBake = link.RequiresHumanoidBake,
+                        }).ToArray(),
+                    };
+                    writer.WriteLine(JsonConvert.SerializeObject(binding));
+                }
+            }
+
+            if (explicitAnimationLinks.MatchingDeferred)
+            {
+                var deferred = new
+                {
+                    generatedAt = DateTime.UtcNow.ToString("O"),
+                    catalog = catalogPath,
+                    rule = "Full verbose model-animation candidates were intentionally deferred for this large Library export. Models and animations remain clean and standalone; use model_animations.compact.json, animation_bindings.jsonl, skeletons.json, and targeted preview/pack commands.",
+                    relationRule = "No path/name/resourceKind guesses are emitted for large full exports. This preserves the usable-library rule: strict relations only,宁缺毋滥.",
+                    matchingDeferred = true,
+                    deferredReason = explicitAnimationLinks.DeferredReason,
+                    pairCount = explicitAnimationLinks.PairCount,
+                    pairLimit = explicitAnimationLinks.PairLimit,
+                    modelCount = models.Count,
+                    animationCount = animations.Count,
+                    compactIndex = Path.Combine(savePath, "model_animations.compact.json"),
+                    skeletonIndex = Path.Combine(savePath, "skeletons.json"),
+                    animationBindings = bindingsPath,
+                };
+                File.WriteAllText(
+                    Path.Combine(savePath, "model_animations.json"),
+                    JsonConvert.SerializeObject(deferred, Newtonsoft.Json.Formatting.Indented)
+                );
+            }
+            else
+            {
+                using (ProfileLogger.Measure("library_index_write_model_animations_verbose", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                    ["animationCount"] = animations.Count,
+                }))
+                {
+                    var modelAnimations = new
+                    {
+                        generatedAt = DateTime.UtcNow.ToString("O"),
+                        catalog = catalogPath,
+                        rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
+                        relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
+                        capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                        capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
+                        relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
+                        relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
+                        skeletonIndex = Path.Combine(savePath, "skeletons.json"),
+                        models = models
+                            .OrderBy(x => (string)x["resourceKind"])
+                            .ThenBy(x => (string)x["name"])
+                            .Select(model =>
+                            {
+                                var modelKey = GetCatalogKey(model);
+                                explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var linkedAnimations);
+                                var candidates = (linkedAnimations ?? new List<ExplicitModelAnimationLink>())
+                                    .Select(BuildExplicitModelAnimationCandidate)
+                                    .OrderByDescending(x => x.score)
+                                    .ThenBy(x => x.name)
+                                    .ToArray();
+
+                                return new
+                                {
+                                    model = BuildModelBindingAsset(model),
+                                    candidateCount = candidates.Length,
+                                    embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
+                                    candidates,
+                                    notes = candidates.Length == 0
+                                        ? new[] { "No explicit Unity Animator/Animation clip reference was found for this exported model in the current loaded files." }
+                                        : Array.Empty<string>(),
+                                };
+                            })
+                            .ToArray(),
+                    };
+                    File.WriteAllText(
+                        Path.Combine(savePath, "model_animations.json"),
+                        JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
+                    );
+                }
+            }
+
+            using (ProfileLogger.Measure("library_index_write_model_animations_compact", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+                ["animationCount"] = animations.Count,
+                ["matchingDeferred"] = explicitAnimationLinks.MatchingDeferred,
+            }))
+            {
+                GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
+            }
+
+            using (ProfileLogger.Measure("library_index_write_character_assemblies", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+            }))
+            {
+                CharacterAssemblyIndexGenerator.Generate(savePath, models);
+            }
+
+            using (ProfileLogger.Measure("library_index_write_asset_readmes", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+            }))
+            {
+                AssetReadmeGenerator.Generate(savePath);
+            }
         }
 
         public static void ExportAudioLibrary(string savePath)
@@ -1580,6 +1694,26 @@ namespace AnimeStudio.CLI
             var links = new ExplicitAnimationLinks();
             AddStructuralUnityBindingLinks(links, models, animations);
             return links;
+        }
+
+        private static ExplicitAnimationLinks BuildStructuralUnityAnimationLinksForLibrary(List<JObject> models, List<JObject> animations)
+        {
+            var pairCount = (long)models.Count * animations.Count;
+            if (pairCount > FullStructuralAnimationPairLimit)
+            {
+                Logger.Warning(
+                    $"Skipped full structural model-animation matching for large Library index: {models.Count} model(s) x {animations.Count} animation(s) = {pairCount} pair(s), limit {FullStructuralAnimationPairLimit}. Use targeted preview/pack commands or a smaller filtered export to build exact candidates."
+                );
+                return new ExplicitAnimationLinks
+                {
+                    MatchingDeferred = true,
+                    DeferredReason = $"Large Library index has {pairCount} model-animation pairs, above limit {FullStructuralAnimationPairLimit}. Default full export keeps clean models and standalone animations, and defers expensive candidate matching to targeted tools.",
+                    PairCount = pairCount,
+                    PairLimit = FullStructuralAnimationPairLimit,
+                };
+            }
+
+            return BuildStructuralUnityAnimationLinks(models, animations);
         }
 
         private static void AddStructuralUnityBindingLinks(ExplicitAnimationLinks links, List<JObject> models, List<JObject> animations)
@@ -2473,6 +2607,10 @@ namespace AnimeStudio.CLI
         {
             public Dictionary<string, List<ExplicitModelAnimationLink>> ByModel { get; } = new Dictionary<string, List<ExplicitModelAnimationLink>>(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, List<ExplicitModelAnimationLink>> ByAnimation { get; } = new Dictionary<string, List<ExplicitModelAnimationLink>>(StringComparer.OrdinalIgnoreCase);
+            public bool MatchingDeferred { get; init; }
+            public string DeferredReason { get; init; }
+            public long PairCount { get; init; }
+            public long PairLimit { get; init; }
             private readonly HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             public void Add(string modelKey, string animationKey, ExplicitModelAnimationLink link)
