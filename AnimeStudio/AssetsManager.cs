@@ -26,6 +26,7 @@ namespace AnimeStudio
         public int CurrentReadObjectCount { get; private set; }
         public long CurrentReadPathId { get; private set; }
         public ClassIDType CurrentReadType { get; private set; }
+        private readonly Dictionary<ClassIDType, int> objectParseFailureCounts = new();
 
         internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
@@ -719,19 +720,60 @@ namespace AnimeStudio
                     }
                     catch (Exception e)
                     {
-                        var sb = new StringBuilder();
-                        sb.AppendLine("Unable to load object")
-                            .AppendLine($"Assets {assetsFile.fileName}")
-                            .AppendLine($"Path {assetsFile.originalPath}")
-                            .AppendLine($"Type {objectReader.type}")
-                            .AppendLine($"PathID {objectInfo.m_PathID}")
-                            .Append(e);
-                        Logger.Error(sb.ToString());
+                        HandleObjectParseFailure(assetsFile, objectInfo, objectReader, e);
+                        assetsFile.AddObject(new Object(objectReader));
                     }
 
                     Progress.Report(++i, progressCount);
                 }
             }
+        }
+
+        private void HandleObjectParseFailure(SerializedFile assetsFile, ObjectInfo objectInfo, ObjectReader objectReader, Exception exception)
+        {
+            objectParseFailureCounts.TryGetValue(objectReader.type, out var count);
+            count++;
+            objectParseFailureCounts[objectReader.type] = count;
+
+            var message =
+                $"Unable to parse {objectReader.type} object in {assetsFile.fileName}: PathID {objectInfo.m_PathID}, " +
+                $"byteStart {objectInfo.byteStart}, byteSize {objectInfo.byteSize}. " +
+                $"The object will be kept as a lightweight placeholder. {exception.GetType().Name}: {exception.Message}";
+
+            if (IsRecoverableObjectParseFailure(exception))
+            {
+                if (count <= 5)
+                {
+                    Logger.Warning(message);
+                }
+                else if (count == 6)
+                {
+                    Logger.Warning($"Further {objectReader.type} parse failures are suppressed for this load batch.");
+                }
+                else
+                {
+                    Logger.Debug(message);
+                }
+                return;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Unable to load object")
+                .AppendLine($"Assets {assetsFile.fileName}")
+                .AppendLine($"Path {assetsFile.originalPath}")
+                .AppendLine($"Type {objectReader.type}")
+                .AppendLine($"PathID {objectInfo.m_PathID}")
+                .Append(exception);
+            Logger.Error(sb.ToString());
+        }
+
+        private static bool IsRecoverableObjectParseFailure(Exception exception)
+        {
+            return exception is EndOfStreamException
+                or InvalidDataException
+                or ArgumentOutOfRangeException
+                or IndexOutOfRangeException
+                or OverflowException;
         }
 
         private static bool IsObjectRangeReadable(SerializedFile assetsFile, ObjectInfo objectInfo)
