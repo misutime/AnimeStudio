@@ -606,8 +606,10 @@ namespace AnimeStudio.CLI
         {
             int toExportCount = toExportAssets.Count;
             int exportedCount = 0;
+            int processedCount = 0;
             foreach (var asset in toExportAssets)
             {
+                processedCount++;
                 string exportPath;
                 switch (assetGroupOption)
                 {
@@ -651,7 +653,7 @@ namespace AnimeStudio.CLI
                         break;
                 }
                 exportPath += Path.DirectorySeparatorChar;
-                Logger.Info(
+                Logger.Verbose(
                     $"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}"
                 );
                 try
@@ -662,6 +664,7 @@ namespace AnimeStudio.CLI
                             if (ExportRawFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -669,6 +672,7 @@ namespace AnimeStudio.CLI
                             if (ExportDumpFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -676,6 +680,7 @@ namespace AnimeStudio.CLI
                             if (ExportConvertFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -683,6 +688,7 @@ namespace AnimeStudio.CLI
                             if (ExportJSONFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -692,6 +698,13 @@ namespace AnimeStudio.CLI
                 {
                     Logger.Error(
                         $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
+                    );
+                }
+
+                if (processedCount % 500 == 0)
+                {
+                    Logger.Info(
+                        $"Processed {processedCount}/{toExportCount} {asset.TypeString} asset(s); exported {exportedCount}."
                     );
                 }
             }
@@ -708,6 +721,17 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
+        }
+
+        private static void LogAssetExported(AssetItem asset, int batchCount)
+        {
+            if (asset.Type == ClassIDType.AnimationClip && batchCount > 200)
+            {
+                Logger.Verbose($"Exported {asset.TypeString}: {asset.Text}");
+                return;
+            }
+
+            Logger.Info($"Exported {asset.TypeString}: {asset.Text}");
         }
 
         public static void ExportCurrentAssets(
