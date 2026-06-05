@@ -368,6 +368,20 @@ namespace AnimeStudio.CLI
                     o.Output.FullName
                 );
                 SQLiteSourceIndexRuntime.LoadResult sourceIndexResult = null;
+                if (string.IsNullOrWhiteSpace(sourceIndexPath)
+                    && o.WorkMode == WorkMode.Library
+                    && o.MapOp.Equals(MapOpType.None))
+                {
+                    Logger.Info("No SQLite source index was supplied or found. Building unity_source_index.db in the output directory before Library export.");
+                    sourceIndexPath = SQLiteSourceIndexBuilder.Build(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.UnityVersion,
+                        Math.Max(1, o.BatchFiles)
+                    );
+                }
+
                 if (!string.IsNullOrWhiteSpace(sourceIndexPath))
                 {
                     sourceIndexResult = SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(
@@ -397,7 +411,7 @@ namespace AnimeStudio.CLI
                     && o.MapOp.Equals(MapOpType.None)
                     && needsModelDependencies)
                 {
-                    throw new InvalidOperationException("Library export requires a SQLite Unity source index. Build it with --build_source_sqlite_index, then pass --source_index \"...\\unity_source_index.db\".");
+                    throw new InvalidOperationException("Library export requires a SQLite Unity source index. Build it with --build_source_sqlite_index, pass --source_index, or let the default Library command auto-build unity_source_index.db in the output directory.");
                 }
 
                 if (sourceIndexResult != null && (o.MapOp.HasFlag(MapOpType.CABMap) || o.MapOp.HasFlag(MapOpType.Both)))
