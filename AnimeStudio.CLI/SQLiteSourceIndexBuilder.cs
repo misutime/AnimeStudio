@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -739,7 +740,30 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 case ".webm":
                     return false;
                 default:
-                    return true;
+                    return HasUnityBundleHeader(path);
+            }
+        }
+
+        private static bool HasUnityBundleHeader(string path)
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                if (stream.Length < 7)
+                {
+                    return false;
+                }
+
+                var buffer = new byte[Math.Min(16, stream.Length)];
+                var read = stream.Read(buffer, 0, buffer.Length);
+                var header = Encoding.ASCII.GetString(buffer, 0, read);
+                return header.StartsWith("UnityFS", StringComparison.Ordinal)
+                    || header.StartsWith("UnityWeb", StringComparison.Ordinal)
+                    || header.StartsWith("UnityRaw", StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
             }
         }
 
