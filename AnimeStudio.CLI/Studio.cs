@@ -52,6 +52,10 @@ namespace AnimeStudio.CLI
             new Regex(@"(?:^|_)ShadowMesh$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Dummy|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|[_\-\s])Decal(?:$|[_\-\s])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"^(p?VFX|FX|Part(?:_|$)|Particle|Particles|Trail|TrailTemplate|Beam|Smoke|Flames?|Embers?|Spark(?:s|ies)?|Glow|GlowTip|SmallTip|Soft Shockwave|Distortion|Multiply|EnergyBillboard|Light)$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"^(?:Morgana)?FogPlane\d*$|^Tendrils?\s+Trails?$|^InnerTrails?(?:\s*\(\d+\))?$|^Front Rings?$|^Streaks$|^BlackSpots$|^Burst_Droplet$|^TrailTemplate(?:Thin)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[\n_\-\s/])(p?VFX|FX|Part|Particle|Particles|Trail|Beam|Smoke|Flames?|Embers?|Spark(?:s|ies)?|Glow|Shockwave|Distortion|Billboard|Light)(?:$|[\n_\-\s/0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[_\-\s/])(Projectile|Hit|Miss|Aoe|AoE|Buff|Debuff|Cast|Travel|Impact|Explosion|TargetAreaIndicator)(?:$|[_\-\s/0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
 
         public static Dictionary<ulong, string> Paths { get; set; } =
@@ -384,12 +388,12 @@ namespace AnimeStudio.CLI
             var filtered = assets
                 .Where(x =>
                 {
-                    if (x.Asset is not GameObject)
+                    if (x.Asset is not GameObject && x.Asset is not Animator)
                     {
                         return true;
                     }
 
-                    var exclude = ModelRootExcludePatterns.Any(y => y.IsMatch(x.Text ?? string.Empty));
+                    var exclude = IsExcludedModelRoot(x);
                     if (exclude)
                     {
                         skipped++;
@@ -406,6 +410,21 @@ namespace AnimeStudio.CLI
             }
 
             return filtered;
+        }
+
+        private static bool IsExcludedModelRoot(AssetItem asset)
+        {
+            var filterTexts = new[]
+                {
+                    asset.Text,
+                    asset.Container,
+                    asset.SourceFile?.originalPath,
+                    asset.SourceFile?.fileName,
+                    GetFilterableContainerText(asset),
+                }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x.Replace('\\', '/'));
+            return filterTexts.Any(x => ModelRootExcludePatterns.Any(y => y.IsMatch(x)));
         }
 
         private static AssetItem[] FilterModelRootsOnly(
@@ -2522,7 +2541,9 @@ namespace AnimeStudio.CLI
             {
                 var exportPath = GetExportPath(savePath, assetGroupOption, asset);
                 processedCount++;
-                Logger.Info($"[{processedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
+                Logger.Verbose(
+                    $"[{processedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}"
+                );
                 try
                 {
                     var exported = asset.Asset switch
@@ -2535,6 +2556,9 @@ namespace AnimeStudio.CLI
                     if (exported)
                     {
                         exportedCount++;
+                        Logger.Info(
+                            $"[{processedCount}/{toExportCount}] Exported {asset.TypeString}: {asset.Text}"
+                        );
                         AppendExportManifest(savePath, asset, exportPath);
                     }
                     else
@@ -2549,6 +2573,13 @@ namespace AnimeStudio.CLI
                         $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
                     );
                     CollectAfterModelExport();
+                }
+
+                if (processedCount % 100 == 0)
+                {
+                    Logger.Info(
+                        $"Processed {processedCount}/{toExportCount} model candidate(s); exported {exportedCount}, skipped {skippedCount}."
+                    );
                 }
             }
 

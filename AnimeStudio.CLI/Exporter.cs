@@ -802,6 +802,11 @@ namespace AnimeStudio.CLI
                         )
                         : new ModelConverter(m_Animator, options);
             }
+            if (convert.MeshList.Count == 0)
+            {
+                Logger.Verbose($"Animator {item.Text} has no mesh, skipping...");
+                return false;
+            }
             if (options.exportMaterials)
             {
                 var materialExportPath = exportFullPath;
