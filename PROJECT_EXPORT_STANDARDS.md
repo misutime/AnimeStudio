@@ -90,6 +90,14 @@ SQLite 索引规则：
 - 当前 SQLite v1 面向“已导出的 Library/AudioLibrary 目录”建库；后续可扩展为直接读取完整 Unity 源目录的 CAB/Object/PPtr 全量索引。
 - 不允许为了缩小索引而切断 Unity 外部依赖关系；导出候选可以精简，Unity 关系索引必须完整可追溯。
 
+SQLite 源索引规则：
+
+- `unity_source_index.db` 面向完整 Unity 源目录，不导出素材，只记录源关系。
+- 源索引必须按批加载、写库、清理，避免全量游戏建库时内存无止境增长。
+- 源索引至少包含 `source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。
+- 跨 bundle 关系不能依赖当前批次是否已加载目标对象；必须记录原始 PPtr 的 `fileID`、`pathID` 和 external `fileName/pathName`，避免分批加载切断 Unity 引用。
+- 源索引是后续导出加速和调试底座，不替代 `model_validation.json`、`preview_validation.json` 和人工验收。
+
 音频素材库是独立 profile，不属于默认 3D Library：
 
 - 短音效、按钮声、脚步、命中、技能、环境点缀等 `AudioClip` 可以作为开发素材保存。

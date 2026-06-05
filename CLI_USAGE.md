@@ -268,6 +268,51 @@ model_validation.json
 
 核心原则仍然是“索引要全，导出要精”。进入 `library_index.db` 只是说明资源和关系可查询，不代表默认导出、推荐使用或动画/材质已经视觉验收通过。当前 v1 是从已有导出目录建库；后续会扩展为对完整 Unity 源目录建立 CAB/Object/PPtr 全量索引，减少重复扫描和调试等待。
 
+### SQLite Unity 源目录索引
+
+如果想先对完整 Unity 游戏目录建立可复用源索引，而不是直接导出素材，可以使用：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data" `
+  "D:\Assets\Freedunk_Data_Dev\SQLiteSourceIndex_VRising_Full" `
+  --game Normal `
+  --build_source_sqlite_index `
+  --batch_files 4
+```
+
+默认输出：
+
+```text
+unity_source_index.db
+unity_source_index_summary.json
+UNITY_SOURCE_INDEX_README.md
+```
+
+也可以显式指定数据库路径：
+
+```powershell
+--index_path "D:\Assets\Freedunk_Data_Dev\SQLiteSourceIndex_VRising_Full\unity_source_index.db"
+```
+
+`unity_source_index.db` 和 `library_index.db` 的定位不同：
+
+- `unity_source_index.db`：面向完整 Unity 源目录，记录源文件、SerializedFile、Object、external CAB/PPtr、Unity 组件关系、AnimationClip binding。不导出素材。
+- `library_index.db`：面向已经导出的 Library/AudioLibrary 目录，记录可浏览素材、导出文件、报告、侧车 JSON 和已生成的关系索引。
+
+源索引主要表：
+
+```text
+source_files
+serialized_files
+source_objects
+source_externals
+source_relations
+source_animation_bindings
+```
+
+`--batch_files` 控制每批加载多少源文件。批次越大，跨文件对象解析机会越多，但内存占用更高；批次越小，内存更稳。源索引会直接记录 PPtr 的 `fileID/pathID/external fileName`，因此即使目标对象不在当前批次，也不会丢掉 Unity 引用关系。
+
 ### 模型和动画规则
 
 一个模型可能支持很多动画，尤其是角色资源：私有表情动画、角色展示动画、通用身体动作、职业/性别动作、Animator Controller 引用动作、外部公共动作库等。默认不能把这些动画全部嵌进每个模型，否则会产生巨大、重复、难浏览的 glTF。

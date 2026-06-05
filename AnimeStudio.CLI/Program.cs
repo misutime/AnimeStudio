@@ -136,7 +136,7 @@ namespace AnimeStudio.CLI
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, or --build_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --build_sqlite_index, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -260,6 +260,10 @@ namespace AnimeStudio.CLI
                     }
                 }
                 ConfigureWorkModeTypes(o.WorkMode, o.FbxAnimationMode);
+                if (o.BuildSourceSqliteIndex)
+                {
+                    ConfigureSourceIndexTypes();
+                }
                 if (o.WorkMode != WorkMode.Export)
                 {
                     classTypeFilter = Array.Empty<ClassIDType>();
@@ -306,6 +310,19 @@ namespace AnimeStudio.CLI
                 if (o.DummyDllFolder != null)
                 {
                     assemblyLoader.Load(o.DummyDllFolder.FullName);
+                }
+
+                if (o.BuildSourceSqliteIndex)
+                {
+                    SQLiteSourceIndexBuilder.Build(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.UnityVersion,
+                        Math.Max(1, o.BatchFiles),
+                        o.IndexPath?.FullName
+                    );
+                    return;
                 }
 
                 Logger.Info("Scanning for files...");
@@ -763,6 +780,50 @@ namespace AnimeStudio.CLI
             if (workMode == WorkMode.Library && Studio.IncludeShaders)
             {
                 TypeFlags.SetType(ClassIDType.Shader, true, true);
+            }
+        }
+
+        private static void ConfigureSourceIndexTypes()
+        {
+            TypeFlags.SetTypes(new Dictionary<ClassIDType, (bool, bool)>());
+            foreach (ClassIDType type in Enum.GetValues(typeof(ClassIDType)))
+            {
+                TypeFlags.SetType(type, false, false);
+            }
+
+            var parseTypes = new[]
+            {
+                ClassIDType.Animation,
+                ClassIDType.AnimationClip,
+                ClassIDType.Animator,
+                ClassIDType.AnimatorController,
+                ClassIDType.AnimatorOverrideController,
+                ClassIDType.AssetBundle,
+                ClassIDType.AudioClip,
+                ClassIDType.Avatar,
+                ClassIDType.GameObject,
+                ClassIDType.IndexObject,
+                ClassIDType.Material,
+                ClassIDType.Mesh,
+                ClassIDType.MeshFilter,
+                ClassIDType.MeshRenderer,
+                ClassIDType.MonoBehaviour,
+                ClassIDType.MonoScript,
+                ClassIDType.RectTransform,
+                ClassIDType.ResourceManager,
+                ClassIDType.Shader,
+                ClassIDType.SkinnedMeshRenderer,
+                ClassIDType.Sprite,
+                ClassIDType.SpriteAtlas,
+                ClassIDType.TextAsset,
+                ClassIDType.Texture2D,
+                ClassIDType.Texture2DArray,
+                ClassIDType.Transform,
+            };
+
+            foreach (var type in parseTypes)
+            {
+                TypeFlags.SetType(type, true, false);
             }
         }
 
