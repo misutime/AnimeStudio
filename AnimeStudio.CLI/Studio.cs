@@ -767,21 +767,161 @@ namespace AnimeStudio.CLI
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
             var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
             var sourcePartModels = new List<AssetItem>();
+            var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
 
             Logger.Info(
-                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {shaders.Count} shader(s)."
+                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {libraryTextures.Count} material/terrain texture asset(s), {shaders.Count} shader(s)."
             );
             AppendModelSourcePartCatalog(savePath, sourcePartModels);
 
             var modelAnimations = CliExportOptions.ExportEmbeddedAnimations ? animations : null;
             ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, modelAnimations);
             ExportSeparateAnimationClips(savePath);
+            if (libraryTextures.Count > 0)
+            {
+                ExportAssets(savePath, libraryTextures, AssetGroupOption.ByLibrary, ExportType.Convert);
+            }
             if (shaders.Count > 0)
             {
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
+        }
+
+        private static List<AssetItem> CollectLibraryTextureAssets(string savePath)
+        {
+            var textureItems = exportableAssets
+                .Where(x => x.Asset is Texture2D or Texture2DArray)
+                .GroupBy(x => GetAssetKey((AnimeStudio.Object)x.Asset), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+
+            if (textureItems.Count == 0)
+            {
+                return new List<AssetItem>();
+            }
+
+            var selectedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var references = new Dictionary<string, List<object>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var arrayItem in textureItems.Values.Where(x => x.Asset is Texture2DArray))
+            {
+                var key = GetAssetKey((AnimeStudio.Object)arrayItem.Asset);
+                selectedKeys.Add(key);
+                AddTextureLibraryReference(references, key, new
+                {
+                    basis = "Texture2DArray",
+                    reason = "Texture2DArray is a standalone material/terrain/shader texture library asset.",
+                });
+            }
+
+            foreach (var materialItem in exportableAssets.Where(x => x.Asset is Material))
+            {
+                var material = (Material)materialItem.Asset;
+                foreach (var texEnv in material.m_SavedProperties?.m_TexEnvs ?? new List<KeyValuePair<string, UnityTexEnv>>())
+                {
+                    if (texEnv.Value?.m_Texture == null || texEnv.Value.m_Texture.m_PathID == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!texEnv.Value.m_Texture.TryGet<Texture>(out var texture))
+                    {
+                        continue;
+                    }
+
+                    if (texture is not Texture2D and not Texture2DArray)
+                    {
+                        continue;
+                    }
+
+                    var key = GetAssetKey(texture);
+                    if (!textureItems.ContainsKey(key))
+                    {
+                        continue;
+                    }
+
+                    selectedKeys.Add(key);
+                    AddTextureLibraryReference(references, key, new
+                    {
+                        basis = "Material.m_SavedProperties.m_TexEnvs",
+                        slot = texEnv.Key,
+                        material = material.m_Name,
+                        materialSource = material.assetsFile?.originalPath ?? material.assetsFile?.fileName,
+                        materialPathId = material.m_PathID,
+                    });
+                }
+            }
+
+            var selected = selectedKeys
+                .Select(x => textureItems[x])
+                .OrderBy(x => x.TypeString, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Container ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Text ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var item in selected)
+            {
+                item.LibraryRole = item.Asset is Texture2DArray ? "Texture2DArray" : "MaterialLibrary";
+            }
+
+            WriteTextureLibraryReport(savePath, selected, references);
+            return selected;
+        }
+
+        private static void AddTextureLibraryReference(Dictionary<string, List<object>> references, string key, object reference)
+        {
+            if (!references.TryGetValue(key, out var list))
+            {
+                list = new List<object>();
+                references[key] = list;
+            }
+            list.Add(reference);
+        }
+
+        private static void WriteTextureLibraryReport(string savePath, List<AssetItem> textures, Dictionary<string, List<object>> references)
+        {
+            if (textures.Count == 0)
+            {
+                return;
+            }
+
+            var report = new JObject
+            {
+                ["schemaVersion"] = 1,
+                ["generatedUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["rule"] = "Default Library exports material-referenced Texture2D assets and all Texture2DArray assets as independent material/terrain texture library resources. Model display dependencies remain in Textures/_ModelDependencies.",
+                ["counts"] = JObject.FromObject(new
+                {
+                    total = textures.Count,
+                    texture2D = textures.Count(x => x.Asset is Texture2D),
+                    texture2DArray = textures.Count(x => x.Asset is Texture2DArray),
+                }),
+                ["textures"] = JArray.FromObject(textures.Select(x =>
+                {
+                    var key = GetAssetKey((AnimeStudio.Object)x.Asset);
+                    return new
+                    {
+                        name = x.Text,
+                        type = x.TypeString,
+                        libraryRole = x.LibraryRole,
+                        source = x.SourceFile?.originalPath ?? x.SourceFile?.fileName,
+                        container = x.Container,
+                        pathId = x.m_PathID,
+                        outputRoot = Path.Combine("Textures", x.LibraryRole == "Texture2DArray" ? "Texture2DArray" : "MaterialLibrary"),
+                        references = references.TryGetValue(key, out var refs) ? refs : new List<object>(),
+                    };
+                })),
+            };
+
+            File.WriteAllText(Path.Combine(savePath, "texture_library.json"), report.ToString(Newtonsoft.Json.Formatting.Indented));
+            File.WriteAllText(Path.Combine(savePath, "TEXTURE_LIBRARY.md"),
+                "# Texture Library\n\n" +
+                "默认 Library 会额外导出材质/地表贴图库：\n\n" +
+                "- `Textures/_ModelDependencies`：模型 glTF 直接显示需要的贴图。\n" +
+                "- `Textures/MaterialLibrary`：由 Unity `Material.m_SavedProperties.m_TexEnvs` 明确引用的 Texture2D。\n" +
+                "- `Textures/Texture2DArray`：Texture2DArray 按 layer 拆出的贴图库资源，常用于 terrain、surface、shader/material 混合。\n\n" +
+                "这些贴图不一定会直接嵌入 glTF PBR 材质；自定义 shader、terrain splat、ColorMask/Tint 或 Texture2DArray 采样方式需要结合 `texture_library.json`、材质 JSON 和后续 shader/customization 管线处理。\n");
         }
 
         private static List<AssetItem> FilterLibraryModelSources(
@@ -2853,6 +2993,22 @@ namespace AnimeStudio.CLI
             if (asset.Asset is AudioClip audioClip)
             {
                 return GetAudioLibrarySubPath(asset, audioClip);
+            }
+
+            if (asset.Type == ClassIDType.Texture2DArray || asset.LibraryRole == "Texture2DArray")
+            {
+                var textureArraySubPath = GetLibrarySubPathWithoutRole(asset);
+                return string.IsNullOrWhiteSpace(textureArraySubPath)
+                    ? "Texture2DArray"
+                    : Path.Combine("Texture2DArray", textureArraySubPath);
+            }
+
+            if (asset.Type == ClassIDType.Texture2D && asset.LibraryRole == "MaterialLibrary")
+            {
+                var textureSubPath = GetLibrarySubPathWithoutRole(asset);
+                return string.IsNullOrWhiteSpace(textureSubPath)
+                    ? "MaterialLibrary"
+                    : Path.Combine("MaterialLibrary", textureSubPath);
             }
 
             if (asset.LibraryRole == "RawUnreferenced")

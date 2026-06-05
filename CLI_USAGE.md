@@ -201,13 +201,20 @@ AnimeStudio 的默认策略是：
 
 Unity 的 `Texture2DArray` 是数组贴图，常见于地形、地表、shader 采样、材质变体或运行时混合。它通常不是普通模型 glTF PBR 材质能直接引用的一张图片，所以默认模型导出不会把它强行塞进 glTF。
 
-AnimeStudio 参考 AssetStudio 的方式，把 `Texture2DArray` 的每一层拆成导出阶段的 fake `Texture2DArrayImage`，再复用现有贴图解码器导出 PNG。输出目录会包含：
+默认 `Library` 输出会导出材质/地表贴图库：
+
+- `Textures/_ModelDependencies`：模型 glTF 直接显示所需的贴图。
+- `Textures/MaterialLibrary`：Unity `Material.m_SavedProperties.m_TexEnvs` 明确引用的 `Texture2D`。这覆盖大量 terrain、surface、material、mask、normal、base map 等贴图，同时避免把未被材质引用的 UI/图标噪声默认塞进 3D Library。
+- `Textures/Texture2DArray`：所有解析到的 `Texture2DArray`，作为独立 terrain/material/shader 贴图库资源保存。
+
+AnimeStudio 参考 AssetStudio 的方式，把 `Texture2DArray` 的每一层拆成导出阶段的 fake `Texture2DArrayImage`，再复用现有贴图解码器导出 PNG。数组贴图目录会包含：
 
 - `xxx_001.png`、`xxx_002.png` 等每层图片。
 - `xxx.texture2darray.json`，记录 width、height、depth、GraphicsFormat、TextureFormat、源文件、PathID、stream offset/size 和每层导出状态。
 - `asset_catalog.jsonl` 中的 `Texture2DArray` 条目，方便后续材质报告或素材库 UI 反查。
+- 根目录 `TEXTURE_LIBRARY.md` 和 `texture_library.json` 会说明这些贴图来自哪些 Unity 材质槽或为什么作为独立数组贴图库导出。
 
-单独导出数组贴图库示例：
+如果只想单独抽数组贴图库，仍可使用显式命令：
 
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `

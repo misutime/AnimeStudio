@@ -815,8 +815,8 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, true, false);
             TypeFlags.SetType(ClassIDType.Mesh, true, false);
             TypeFlags.SetType(ClassIDType.Material, true, false);
-            TypeFlags.SetType(ClassIDType.Texture2D, true, false);
-            TypeFlags.SetType(ClassIDType.Texture2DArray, true, false);
+            TypeFlags.SetType(ClassIDType.Texture2D, true, workMode == WorkMode.Library);
+            TypeFlags.SetType(ClassIDType.Texture2DArray, true, workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.AudioClip, false, false);
             TypeFlags.SetType(ClassIDType.VideoClip, false, false);
             TypeFlags.SetType(ClassIDType.MovieTexture, false, false);
