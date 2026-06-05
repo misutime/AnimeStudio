@@ -37,7 +37,7 @@ namespace AnimeStudio.CLI
         public static WorkMode WorkMode { get; set; } = WorkMode.Export;
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static int MaxExportTasks { get; set; } = 1;
-        public static int BatchFiles { get; set; } = 4;
+        public static int BatchFiles { get; set; } = 16;
         public static int ModelGcInterval { get; set; } = 32;
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }

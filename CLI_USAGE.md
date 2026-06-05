@@ -322,7 +322,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "D:\Assets\Freedunk_Data_Dev\SQLiteSourceIndex_VRising_Full" `
   --game Normal `
   --build_source_sqlite_index `
-  --batch_files 4 `
+  --batch_files 16 `
   --profile_log source_index_profile.jsonl
 ```
 
@@ -932,10 +932,10 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 3D 模式默认启用受控批处理：
 
 ```powershell
---batch_files 4
+--batch_files 16
 ```
 
-`--batch_files` 表示每批加载多少个源资源文件及其依赖。数值越大，重复依赖加载越少，但内存峰值越高；数值越小，内存更稳但总耗时可能增加。大游戏全量导出优先保持默认值，内存充足时再调高。
+`--batch_files` 表示每批加载多少个源资源文件及其依赖。默认值是 `16`。数值越大，重复依赖加载越少，但内存峰值越高；数值越小，内存更稳但总耗时可能增加。大游戏全量导出优先保持默认值，内存充足时再调高。
 
 3D 模式还会按模型数量定期做一次完整 GC：
 
@@ -943,7 +943,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 --model_gc_interval 32
 ```
 
-64GB 内存机器建议保持默认值或调大到 `64`，优先提高吞吐；如果观察到内存持续上升不回落，再调小到 `16`。传 `0` 可以关闭模型级完整 GC，只保留批次结束时的清理。
+64GB 内存机器建议先保持默认 `16`；如果内存稳定且希望提高吞吐，可以调大到 `32` 或 `64`；如果观察到内存持续上升不回落，再调小到 `8`。传 `0` 可以关闭模型级完整 GC，只保留批次结束时的清理。
 
 导出过程会写入：
 

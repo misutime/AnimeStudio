@@ -412,7 +412,7 @@ namespace AnimeStudio.CLI
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.Core);
             ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
             MaxExportTasks.SetDefaultValue(1);
-            BatchFiles.SetDefaultValue(4);
+            BatchFiles.SetDefaultValue(16);
             ModelGcInterval.SetDefaultValue(32);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
