@@ -465,6 +465,11 @@ namespace AnimeStudio.CLI
                         assetItem.FullSize = asset.byteSize + m_Texture2D.m_StreamData.size;
                     exportable = ClassIDType.Texture2D.CanExport();
                     break;
+                case Texture2DArray m_Texture2DArray:
+                    if (!string.IsNullOrEmpty(m_Texture2DArray.m_StreamData?.path))
+                        assetItem.FullSize = asset.byteSize + m_Texture2DArray.m_StreamData.size;
+                    exportable = ClassIDType.Texture2DArray.CanExport();
+                    break;
                 case AudioClip m_AudioClip:
                     if (!string.IsNullOrEmpty(m_AudioClip.m_Source))
                         assetItem.FullSize = asset.byteSize + m_AudioClip.m_Size;
@@ -2484,7 +2489,7 @@ namespace AnimeStudio.CLI
                 ClassIDType.GameObject or ClassIDType.Animator => "Models",
                 ClassIDType.AnimationClip => "Animations",
                 ClassIDType.Shader => "Shaders",
-                ClassIDType.Texture2D or ClassIDType.Sprite => "Textures",
+                ClassIDType.Texture2D or ClassIDType.Texture2DArray or ClassIDType.Sprite => "Textures",
                 ClassIDType.Material => "Materials",
                 ClassIDType.Mesh => "Meshes",
                 ClassIDType.MiHoYoBinData

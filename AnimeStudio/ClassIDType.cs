@@ -146,6 +146,7 @@ namespace AnimeStudio
         ProceduralMaterial = 185,
         ProceduralTexture = 186,
         Texture2DArray = 187,
+        Texture2DArrayImage = -187, // fake export-time layer image
         CubemapArray = 188,
         OffMeshLink = 191,
         OcclusionArea = 192,

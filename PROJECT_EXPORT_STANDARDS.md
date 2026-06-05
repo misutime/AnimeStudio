@@ -170,6 +170,13 @@ ColorMask/Tint 管线规则：
 - 如果只有 mask 和基础贴图，没有颜色配置，必须标记 `needsCustomizationTint`。
 - 不能为了让模型看起来有颜色而硬猜游戏私有配色。
 
+Texture2DArray 规则：
+
+- `Texture2DArray` 常用于地形、地表、shader 采样、材质变体或运行时混合，默认视为独立贴图库/材质库资源。
+- 默认模型 glTF 不强行嵌入数组贴图；普通 PBR 无法表达其 shader 采样逻辑时，必须保留引用和报告，而不是硬猜。
+- 导出时按 AssetStudio 思路拆成 fake `Texture2DArrayImage` 层图，并写 metadata 记录 width、height、depth、GraphicsFormat、TextureFormat、源文件、PathID、stream offset/size 和每层状态。
+- 如果材质引用数组贴图，`MATERIAL_REPORT.md` 应说明槽位、来源和后续需要 shader/customization 处理的原因。
+
 Shader 默认作为实验功能：
 
 - 默认不作为核心导出。

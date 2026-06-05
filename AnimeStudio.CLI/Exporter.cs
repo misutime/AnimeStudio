@@ -79,6 +79,99 @@ namespace AnimeStudio.CLI
             }
         }
 
+        public static bool ExportTexture2DArray(AssetItem item, string exportPath)
+        {
+            var textureArray = (Texture2DArray)item.Asset;
+            if (!TryExportFolder(exportPath, item, out var exportFolder))
+                return false;
+
+            Directory.CreateDirectory(exportFolder);
+
+            var type = Properties.Settings.Default.convertType;
+            var extension = "." + type.ToString().ToLower();
+            var exportedLayers = new List<object>();
+            var layerIndex = 0;
+
+            foreach (var layer in textureArray.TextureList)
+            {
+                layerIndex++;
+                var layerName = FixFileName(layer.m_Name);
+                var layerPath = Path.Combine(exportFolder, $"{layerName}{extension}");
+                if (File.Exists(layerPath) && !Properties.Settings.Default.allowDuplicates)
+                {
+                    continue;
+                }
+
+                if (File.Exists(layerPath))
+                {
+                    for (var duplicate = 0; ; duplicate++)
+                    {
+                        var candidate = Path.Combine(exportFolder, $"{layerName} ({duplicate}){extension}");
+                        if (!File.Exists(candidate))
+                        {
+                            layerPath = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                using var image = layer.ConvertToImage(true);
+                if (image == null)
+                {
+                    exportedLayers.Add(new
+                    {
+                        index = layerIndex - 1,
+                        name = layer.m_Name,
+                        output = (string)null,
+                        status = "unsupportedTextureFormat",
+                        textureFormat = layer.m_TextureFormat.ToString(),
+                    });
+                    continue;
+                }
+
+                using (var file = File.OpenWrite(layerPath))
+                {
+                    image.WriteToStream(file, type);
+                }
+
+                exportedLayers.Add(new
+                {
+                    index = layerIndex - 1,
+                    name = layer.m_Name,
+                    output = layerPath,
+                    status = "exported",
+                    textureFormat = layer.m_TextureFormat.ToString(),
+                });
+            }
+
+            var metadataPath = Path.Combine(exportFolder, $"{FixFileName(item.Text)}.texture2darray.json");
+            var metadata = new
+            {
+                kind = "Texture2DArray",
+                name = textureArray.m_Name,
+                sourceType = item.TypeString,
+                source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                container = item.Container,
+                pathId = item.m_PathID,
+                width = textureArray.m_Width,
+                height = textureArray.m_Height,
+                depth = textureArray.m_Depth,
+                graphicsFormat = textureArray.m_Format.ToString(),
+                mappedTextureFormat = textureArray.m_Format.ToTextureFormat().ToString(),
+                mipCount = textureArray.m_MipCount,
+                dataSize = textureArray.m_DataSize,
+                streamPath = textureArray.m_StreamData?.path,
+                streamOffset = textureArray.m_StreamData?.offset,
+                streamSize = textureArray.m_StreamData?.size,
+                layers = exportedLayers,
+                note = "Texture2DArray is exported as independent layer images for texture/terrain/material libraries; it is not embedded into glTF PBR materials by default.",
+            };
+            File.WriteAllText(metadataPath, JsonConvert.SerializeObject(metadata, Formatting.Indented));
+
+            AppendAssetCatalog(item, exportFolder, "Texture2DArray");
+            return exportedLayers.Count > 0;
+        }
+
         public static bool ExportAudioClip(AssetItem item, string exportPath)
         {
             var m_AudioClip = (AudioClip)item.Asset;
@@ -2175,6 +2268,8 @@ namespace AnimeStudio.CLI
                     return ExportGameObject(item, exportPath);
                 case ClassIDType.Texture2D:
                     return ExportTexture2D(item, exportPath);
+                case ClassIDType.Texture2DArray:
+                    return ExportTexture2DArray(item, exportPath);
                 case ClassIDType.AudioClip:
                     return ExportAudioClip(item, exportPath);
                 case ClassIDType.Shader:

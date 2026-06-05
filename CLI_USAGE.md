@@ -156,6 +156,31 @@ AnimeStudio 的默认策略是：
 
 每个模型目录还会生成 `ASSET_README.md`。这是模型使用入口，会汇总基础信息、材质状态、动画候选、模块/头发/头部/附件组装关系和使用建议。正常浏览素材时先看 `ASSET_README.md`，需要材质细节时再看 `MATERIAL_REPORT.md`。
 
+### Texture2DArray / Texture2DArrayImage
+
+Unity 的 `Texture2DArray` 是数组贴图，常见于地形、地表、shader 采样、材质变体或运行时混合。它通常不是普通模型 glTF PBR 材质能直接引用的一张图片，所以默认模型导出不会把它强行塞进 glTF。
+
+AnimeStudio 参考 AssetStudio 的方式，把 `Texture2DArray` 的每一层拆成导出阶段的 fake `Texture2DArrayImage`，再复用现有贴图解码器导出 PNG。输出目录会包含：
+
+- `xxx_001.png`、`xxx_002.png` 等每层图片。
+- `xxx.texture2darray.json`，记录 width、height、depth、GraphicsFormat、TextureFormat、源文件、PathID、stream offset/size 和每层导出状态。
+- `asset_catalog.jsonl` 中的 `Texture2DArray` 条目，方便后续材质报告或素材库 UI 反查。
+
+单独导出数组贴图库示例：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data" `
+  "D:\Assets\VRising_Texture2DArray" `
+  --game Normal `
+  --mode Export `
+  --types Texture2DArray:Both AssetBundle:Parse ResourceManager:Parse `
+  --group_assets ByLibrary `
+  --export_type Convert
+```
+
+如果某个模型材质引用了数组贴图，`MATERIAL_REPORT.md` 应记录这个 Unity 贴图槽和引用关系；但除非后续有明确 shader/customization 管线能还原采样方式，否则它仍作为独立贴图库资源保存。
+
 ### 模型和动画规则
 
 一个模型可能支持很多动画，尤其是角色资源：私有表情动画、角色展示动画、通用身体动作、职业/性别动作、Animator Controller 引用动作、外部公共动作库等。默认不能把这些动画全部嵌进每个模型，否则会产生巨大、重复、难浏览的 glTF。

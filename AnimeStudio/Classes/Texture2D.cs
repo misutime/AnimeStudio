@@ -69,6 +69,7 @@ namespace AnimeStudio
     {
         public int m_Width;
         public int m_Height;
+        public uint m_CompleteImageSize;
         public TextureFormat m_TextureFormat;
         public bool m_MipMap;
         public int m_MipCount;
@@ -78,11 +79,43 @@ namespace AnimeStudio
 
         private static bool HasGNFTexture(SerializedType type) => type.Match("1D52BB98AA5F54C67C22C39E8B2E400F");
         private static bool HasExternalMipRelativeOffset(SerializedType type) => type.Match("1D52BB98AA5F54C67C22C39E8B2E400F", "5390A985F58D5524F95DB240E8789704");
+        public Texture2D(Texture2DArray texture2DArray, int layer)
+        {
+            reader = texture2DArray.reader;
+            assetsFile = texture2DArray.assetsFile;
+            version = texture2DArray.version;
+            platform = texture2DArray.platform;
+            serializedType = texture2DArray.serializedType;
+
+            m_Name = $"{texture2DArray.m_Name}_{layer + 1:D3}";
+            type = ClassIDType.Texture2DArrayImage;
+            m_PathID = texture2DArray.m_PathID;
+
+            m_Width = texture2DArray.m_Width;
+            m_Height = texture2DArray.m_Height;
+            m_TextureFormat = texture2DArray.m_Format.ToTextureFormat();
+            m_MipCount = texture2DArray.m_MipCount;
+            m_MipMap = m_MipCount > 1;
+            m_TextureSettings = texture2DArray.m_TextureSettings;
+            m_StreamData = texture2DArray.m_StreamData;
+
+            m_CompleteImageSize = texture2DArray.m_Depth > 0
+                ? texture2DArray.m_DataSize / (uint)texture2DArray.m_Depth
+                : 0;
+            var offset = layer * m_CompleteImageSize + texture2DArray.image_data.Offset;
+
+            image_data = !string.IsNullOrEmpty(m_StreamData?.path)
+                ? new ResourceReader(m_StreamData.path, assetsFile, offset, m_CompleteImageSize)
+                : new ResourceReader(reader, offset, m_CompleteImageSize);
+
+            byteSize = (uint)(m_Width * m_Height) * 4;
+        }
+
         public Texture2D(ObjectReader reader) : base(reader)
         {
             m_Width = reader.ReadInt32();
             m_Height = reader.ReadInt32();
-            var m_CompleteImageSize = reader.ReadInt32();
+            m_CompleteImageSize = reader.ReadUInt32();
             if (version[0] >= 2020) //2020.1 and up
             {
                 var m_MipsStripped = reader.ReadInt32();

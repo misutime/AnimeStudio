@@ -29,6 +29,7 @@ It's an up-to-date fork of Razmoth's one. After his repo was discontinued, bugs 
 - [CLI 通用资源导出说明](CLI_USAGE.md)
 - [开发样本工作流](DEV_SAMPLE_WORKFLOW.md)
 - [资源导出工具开发规划](RESOURCE_EXPORT_ROADMAP.md)
+- `Texture2DArray` 支持按数组层拆成 `Texture2DArrayImage` 独立贴图库资源，详见 CLI 文档。
 
 ---
 

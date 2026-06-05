@@ -189,6 +189,7 @@ namespace AnimeStudio.CLI
                 ProfileLogger.Initialize(o.Output.FullName, o.ProfileLog);
 
                 TypeFlags.SetTypes(JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Settings.Default.types));
+                TypeFlags.SetType(ClassIDType.Texture2DArray, true, true);
 
                 var classTypeFilter = Array.Empty<ClassIDType>();
                 if (!o.TypeFilter.IsNullOrEmpty())
@@ -241,6 +242,7 @@ namespace AnimeStudio.CLI
                     if (ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport())
                     {
                         TypeFlags.SetType(ClassIDType.Texture2D, true, exportTexture2D);
+                        TypeFlags.SetType(ClassIDType.Texture2DArray, true, false);
                         if (Settings.Default.exportMaterials)
                         {
                             TypeFlags.SetType(ClassIDType.Material, true, exportMaterial);
@@ -706,6 +708,7 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.Mesh, true, false);
             TypeFlags.SetType(ClassIDType.Material, true, false);
             TypeFlags.SetType(ClassIDType.Texture2D, true, false);
+            TypeFlags.SetType(ClassIDType.Texture2DArray, true, false);
             TypeFlags.SetType(ClassIDType.AudioClip, false, false);
             TypeFlags.SetType(ClassIDType.VideoClip, false, false);
             TypeFlags.SetType(ClassIDType.MovieTexture, false, false);
