@@ -28,6 +28,8 @@ namespace AnimeStudio
         public ClassIDType CurrentReadType { get; private set; }
         private readonly Dictionary<ClassIDType, int> objectParseFailureCounts = new();
 
+        public IReadOnlyDictionary<ClassIDType, int> ObjectParseFailureCounts => objectParseFailureCounts;
+
         internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
         internal List<IDisposable> containerFiles = new List<IDisposable>();

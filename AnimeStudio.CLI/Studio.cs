@@ -42,6 +42,7 @@ namespace AnimeStudio.CLI
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
+        private static ExportRunStats _exportRunStats = new ExportRunStats();
         private const long FullStructuralAnimationPairLimit = 100_000;
         private static readonly Regex[] ModelRootExcludePatterns =
         {
@@ -1134,6 +1135,64 @@ namespace AnimeStudio.CLI
                 : null;
         }
 
+        private sealed class ExportRunStats
+        {
+            private const int MaxSamples = 64;
+
+            public DateTime? StartedAtUtc { get; set; }
+            public DateTime? FinishedAtUtc { get; set; }
+            public string Mode { get; set; }
+            public int ModelCandidateCount { get; set; }
+            public int AnimationCandidateCount { get; set; }
+            public int ExportedModels { get; set; }
+            public int SkippedModels { get; private set; }
+            public int FailedModels { get; private set; }
+            public Dictionary<string, int> SkippedByReason { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> FailedByReason { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public List<object> SkippedSamples { get; } = new();
+            public List<object> FailedSamples { get; } = new();
+
+            public void RecordSkippedModel(string reason, AssetItem asset)
+            {
+                SkippedModels++;
+                Increment(SkippedByReason, reason);
+                AddSample(SkippedSamples, reason, asset, null);
+            }
+
+            public void RecordFailedModel(string reason, AssetItem asset, Exception exception)
+            {
+                FailedModels++;
+                Increment(FailedByReason, reason);
+                AddSample(FailedSamples, reason, asset, exception);
+            }
+
+            private static void Increment(Dictionary<string, int> map, string key)
+            {
+                key = string.IsNullOrWhiteSpace(key) ? "unknown" : key;
+                map.TryGetValue(key, out var count);
+                map[key] = count + 1;
+            }
+
+            private static void AddSample(List<object> samples, string reason, AssetItem asset, Exception exception)
+            {
+                if (samples.Count >= MaxSamples)
+                {
+                    return;
+                }
+
+                samples.Add(new
+                {
+                    reason,
+                    type = asset?.TypeString,
+                    name = asset?.Text,
+                    source = asset?.SourceFile?.originalPath ?? asset?.SourceFile?.fullName ?? asset?.SourceFile?.fileName,
+                    pathId = asset?.m_PathID,
+                    exception = exception?.GetType().Name,
+                    message = exception?.Message,
+                });
+            }
+        }
+
         public static void GenerateLibraryIndexes(string savePath)
         {
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
@@ -1162,6 +1221,7 @@ namespace AnimeStudio.CLI
                 }))
                 {
                     WriteAssetSummary(savePath, catalogPath, entries);
+                    WriteExportRunSummary(savePath);
                 }
 
                 using (ProfileLogger.Measure("library_index_validate_models", new Dictionary<string, object>
@@ -1260,6 +1320,60 @@ namespace AnimeStudio.CLI
             };
             File.WriteAllText(
                 Path.Combine(savePath, "asset_summary.json"),
+                JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
+            );
+        }
+
+        private static void WriteExportRunSummary(string savePath)
+        {
+            if (_exportRunStats == null)
+            {
+                return;
+            }
+
+            var parseFailures = assetsManager.ObjectParseFailureCounts
+                .OrderByDescending(x => x.Value)
+                .ThenBy(x => x.Key.ToString(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key.ToString(), x => x.Value);
+            var summary = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                startedAt = _exportRunStats.StartedAtUtc?.ToString("O"),
+                finishedAt = _exportRunStats.FinishedAtUtc?.ToString("O"),
+                mode = _exportRunStats.Mode,
+                candidates = new
+                {
+                    models = _exportRunStats.ModelCandidateCount,
+                    animations = _exportRunStats.AnimationCandidateCount,
+                },
+                results = new
+                {
+                    exportedModels = _exportRunStats.ExportedModels,
+                    skippedModels = _exportRunStats.SkippedModels,
+                    failedModels = _exportRunStats.FailedModels,
+                },
+                skippedByReason = _exportRunStats.SkippedByReason
+                    .OrderByDescending(x => x.Value)
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Value),
+                failedByReason = _exportRunStats.FailedByReason
+                    .OrderByDescending(x => x.Value)
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Value),
+                objectParseFailures = new
+                {
+                    total = parseFailures.Values.Sum(),
+                    byType = parseFailures,
+                    note = "Recoverable Unity object parse failures are skipped or kept as lightweight placeholders. They are not treated as usable exported assets.",
+                },
+                samples = new
+                {
+                    skipped = _exportRunStats.SkippedSamples,
+                    failed = _exportRunStats.FailedSamples,
+                },
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "export_run_summary.json"),
                 JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
             );
         }
@@ -2833,6 +2947,13 @@ namespace AnimeStudio.CLI
             List<AssetItem> animations
         )
         {
+            _exportRunStats = new ExportRunStats
+            {
+                StartedAtUtc = DateTime.UtcNow,
+                Mode = WorkMode.ToString(),
+                ModelCandidateCount = models.Count,
+                AnimationCandidateCount = animations?.Count ?? 0,
+            };
             var exportedCount = 0;
             var processedCount = 0;
             var skippedCount = 0;
@@ -2858,6 +2979,7 @@ namespace AnimeStudio.CLI
                     if (exported)
                     {
                         exportedCount++;
+                        _exportRunStats.ExportedModels++;
                         Logger.Info(
                             $"[{processedCount}/{toExportCount}] Exported {asset.TypeString}: {asset.Text}"
                         );
@@ -2866,11 +2988,13 @@ namespace AnimeStudio.CLI
                     else
                     {
                         skippedCount++;
+                        _exportRunStats.RecordSkippedModel("export_returned_false", asset);
                     }
                     CollectAfterModelExport();
                 }
                 catch (Exception ex)
                 {
+                    _exportRunStats.RecordFailedModel("export_exception", asset, ex);
                     Logger.Error(
                         $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
                     );
@@ -2885,7 +3009,9 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            _exportRunStats.FinishedAtUtc = DateTime.UtcNow;
             Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s); skipped {skippedCount} candidate(s).");
+            WriteExportRunSummary(savePath);
         }
 
         private static void CollectAfterModelExport()
