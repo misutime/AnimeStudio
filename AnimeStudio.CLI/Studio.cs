@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using Newtonsoft.Json;
@@ -695,6 +696,9 @@ namespace AnimeStudio.CLI
                 case WorkMode.Library:
                     ExportAssetLibrary(savePath);
                     break;
+                case WorkMode.AudioLibrary:
+                    ExportAudioLibrary(savePath);
+                    break;
                 case WorkMode.SplitObjects:
                     ExportSplitObjects(savePath, assetGroupOption);
                     break;
@@ -1127,6 +1131,79 @@ namespace AnimeStudio.CLI
             GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
             CharacterAssemblyIndexGenerator.Generate(savePath, models);
             AssetReadmeGenerator.Generate(savePath);
+        }
+
+        public static void ExportAudioLibrary(string savePath)
+        {
+            var audioClips = exportableAssets.Where(x => x.Asset is AudioClip).ToList();
+            Logger.Info($"Exporting audio library: {audioClips.Count} audio clip(s).");
+            ExportAssets(savePath, audioClips, AssetGroupOption.ByLibrary, ExportType.Convert);
+            WriteAudioLibraryReadme(savePath, audioClips);
+        }
+
+        private static void WriteAudioLibraryReadme(string savePath, IReadOnlyCollection<AssetItem> audioClips)
+        {
+            var counts = GetAudioLibraryCounts(savePath, audioClips);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# Audio Library");
+            sb.AppendLine();
+            sb.AppendLine("这份目录是独立音频素材库，不属于默认 3D Library。3D Library 默认只导出模型、贴图、骨骼、动画和必要材质信息；音效需要显式使用 `--mode AudioLibrary`。");
+            sb.AppendLine();
+            sb.AppendLine("## 目录分类");
+            sb.AppendLine();
+            sb.AppendLine("- `Audio/SFX/`：短音效，例如脚步、命中、按钮、技能、环境点缀等。");
+            sb.AppendLine("- `Audio/Music/`：较长音乐、BGM、主题音乐。");
+            sb.AppendLine("- `Audio/Voice/`：语音、对白、角色台词。");
+            sb.AppendLine("- `Audio/Other/`：无法可靠判断的音频。");
+            sb.AppendLine();
+            sb.AppendLine("分类优先依据 Unity container/source/name 中的通用语义，再用音频时长兜底；这是素材库浏览规则，不改变原始 Unity 资源。");
+            sb.AppendLine();
+            sb.AppendLine("## 本次统计");
+            sb.AppendLine();
+            foreach (var pair in counts)
+            {
+                sb.AppendLine($"- `{pair.Key}`: {pair.Value}");
+            }
+            if (counts.Count == 0)
+            {
+                sb.AppendLine("- 未导出可用音频。");
+            }
+            sb.AppendLine();
+            sb.AppendLine("每个导出的音频旁边会生成 `.audio.json`，记录 Unity 名称、路径、长度、声道、采样率、压缩格式、分类和导出文件。机器索引用 `asset_catalog.jsonl`。");
+            File.WriteAllText(Path.Combine(savePath, "AUDIO_LIBRARY_README.md"), sb.ToString(), Encoding.UTF8);
+        }
+
+        private static Dictionary<string, int> GetAudioLibraryCounts(string savePath, IReadOnlyCollection<AssetItem> audioClips)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (File.Exists(catalogPath))
+            {
+                return File.ReadLines(catalogPath)
+                    .Select(line =>
+                    {
+                        try
+                        {
+                            return JObject.Parse(line);
+                        }
+                        catch
+                        {
+                            return null;
+                        }
+                    })
+                    .Where(x => x?["kind"]?.ToString() == "Audio")
+                    .GroupBy(x => x["output"]?.ToString() ?? $"{x["name"]}|{x["pathId"]}")
+                    .Select(x => x.Last())
+                    .GroupBy(x => x["audioKind"]?.ToString() ?? x["resourceKind"]?.ToString() ?? "Other")
+                    .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count());
+            }
+
+            return audioClips
+                .Where(x => x.Asset is AudioClip)
+                .GroupBy(x => Exporter.ClassifyAudioClip((AudioClip)x.Asset, x.Text, x.Container, x.SourceFile?.originalPath ?? x.SourceFile?.fileName))
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count());
         }
 
         private static void GenerateCompactModelAnimationIndex(
@@ -2488,6 +2565,7 @@ namespace AnimeStudio.CLI
             {
                 ClassIDType.GameObject or ClassIDType.Animator => "Models",
                 ClassIDType.AnimationClip => "Animations",
+                ClassIDType.AudioClip => "Audio",
                 ClassIDType.Shader => "Shaders",
                 ClassIDType.Texture2D or ClassIDType.Texture2DArray or ClassIDType.Sprite => "Textures",
                 ClassIDType.Material => "Materials",
@@ -2501,6 +2579,11 @@ namespace AnimeStudio.CLI
 
         private static string GetLibrarySubPath(AssetItem asset)
         {
+            if (asset.Asset is AudioClip audioClip)
+            {
+                return GetAudioLibrarySubPath(asset, audioClip);
+            }
+
             if (asset.LibraryRole == "RawUnreferenced")
             {
                 var rawSubPath = GetLibrarySubPathWithoutRole(asset);
@@ -2523,6 +2606,32 @@ namespace AnimeStudio.CLI
             }
 
             return GetAssetNameCategory(asset.Text);
+        }
+
+        private static string GetAudioLibrarySubPath(AssetItem asset, AudioClip audioClip)
+        {
+            var category = Exporter.ClassifyAudioClip(audioClip, asset.Text, asset.Container, asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName);
+            var sourcePath = !string.IsNullOrWhiteSpace(asset.Container) && !int.TryParse(asset.Container, out _)
+                ? asset.Container
+                : asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName ?? string.Empty;
+            var container = Path.HasExtension(sourcePath) ? Path.GetDirectoryName(sourcePath) : sourcePath;
+            if (string.IsNullOrWhiteSpace(container))
+            {
+                return category;
+            }
+
+            return Path.Combine(category, SanitizeRelativePath(container));
+        }
+
+        private static string SanitizeRelativePath(string path)
+        {
+            var parts = path
+                .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+                .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => Regex.Replace(x, @"[<>:""/\\|?*]+", "_"))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            return parts.Length == 0 ? string.Empty : Path.Combine(parts);
         }
 
         private static string GetAssetNameCategory(string name)

@@ -80,6 +80,14 @@ FBX 只作为兼容旧 DCC、对照验证或实验输出。默认正确性验证
 - `model_validation.json` / `preview_validation.json`：导出质量验证结果。
 - `export_manifest.jsonl`：导出文件和源资源关系。
 
+音频素材库是独立 profile，不属于默认 3D Library：
+
+- 短音效、按钮声、脚步、命中、技能、环境点缀等 `AudioClip` 可以作为开发素材保存。
+- 默认 `Library` 不导出 `AudioClip`、`VideoClip`、`MovieTexture`，避免污染 3D 模型素材库。
+- 需要音效时使用 `--mode AudioLibrary`，输出到 `Audio/SFX`、`Audio/Music`、`Audio/Voice`、`Audio/Other`。
+- 每个音频旁边必须有 `.audio.json`，根目录必须有 `AUDIO_LIBRARY_README.md`，说明分类规则和统计。
+- `VideoClip` / `MovieTexture` 只属于显式媒体提取，不进入默认可用素材库。
+
 默认 `Models/` 使用 `PrefabPrimary`：
 
 - 只放 prefab、Animator 或完整 GameObject 组合模型。

@@ -585,7 +585,7 @@ namespace AnimeStudio.CLI
             Regex[] userExcludeFilters
         )
         {
-            if (workMode == WorkMode.Export)
+            if (workMode == WorkMode.Export || workMode == WorkMode.AudioLibrary)
             {
                 return userExcludeFilters ?? Array.Empty<Regex>();
             }
@@ -661,7 +661,7 @@ namespace AnimeStudio.CLI
 
         private static Regex[] GetNameExcludeFilters(WorkMode workMode, Model3DProfile profile3D, Regex[] userExcludeFilters)
         {
-            if (workMode == WorkMode.Export)
+            if (workMode == WorkMode.Export || workMode == WorkMode.AudioLibrary)
             {
                 return userExcludeFilters ?? Array.Empty<Regex>();
             }
@@ -696,6 +696,32 @@ namespace AnimeStudio.CLI
         {
             if (workMode == WorkMode.Export)
             {
+                return;
+            }
+
+            if (workMode == WorkMode.AudioLibrary)
+            {
+                TypeFlags.SetType(ClassIDType.AnimationClip, false, false);
+                TypeFlags.SetType(ClassIDType.Animator, false, false);
+                TypeFlags.SetType(ClassIDType.GameObject, false, false);
+                TypeFlags.SetType(ClassIDType.Transform, false, false);
+                TypeFlags.SetType(ClassIDType.MeshFilter, false, false);
+                TypeFlags.SetType(ClassIDType.MeshRenderer, false, false);
+                TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, false, false);
+                TypeFlags.SetType(ClassIDType.Mesh, false, false);
+                TypeFlags.SetType(ClassIDType.Material, false, false);
+                TypeFlags.SetType(ClassIDType.Texture2D, false, false);
+                TypeFlags.SetType(ClassIDType.Texture2DArray, false, false);
+                TypeFlags.SetType(ClassIDType.AudioClip, true, true);
+                TypeFlags.SetType(ClassIDType.VideoClip, false, false);
+                TypeFlags.SetType(ClassIDType.MovieTexture, false, false);
+                TypeFlags.SetType(ClassIDType.Sprite, false, false);
+                TypeFlags.SetType(ClassIDType.SpriteAtlas, false, false);
+                TypeFlags.SetType(ClassIDType.Font, false, false);
+                TypeFlags.SetType(ClassIDType.TextAsset, false, false);
+                TypeFlags.SetType(ClassIDType.MonoBehaviour, false, false);
+                TypeFlags.SetType(ClassIDType.MiHoYoBinData, false, false);
+                TypeFlags.SetType(ClassIDType.Shader, false, false);
                 return;
             }
 

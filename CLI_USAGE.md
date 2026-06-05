@@ -181,6 +181,51 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 如果某个模型材质引用了数组贴图，`MATERIAL_REPORT.md` 应记录这个 Unity 贴图槽和引用关系；但除非后续有明确 shader/customization 管线能还原采样方式，否则它仍作为独立贴图库资源保存。
 
+### AudioClip / 音效素材库
+
+短音效属于开发素材，例如脚步声、命中、技能、按钮、篮球入网、环境点缀等。但它不属于默认 3D Library，不能和模型、贴图、骨骼、动画混在同一个浏览目录里。
+
+默认 `--mode Library` 会关闭 `AudioClip`、`VideoClip`、`MovieTexture`。需要音效时使用独立音频素材库：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data" `
+  "D:\Assets\VRising_AudioLibrary" `
+  --game Normal `
+  --mode AudioLibrary `
+  --group_assets ByLibrary `
+  --export_type Convert
+```
+
+输出结构：
+
+- `Audio/SFX/`：短音效，优先用于游戏开发复用。
+- `Audio/Music/`：BGM、主题音乐、较长循环音乐。
+- `Audio/Voice/`：对白、语音、角色台词。
+- `Audio/Other/`：无法可靠判断的音频。
+- `AUDIO_LIBRARY_README.md`：人工入口，解释分类和统计。
+- `*.audio.json`：每个音频旁边的元数据，记录长度、声道、采样率、压缩格式、Unity 路径、分类等。
+- `asset_catalog.jsonl`：机器索引，包含 `kind=Audio` 和 `audioKind`。
+
+分类规则是通用启发式：优先看 Unity container/source/name 中的 `voice/dialog/bgm/music/sfx/sound/effect` 等语义，再用音频时长兜底。短于约 15 秒的未知音频默认归 `SFX`，长于约 45 秒的未知音频默认归 `Music`。这只是素材库浏览分类，不会修改原始 Unity 资源。
+
+如果本机 FMOD/native 解码器不可用，CLI 会降级导出原始音频数据，例如 `.fsb`，并在 `.audio.json` 中标记 `convertedToWav=false`。这比整批失败更适合作为素材库归档；后续可以用专门音频工具批量转码。
+
+如果只想做底层显式提取，也可以用原始类型开关：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\Game\Game_Data" `
+  "D:\Assets\Game_AudioRaw" `
+  --game Normal `
+  --mode Export `
+  --types AudioClip:Both `
+  --group_assets ByLibrary `
+  --export_type Convert
+```
+
+`VideoClip` / `MovieTexture` 仍然不进入默认素材库；如果确实要提取视频，需要显式用 `--mode Export --types VideoClip:Both`。
+
 ### 模型和动画规则
 
 一个模型可能支持很多动画，尤其是角色资源：私有表情动画、角色展示动画、通用身体动作、职业/性别动作、Animator Controller 引用动作、外部公共动作库等。默认不能把这些动画全部嵌进每个模型，否则会产生巨大、重复、难浏览的 glTF。

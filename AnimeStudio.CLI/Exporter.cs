@@ -178,14 +178,40 @@ namespace AnimeStudio.CLI
             if (m_AudioClip.m_AudioData.Size == 0)
                 return false;
             var converter = new AudioClipConverter(m_AudioClip);
+            string exportFullPath;
+            var convertedToWav = false;
             if (Properties.Settings.Default.convertAudio && converter.IsSupport)
             {
-                if (!TryExportFile(exportPath, item, ".wav", out var exportFullPath))
-                    return false;
-                var buffer = converter.ConvertToWav();
-                if (buffer == null)
-                    return false;
-                File.WriteAllBytes(exportFullPath, buffer);
+                byte[] buffer = null;
+                try
+                {
+                    buffer = converter.ConvertToWav();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"AudioClip {item.Text} cannot be converted to wav; exporting original audio data instead. {ex.Message}");
+                }
+
+                if (buffer != null)
+                {
+                    if (!TryExportFile(exportPath, item, ".wav", out exportFullPath))
+                        return false;
+                    File.WriteAllBytes(exportFullPath, buffer);
+                    convertedToWav = true;
+                }
+                else
+                {
+                    if (
+                        !TryExportFile(
+                            exportPath,
+                            item,
+                            converter.GetExtensionName(),
+                            out exportFullPath
+                        )
+                    )
+                        return false;
+                    m_AudioClip.m_AudioData.WriteData(exportFullPath);
+                }
             }
             else
             {
@@ -194,13 +220,77 @@ namespace AnimeStudio.CLI
                         exportPath,
                         item,
                         converter.GetExtensionName(),
-                        out var exportFullPath
+                        out exportFullPath
                     )
                 )
                     return false;
                 m_AudioClip.m_AudioData.WriteData(exportFullPath);
             }
+            WriteAudioMetadata(item, m_AudioClip, exportFullPath, converter, convertedToWav);
+            AppendAssetCatalog(item, exportFullPath, "Audio");
             return true;
+        }
+
+        internal static string ClassifyAudioClip(AudioClip clip, string name, string container, string source)
+        {
+            var text = $"{name} {container} {source}".ToLowerInvariant();
+            if (Regex.IsMatch(text, @"(^|[^a-z0-9])(voice|vo|dialog|dialogue|speech|talk|line|npcvoice|character[_-]?voice)([^a-z0-9]|$)"))
+            {
+                return "Voice";
+            }
+            if (Regex.IsMatch(text, @"(^|[^a-z0-9])(bgm|music|mus|theme|ost|song|loop|ambience|ambient)([^a-z0-9]|$)"))
+            {
+                return "Music";
+            }
+            if (Regex.IsMatch(text, @"(^|[^a-z0-9])(sfx|se|sound|sounds|audio|effect|fx|hit|step|foot|jump|dash|shoot|shot|button|click|impact|skill|attack|ui)([^a-z0-9]|$)"))
+            {
+                return "SFX";
+            }
+            if (clip != null && clip.m_Length > 0 && clip.m_Length <= 15f)
+            {
+                return "SFX";
+            }
+            if (clip != null && clip.m_Length >= 45f)
+            {
+                return "Music";
+            }
+            return "Other";
+        }
+
+        private static void WriteAudioMetadata(
+            AssetItem item,
+            AudioClip audioClip,
+            string exportFullPath,
+            AudioClipConverter converter,
+            bool convertedToWav
+        )
+        {
+            var source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName;
+            var metadata = new
+            {
+                kind = "Audio",
+                resourceKind = ClassifyAudioClip(audioClip, item.Text, item.Container, source),
+                name = item.Text,
+                unityName = audioClip.m_Name,
+                container = item.Container,
+                source,
+                pathId = item.m_PathID,
+                output = exportFullPath,
+                exportedFile = Path.GetFileName(exportFullPath),
+                convertedToWav,
+                originalExtension = converter.GetExtensionName(),
+                length = audioClip.m_Length,
+                channels = audioClip.m_Channels,
+                frequency = audioClip.m_Frequency,
+                bitsPerSample = audioClip.m_BitsPerSample,
+                compressionFormat = audioClip.m_CompressionFormat.ToString(),
+                loadType = audioClip.m_LoadType,
+                preloadAudioData = audioClip.m_PreloadAudioData,
+                loadInBackground = audioClip.m_LoadInBackground,
+                dataSize = audioClip.m_AudioData.Size,
+                note = "AudioClip is intentionally exported through AudioLibrary or explicit type export; it is not part of the default 3D Library.",
+            };
+            File.WriteAllText(exportFullPath + ".audio.json", JsonConvert.SerializeObject(metadata, Formatting.Indented));
         }
 
         public static bool ExportShader(AssetItem item, string exportPath)
@@ -1855,10 +1945,14 @@ namespace AnimeStudio.CLI
             }
 
             var animationInfo = item.Asset is AnimationClip infoClip ? AnalyzeAnimationClip(infoClip) : null;
+            var audioClip = item.Asset as AudioClip;
+            var audioKind = audioClip == null
+                ? null
+                : ClassifyAudioClip(audioClip, item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName);
             var entry = new
             {
                 kind,
-                resourceKind = InferResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
+                resourceKind = audioKind ?? InferResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
                 exportedAt = DateTime.UtcNow.ToString("O"),
                 name = item.Text,
                 sourceType = item.TypeString,
@@ -1882,6 +1976,13 @@ namespace AnimeStudio.CLI
                 unknownBindingCount = animationInfo?.unknownBindingCount,
                 transformBindingPaths = animationInfo?.transformBindingPaths,
                 classificationNotes = animationInfo?.classificationNotes,
+                audioKind,
+                audioLength = audioClip?.m_Length,
+                audioChannels = audioClip?.m_Channels,
+                audioFrequency = audioClip?.m_Frequency,
+                audioBitsPerSample = audioClip?.m_BitsPerSample,
+                audioCompressionFormat = audioClip?.m_CompressionFormat.ToString(),
+                audioDataSize = audioClip?.m_AudioData.Size,
             };
             AppendCatalogEntry(entry);
         }

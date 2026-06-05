@@ -14,7 +14,8 @@ namespace AnimeStudio.CLI
         Export,
         SplitObjects,
         Animator,
-        Library
+        Library,
+        AudioLibrary
     }
 
     public enum FbxAnimationMode
@@ -293,7 +294,7 @@ namespace AnimeStudio.CLI
             ContainerFilter = new Option<Regex[]>("--containers", ParseRegexOption, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
             NameExcludeFilter = new Option<Regex[]>("--names_exclude", ParseRegexOption, false, "Specify name regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
             ContainerExcludeFilter = new Option<Regex[]>("--containers_exclude", ParseRegexOption, false, "Specify container/path regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
-            WorkMode = new Option<WorkMode>("--mode", "Specify export mode: Library, Export, SplitObjects, or Animator.");
+            WorkMode = new Option<WorkMode>("--mode", "Specify export mode: Library, AudioLibrary, Export, SplitObjects, or Animator.");
             GameName = new Option<string>("--game", $"Specify Game.");
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
