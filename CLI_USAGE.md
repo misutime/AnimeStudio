@@ -343,6 +343,33 @@ source_index_profile.jsonl
 - `unity_source_index.db`：面向完整 Unity 源目录，记录源文件、SerializedFile、Object、external CAB/PPtr、Unity 组件关系、AnimationClip binding。不导出素材。
 - `library_index.db`：面向已经导出的 Library/AudioLibrary 目录，记录可浏览素材、导出文件、报告、侧车 JSON 和已生成的关系索引。
 
+全量 `Library` 导出必须显式使用源索引：
+
+```powershell
+D:\misutime\AnimeStudio\dist\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data" `
+  "D:\Assets\VRising_AnimeStudioExport_Library" `
+  --game Normal `
+  --mode Library `
+  --group_assets ByContainer `
+  --profile_3d Core `
+  --model_format Gltf `
+  --texture_mode Png `
+  --fbx_animation Auto `
+  --animation_package Separate `
+  --batch_files 8 `
+  --source_index "D:\Assets\VRising_AnimeStudioExport_Full\unity_source_index.db" `
+  --profile_log export_profile.jsonl
+```
+
+传入 `--source_index` 后，CLI 会读取 SQLite 的 `serialized_files` / `source_externals`，把它作为运行时 Unity 外部引用解析底座，并跳过旧 CAB map 的自动构建。精品 `Library` 导出缺少 SQLite 源索引时会停止；旧 CAB map / AssetMap 只保留给显式 `--map_op` 调试或兼容旧流程，不再作为默认全量导出路径。导出目录会写入：
+
+```text
+source_index_usage.json
+```
+
+用于记录本次导出使用了哪个源索引、索引规模、关系数量和 animation binding 数量。
+
 源索引主要表：
 
 ```text

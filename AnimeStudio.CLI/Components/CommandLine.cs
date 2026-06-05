@@ -130,6 +130,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.RebuildLibraryIndexes,
                 optionsBinder.BuildSqliteIndex,
                 optionsBinder.BuildSourceSqliteIndex,
+                optionsBinder.SourceIndex,
                 optionsBinder.IndexPath,
                 optionsBinder.InspectUnityFiles,
                 optionsBinder.Blender,
@@ -211,6 +212,7 @@ namespace AnimeStudio.CLI
         public DirectoryInfo RebuildLibraryIndexes { get; set; }
         public DirectoryInfo BuildSqliteIndex { get; set; }
         public bool BuildSourceSqliteIndex { get; set; }
+        public FileInfo SourceIndex { get; set; }
         public FileInfo IndexPath { get; set; }
         public bool InspectUnityFiles { get; set; }
         public FileInfo Blender { get; set; }
@@ -287,6 +289,7 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> RebuildLibraryIndexes;
         public readonly Option<DirectoryInfo> BuildSqliteIndex;
         public readonly Option<bool> BuildSourceSqliteIndex;
+        public readonly Option<FileInfo> SourceIndex;
         public readonly Option<FileInfo> IndexPath;
         public readonly Option<bool> InspectUnityFiles;
         public readonly Option<FileInfo> Blender;
@@ -361,6 +364,7 @@ namespace AnimeStudio.CLI
             RebuildLibraryIndexes = new Option<DirectoryInfo>("--rebuild_library_indexes", "Rebuild summary, validation, skeleton, model-animation, and compact indexes from a previous Library export without loading the original Unity game files. Explicit Animator relations require a fresh export; catalog structural links are rebuilt.").LegalFilePathsOnly();
             BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Build a reusable SQLite index from a previous Library or AudioLibrary export. This keeps indexing broad while export remains strict.").LegalFilePathsOnly();
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
+            SourceIndex = new Option<FileInfo>("--source_index", "SQLite Unity source index used by Library export for dependency resolution. Prefer unity_source_index.db over legacy CAB maps for full exports.").LegalFilePathsOnly();
             IndexPath = new Option<FileInfo>("--index_path", "Output SQLite database path for --build_sqlite_index. Defaults to library_index.db in the export root.");
             InspectUnityFiles = new Option<bool>("--inspect_unity_files", "Load Unity files and write unity_file_inspect.json with object type counts and sample names, without exporting assets.");
             Blender = new Option<FileInfo>("--blender", "Blender executable path used for optional glTF-to-FBX compatibility packaging.").LegalFilePathsOnly();
@@ -524,6 +528,7 @@ namespace AnimeStudio.CLI
                 RebuildLibraryIndexes = bindingContext.ParseResult.GetValueForOption(RebuildLibraryIndexes),
                 BuildSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSqliteIndex),
                 BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
+                SourceIndex = bindingContext.ParseResult.GetValueForOption(SourceIndex),
                 IndexPath = bindingContext.ParseResult.GetValueForOption(IndexPath),
                 InspectUnityFiles = bindingContext.ParseResult.GetValueForOption(InspectUnityFiles),
                 Blender = bindingContext.ParseResult.GetValueForOption(Blender),

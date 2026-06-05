@@ -404,68 +404,55 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                 case GameObject gameObject:
                     foreach (var ptr in gameObject.m_Components ?? Enumerable.Empty<PPtr<Component>>())
                     {
-                        InsertPPtrRelation(connection, transaction, "gameObject.component", gameObject, ptr.m_FileID, ptr.m_PathID, "Component", null);
-                        counts["sourceRelations"]++;
+                        AddPPtrRelation(connection, transaction, counts, "gameObject.component", gameObject, ptr.m_FileID, ptr.m_PathID, "Component", null);
                     }
                     break;
                 case Transform transform:
-                    InsertPPtrRelation(connection, transaction, "component.gameObject", transform, transform.m_GameObject.m_FileID, transform.m_GameObject.m_PathID, "GameObject", null);
-                    counts["sourceRelations"]++;
+                    AddPPtrRelation(connection, transaction, counts, "component.gameObject", transform, transform.m_GameObject.m_FileID, transform.m_GameObject.m_PathID, "GameObject", null);
                     if (transform.m_Father != null && !transform.m_Father.IsNull)
                     {
-                        InsertPPtrRelation(connection, transaction, "transform.parent", transform, transform.m_Father.m_FileID, transform.m_Father.m_PathID, "Transform", null);
-                        counts["sourceRelations"]++;
+                        AddPPtrRelation(connection, transaction, counts, "transform.parent", transform, transform.m_Father.m_FileID, transform.m_Father.m_PathID, "Transform", null);
                     }
                     foreach (var ptr in transform.m_Children ?? Enumerable.Empty<PPtr<Transform>>())
                     {
-                        InsertPPtrRelation(connection, transaction, "transform.child", transform, ptr.m_FileID, ptr.m_PathID, "Transform", null);
-                        counts["sourceRelations"]++;
+                        AddPPtrRelation(connection, transaction, counts, "transform.child", transform, ptr.m_FileID, ptr.m_PathID, "Transform", null);
                     }
                     break;
                 case Animator animator:
                     WriteComponentGameObject(connection, transaction, animator, counts);
-                    InsertPPtrRelation(connection, transaction, "animator.avatar", animator, animator.m_Avatar.m_FileID, animator.m_Avatar.m_PathID, "Avatar", null);
-                    counts["sourceRelations"]++;
-                    InsertPPtrRelation(connection, transaction, "animator.controller", animator, animator.m_Controller.m_FileID, animator.m_Controller.m_PathID, "RuntimeAnimatorController", null);
-                    counts["sourceRelations"]++;
+                    AddPPtrRelation(connection, transaction, counts, "animator.avatar", animator, animator.m_Avatar.m_FileID, animator.m_Avatar.m_PathID, "Avatar", null);
+                    AddPPtrRelation(connection, transaction, counts, "animator.controller", animator, animator.m_Controller.m_FileID, animator.m_Controller.m_PathID, "RuntimeAnimatorController", null);
                     break;
                 case Animation animation:
                     WriteComponentGameObject(connection, transaction, animation, counts);
                     foreach (var ptr in animation.m_Animations ?? Enumerable.Empty<PPtr<AnimationClip>>())
                     {
-                        InsertPPtrRelation(connection, transaction, "animation.clip", animation, ptr.m_FileID, ptr.m_PathID, "AnimationClip", null);
-                        counts["sourceRelations"]++;
+                        AddPPtrRelation(connection, transaction, counts, "animation.clip", animation, ptr.m_FileID, ptr.m_PathID, "AnimationClip", null);
                     }
                     break;
                 case AnimatorController controller:
                     foreach (var ptr in controller.m_AnimationClips ?? Enumerable.Empty<PPtr<AnimationClip>>())
                     {
-                        InsertPPtrRelation(connection, transaction, "animatorController.clip", controller, ptr.m_FileID, ptr.m_PathID, "AnimationClip", null);
-                        counts["sourceRelations"]++;
+                        AddPPtrRelation(connection, transaction, counts, "animatorController.clip", controller, ptr.m_FileID, ptr.m_PathID, "AnimationClip", null);
                     }
                     break;
                 case AnimatorOverrideController overrideController:
-                    InsertPPtrRelation(connection, transaction, "animatorOverrideController.baseController", overrideController, overrideController.m_Controller.m_FileID, overrideController.m_Controller.m_PathID, "RuntimeAnimatorController", null);
-                    counts["sourceRelations"]++;
+                    AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.baseController", overrideController, overrideController.m_Controller.m_FileID, overrideController.m_Controller.m_PathID, "RuntimeAnimatorController", null);
                     foreach (var clip in overrideController.m_Clips ?? Enumerable.Empty<AnimationClipOverride>())
                     {
-                        InsertPPtrRelation(connection, transaction, "animatorOverrideController.originalClip", overrideController, clip.m_OriginalClip.m_FileID, clip.m_OriginalClip.m_PathID, "AnimationClip", null);
-                        InsertPPtrRelation(connection, transaction, "animatorOverrideController.overrideClip", overrideController, clip.m_OverrideClip.m_FileID, clip.m_OverrideClip.m_PathID, "AnimationClip", null);
-                        counts["sourceRelations"] += 2;
+                        AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.originalClip", overrideController, clip.m_OriginalClip.m_FileID, clip.m_OriginalClip.m_PathID, "AnimationClip", null);
+                        AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.overrideClip", overrideController, clip.m_OverrideClip.m_FileID, clip.m_OverrideClip.m_PathID, "AnimationClip", null);
                     }
                     break;
                 case SkinnedMeshRenderer skinned:
                     WriteComponentGameObject(connection, transaction, skinned, counts);
-                    InsertPPtrRelation(connection, transaction, "skinnedMeshRenderer.mesh", skinned, skinned.m_Mesh.m_FileID, skinned.m_Mesh.m_PathID, "Mesh", null);
-                    counts["sourceRelations"]++;
+                    AddPPtrRelation(connection, transaction, counts, "skinnedMeshRenderer.mesh", skinned, skinned.m_Mesh.m_FileID, skinned.m_Mesh.m_PathID, "Mesh", null);
                     if (skinned.m_RootBone != null && !skinned.m_RootBone.IsNull)
                     {
-                        InsertPPtrRelation(connection, transaction, "skinnedMeshRenderer.rootBone", skinned, skinned.m_RootBone.m_FileID, skinned.m_RootBone.m_PathID, "Transform", null);
-                        counts["sourceRelations"]++;
+                        AddPPtrRelation(connection, transaction, counts, "skinnedMeshRenderer.rootBone", skinned, skinned.m_RootBone.m_FileID, skinned.m_RootBone.m_PathID, "Transform", null);
                     }
                     var bones = skinned.m_Bones ?? new List<PPtr<Transform>>();
-                    InsertPPtrRelation(connection, transaction, "skinnedMeshRenderer.bones", skinned, 0, 0, "Transform", new { count = bones.Count, targets = bones.Take(512).Select(x => DescribePPtr(skinned.assetsFile, x.m_FileID, x.m_PathID, "Transform")).ToArray(), truncated = bones.Count > 512 });
-                    counts["sourceRelations"]++;
+                    AddPPtrRelation(connection, transaction, counts, "skinnedMeshRenderer.bones", skinned, 0, 0, "Transform", new { count = bones.Count, targets = bones.Take(512).Select(x => DescribePPtr(skinned.assetsFile, x.m_FileID, x.m_PathID, "Transform")).ToArray(), truncated = bones.Count > 512 });
                     WriteRendererMaterials(connection, transaction, skinned, counts);
                     break;
                 case MeshRenderer meshRenderer:
@@ -474,8 +461,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     break;
                 case MeshFilter meshFilter:
                     WriteComponentGameObject(connection, transaction, meshFilter, counts);
-                    InsertPPtrRelation(connection, transaction, "meshFilter.mesh", meshFilter, meshFilter.m_Mesh.m_FileID, meshFilter.m_Mesh.m_PathID, "Mesh", null);
-                    counts["sourceRelations"]++;
+                    AddPPtrRelation(connection, transaction, counts, "meshFilter.mesh", meshFilter, meshFilter.m_Mesh.m_FileID, meshFilter.m_Mesh.m_PathID, "Mesh", null);
                     break;
                 case AnimationClip clip:
                     InsertAnimationBindings(connection, transaction, clip);
@@ -486,24 +472,30 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 
         private static void WriteComponentGameObject(SqliteConnection connection, SqliteTransaction transaction, Component component, Dictionary<string, long> counts)
         {
-            InsertPPtrRelation(connection, transaction, "component.gameObject", component, component.m_GameObject.m_FileID, component.m_GameObject.m_PathID, "GameObject", null);
-            counts["sourceRelations"]++;
+            AddPPtrRelation(connection, transaction, counts, "component.gameObject", component, component.m_GameObject.m_FileID, component.m_GameObject.m_PathID, "GameObject", null);
         }
 
         private static void WriteRendererMaterials(SqliteConnection connection, SqliteTransaction transaction, Renderer renderer, Dictionary<string, long> counts)
         {
             foreach (var ptr in renderer.m_Materials ?? Enumerable.Empty<PPtr<Material>>())
             {
-                InsertPPtrRelation(connection, transaction, "renderer.material", renderer, ptr.m_FileID, ptr.m_PathID, "Material", null);
+                AddPPtrRelation(connection, transaction, counts, "renderer.material", renderer, ptr.m_FileID, ptr.m_PathID, "Material", null);
+            }
+        }
+
+        private static void AddPPtrRelation(SqliteConnection connection, SqliteTransaction transaction, Dictionary<string, long> counts, string relation, AnimeStudio.Object from, int toFileId, long toPathId, string toTypeHint, object details)
+        {
+            if (InsertPPtrRelation(connection, transaction, relation, from, toFileId, toPathId, toTypeHint, details))
+            {
                 counts["sourceRelations"]++;
             }
         }
 
-        private static void InsertPPtrRelation(SqliteConnection connection, SqliteTransaction transaction, string relation, AnimeStudio.Object from, int toFileId, long toPathId, string toTypeHint, object details)
+        private static bool InsertPPtrRelation(SqliteConnection connection, SqliteTransaction transaction, string relation, AnimeStudio.Object from, int toFileId, long toPathId, string toTypeHint, object details)
         {
             if (toPathId == 0 && details == null)
             {
-                return;
+                return false;
             }
 
             var target = DescribePPtr(from.assetsFile, toFileId, toPathId, toTypeHint);
@@ -535,6 +527,7 @@ VALUES ($relation, $confidence, $fromSource, $fromFile, $fromType, $fromName, $f
             command.Parameters.AddWithValue("$targetCount", details == null ? DBNull.Value : (details.GetType().GetProperty("count")?.GetValue(details) ?? DBNull.Value));
             command.Parameters.AddWithValue("$rawJson", JsonConvert.SerializeObject(raw));
             command.ExecuteNonQuery();
+            return true;
         }
 
         private static void InsertAnimationBindings(SqliteConnection connection, SqliteTransaction transaction, AnimationClip clip)

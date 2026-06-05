@@ -93,6 +93,7 @@ SQLite 索引规则：
 SQLite 源索引规则：
 
 - `unity_source_index.db` 面向完整 Unity 源目录，不导出素材，只记录源关系。
+- 全量 `Library` 导出必须使用 `--source_index` 指向已构建的 `unity_source_index.db`。SQLite 源索引是默认依赖底座；旧 CAB map / AssetMap 只作为显式 `--map_op` 调试或兼容旧流程，不能作为精品全量导出的默认路径。
 - 源索引必须按批加载、写库、清理，避免全量游戏建库时内存无止境增长。
 - 源索引至少包含 `source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。
 - 跨 bundle 关系不能依赖当前批次是否已加载目标对象；必须记录原始 PPtr 的 `fileID`、`pathID` 和 external `fileName/pathName`，避免分批加载切断 Unity 引用。

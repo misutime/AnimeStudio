@@ -362,13 +362,50 @@ namespace AnimeStudio.CLI
                     Logger.Warning("No files left after applying filters.");
                     return;
                 }
+                var sourceIndexPath = SQLiteSourceIndexRuntime.ResolveIndexPath(
+                    o.SourceIndex?.FullName,
+                    o.Input.FullName,
+                    o.Output.FullName
+                );
+                SQLiteSourceIndexRuntime.LoadResult sourceIndexResult = null;
+                if (!string.IsNullOrWhiteSpace(sourceIndexPath))
+                {
+                    sourceIndexResult = SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(
+                        sourceIndexPath,
+                        o.Input.FullName,
+                        game.Name
+                    );
+                    SQLiteSourceIndexRuntime.WriteUsageReport(o.Output.FullName, sourceIndexResult);
+                    if (sourceIndexResult != null)
+                    {
+                        assetsManager.ResolveDependencies = true;
+                    }
+                }
+                else if (o.WorkMode == WorkMode.Library || o.WorkMode == WorkMode.AudioLibrary)
+                {
+                    Logger.Warning("No SQLite source index was supplied or found. Legacy CAB/Asset maps are only available through explicit --map_op compatibility commands.");
+                }
+
                 var mapName = ResolveMapName(o.MapName, game, inputBaseFolder);
                 Logger.Info($"Using map name {mapName}");
                 var needsModelDependencies = !o.InspectUnityFiles && (ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport());
                 var cabMapSourceFiles = needsModelDependencies ? dependencyMapFiles : files;
                 var expectedCabMapFileCount = cabMapSourceFiles.Length;
 
-                if (o.MapOp.HasFlag(MapOpType.CABMap))
+                if (sourceIndexResult == null
+                    && o.WorkMode == WorkMode.Library
+                    && o.MapOp.Equals(MapOpType.None)
+                    && needsModelDependencies)
+                {
+                    throw new InvalidOperationException("Library export requires a SQLite Unity source index. Build it with --build_source_sqlite_index, then pass --source_index \"...\\unity_source_index.db\".");
+                }
+
+                if (sourceIndexResult != null && (o.MapOp.HasFlag(MapOpType.CABMap) || o.MapOp.HasFlag(MapOpType.Both)))
+                {
+                    Logger.Warning("SQLite source index is active; skipping legacy CABMap build/load. Use --source_index as the dependency source for full exports.");
+                }
+
+                if (sourceIndexResult == null && o.MapOp.HasFlag(MapOpType.CABMap))
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
@@ -413,11 +450,15 @@ namespace AnimeStudio.CLI
                         Task.Run(() => AssetsHelper.BuildAssetMap(files, mapName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                     }
                 }
-                if (o.MapOp.HasFlag(MapOpType.Both))
+                if (sourceIndexResult == null && o.MapOp.HasFlag(MapOpType.Both))
                 {
                     Task.Run(() => AssetsHelper.BuildBoth(cabMapSourceFiles, mapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                 }
-                if (needsModelDependencies && o.MapOp.Equals(MapOpType.None))
+                if (sourceIndexResult != null && o.MapOp.HasFlag(MapOpType.AssetMap))
+                {
+                    Logger.Warning("Legacy AssetMap is still an explicit compatibility command. SQLite source index remains the preferred dependency source.");
+                }
+                if (sourceIndexResult == null && needsModelDependencies && o.MapOp.Equals(MapOpType.None))
                 {
                     bool cabMapLoaded;
                     using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))

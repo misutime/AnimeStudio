@@ -39,6 +39,36 @@ namespace AnimeStudio
             public List<string> Dependencies { get; set; }
         }
 
+        public static void LoadCABMapEntries(
+            string baseFolder,
+            IEnumerable<KeyValuePair<string, Entry>> entries,
+            int sourceFileCount = -1,
+            string sourceFingerprint = null)
+        {
+            CABMap.Clear();
+            Offsets.Clear();
+            BaseFolder = baseFolder ?? string.Empty;
+            CABMapSourceFileCount = sourceFileCount;
+            CABMapSourceFingerprint = sourceFingerprint ?? string.Empty;
+
+            foreach (var pair in entries)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key) || pair.Value == null)
+                {
+                    continue;
+                }
+
+                CABMap[pair.Key] = new Entry
+                {
+                    Path = pair.Value.Path,
+                    Offset = pair.Value.Offset,
+                    Dependencies = pair.Value.Dependencies ?? new List<string>(),
+                };
+            }
+
+            Logger.Info($"Loaded runtime CAB dependency map from source index: {CABMap.Count} serialized file entries.");
+        }
+
         public static void SetUnityVersion(string version)
         {
             assetsManager.SpecifyUnityVersion = version;
