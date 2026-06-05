@@ -1000,7 +1000,7 @@ namespace AnimeStudio
             var stage = options.textureMode == TextureExportMode.Raw
                 ? "model_texture_raw"
                 : "model_texture";
-            using (Measure(stage, new Dictionary<string, object>
+            var textureProfileData = new Dictionary<string, object>
             {
                 ["texture"] = m_Texture2D.m_Name,
                 ["source"] = m_Texture2D.assetsFile?.fullName,
@@ -1011,7 +1011,9 @@ namespace AnimeStudio
                 ["width"] = m_Texture2D.m_Width,
                 ["height"] = m_Texture2D.m_Height,
                 ["imageFormat"] = options.imageFormat.ToString(),
-            }))
+            };
+
+            using (Measure(stage, textureProfileData))
             {
                 if (options.textureMode == TextureExportMode.Raw)
                 {
@@ -1026,7 +1028,7 @@ namespace AnimeStudio
                 }
                 else
                 {
-                    var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
+                    var stream = m_Texture2D.ConvertToStream(options.imageFormat, true, options.profileMeasure, textureProfileData);
                     if (stream != null)
                     {
                         using (stream)

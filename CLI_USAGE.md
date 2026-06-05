@@ -2,12 +2,53 @@
 
 本文档说明如何使用 `AnimeStudio.CLI` 导出 Unity 游戏资源。目标是让普通 Unity 游戏和原神等特殊游戏使用同一套工作流，只在 `--game`、资源路径、asset index 等必要位置区分。
 
-## CLI 入口
+## 构建与 CLI 入口
 
-Debug 版 CLI：
+### 正式 Release / dist 构建
+
+真实游戏全量索引或全量导出建议使用仓库自带构建脚本：
 
 ```powershell
+cd D:\misutime\AnimeStudio
+.\build.ps1
+```
+
+脚本会构建 `Release` 版 CLI/GUI、执行 patcher，并把可运行产物整理到：
+
+```text
+D:\misutime\AnimeStudio\dist\net9.0-windows
+D:\misutime\AnimeStudio\dist\net8.0-windows
+```
+
+推荐优先使用 net9.0-windows：
+
+```powershell
+D:\misutime\AnimeStudio\dist\net9.0-windows\AnimeStudio.CLI.exe
+```
+
+`dist` 目录更适合团队复现、长时间全量任务和真实素材导出。GUI 构建阶段如果出现 FBXNative 复制 warning，不影响 CLI 的源索引、glTF 模型、PNG 贴图和 SQLite 建库。
+
+### 开发 Debug 构建
+
+快速调试 CLI 可以只构建 CLI 项目：
+
+```powershell
+cd D:\misutime\AnimeStudio
+dotnet build AnimeStudio.CLI\AnimeStudio.CLI.csproj -f net9.0-windows
+```
+
+Debug 版 CLI 输出在：
+
+```text
 D:\misutime\AnimeStudio\AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe
+```
+
+Debug 构建适合开发和小样本验证；真实全量任务优先使用 `.\build.ps1` 生成的 `dist` 版本。
+
+### CLI 入口
+
+```powershell
+D:\misutime\AnimeStudio\dist\net9.0-windows\AnimeStudio.CLI.exe
 ```
 
 建议先进入仓库目录再运行：
@@ -19,7 +60,7 @@ cd D:\misutime\AnimeStudio
 然后用相对入口：
 
 ```powershell
-AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe
+dist\net9.0-windows\AnimeStudio.CLI.exe
 ```
 
 ## 核心概念
@@ -911,9 +952,26 @@ AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransform
 
 ```text
 export_profile.jsonl
+profile_summary.json
 ```
 
-它记录批次加载、资产数据构建、模型转换、`model_mesh`、`model_skin`、`model_material`、`model_texture`、`model_texture_raw`、模型写出和 GC 的耗时及内存快照。觉得全量导出慢时，保留这个文件就能直接分析瓶颈。关闭日志：
+它记录批次加载、资产数据构建、模型转换、`model_mesh`、`model_skin`、`model_material`、`model_texture`、`model_texture_raw`、模型写出和 GC 的耗时及内存快照。觉得全量导出慢时，保留这个文件就能直接分析瓶颈。
+
+贴图 PNG 路径会进一步拆成：
+
+```text
+model_texture
+model_texture_decode
+model_texture_image_load
+model_texture_flip
+model_texture_encode_png
+model_texture_write
+model_texture_link
+```
+
+`model_texture` 是单张贴图的整体转换耗时；`model_texture_decode` 用于判断 Unity 压缩贴图解码是否慢；`model_texture_encode_png` 用于判断 PNG 编码是否慢；`model_texture_write` / `model_texture_link` 用于判断磁盘写入、共享贴图硬链接或复制是否慢。关闭日志：
+
+`export_profile.jsonl` 是逐事件原始日志；`profile_summary.json` 是自动汇总，按 stage 统计 `count`、`totalElapsedMs`、`averageElapsedMs`、`maxElapsedMs` 和内存峰值。长任务运行中会定期刷新，正常结束时会再写一次。
 
 ```powershell
 --profile_log off

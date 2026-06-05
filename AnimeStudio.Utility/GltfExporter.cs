@@ -20,6 +20,7 @@ namespace AnimeStudio
             public bool exportSkins = true;
             public bool exportAnimations = true;
             public string localTextureDirectoryName;
+            public Func<string, IDictionary<string, object>, IDisposable> profileMeasure;
         }
 
         public static class Exporter
@@ -1163,18 +1164,23 @@ namespace AnimeStudio
             var path = Path.Combine(textureDirectory, $"{name}{ext.ToLowerInvariant()}");
             if (!File.Exists(path) && texture.Data != null)
             {
-                File.WriteAllBytes(path, texture.Data);
-                WriteTextureMetadata(path, texture);
+                var writeData = GetTextureProfileData(texture, path);
+                writeData["bytes"] = texture.Data.Length;
+                using (Measure("model_texture_write", writeData))
+                {
+                    File.WriteAllBytes(path, texture.Data);
+                    WriteTextureMetadata(path, texture);
+                }
             }
             if (!File.Exists(path))
             {
                 return null;
             }
 
-            return CreateLocalTextureLink(path, Path.GetFileName(path));
+            return CreateLocalTextureLink(path, Path.GetFileName(path), texture);
         }
 
-        private string CreateLocalTextureLink(string sharedPath, string fileName)
+        private string CreateLocalTextureLink(string sharedPath, string fileName, ImportedTexture texture)
         {
             if (_localTextureDirectory == null)
             {
@@ -1193,11 +1199,41 @@ namespace AnimeStudio
                 return linkPath;
             }
 
-            if (!CreateHardLink(linkPath, sharedPath, IntPtr.Zero))
+            var linkData = GetTextureProfileData(texture, linkPath);
+            linkData["sharedPath"] = sharedPath;
+            using (Measure("model_texture_link", linkData))
             {
-                File.Copy(sharedPath, linkPath, false);
+                if (CreateHardLink(linkPath, sharedPath, IntPtr.Zero))
+                {
+                    linkData["linkMode"] = "HardLink";
+                }
+                else
+                {
+                    File.Copy(sharedPath, linkPath, false);
+                    linkData["linkMode"] = "Copy";
+                }
             }
             return linkPath;
+        }
+
+        private IDisposable Measure(string stage, IDictionary<string, object> data)
+        {
+            return _options.profileMeasure?.Invoke(stage, data);
+        }
+
+        private static Dictionary<string, object> GetTextureProfileData(ImportedTexture texture, string path)
+        {
+            return new Dictionary<string, object>
+            {
+                ["texture"] = texture.Name,
+                ["exportName"] = texture.ExportName ?? texture.Name,
+                ["path"] = path,
+                ["textureFormat"] = texture.SourceTextureFormat,
+                ["width"] = texture.Width,
+                ["height"] = texture.Height,
+                ["source"] = texture.SourceAssetPath,
+                ["pathId"] = texture.SourcePathId,
+            };
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]

@@ -981,6 +981,7 @@ namespace AnimeStudio.CLI
                 exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 textureDirectory = GetSharedTextureDirectory(exportPath),
                 localTextureDirectoryName = "Textures",
+                profileMeasure = ProfileLogger.Measure,
             };
             ModelExporter.ExportGltf(exportPath, convert, exportOptions);
         }
