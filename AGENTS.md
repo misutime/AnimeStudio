@@ -49,7 +49,7 @@
 - 材质和 shader 还原也必须从 Unity `Material.m_SavedProperties`、Renderer 材质槽、贴图 PPtr、shader 引用和渲染状态出发。默认导出应优先把 Unity 的透明、裁剪、双面、基础贴图槽映射到 glTF 标准；无法标准表达的自定义 shader slot/float/color 必须保留在材质 JSON 和 glTF `extras.unityMaterial`，作为后续材质重建或贴图烘焙依据，不能按单个游戏名称硬猜。
 - ColorMask/Tint 属于“可用素材库预览材质”管线，不是完整 shader 复刻。默认逻辑必须索引 `_ColorMask`、`_MaskMap`、`_BaseColorMap`、Unity 材质颜色/float 和渲染状态；只有找到明确 tint 参数或后续 customization 配置时才自动烘焙预览 base color。找不到颜色配置时保留贴图和 mask，并在 glTF `extras.animeStudioMaterial` 标记 `needsCustomizationTint`，不要为了看起来有颜色而硬猜游戏私有配色。
 - 索引策略固定为“索引要全，导出要精”。SQLite `library_index.db` 是可复用素材库索引底座，应尽量保留 Unity 关系、导出 manifest、asset catalog、报告 JSON 和 `raw_json`；进入索引不代表默认导出或推荐使用，默认导出仍必须严格匹配、宁缺毋滥。
-- SQLite 分两类：`library_index.db` 面向已导出的素材库目录，`unity_source_index.db` 面向完整 Unity 源目录。源索引必须记录 source file、SerializedFile、Object、external CAB/PPtr、核心 Unity 关系和 AnimationClip binding；全量 Library 导出必须使用 SQLite 源索引作为依赖底座。默认命令应自动查找或构建 `unity_source_index.db`，`--source_index` 只用于显式指定共享索引。旧 CAB map / AssetMap 只作为显式 `--map_op` 调试或兼容旧流程，不能作为精品全量导出的默认机制。
+- SQLite 分两类：`library_index.db` 面向已导出的素材库目录，`unity_source_index.db` 面向完整 Unity 源目录。源索引必须记录 source file、SerializedFile、Object、external CAB/PPtr、核心 Unity 关系和 AnimationClip binding；全量 Library 导出必须使用 SQLite 源索引作为依赖底座。源索引解析优先级固定为：显式 `--source_index`；输出目录 `unity_source_index.db`；输入目录 `unity_source_index.db`；都不存在时自动在输出目录构建。旧 CAB map / AssetMap 只作为显式 `--map_op` 调试或兼容旧流程，不能作为精品全量导出的默认机制。
 - 角色、NPC、道具、机关、场景物件都可能有动画。动画适配逻辑必须基于 Unity component/controller/clip binding/avatar/bone path 等通用关系，不能只服务角色动画。
 - 表情/BlendShape、legacy AnimationClip、非角色 Transform 动画、材质/激活/事件类动画要和 Humanoid 身体动画分开标注、分开验证。不能因为 Humanoid bake 成功，就把这些动画类型默认标成“可播放已验证”。
 - 如果确实需要针对某个游戏做特殊适配，必须默认关闭或放入 profile/config，并在文档里标明它是游戏 profile 规则，不是 `Normal` 通用 Unity 导出路径的一部分。

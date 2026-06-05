@@ -311,7 +311,10 @@ model_validation.json
 
 ### SQLite Unity 源目录索引
 
-如果想先对完整 Unity 游戏目录建立可复用源索引，而不是直接导出素材，可以使用：
+SQLite 源索引有三种用法，团队内统一按下面规则选择。
+
+1. 单独构建源索引。
+   适合真实游戏第一次接入、开发调试、性能分析，或准备给多次导出复用同一份索引。这个命令只建 `unity_source_index.db`，不导出模型、贴图、动画素材：
 
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
@@ -323,7 +326,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --profile_log source_index_profile.jsonl
 ```
 
-默认输出：
+默认输出到第二个参数指定的目录：
 
 ```text
 unity_source_index.db
@@ -332,7 +335,7 @@ UNITY_SOURCE_INDEX_README.md
 source_index_profile.jsonl
 ```
 
-也可以显式指定数据库路径：
+也可以显式指定数据库路径，适合把索引放到共享目录或固定缓存目录：
 
 ```powershell
 --index_path "D:\Assets\Freedunk_Data_Dev\SQLiteSourceIndex_VRising_Full\unity_source_index.db"
@@ -343,7 +346,8 @@ source_index_profile.jsonl
 - `unity_source_index.db`：面向完整 Unity 源目录，记录源文件、SerializedFile、Object、external CAB/PPtr、Unity 组件关系、AnimationClip binding。不导出素材。
 - `library_index.db`：面向已经导出的 Library/AudioLibrary 目录，记录可浏览素材、导出文件、报告、侧车 JSON 和已生成的关系索引。
 
-全量 `Library` 导出默认使用 SQLite 源索引；如果输出目录和输入目录都找不到 `unity_source_index.db`，CLI 会先在输出目录自动构建一份，再继续导出：
+2. 直接导出素材，自动构建源索引。
+   这是默认推荐的最简单用法。CLI 会先查找 `输出目录\unity_source_index.db`，再查找 `输入目录\unity_source_index.db`。如果都不存在，会自动在输出目录构建一份，然后继续导出 Library 素材：
 
 ```powershell
 D:\misutime\AnimeStudio\dist\net9.0-windows\AnimeStudio.CLI.exe `
@@ -352,10 +356,17 @@ D:\misutime\AnimeStudio\dist\net9.0-windows\AnimeStudio.CLI.exe `
   --game Normal
 ```
 
-如果已经有一份共享源索引，或者想把源索引和 Library 输出分开保存，可以显式传：
+这种方式会让同一个输出目录同时包含源索引和导出的素材库。第一次运行会先花时间建索引；后续同目录再次导出会直接复用已有 `unity_source_index.db`。
+
+3. 显式使用已有源索引。
+   如果已经单独构建过索引，或者想让多个导出目录复用同一份源索引，使用 `--source_index` 指定路径。指定后 CLI 会直接读取这份索引，不会重新生成：
 
 ```powershell
---source_index "D:\Assets\VRising_AnimeStudioExport_Full\unity_source_index.db"
+D:\misutime\AnimeStudio\dist\net9.0-windows\AnimeStudio.CLI.exe `
+  "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data" `
+  "D:\Assets\VRising_AnimeStudioExport_Library" `
+  --game Normal `
+  --source_index "D:\Assets\VRising_AnimeStudioExport_Full\unity_source_index.db"
 ```
 
 CLI 会读取 SQLite 的 `serialized_files` / `source_externals`，把它作为运行时 Unity 外部引用解析底座，并跳过旧 CAB map 的自动构建。旧 CAB map / AssetMap 只保留给显式 `--map_op` 调试或兼容旧流程，不再作为默认全量导出路径。导出目录会写入：
