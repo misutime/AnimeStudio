@@ -11,6 +11,8 @@ namespace AnimeStudio.CLI
 {
     public static class SQLiteSourceIndexBuilder
     {
+        private const long LargeSourceIndexFileBytes = 256L * 1024L * 1024L;
+
         public static string Build(
             string inputPath,
             string outputPath,
@@ -50,7 +52,8 @@ namespace AnimeStudio.CLI
             }
 
             string sourceRoot;
-            string[] files;
+            string[] sourceFiles;
+            string[] loadableFiles;
             using (ProfileLogger.Measure("source_index_scan_files", new Dictionary<string, object>
             {
                 ["inputPath"] = inputPath,
@@ -59,14 +62,21 @@ namespace AnimeStudio.CLI
                 sourceRoot = Directory.Exists(inputPath)
                     ? Path.GetFullPath(inputPath)
                     : Path.GetDirectoryName(Path.GetFullPath(inputPath));
-                files = Directory.Exists(inputPath)
-                    ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray()
+                sourceFiles = Directory.Exists(inputPath)
+                    ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
                     : new[] { Path.GetFullPath(inputPath) };
+                loadableFiles = sourceFiles
+                    .Where(IsLikelyUnityLoadableFile)
+                    .OrderBy(x => SafeFileLength(x))
+                    .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
             }
 
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
             {
-                ["sourceFiles"] = files.Length,
+                ["sourceFiles"] = sourceFiles.Length,
+                ["loadableSourceFiles"] = loadableFiles.Length,
+                ["skippedSidecarFiles"] = sourceFiles.Length - loadableFiles.Length,
                 ["serializedFiles"] = 0,
                 ["sourceObjects"] = 0,
                 ["sourceExternals"] = 0,
@@ -79,7 +89,8 @@ namespace AnimeStudio.CLI
             using (ProfileLogger.Measure("source_index_init_db", new Dictionary<string, object>
             {
                 ["dbPath"] = dbPath,
-                ["fileCount"] = files.Length,
+                ["fileCount"] = sourceFiles.Length,
+                ["loadableFileCount"] = loadableFiles.Length,
             }))
             {
                 connection.Open();
@@ -96,20 +107,26 @@ namespace AnimeStudio.CLI
                 InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。This database indexes Unity source files, SerializedFiles, objects, PPtr relations, and animation bindings without exporting assets.");
                 using (ProfileLogger.Measure("source_index_insert_source_files", new Dictionary<string, object>
                 {
-                    ["fileCount"] = files.Length,
+                    ["fileCount"] = sourceFiles.Length,
                 }))
                 {
-                    InsertSourceFiles(connection, transaction, sourceRoot, files);
+                    InsertSourceFiles(connection, transaction, sourceRoot, sourceFiles);
                 }
                 transaction.Commit();
             }
 
             var effectiveBatch = Math.Max(1, batchFiles);
-            var totalBatches = (int)Math.Ceiling(files.Length / (double)effectiveBatch);
-            for (var batchIndex = 0; batchIndex < totalBatches; batchIndex++)
+            var batches = BuildLoadBatches(loadableFiles, effectiveBatch);
+            Logger.Info($"SQLite source index will load {loadableFiles.Length}/{sourceFiles.Length} source file(s); skipped {sourceFiles.Length - loadableFiles.Length} sidecar/non-Unity file(s).");
+            for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
             {
-                var batch = files.Skip(batchIndex * effectiveBatch).Take(effectiveBatch).ToArray();
-                Logger.Info($"[source-index {batchIndex + 1}/{totalBatches}] Loading {batch.Length} file(s)...");
+                var batch = batches[batchIndex];
+                var largest = batch
+                    .Select(x => new { Path = x, Bytes = SafeFileLength(x) })
+                    .OrderByDescending(x => x.Bytes)
+                    .FirstOrDefault();
+                var batchBytes = batch.Sum(SafeFileLength);
+                Logger.Info($"[source-index {batchIndex + 1}/{batches.Count}] Loading {batch.Length} file(s), {FormatBytes(batchBytes)}; largest {MakeRelativeOrName(sourceRoot, largest?.Path)} ({FormatBytes(largest?.Bytes ?? 0)}).");
                 var manager = new AssetsManager
                 {
                     Game = game,
@@ -123,9 +140,12 @@ namespace AnimeStudio.CLI
                     using (ProfileLogger.Measure("source_index_load_batch", new Dictionary<string, object>
                     {
                         ["batchIndex"] = batchIndex + 1,
-                        ["totalBatches"] = totalBatches,
+                        ["totalBatches"] = batches.Count,
                         ["batchFileCount"] = batch.Length,
-                        ["batchBytes"] = batch.Sum(x => new FileInfo(x).Length),
+                        ["batchBytes"] = batchBytes,
+                        ["largestFile"] = MakeRelativeOrName(sourceRoot, largest?.Path),
+                        ["largestFileBytes"] = largest?.Bytes ?? 0,
+                        ["isLargeSingleton"] = batch.Length == 1 && batchBytes >= LargeSourceIndexFileBytes,
                     }))
                     {
                         manager.LoadFiles(batch);
@@ -176,7 +196,7 @@ namespace AnimeStudio.CLI
                 ["sourceRelations"] = counts["sourceRelations"],
             }))
             {
-                WriteSummary(outputRoot, dbPath, sourceRoot, files.Length, counts);
+                WriteSummary(outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts);
             }
             Logger.Info($"SQLite Unity source index written: {dbPath}");
             return dbPath;
@@ -637,6 +657,118 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.ExecuteNonQuery();
+        }
+
+        private static List<string[]> BuildLoadBatches(string[] files, int batchFiles)
+        {
+            var batches = new List<string[]>();
+            var current = new List<string>(batchFiles);
+
+            foreach (var file in files)
+            {
+                var length = SafeFileLength(file);
+                if (length >= LargeSourceIndexFileBytes)
+                {
+                    if (current.Count > 0)
+                    {
+                        batches.Add(current.ToArray());
+                        current.Clear();
+                    }
+
+                    batches.Add(new[] { file });
+                    continue;
+                }
+
+                current.Add(file);
+                if (current.Count >= batchFiles)
+                {
+                    batches.Add(current.ToArray());
+                    current.Clear();
+                }
+            }
+
+            if (current.Count > 0)
+            {
+                batches.Add(current.ToArray());
+            }
+
+            return batches;
+        }
+
+        private static bool IsLikelyUnityLoadableFile(string path)
+        {
+            var extension = Path.GetExtension(path);
+            if (string.IsNullOrEmpty(extension))
+            {
+                return true;
+            }
+
+            switch (extension.ToLowerInvariant())
+            {
+                case ".assets":
+                case ".bundle":
+                case ".unity3d":
+                case ".ab":
+                case ".entities":
+                case ".entityheader":
+                    return true;
+                case ".ress":
+                case ".resss":
+                case ".resource":
+                case ".json":
+                case ".config":
+                case ".info":
+                case ".manifest":
+                case ".txt":
+                case ".xml":
+                case ".dll":
+                case ".exe":
+                case ".pdb":
+                case ".mdb":
+                case ".png":
+                case ".jpg":
+                case ".jpeg":
+                case ".tga":
+                case ".dds":
+                case ".wav":
+                case ".mp3":
+                case ".ogg":
+                case ".wem":
+                case ".bank":
+                case ".mp4":
+                case ".webm":
+                    return false;
+                default:
+                    return true;
+            }
+        }
+
+        private static long SafeFileLength(string path)
+        {
+            try
+            {
+                return new FileInfo(path).Length;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            string[] units = { "B", "KB", "MB", "GB", "TB" };
+            double value = bytes;
+            var unit = 0;
+            while (value >= 1024 && unit < units.Length - 1)
+            {
+                value /= 1024;
+                unit++;
+            }
+
+            return unit == 0
+                ? $"{bytes} {units[unit]}"
+                : $"{value:0.##} {units[unit]}";
         }
 
         private static string MakeRelative(string root, string path)
