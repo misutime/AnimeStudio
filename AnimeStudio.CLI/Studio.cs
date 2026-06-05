@@ -738,7 +738,6 @@ namespace AnimeStudio.CLI
             {
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
-            GenerateLibraryIndexes(savePath);
         }
 
         private static List<AssetItem> FilterLibraryModelSources(
@@ -951,7 +950,7 @@ namespace AnimeStudio.CLI
                 : null;
         }
 
-        private static void GenerateLibraryIndexes(string savePath)
+        public static void GenerateLibraryIndexes(string savePath)
         {
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
             if (!File.Exists(catalogPath))
@@ -959,15 +958,21 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            var entries = LoadCatalogEntries(catalogPath);
-            WriteAssetSummary(savePath, catalogPath, entries);
-            UnityRelationGraph.Generate(savePath, assetsManager, exportableAssets);
-            ModelLibraryValidator.Generate(savePath);
+            using (ProfileLogger.Measure("generate_library_indexes", new Dictionary<string, object>
+            {
+                ["catalogPath"] = catalogPath,
+            }))
+            {
+                var entries = LoadCatalogEntries(catalogPath);
+                WriteAssetSummary(savePath, catalogPath, entries);
+                ModelLibraryValidator.Generate(savePath);
 
-            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
-            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-            var explicitAnimationLinks = BuildExplicitUnityAnimationLinks(models, animations);
-            WriteAnimationIndexes(savePath, catalogPath, models, animations, explicitAnimationLinks);
+                var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+                var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+                var structuralLinks = BuildStructuralUnityAnimationLinks(models, animations);
+                WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+                Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
+            }
         }
 
         public static void RebuildLibraryIndexes(string savePath)

@@ -569,6 +569,10 @@ namespace AnimeStudio.CLI
                     {
                         WriteUnityFileInspect(o.Output.FullName, inspectReports);
                     }
+                    else if (o.WorkMode == WorkMode.Library)
+                    {
+                        GenerateLibraryIndexes(o.Output.FullName);
+                    }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
                 {
