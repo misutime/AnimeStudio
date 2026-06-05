@@ -16,6 +16,7 @@ namespace AnimeStudio
         public bool Silent = false;
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
+        public bool LoadSerializedFileExternals = true;
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
@@ -229,34 +230,37 @@ namespace AnimeStudio
                     assetsFileIndexCache.Add(assetsFile.fileName, assetsFileList.Count - 1);
                     assetsFileListHash.Add(assetsFile.fileName);
 
-                    foreach (var sharedFile in assetsFile.m_Externals)
+                    if (LoadSerializedFileExternals)
                     {
-                        Logger.Verbose($"{assetsFile.fileName} needs external file {sharedFile.fileName}, attempting to look it up...");
-                        var sharedFileName = sharedFile.fileName;
-
-                        if (!importFilesHash.Contains(sharedFileName))
+                        foreach (var sharedFile in assetsFile.m_Externals)
                         {
-                            var sharedFilePath = Path.Combine(Path.GetDirectoryName(reader.FullPath), sharedFileName);
-                            if (!noexistFiles.Contains(sharedFilePath))
+                            Logger.Verbose($"{assetsFile.fileName} needs external file {sharedFile.fileName}, attempting to look it up...");
+                            var sharedFileName = sharedFile.fileName;
+
+                            if (!importFilesHash.Contains(sharedFileName))
                             {
-                                if (!File.Exists(sharedFilePath))
+                                var sharedFilePath = Path.Combine(Path.GetDirectoryName(reader.FullPath), sharedFileName);
+                                if (!noexistFiles.Contains(sharedFilePath))
                                 {
-                                    var findFiles = Directory.GetFiles(Path.GetDirectoryName(reader.FullPath), sharedFileName, SearchOption.AllDirectories);
-                                    if (findFiles.Length > 0)
+                                    if (!File.Exists(sharedFilePath))
                                     {
-                                        Logger.Verbose($"Found {findFiles.Length} matching files, picking first file {findFiles[0]} !!");
-                                        sharedFilePath = findFiles[0];
+                                        var findFiles = Directory.GetFiles(Path.GetDirectoryName(reader.FullPath), sharedFileName, SearchOption.AllDirectories);
+                                        if (findFiles.Length > 0)
+                                        {
+                                            Logger.Verbose($"Found {findFiles.Length} matching files, picking first file {findFiles[0]} !!");
+                                            sharedFilePath = findFiles[0];
+                                        }
                                     }
-                                }
-                                if (File.Exists(sharedFilePath))
-                                {
-                                    importFiles.Add(sharedFilePath);
-                                    importFilesHash.Add(sharedFileName);
-                                }
-                                else
-                                {
-                                    Logger.Verbose("Nothing was found, caching into non existant files to avoid repeated searching !!");
-                                    noexistFiles.Add(sharedFilePath);
+                                    if (File.Exists(sharedFilePath))
+                                    {
+                                        importFiles.Add(sharedFilePath);
+                                        importFilesHash.Add(sharedFileName);
+                                    }
+                                    else
+                                    {
+                                        Logger.Verbose("Nothing was found, caching into non existant files to avoid repeated searching !!");
+                                        noexistFiles.Add(sharedFilePath);
+                                    }
                                 }
                             }
                         }
@@ -652,6 +656,13 @@ namespace AnimeStudio
                         Logger.Info("Reading assets has been cancelled !!");
                         return;
                     }
+                    if (!IsObjectRangeReadable(assetsFile, objectInfo))
+                    {
+                        Logger.Warning($"Skipping object with invalid byte range in {assetsFile.fileName}: PathID {objectInfo.m_PathID}, byteStart {objectInfo.byteStart}, byteSize {objectInfo.byteSize}, streamLength {assetsFile.reader.Length}.");
+                        Progress.Report(++i, progressCount);
+                        continue;
+                    }
+
                     var objectReader = new ObjectReader(assetsFile.reader, assetsFile, objectInfo, Game);
                     try
                     {
@@ -708,6 +719,17 @@ namespace AnimeStudio
                     Progress.Report(++i, progressCount);
                 }
             }
+        }
+
+        private static bool IsObjectRangeReadable(SerializedFile assetsFile, ObjectInfo objectInfo)
+        {
+            if (objectInfo.byteStart < 0 || objectInfo.byteSize > int.MaxValue)
+            {
+                return false;
+            }
+
+            var end = objectInfo.byteStart + (long)objectInfo.byteSize;
+            return end >= objectInfo.byteStart && end <= assetsFile.reader.Length;
         }
 
         private void ProcessAssets()
