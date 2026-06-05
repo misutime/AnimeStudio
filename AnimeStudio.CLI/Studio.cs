@@ -50,6 +50,8 @@ namespace AnimeStudio.CLI
             new Regex(@"(?:^|_)(Col|Collider|Collision)$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"Collider|Collision", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|_)ShadowMesh$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Dummy|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[_\-\s])Decal(?:$|[_\-\s])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
 
         public static Dictionary<ulong, string> Paths { get; set; } =
@@ -426,8 +428,12 @@ namespace AnimeStudio.CLI
                 }
                 if (WorkMode == WorkMode.Library)
                 {
-                    Logger.Info("Library mode keeps these model candidates to avoid producing an empty asset library.");
-                    return assets;
+                    var hierarchyRoots = FilterHierarchyModelRoots(assets, out var skippedChildren);
+                    if (skippedChildren > 0)
+                    {
+                        Logger.Info($"Library model root fallback kept hierarchy roots and skipped {skippedChildren} child model candidate(s).");
+                    }
+                    return hierarchyRoots;
                 }
                 if (skippedModels > 0)
                 {
@@ -2159,6 +2165,66 @@ namespace AnimeStudio.CLI
                 .ToArray();
         }
 
+        private static AssetItem[] FilterHierarchyModelRoots(AssetItem[] assets, out int skippedChildren)
+        {
+            skippedChildren = 0;
+            var modelRoots = assets
+                .Where(x => x.Asset is GameObject)
+                .Select(x => (GameObject)x.Asset)
+                .ToHashSet();
+            if (modelRoots.Count == 0)
+            {
+                return assets;
+            }
+
+            var filtered = new List<AssetItem>(assets.Length);
+            foreach (var asset in assets)
+            {
+                if (asset.Asset is not GameObject gameObject)
+                {
+                    filtered.Add(asset);
+                    continue;
+                }
+
+                if (HasAncestorInCandidateSet(gameObject, modelRoots))
+                {
+                    skippedChildren++;
+                    continue;
+                }
+
+                filtered.Add(asset);
+            }
+
+            return filtered.ToArray();
+        }
+
+        private static bool HasAncestorInCandidateSet(GameObject gameObject, HashSet<GameObject> candidates)
+        {
+            var transform = gameObject.m_Transform;
+            var visited = new HashSet<long>();
+            while (transform?.m_Father != null && !transform.m_Father.IsNull)
+            {
+                if (!transform.m_Father.TryGet(out var parent))
+                {
+                    return false;
+                }
+
+                if (!visited.Add(parent.m_PathID))
+                {
+                    return false;
+                }
+
+                if (parent.m_GameObject.TryGet(out var parentGameObject) && candidates.Contains(parentGameObject))
+                {
+                    return true;
+                }
+
+                transform = parent;
+            }
+
+            return false;
+        }
+
         private static bool BindingPathAffectsMesh(string bindingPath, string meshPath)
         {
             var bindingKeys = GetComparableBonePathKeys(bindingPath).ToArray();
@@ -2442,13 +2508,16 @@ namespace AnimeStudio.CLI
         )
         {
             var exportedCount = 0;
+            var processedCount = 0;
+            var skippedCount = 0;
             var toExportCount = models.Count;
             Logger.Info($"Export mode {WorkMode} using max export tasks {MaxExportTasks}.");
 
             foreach (var asset in models)
             {
                 var exportPath = GetExportPath(savePath, assetGroupOption, asset);
-                Logger.Info($"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
+                processedCount++;
+                Logger.Info($"[{processedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
                 try
                 {
                     var exported = asset.Asset switch
@@ -2463,6 +2532,10 @@ namespace AnimeStudio.CLI
                         exportedCount++;
                         AppendExportManifest(savePath, asset, exportPath);
                     }
+                    else
+                    {
+                        skippedCount++;
+                    }
                     CollectAfterModelExport();
                 }
                 catch (Exception ex)
@@ -2474,7 +2547,7 @@ namespace AnimeStudio.CLI
                 }
             }
 
-            Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s).");
+            Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s); skipped {skippedCount} candidate(s).");
         }
 
         private static void CollectAfterModelExport()

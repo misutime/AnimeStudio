@@ -831,7 +831,7 @@ namespace AnimeStudio.CLI
             var m_GameObject = (GameObject)item.Asset;
             if (m_GameObject.m_Transform == null)
             {
-                Logger.Info($"GameObject {m_GameObject.m_Name} has no Transform, skipping...");
+                Logger.Verbose($"GameObject {m_GameObject.m_Name} has no Transform, skipping...");
                 return false;
             }
             return ExportGameObject(
@@ -893,7 +893,7 @@ namespace AnimeStudio.CLI
 
             if (convert.MeshList.Count == 0)
             {
-                Logger.Info($"GameObject {gameObject.m_Name} has no mesh, skipping...");
+                Logger.Verbose($"GameObject {gameObject.m_Name} has no mesh, skipping...");
                 return false;
             }
             if (options.exportMaterials && convert.MaterialList.Count == 0)
