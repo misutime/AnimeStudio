@@ -128,6 +128,8 @@ namespace AnimeStudio.CLI
                 optionsBinder.GenerateSkeletonGuide,
                 optionsBinder.SkeletonGuideCatalog,
                 optionsBinder.RebuildLibraryIndexes,
+                optionsBinder.BuildSqliteIndex,
+                optionsBinder.IndexPath,
                 optionsBinder.InspectUnityFiles,
                 optionsBinder.Blender,
                 optionsBinder.DummyDllFolder,
@@ -206,6 +208,8 @@ namespace AnimeStudio.CLI
         public FileInfo GenerateSkeletonGuide { get; set; }
         public FileInfo SkeletonGuideCatalog { get; set; }
         public DirectoryInfo RebuildLibraryIndexes { get; set; }
+        public DirectoryInfo BuildSqliteIndex { get; set; }
+        public FileInfo IndexPath { get; set; }
         public bool InspectUnityFiles { get; set; }
         public FileInfo Blender { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
@@ -279,6 +283,8 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> GenerateSkeletonGuide;
         public readonly Option<FileInfo> SkeletonGuideCatalog;
         public readonly Option<DirectoryInfo> RebuildLibraryIndexes;
+        public readonly Option<DirectoryInfo> BuildSqliteIndex;
+        public readonly Option<FileInfo> IndexPath;
         public readonly Option<bool> InspectUnityFiles;
         public readonly Option<FileInfo> Blender;
         public readonly Option<DirectoryInfo> DummyDllFolder;
@@ -350,6 +356,8 @@ namespace AnimeStudio.CLI
             GenerateSkeletonGuide = new Option<FileInfo>("--generate_skeleton_guide", "Generate a non-destructive Blender CoreHumanoid skeleton guide from an exported FBX/glTF/GLB. Uses asset_catalog.jsonl Unity Avatar relations when available.").LegalFilePathsOnly();
             SkeletonGuideCatalog = new Option<FileInfo>("--skeleton_guide_catalog", "Optional asset_catalog.jsonl used by --generate_skeleton_guide. If omitted, AnimeStudio walks up from the FBX path.").LegalFilePathsOnly();
             RebuildLibraryIndexes = new Option<DirectoryInfo>("--rebuild_library_indexes", "Rebuild summary, validation, skeleton, model-animation, and compact indexes from a previous Library export without loading the original Unity game files. Explicit Animator relations require a fresh export; catalog structural links are rebuilt.").LegalFilePathsOnly();
+            BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Build a reusable SQLite index from a previous Library or AudioLibrary export. This keeps indexing broad while export remains strict.").LegalFilePathsOnly();
+            IndexPath = new Option<FileInfo>("--index_path", "Output SQLite database path for --build_sqlite_index. Defaults to library_index.db in the export root.");
             InspectUnityFiles = new Option<bool>("--inspect_unity_files", "Load Unity files and write unity_file_inspect.json with object type counts and sample names, without exporting assets.");
             Blender = new Option<FileInfo>("--blender", "Blender executable path used for optional glTF-to-FBX compatibility packaging.").LegalFilePathsOnly();
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
@@ -510,6 +518,8 @@ namespace AnimeStudio.CLI
                 GenerateSkeletonGuide = bindingContext.ParseResult.GetValueForOption(GenerateSkeletonGuide),
                 SkeletonGuideCatalog = bindingContext.ParseResult.GetValueForOption(SkeletonGuideCatalog),
                 RebuildLibraryIndexes = bindingContext.ParseResult.GetValueForOption(RebuildLibraryIndexes),
+                BuildSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSqliteIndex),
+                IndexPath = bindingContext.ParseResult.GetValueForOption(IndexPath),
                 InspectUnityFiles = bindingContext.ParseResult.GetValueForOption(InspectUnityFiles),
                 Blender = bindingContext.ParseResult.GetValueForOption(Blender),
                 DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),

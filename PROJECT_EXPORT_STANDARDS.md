@@ -79,6 +79,16 @@ FBX 只作为兼容旧 DCC、对照验证或实验输出。默认正确性验证
 - `unity_relations.jsonl` / `unity_relation_summary.json`：Unity 原生关系图。
 - `model_validation.json` / `preview_validation.json`：导出质量验证结果。
 - `export_manifest.jsonl`：导出文件和源资源关系。
+- `library_index.db`：可选 SQLite 素材库索引数据库，用于浏览、查询、调试和后续批量处理。
+- `sqlite_index_summary.json` / `SQLITE_INDEX_README.md`：SQLite 索引摘要和人工说明。
+
+SQLite 索引规则：
+
+- 索引要全，导出要精。进入 SQLite 不代表默认导出、推荐使用或视觉验收通过。
+- SQLite 应尽量记录 `asset_catalog.jsonl`、`unity_relations.jsonl`、`animation_bindings.jsonl`、`export_manifest.jsonl`、报告 JSON、模型/动画/模块索引和实际文件列表。
+- 结构化字段用于常见查询，`raw_json` 用于保留原始信息，避免后续字段扩展时必须重新导出。
+- 当前 SQLite v1 面向“已导出的 Library/AudioLibrary 目录”建库；后续可扩展为直接读取完整 Unity 源目录的 CAB/Object/PPtr 全量索引。
+- 不允许为了缩小索引而切断 Unity 外部依赖关系；导出候选可以精简，Unity 关系索引必须完整可追溯。
 
 音频素材库是独立 profile，不属于默认 3D Library：
 
@@ -86,6 +96,7 @@ FBX 只作为兼容旧 DCC、对照验证或实验输出。默认正确性验证
 - 默认 `Library` 不导出 `AudioClip`、`VideoClip`、`MovieTexture`，避免污染 3D 模型素材库。
 - 需要音效时使用 `--mode AudioLibrary`，输出到 `Audio/SFX`、`Audio/Music`、`Audio/Voice`、`Audio/Other`。
 - 每个音频旁边必须有 `.audio.json`，根目录必须有 `AUDIO_LIBRARY_README.md`，说明分类规则和统计。
+- 当前允许先保存 `.fsb` 等原始音频数据；FMOD/native 转 WAV 作为后续批量转换阶段处理。`.audio.json` 必须记录 `convertedToWav=false` 或实际输出格式，不能假装已转码。
 - `VideoClip` / `MovieTexture` 只属于显式媒体提取，不进入默认可用素材库。
 
 默认 `Models/` 使用 `PrefabPrimary`：

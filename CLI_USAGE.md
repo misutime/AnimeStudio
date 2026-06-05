@@ -226,6 +226,48 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 `VideoClip` / `MovieTexture` 仍然不进入默认素材库；如果确实要提取视频，需要显式用 `--mode Export --types VideoClip:Both`。
 
+### SQLite 素材库索引
+
+当已经有一个 Library 或 AudioLibrary 导出目录时，可以把机器索引、Unity 关系、报告 JSON 和实际文件列表合并进 SQLite，供后续浏览、查询、调试、批量 bake、材质补全或二次打包使用：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --build_sqlite_index "D:\Assets\Freedunk_Data_Dev\CrossGame_VRising_ColorMaskTint_V1"
+```
+
+默认输出：
+
+```text
+library_index.db
+sqlite_index_summary.json
+SQLITE_INDEX_README.md
+```
+
+也可以显式指定数据库路径：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --build_sqlite_index "D:\Assets\Freedunk_Data_Dev\CrossGame_VRising_ColorMaskTint_V1" `
+  --index_path "D:\Assets\Freedunk_Data_Dev\CrossGame_VRising_ColorMaskTint_V1\library_index.db"
+```
+
+SQLite v1 会读取：
+
+```text
+asset_catalog.jsonl
+unity_relations.jsonl
+animation_bindings.jsonl
+export_manifest.jsonl
+model_animations.json
+model_animations.compact.json
+character_assemblies.json
+unity_relation_summary.json
+model_validation.json
+*.audio.json
+```
+
+核心原则仍然是“索引要全，导出要精”。进入 `library_index.db` 只是说明资源和关系可查询，不代表默认导出、推荐使用或动画/材质已经视觉验收通过。当前 v1 是从已有导出目录建库；后续会扩展为对完整 Unity 源目录建立 CAB/Object/PPtr 全量索引，减少重复扫描和调试等待。
+
 ### 模型和动画规则
 
 一个模型可能支持很多动画，尤其是角色资源：私有表情动画、角色展示动画、通用身体动作、职业/性别动作、Animator Controller 引用动作、外部公共动作库等。默认不能把这些动画全部嵌进每个模型，否则会产生巨大、重复、难浏览的 glTF。
