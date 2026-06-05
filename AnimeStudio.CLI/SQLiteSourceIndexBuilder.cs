@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -13,6 +16,7 @@ namespace AnimeStudio.CLI
     public static class SQLiteSourceIndexBuilder
     {
         private const long LargeSourceIndexFileBytes = 256L * 1024L * 1024L;
+        private static readonly TimeSpan SourceIndexHeartbeatInterval = TimeSpan.FromSeconds(30);
 
         public static string Build(
             string inputPath,
@@ -150,6 +154,13 @@ namespace AnimeStudio.CLI
                         ["isLargeSingleton"] = batch.Length == 1 && batchBytes >= LargeSourceIndexFileBytes,
                     }))
                     {
+                        using var heartbeat = StartSourceIndexLoadHeartbeat(
+                            batchIndex + 1,
+                            batches.Count,
+                            batch.Length,
+                            batchBytes,
+                            MakeRelativeOrName(sourceRoot, largest?.Path),
+                            largest?.Bytes ?? 0);
                         manager.LoadFiles(batch);
                     }
 
@@ -697,6 +708,112 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             return batches;
         }
 
+        private static IDisposable StartSourceIndexLoadHeartbeat(
+            int batchIndex,
+            int totalBatches,
+            int batchFileCount,
+            long batchBytes,
+            string largestFile,
+            long largestFileBytes)
+        {
+            return new SourceIndexHeartbeat(batchIndex, totalBatches, batchFileCount, batchBytes, largestFile, largestFileBytes);
+        }
+
+        private sealed class SourceIndexHeartbeat : IDisposable
+        {
+            private readonly CancellationTokenSource cancellation = new();
+            private readonly Task task;
+            private readonly Stopwatch stopwatch = Stopwatch.StartNew();
+            private readonly int batchIndex;
+            private readonly int totalBatches;
+            private readonly int batchFileCount;
+            private readonly long batchBytes;
+            private readonly string largestFile;
+            private readonly long largestFileBytes;
+
+            public SourceIndexHeartbeat(
+                int batchIndex,
+                int totalBatches,
+                int batchFileCount,
+                long batchBytes,
+                string largestFile,
+                long largestFileBytes)
+            {
+                this.batchIndex = batchIndex;
+                this.totalBatches = totalBatches;
+                this.batchFileCount = batchFileCount;
+                this.batchBytes = batchBytes;
+                this.largestFile = largestFile;
+                this.largestFileBytes = largestFileBytes;
+                task = Task.Run(Run);
+            }
+
+            public void Dispose()
+            {
+                cancellation.Cancel();
+                try
+                {
+                    task.Wait(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // Best-effort heartbeat shutdown.
+                }
+                cancellation.Dispose();
+            }
+
+            private async Task Run()
+            {
+                while (!cancellation.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(SourceIndexHeartbeatInterval, cancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        break;
+                    }
+
+                    if (cancellation.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    var process = Process.GetCurrentProcess();
+                    var elapsed = stopwatch.Elapsed;
+                    ProfileLogger.Event("source_index_load_batch_heartbeat", new Dictionary<string, object>
+                    {
+                        ["batchIndex"] = batchIndex,
+                        ["totalBatches"] = totalBatches,
+                        ["batchFileCount"] = batchFileCount,
+                        ["batchBytes"] = batchBytes,
+                        ["largestFile"] = largestFile ?? string.Empty,
+                        ["largestFileBytes"] = largestFileBytes,
+                        ["elapsedMs"] = elapsed.TotalMilliseconds,
+                    });
+                    ForceInfo(
+                        $"[source-index {batchIndex}/{totalBatches}] Still loading after {FormatDuration(elapsed)}; " +
+                        $"{batchFileCount} file(s), {FormatBytes(batchBytes)}; largest {largestFile} ({FormatBytes(largestFileBytes)}); " +
+                        $"workingSet {FormatBytes(process.WorkingSet64)}, private {FormatBytes(process.PrivateMemorySize64)}, managed {FormatBytes(GC.GetTotalMemory(false))}.");
+                }
+            }
+        }
+
+        private static void ForceInfo(string message)
+        {
+            if (!Logger.Flags.HasFlag(LoggerEvent.Info))
+            {
+                return;
+            }
+
+            if (Logger.FileLogging)
+            {
+                Logger.File?.Log(LoggerEvent.Info, message);
+            }
+            Logger.Default.Log(LoggerEvent.Info, message);
+        }
+
         private static bool IsLikelyUnityLoadableFile(string path)
         {
             var extension = Path.GetExtension(path);
@@ -818,6 +935,15 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             return unit == 0
                 ? $"{bytes} {units[unit]}"
                 : $"{value:0.##} {units[unit]}";
+        }
+
+        private static string FormatDuration(TimeSpan duration)
+        {
+            return duration.TotalHours >= 1
+                ? $"{(int)duration.TotalHours}h {duration.Minutes}m {duration.Seconds}s"
+                : duration.TotalMinutes >= 1
+                    ? $"{(int)duration.TotalMinutes}m {duration.Seconds}s"
+                    : $"{duration.Seconds}s";
         }
 
         private static string MakeRelative(string root, string path)
