@@ -701,12 +701,13 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             var extension = Path.GetExtension(path);
             if (string.IsNullOrEmpty(extension))
             {
-                return true;
+                return IsKnownUnityDataFile(path) || HasUnityBundleHeader(path);
             }
 
             switch (extension.ToLowerInvariant())
             {
                 case ".assets":
+                    return !IsTinySharedAssetsPlaceholder(path);
                 case ".bundle":
                 case ".unity3d":
                 case ".ab":
@@ -765,6 +766,43 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             {
                 return false;
             }
+        }
+
+        private static bool IsKnownUnityDataFile(string path)
+        {
+            var name = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            if (string.Equals(name, "globalgamemanagers", StringComparison.OrdinalIgnoreCase)
+                && File.Exists(path + ".assets"))
+            {
+                return false;
+            }
+
+            if (name.StartsWith("level", StringComparison.OrdinalIgnoreCase) && name.Skip(5).All(char.IsDigit))
+            {
+                return SafeFileLength(path) >= 64L * 1024L;
+            }
+
+            return string.Equals(name, "globalgamemanagers", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "unity_builtin_extra", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "unity default resources", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTinySharedAssetsPlaceholder(string path)
+        {
+            var name = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            return name.StartsWith("sharedassets", StringComparison.OrdinalIgnoreCase)
+                && name.EndsWith(".assets", StringComparison.OrdinalIgnoreCase)
+                && SafeFileLength(path) < 64L * 1024L;
         }
 
         private static long SafeFileLength(string path)
