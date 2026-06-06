@@ -2422,6 +2422,9 @@ namespace AnimeStudio.CLI
 
         public static string FixFileName(string str)
         {
+            str = (str ?? string.Empty).Trim().TrimEnd('.');
+            if (str.Length == 0)
+                return "_";
             if (str.Length >= 260)
                 return Path.GetRandomFileName();
             return Path.GetInvalidFileNameChars()

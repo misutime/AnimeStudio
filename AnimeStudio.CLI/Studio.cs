@@ -59,6 +59,10 @@ namespace AnimeStudio.CLI
             @"(?:^|[\\/])(obsolete|deprecated)(?:[\\/]|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
+        private static readonly Regex LowValueBrowsableModelPattern = new Regex(
+            @"(?:^|[\\/])(?:[^\\/]*PLACEHOLDER[^\\/]*|[^\\/]*(?:^|[_\-\s])Dummy(?:$|[_\-\s0-9])[^\\/]*|[^\\/]*AimPreview[^\\/]*|[^\\/]*ArenaBlock_(?:Invalid|ValidPlace|ValidRemove)[^\\/]*)$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
 
         public static Dictionary<ulong, string> Paths { get; set; } =
             new Dictionary<ulong, string>();
@@ -797,6 +801,7 @@ namespace AnimeStudio.CLI
 
             models = FilterLibraryModelSources(models, sourcePartModels);
             models = FilterDeprecatedLibraryAssets(models, "model");
+            models = FilterLowValueBrowsableModels(models, sourcePartModels);
             animations = FilterDeprecatedLibraryAssets(animations, "animation");
 
             Logger.Info(
@@ -854,6 +859,46 @@ namespace AnimeStudio.CLI
                 .Any(x => DeprecatedLibraryPathPattern.IsMatch(x));
         }
 
+        private static List<AssetItem> FilterLowValueBrowsableModels(List<AssetItem> models, List<AssetItem> sourcePartModels)
+        {
+            var kept = new List<AssetItem>(models.Count);
+            var skipped = 0;
+            foreach (var model in models)
+            {
+                if (IsLowValueBrowsableModel(model))
+                {
+                    model.LibraryRole = string.IsNullOrWhiteSpace(model.LibraryRole)
+                        ? "SourcePart"
+                        : model.LibraryRole;
+                    sourcePartModels.Add(model);
+                    skipped++;
+                    continue;
+                }
+
+                kept.Add(model);
+            }
+
+            if (skipped > 0)
+            {
+                Logger.Info($"Library downgraded {skipped} placeholder/debug preview model(s) to source-part index entries.");
+                ProfileLogger.Event("library_low_value_model_filter", new Dictionary<string, object>
+                {
+                    ["inputCount"] = models.Count,
+                    ["skippedCount"] = skipped,
+                    ["keptCount"] = kept.Count,
+                    ["rule"] = "Only strong low-value browsing signals are downgraded: PLACEHOLDER, Dummy token, AimPreview, and ArenaBlock Invalid/ValidPlace/ValidRemove. Part_* is not filtered by prefix.",
+                });
+            }
+
+            return kept;
+        }
+
+        private static bool IsLowValueBrowsableModel(AssetItem asset)
+        {
+            return GetLowValueFilterTexts(asset)
+                .Any(x => LowValueBrowsableModelPattern.IsMatch(x));
+        }
+
         private static IEnumerable<string> GetDeprecatedFilterTexts(AssetItem asset)
         {
             if (!string.IsNullOrWhiteSpace(asset.Container))
@@ -863,6 +908,26 @@ namespace AnimeStudio.CLI
             if (!string.IsNullOrWhiteSpace(asset.SourceFile?.originalPath))
             {
                 yield return asset.SourceFile.originalPath.Replace('\\', '/');
+            }
+        }
+
+        private static IEnumerable<string> GetLowValueFilterTexts(AssetItem asset)
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Text))
+            {
+                yield return asset.Text.Replace('\\', '/');
+            }
+            if (!string.IsNullOrWhiteSpace(asset.Container))
+            {
+                yield return asset.Container.Replace('\\', '/');
+            }
+            if (!string.IsNullOrWhiteSpace(asset.SourceFile?.originalPath))
+            {
+                yield return asset.SourceFile.originalPath.Replace('\\', '/');
+            }
+            if (!string.IsNullOrWhiteSpace(asset.SourceFile?.fileName))
+            {
+                yield return asset.SourceFile.fileName.Replace('\\', '/');
             }
         }
 
@@ -3182,7 +3247,7 @@ namespace AnimeStudio.CLI
         private static string GetLibraryExportPath(string savePath, AssetItem asset)
         {
             var libraryRoot = GetLibraryRoot(asset);
-            var subPath = GetLibrarySubPath(asset);
+            var subPath = SanitizeRelativePath(GetLibrarySubPath(asset));
             return string.IsNullOrEmpty(subPath)
                 ? Path.Combine(savePath, libraryRoot)
                 : Path.Combine(savePath, libraryRoot, subPath);
@@ -3273,7 +3338,7 @@ namespace AnimeStudio.CLI
             var parts = path
                 .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
                 .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
-                .Select(x => Regex.Replace(x, @"[<>:""/\\|?*]+", "_"))
+                .Select(x => Exporter.FixFileName(Regex.Replace(x, @"[<>:""/\\|?*]+", "_")))
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToArray();
             return parts.Length == 0 ? string.Empty : Path.Combine(parts);
@@ -3281,6 +3346,7 @@ namespace AnimeStudio.CLI
 
         private static string GetAssetNameCategory(string name)
         {
+            name = Exporter.FixFileName(name ?? string.Empty);
             if (string.IsNullOrWhiteSpace(name))
             {
                 return string.Empty;
