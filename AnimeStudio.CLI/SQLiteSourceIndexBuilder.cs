@@ -854,7 +854,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             Logger.Default.Log(LoggerEvent.Info, message);
         }
 
-        private static bool IsLikelyUnityLoadableFile(string path)
+        internal static bool IsLikelyUnityLoadableFile(string path)
         {
             var extension = Path.GetExtension(path);
             if (string.IsNullOrEmpty(extension))

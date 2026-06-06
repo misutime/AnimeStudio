@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using AnimeStudio.CLI.Properties;
 using Newtonsoft.Json;
@@ -326,7 +327,19 @@ namespace AnimeStudio.CLI
                 }
 
                 Logger.Info("Scanning for files...");
-                var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
+                var allFiles = o.Input.Attributes.HasFlag(FileAttributes.Directory)
+                    ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories)
+                    : new string[] { o.Input.FullName };
+                var files = allFiles
+                    .Where(SQLiteSourceIndexBuilder.IsLikelyUnityLoadableFile)
+                    .OrderBy(SafeFileLength)
+                    .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var skippedNonUnityFiles = allFiles.Length - files.Length;
+                if (skippedNonUnityFiles > 0)
+                {
+                    Logger.Info($"Skipped {skippedNonUnityFiles} sidecar/non-Unity file(s) before Library load.");
+                }
                 var dependencyMapFiles = files;
                 var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
                     ? o.Input.FullName
@@ -513,9 +526,18 @@ namespace AnimeStudio.CLI
                     var fileList = new List<string>(toReadFile);
                     foreach (var batch in ChunkFiles(fileList, GetEffectiveBatchSize(o.WorkMode)))
                     {
+                        var largestBatchFile = batch
+                            .Select(x => new { Path = x, Bytes = SafeFileLength(x) })
+                            .OrderByDescending(x => x.Bytes)
+                            .FirstOrDefault();
+                        var batchBytes = batch.Sum(SafeFileLength);
+                        using (StartLibraryLoadHeartbeat(batch.Count, batchBytes, largestBatchFile?.Path, largestBatchFile?.Bytes ?? 0, assetsManager))
                         using (ProfileLogger.Measure("load_batch", new Dictionary<string, object>
                         {
                             ["batchSize"] = batch.Count,
+                            ["batchBytes"] = batchBytes,
+                            ["largestFile"] = largestBatchFile?.Path,
+                            ["largestFileBytes"] = largestBatchFile?.Bytes ?? 0,
                             ["firstFile"] = batch.FirstOrDefault(),
                         }))
                         {
@@ -889,6 +911,102 @@ namespace AnimeStudio.CLI
         private static int GetEffectiveBatchSize(WorkMode workMode)
         {
             return workMode == WorkMode.Export ? 1 : Math.Max(1, Studio.BatchFiles);
+        }
+
+        private static long SafeFileLength(string path)
+        {
+            try
+            {
+                return new FileInfo(path).Length;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static IDisposable StartLibraryLoadHeartbeat(
+            int batchFileCount,
+            long batchBytes,
+            string largestFile,
+            long largestFileBytes,
+            AssetsManager manager)
+        {
+            return new LibraryLoadHeartbeat(batchFileCount, batchBytes, largestFile, largestFileBytes, manager);
+        }
+
+        private sealed class LibraryLoadHeartbeat : IDisposable
+        {
+            private readonly CancellationTokenSource cancellation = new();
+            private readonly Task task;
+            private readonly DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+            private readonly int batchFileCount;
+            private readonly long batchBytes;
+            private readonly string largestFile;
+            private readonly long largestFileBytes;
+            private readonly AssetsManager manager;
+
+            public LibraryLoadHeartbeat(
+                int batchFileCount,
+                long batchBytes,
+                string largestFile,
+                long largestFileBytes,
+                AssetsManager manager)
+            {
+                this.batchFileCount = batchFileCount;
+                this.batchBytes = batchBytes;
+                this.largestFile = largestFile;
+                this.largestFileBytes = largestFileBytes;
+                this.manager = manager;
+                task = Task.Run(Run);
+            }
+
+            private async Task Run()
+            {
+                while (!cancellation.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), cancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        break;
+                    }
+
+                    if (cancellation.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
+                    var data = new Dictionary<string, object>
+                    {
+                        ["batchFileCount"] = batchFileCount,
+                        ["batchBytes"] = batchBytes,
+                        ["largestFile"] = largestFile,
+                        ["largestFileBytes"] = largestFileBytes,
+                        ["loadedAssetFiles"] = manager.assetsFileList.Count,
+                        ["elapsedMs"] = elapsedMs,
+                    };
+                    ProfileLogger.Event("load_batch_heartbeat", data);
+                    Logger.Info($"Library load heartbeat: {batchFileCount} file(s), loaded {manager.assetsFileList.Count} asset file(s), elapsed {elapsedMs / 1000:0}s, largest {Path.GetFileName(largestFile)}.");
+                }
+            }
+
+            public void Dispose()
+            {
+                cancellation.Cancel();
+                try
+                {
+                    task.Wait(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // Heartbeat is diagnostic only.
+                }
+                cancellation.Dispose();
+            }
         }
 
         private static IEnumerable<List<string>> ChunkFiles(List<string> files, int size)

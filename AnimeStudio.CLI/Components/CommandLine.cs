@@ -400,7 +400,7 @@ namespace AnimeStudio.CLI
 
             GameName.FromAmong(GameManager.GetGameNames());
 
-            LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Debug, LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
+            LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
             GroupAssetsType.SetDefaultValue(AssetGroupOption.ByLibrary);
             AssetExportType.SetDefaultValue(ExportType.Convert);
             WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Library);
