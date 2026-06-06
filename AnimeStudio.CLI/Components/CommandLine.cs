@@ -330,7 +330,7 @@ namespace AnimeStudio.CLI
             IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
-            ModelGcInterval = new Option<int>("--model_gc_interval", "Run a full blocking GC after this many exported models in 3D modes. Use 0 to disable model-level full GC.");
+            ModelGcInterval = new Option<int>("--model_gc_interval", "Run a light non-blocking GC after this many exported model candidates in 3D modes. Default 0 disables model-level GC; batch cleanup still performs full cleanup.");
             ProfileLog = new Option<string>("--profile_log", "Write JSONL performance profile events to the specified path. Use 'off' to disable.");
             ConvertModelTextures = new Option<FileInfo>("--convert_model_textures", "Convert only the raw textures referenced by a previously exported glTF model. Does not require the original game folder.").LegalFilePathsOnly();
             ConvertTextureAssetRoot = new Option<DirectoryInfo>("--texture_asset_root", "Root of a previous export. If omitted, it is inferred by walking up from the glTF until Textures/_ModelDependencies is found.").LegalFilePathsOnly();
@@ -409,11 +409,11 @@ namespace AnimeStudio.CLI
             ModelFormat.SetDefaultValue(AnimeStudio.CLI.ModelExportFormat.Gltf);
             AnimationPackage.SetDefaultValue(AnimeStudio.CLI.AnimationPackageMode.Separate);
             TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Png);
-            Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.Core);
+            Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.All);
             ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
             MaxExportTasks.SetDefaultValue(1);
             BatchFiles.SetDefaultValue(16);
-            ModelGcInterval.SetDefaultValue(32);
+            ModelGcInterval.SetDefaultValue(0);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
             UpdateGltfTextureRefs.SetDefaultValue(true);

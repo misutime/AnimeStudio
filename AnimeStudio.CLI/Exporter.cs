@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -625,6 +626,466 @@ namespace AnimeStudio.CLI
             return true;
         }
 
+        public static bool ExportStaticMeshGltf(AssetItem item, string exportPath)
+        {
+            var mesh = (Mesh)item.Asset;
+            if (!IsExportableStaticMesh(mesh))
+            {
+                return false;
+            }
+
+            if (!TryExportFile(exportPath, item, ".gltf", out var gltfPath))
+            {
+                return false;
+            }
+
+            using (ProfileLogger.Measure("static_mesh_gltf_export", GetModelProfileData(item, gltfPath)))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(gltfPath));
+                var binPath = Path.ChangeExtension(gltfPath, ".bin");
+                var binName = Path.GetFileName(binPath);
+                var bufferViews = new JArray();
+                var accessors = new JArray();
+                var primitives = new JArray();
+                using var stream = File.Create(binPath);
+
+                var positionAccessor = WriteFloatAccessor(
+                    stream,
+                    bufferViews,
+                    accessors,
+                    BuildStaticMeshPositions(mesh),
+                    "VEC3",
+                    34962,
+                    CalculateVec3Min(mesh.m_Vertices, mesh.m_VertexCount, true),
+                    CalculateVec3Max(mesh.m_Vertices, mesh.m_VertexCount, true)
+                );
+
+                int? normalAccessor = null;
+                if (mesh.m_Normals != null && mesh.m_Normals.Length >= mesh.m_VertexCount * 3)
+                {
+                    normalAccessor = WriteFloatAccessor(
+                        stream,
+                        bufferViews,
+                        accessors,
+                        BuildStaticMeshNormals(mesh),
+                        "VEC3",
+                        34962
+                    );
+                }
+
+                int? uvAccessor = null;
+                var uv0 = mesh.GetUV(0);
+                if (uv0 != null && uv0.Length >= mesh.m_VertexCount * 2)
+                {
+                    uvAccessor = WriteFloatAccessor(
+                        stream,
+                        bufferViews,
+                        accessors,
+                        BuildStaticMeshUv(uv0, mesh.m_VertexCount),
+                        "VEC2",
+                        34962
+                    );
+                }
+
+                var cursor = 0;
+                for (var subMeshIndex = 0; subMeshIndex < mesh.m_SubMeshes.Count; subMeshIndex++)
+                {
+                    var subMesh = mesh.m_SubMeshes[subMeshIndex];
+                    var indexCount = (int)Math.Min(subMesh.indexCount, Math.Max(0, mesh.m_Indices.Count - cursor));
+                    if (indexCount < 3)
+                    {
+                        cursor += indexCount;
+                        continue;
+                    }
+
+                    var indices = BuildStaticMeshIndices(mesh.m_Indices, cursor, indexCount);
+                    cursor += indexCount;
+                    if (indices.Length < 3)
+                    {
+                        continue;
+                    }
+
+                    var indexAccessor = WriteUIntAccessor(stream, bufferViews, accessors, indices, 34963);
+                    var attributes = new JObject
+                    {
+                        ["POSITION"] = positionAccessor,
+                    };
+                    if (normalAccessor.HasValue)
+                    {
+                        attributes["NORMAL"] = normalAccessor.Value;
+                    }
+                    if (uvAccessor.HasValue)
+                    {
+                        attributes["TEXCOORD_0"] = uvAccessor.Value;
+                    }
+
+                    primitives.Add(new JObject
+                    {
+                        ["attributes"] = attributes,
+                        ["indices"] = indexAccessor,
+                        ["mode"] = 4,
+                        ["material"] = 0,
+                        ["extras"] = new JObject
+                        {
+                            ["unitySubMesh"] = subMeshIndex,
+                            ["sourceIndexCount"] = indexCount,
+                        },
+                    });
+                }
+
+                if (primitives.Count == 0)
+                {
+                    return false;
+                }
+
+                AlignStream4(stream);
+                var sameContainerMaterials = FindSameContainerMaterials(item).ToArray();
+                var materialStatus = sameContainerMaterials.Length > 0 ? "needsRendererBinding" : "missingRendererMaterial";
+                var materialNote = sameContainerMaterials.Length > 0
+                    ? "Static Mesh was exported from a direct Unity Mesh. Same-container Material assets were indexed as candidates, but no Renderer submesh binding exists on the Mesh object itself."
+                    : "Static Mesh was exported from a direct Unity Mesh. No same-container Material candidate was found; material/shader binding may require a prefab/renderer or external configuration.";
+
+                var gltf = new JObject
+                {
+                    ["asset"] = new JObject
+                    {
+                        ["version"] = "2.0",
+                        ["generator"] = "AnimeStudio StaticMesh Library",
+                    },
+                    ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(0) }),
+                    ["scene"] = 0,
+                    ["nodes"] = new JArray(new JObject
+                    {
+                        ["name"] = FixFileName(item.Text),
+                        ["mesh"] = 0,
+                        ["extras"] = new JObject
+                        {
+                            ["unityContainer"] = item.Container,
+                            ["source"] = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                            ["pathId"] = item.m_PathID,
+                            ["libraryRole"] = item.LibraryRole,
+                        },
+                    }),
+                    ["meshes"] = new JArray(new JObject
+                    {
+                        ["name"] = mesh.m_Name,
+                        ["primitives"] = primitives,
+                    }),
+                    ["materials"] = new JArray(new JObject
+                    {
+                        ["name"] = "StaticMesh_Default",
+                        ["pbrMetallicRoughness"] = new JObject
+                        {
+                            ["baseColorFactor"] = new JArray(0.8, 0.8, 0.8, 1.0),
+                            ["metallicFactor"] = 0.0,
+                            ["roughnessFactor"] = 0.6,
+                        },
+                        ["extras"] = new JObject
+                        {
+                            ["animeStudioMaterial"] = new JObject
+                            {
+                                ["workflow"] = "StaticMeshContainer",
+                                ["status"] = materialStatus,
+                                ["notes"] = new JArray(materialNote),
+                                ["sameContainerMaterials"] = JArray.FromObject(sameContainerMaterials),
+                            },
+                        },
+                    }),
+                    ["buffers"] = new JArray(new JObject
+                    {
+                        ["uri"] = binName,
+                        ["byteLength"] = stream.Length,
+                    }),
+                    ["bufferViews"] = bufferViews,
+                    ["accessors"] = accessors,
+                };
+
+                File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
+                WriteStaticMeshReadme(gltfPath, item, mesh, materialStatus, sameContainerMaterials);
+                AppendStaticMeshAssetCatalog(item, gltfPath, materialStatus, sameContainerMaterials);
+            }
+
+            return true;
+        }
+
+        private static bool IsExportableStaticMesh(Mesh mesh)
+        {
+            return mesh != null
+                && mesh.m_VertexCount > 0
+                && mesh.m_Vertices != null
+                && mesh.m_Vertices.Length >= mesh.m_VertexCount * 3
+                && mesh.m_Indices != null
+                && mesh.m_Indices.Count >= 3
+                && mesh.m_SubMeshes != null
+                && mesh.m_SubMeshes.Count > 0;
+        }
+
+        private static float[] BuildStaticMeshPositions(Mesh mesh)
+        {
+            var stride = mesh.m_Vertices.Length >= mesh.m_VertexCount * 4 ? 4 : 3;
+            var values = new float[mesh.m_VertexCount * 3];
+            for (var i = 0; i < mesh.m_VertexCount; i++)
+            {
+                values[i * 3] = SanitizeFloat(-mesh.m_Vertices[i * stride]);
+                values[i * 3 + 1] = SanitizeFloat(mesh.m_Vertices[i * stride + 1]);
+                values[i * 3 + 2] = SanitizeFloat(mesh.m_Vertices[i * stride + 2]);
+            }
+            return values;
+        }
+
+        private static float[] BuildStaticMeshNormals(Mesh mesh)
+        {
+            var stride = mesh.m_Normals.Length >= mesh.m_VertexCount * 4 ? 4 : 3;
+            var values = new float[mesh.m_VertexCount * 3];
+            for (var i = 0; i < mesh.m_VertexCount; i++)
+            {
+                values[i * 3] = SanitizeFloat(-mesh.m_Normals[i * stride]);
+                values[i * 3 + 1] = SanitizeFloat(mesh.m_Normals[i * stride + 1]);
+                values[i * 3 + 2] = SanitizeFloat(mesh.m_Normals[i * stride + 2]);
+            }
+            return values;
+        }
+
+        private static float[] BuildStaticMeshUv(float[] uv, int vertexCount)
+        {
+            var stride = uv.Length >= vertexCount * 4 ? 4 : uv.Length >= vertexCount * 3 ? 3 : 2;
+            var values = new float[vertexCount * 2];
+            for (var i = 0; i < vertexCount; i++)
+            {
+                values[i * 2] = SanitizeFloat(uv[i * stride]);
+                values[i * 2 + 1] = SanitizeFloat(1.0f - uv[i * stride + 1]);
+            }
+            return values;
+        }
+
+        private static uint[] BuildStaticMeshIndices(List<uint> source, int start, int count)
+        {
+            var triangleCount = count / 3;
+            var values = new uint[triangleCount * 3];
+            for (var i = 0; i < triangleCount; i++)
+            {
+                var src = start + i * 3;
+                var dst = i * 3;
+                values[dst] = source[src + 2];
+                values[dst + 1] = source[src + 1];
+                values[dst + 2] = source[src];
+            }
+            return values;
+        }
+
+        private static int WriteFloatAccessor(Stream stream, JArray bufferViews, JArray accessors, float[] values, string type, int target, float[] min = null, float[] max = null)
+        {
+            AlignStream4(stream);
+            var offset = stream.Position;
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                foreach (var value in values)
+                {
+                    writer.Write(SanitizeFloat(value));
+                }
+            }
+            return AddAccessor(bufferViews, accessors, offset, values.Length * sizeof(float), target, 5126, type, GetElementCount(type, values.Length), min, max);
+        }
+
+        private static int WriteUIntAccessor(Stream stream, JArray bufferViews, JArray accessors, uint[] values, int target)
+        {
+            AlignStream4(stream);
+            var offset = stream.Position;
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                foreach (var value in values)
+                {
+                    writer.Write(value);
+                }
+            }
+            return AddAccessor(bufferViews, accessors, offset, values.Length * sizeof(uint), target, 5125, "SCALAR", values.Length);
+        }
+
+        private static int AddAccessor(JArray bufferViews, JArray accessors, long offset, int byteLength, int target, int componentType, string type, int count, float[] min = null, float[] max = null)
+        {
+            var bufferViewIndex = bufferViews.Count;
+            bufferViews.Add(new JObject
+            {
+                ["buffer"] = 0,
+                ["byteOffset"] = offset,
+                ["byteLength"] = byteLength,
+                ["target"] = target,
+            });
+            var accessor = new JObject
+            {
+                ["bufferView"] = bufferViewIndex,
+                ["componentType"] = componentType,
+                ["count"] = count,
+                ["type"] = type,
+            };
+            if (min != null)
+            {
+                accessor["min"] = new JArray(min.Select(x => SanitizeFloat(x)));
+            }
+            if (max != null)
+            {
+                accessor["max"] = new JArray(max.Select(x => SanitizeFloat(x)));
+            }
+            var accessorIndex = accessors.Count;
+            accessors.Add(accessor);
+            return accessorIndex;
+        }
+
+        private static int GetElementCount(string type, int scalarCount)
+        {
+            return type switch
+            {
+                "VEC2" => scalarCount / 2,
+                "VEC3" => scalarCount / 3,
+                "VEC4" => scalarCount / 4,
+                _ => scalarCount,
+            };
+        }
+
+        private static void AlignStream4(Stream stream)
+        {
+            while ((stream.Position & 3) != 0)
+            {
+                stream.WriteByte(0);
+            }
+        }
+
+        private static float SanitizeFloat(float value)
+        {
+            return float.IsFinite(value) ? value : 0f;
+        }
+
+        private static float[] CalculateVec3Min(float[] values, int vertexCount, bool negateX)
+        {
+            return CalculateVec3MinMax(values, vertexCount, negateX, true);
+        }
+
+        private static float[] CalculateVec3Max(float[] values, int vertexCount, bool negateX)
+        {
+            return CalculateVec3MinMax(values, vertexCount, negateX, false);
+        }
+
+        private static float[] CalculateVec3MinMax(float[] values, int vertexCount, bool negateX, bool findMin)
+        {
+            var stride = values.Length >= vertexCount * 4 ? 4 : 3;
+            var result = new[]
+            {
+                findMin ? float.PositiveInfinity : float.NegativeInfinity,
+                findMin ? float.PositiveInfinity : float.NegativeInfinity,
+                findMin ? float.PositiveInfinity : float.NegativeInfinity,
+            };
+            for (var i = 0; i < vertexCount; i++)
+            {
+                var x = SanitizeFloat(values[i * stride] * (negateX ? -1f : 1f));
+                var y = SanitizeFloat(values[i * stride + 1]);
+                var z = SanitizeFloat(values[i * stride + 2]);
+                if (findMin)
+                {
+                    result[0] = Math.Min(result[0], x);
+                    result[1] = Math.Min(result[1], y);
+                    result[2] = Math.Min(result[2], z);
+                }
+                else
+                {
+                    result[0] = Math.Max(result[0], x);
+                    result[1] = Math.Max(result[1], y);
+                    result[2] = Math.Max(result[2], z);
+                }
+            }
+            return result.Select(SanitizeFloat).ToArray();
+        }
+
+        private static IEnumerable<object> FindSameContainerMaterials(AssetItem item)
+        {
+            if (string.IsNullOrWhiteSpace(item.Container))
+            {
+                yield break;
+            }
+
+            foreach (var materialItem in Studio.exportableAssets.Where(x =>
+                         x.Asset is Material
+                         && string.Equals((x.Container ?? string.Empty).Trim(), item.Container.Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                var material = (Material)materialItem.Asset;
+                yield return new
+                {
+                    name = material.m_Name,
+                    source = material.assetsFile?.originalPath ?? material.assetsFile?.fileName,
+                    pathId = material.m_PathID,
+                    textureSlots = material.m_SavedProperties?.m_TexEnvs?
+                        .Where(x => x.Value?.m_Texture != null && x.Value.m_Texture.m_PathID != 0)
+                        .Select(x => x.Key)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                        .ToArray() ?? Array.Empty<string>(),
+                };
+            }
+        }
+
+        private static void WriteStaticMeshReadme(string gltfPath, AssetItem item, Mesh mesh, string materialStatus, object[] sameContainerMaterials)
+        {
+            var readmePath = Path.Combine(Path.GetDirectoryName(gltfPath), $"{FixFileName(item.Text)}.ASSET_README.md");
+            var sb = new StringBuilder();
+            sb.AppendLine("# Static Mesh Asset");
+            sb.AppendLine();
+            sb.AppendLine("这份 glTF 来自 Unity 的直接 `Mesh` 资产，而不是 prefab/renderer 根对象。");
+            sb.AppendLine();
+            sb.AppendLine($"- 名称: `{item.Text}`");
+            sb.AppendLine($"- Unity Container: `{item.Container}`");
+            sb.AppendLine($"- Source: `{item.SourceFile?.originalPath ?? item.SourceFile?.fileName}`");
+            sb.AppendLine($"- PathID: `{item.m_PathID}`");
+            sb.AppendLine($"- Vertex Count: `{mesh.m_VertexCount}`");
+            sb.AppendLine($"- SubMesh Count: `{mesh.m_SubMeshes?.Count ?? 0}`");
+            sb.AppendLine($"- Material Binding: `{materialStatus}`");
+            sb.AppendLine();
+            if (sameContainerMaterials.Length > 0)
+            {
+                sb.AppendLine("同容器内找到了 Material 候选，但裸 Mesh 没有 Renderer 的 submesh-material 绑定，当前仅记录候选关系：");
+                foreach (var material in sameContainerMaterials)
+                {
+                    sb.AppendLine($"- `{JsonConvert.SerializeObject(material)}`");
+                }
+            }
+            else
+            {
+                sb.AppendLine("没有找到同容器 Material 候选。该素材可能需要 prefab/renderer、terrain/shader 配置或人工材质修补。");
+            }
+            File.WriteAllText(readmePath, sb.ToString());
+        }
+
+        private static void AppendStaticMeshAssetCatalog(AssetItem item, string outputPath, string materialStatus, object[] sameContainerMaterials)
+        {
+            if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                return;
+            }
+
+            var mesh = (Mesh)item.Asset;
+            AppendCatalogEntry(new
+            {
+                kind = "Model",
+                libraryRole = item.LibraryRole,
+                resourceKind = InferResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
+                exportedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                name = item.Text,
+                sourceType = item.TypeString,
+                container = item.Container,
+                source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                pathId = item.m_PathID,
+                output = outputPath,
+                format = "Gltf",
+                modelSource = CliExportOptions.ModelSource.ToString(),
+                textureMode = CliExportOptions.TextureMode.ToString(),
+                animationPackage = CliExportOptions.AnimationPackage.ToString(),
+                meshCount = 1,
+                vertexCount = mesh.m_VertexCount,
+                subMeshCount = mesh.m_SubMeshes?.Count ?? 0,
+                indexCount = mesh.m_Indices?.Count ?? 0,
+                materialBindingStatus = materialStatus,
+                sameContainerMaterials,
+            });
+        }
+
         public static bool ExportVideoClip(AssetItem item, string exportPath)
         {
             var m_VideoClip = (VideoClip)item.Asset;
@@ -1234,6 +1695,17 @@ namespace AnimeStudio.CLI
         private static JObject BuildHumanoidSkeletonValidation(IImported imported, JObject avatarInfo)
         {
             var humanBoneMap = ParseAvatarHumanBoneMap(avatarInfo);
+            if (humanBoneMap.Count == 0)
+            {
+                return JObject.FromObject(new
+                {
+                    status = "not_applicable",
+                    rule = "Humanoid skeleton validation only applies when Unity Avatar HumanDescription is available. Static meshes and generic non-humanoid models are not treated as failed humanoid assets.",
+                    hasAvatarHumanDescription = false,
+                    mappedHumanBoneCount = 0,
+                });
+            }
+
             var frameByName = new Dictionary<string, ImportedFrame>(StringComparer.OrdinalIgnoreCase);
             CollectFrames(imported.RootFrame, frameByName);
 
@@ -2198,6 +2670,14 @@ namespace AnimeStudio.CLI
             if (Regex.IsMatch(text, @"(^|/)stage|court|scene|map"))
             {
                 return "Stage";
+            }
+            if (Regex.IsMatch(text, @"(^|/)(terrain|landscape|surface|ground|levelbuild|levelbuildelements|environment|world|locations|rooms|nature|vegetation|foliage|tree|trees|rock|rocks)(/|$)"))
+            {
+                return "Environment";
+            }
+            if (Regex.IsMatch(text, @"(^|/)(building|buildings|structure|structures|wall|walls|floor|floors|roof|roofs|house|houses|castle|pieces)(/|$)|(^|/)gameelements/pieces(/|$)"))
+            {
+                return "Buildings";
             }
             if (Regex.IsMatch(text, @"(^|/)ball|basketball"))
             {

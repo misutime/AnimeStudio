@@ -52,7 +52,7 @@ fallback 必须在索引或报告里标注，不能混入默认绑定结果。
 
 ### 完整依赖图优先
 
-精准导出可以使用 `--containers`、`--names` 过滤候选，但 CAB / PPtr 依赖图必须来自完整源目录。
+精准导出可以使用 `--containers`、`--names` 过滤候选，但 CAB / PPtr 依赖图必须来自完整源目录。默认 `Library` 不允许用 3D 路径过滤裁剪源文件列表；源文件只做 Unity-loadable/sidecar 防御过滤。
 
 不要为了样本变快而只复制少量 bundle 当输入。Unity 游戏常把脸、头发、附件、材质、Mesh、动画拆到外部 CAB，裁掉依赖源会导致模型缺件或引用断链。
 
@@ -111,13 +111,22 @@ SQLite 源索引规则：
 - 当前允许先保存 `.fsb` 等原始音频数据；FMOD/native 转 WAV 作为后续批量转换阶段处理。`.audio.json` 必须记录 `convertedToWav=false` 或实际输出格式，不能假装已转码。
 - `VideoClip` / `MovieTexture` 只属于显式媒体提取，不进入默认可用素材库。
 
-默认 `Models/` 使用 `PrefabPrimary`：
+默认 `Models/` 使用“可用模型主资源”策略：
 
-- 只放 prefab、Animator 或完整 GameObject 组合模型。
+- prefab、Animator、完整 GameObject 组合模型是主资源。
+- 有明确 Unity container/preload 路径、几何完整、语义明确的静态 Mesh 也是主资源，默认必须进入 Library。
 - raw fbx 身体、face、附件等 source part 默认不作为可浏览模型导出。
 - raw/source part 必须进入 `asset_catalog.jsonl`，标记为 `SourcePart`、`RawModel`、`AttachmentSource` 等。
 - 没有被任何组合模型覆盖、但本身可用的 raw 模型可进入 `Models/RawUnreferenced`。
 - 需要研究零散部件时，显式使用 `PrefabAndParts` 或 `RawPartsOnly`。
+
+静态环境/建筑/道具 Mesh 是默认 Library 的一等资源，不是次要补丁，也不是放开所有 Mesh：
+
+- 直接导出所有 Mesh 会产生大量匿名 OBJ/碎片，默认禁止。
+- 只有具备明确 Unity `AssetBundle.m_Container` / preload 容器路径、几何数据完整、路径语义指向 environment/building/prop/world/stage 等可浏览素材的 Mesh，才可升级为 `StaticMeshPrimary`。
+- `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
+- 匿名、无容器路径、碰撞、NavMesh、Occlusion、Dummy、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Decal`、`Shadow`、`SFX/FX/VFX` 等名字不能单独作为静默丢弃理由；如果具备明确容器路径和可见几何，应分类或标注进入素材库。
+- 裸 Mesh 没有 Renderer 的 submesh-material 强绑定时，不要伪造材质关系。可以记录同容器 Material/Texture 候选，并在 `asset_catalog.jsonl` 与模型旁说明文件标记 `needsRendererBinding` 或 `missingRendererMaterial`。
 
 ## 5. 模型、骨骼、模块
 
@@ -162,6 +171,9 @@ Humanoid/Muscle 动画作为可复用身体动画验收时，必须优先通过 
 
 - 有效动画应能驱动目标模型的可见 mesh、bone、blendshape 或 transform。
 - 没有驱动可见对象的候选，宁可标为静态或待检查。
+- 骨架/Avatar 能套上只是技术前提，不代表素材库语义合格。默认候选还必须检查 Unity 显式引用、动画命名语义、武器类型、道具类型、挂点和 prefab 附件是否一致。
+- 带明确附件的模型必须拒绝冲突动作：例如 bow/crossbow 模型不能默认匹配 bomb、bottle、drink、sword 等动作；crossbow/bow/gun/sword 等动作应优先匹配同类附件或显式 Unity 引用。
+- 如果只有结构兼容、但武器/道具/动作语义缺失或冲突，默认不进入推荐候选。需要研究时应通过显式预览命令人工强制选择，并在报告里标注为 fallback/人工验证。
 - 对短动作或定格动作，判断有效性时要同时比较采样姿态相对 rest pose 的变化和帧间变化。
 - 不要因为 Humanoid bake 成功，就把表情、非角色、材质动画标为已验证。
 - 全量 Library 不应做海量模型 × 动画组合搜索。结构候选匹配只服务于小样本/过滤导出；超过保守阈值时必须直接 defer，到定向预览、打包或 UI 查询阶段再按选中模型精确匹配。
@@ -231,6 +243,8 @@ Shader 默认作为实验功能：
 - 默认 PNG 贴图可读；必要时支持 raw/reference 和后处理转换。
 - 日志要分阶段计时：mesh、skin、material、texture、animation、write、cleanup。
 - 内存允许较大占用，但必须稳定释放，不能无止境叠加。
+- 候选数量、跳过数量和 `model_gc` 总耗时本身就是质量指标。默认 Library 可以降级非常明确的 placeholder/debug/dummy/camera/light/audio helper，但不能仅凭 `sfx_`、`fx_`、`vfx_`、`Spawner_`、`Fader_`、`Armature`、`mixamorig:*` 这类名称全局排除；这些对象在不同 Unity 项目中可能承载有效 mesh、skin、skeleton、特效网格、projectile 或场景组件。噪声应优先通过资源分类、报告标注、显式 profile 或后续 UI 筛选解决，不应静默丢失潜在有效模型。
+- 模型级 GC 不能成为主要耗时。全量导出默认关闭模型循环内 GC，依赖 batch 结束时的 `clear_batch` 释放 AssetManager、reader、resource stream 并做完整清理；只有在明确内存风险时才显式设置 `--model_gc_interval` 开启轻量非阻塞 GC。profile 中如果 `model_gc` 接近或超过 `model_convert`，优先优化 GC 策略和候选筛选，而不是先优化 PNG 或 glTF 写出。
 
 当命令慢时，应先看日志定位瓶颈，不要凭感觉删功能。
 

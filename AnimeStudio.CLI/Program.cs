@@ -348,26 +348,11 @@ namespace AnimeStudio.CLI
                 var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.Profile3D, o.NameExcludeFilter);
                 if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
                 {
-                    var originalCount = files.Length;
-                    files = files
-                        .Where(x =>
-                        {
-                            var filterPath = NormalizeFilterPath(x, inputBaseFolder);
-                            return !containerExcludeFilters.Any(y => y.IsMatch(filterPath));
-                        })
-                        .ToArray();
-                    Logger.Info($"Excluded {originalCount - files.Length} file(s) by 3D path filters.");
+                    Logger.Info("3D path excludes will be applied to export candidates only; source files stay complete to preserve Unity PPtr dependencies.");
                 }
                 if (o.WorkMode != WorkMode.Export && !o.ContainerFilter.IsNullOrEmpty())
                 {
-                    var matchedFiles = files
-                        .Where(x => o.ContainerFilter.Any(y => y.IsMatch(NormalizeFilterPath(x, inputBaseFolder))))
-                        .ToArray();
-                    if (matchedFiles.Length > 0 && matchedFiles.Length < files.Length)
-                    {
-                        Logger.Info($"Prefiltered source files by --containers: {files.Length} -> {matchedFiles.Length}.");
-                        files = matchedFiles;
-                    }
+                    Logger.Info("--containers will filter export candidates only; source files stay complete to preserve Unity PPtr dependencies.");
                 }
                 Logger.Info($"Found {files.Length} files");
                 if (files.Length == 0)
@@ -770,13 +755,7 @@ namespace AnimeStudio.CLI
                 return userExcludeFilters ?? Array.Empty<Regex>();
             }
 
-            var filters = new List<Regex>
-            {
-                new Regex(
-                    @"camera|maincam|handycam|uicam",
-                    RegexOptions.IgnoreCase | RegexOptions.Compiled
-                ),
-            };
+            var filters = new List<Regex>();
 
             if (profile3D == Model3DProfile.Core)
             {

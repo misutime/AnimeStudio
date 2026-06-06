@@ -1286,8 +1286,8 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var value in list)
             {
-                _writer.Write(value.X);
-                _writer.Write(value.Y);
+                WriteFinite(value.X);
+                WriteFinite(value.Y);
             }
             return AddAccessor(offset, list.Count * 8, Float, "VEC2", list.Count);
         }
@@ -1298,15 +1298,13 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var value in list)
             {
-                _writer.Write(value.X);
-                _writer.Write(value.Y);
-                _writer.Write(value.Z);
+                WriteFinite(value.X);
+                WriteFinite(value.Y);
+                WriteFinite(value.Z);
             }
-            var minMax = bounds && list.Count > 0
-                ? (min: new[] { list.Min(x => x.X), list.Min(x => x.Y), list.Min(x => x.Z) },
-                   max: new[] { list.Max(x => x.X), list.Max(x => x.Y), list.Max(x => x.Z) })
-                : default;
-            return AddAccessor(offset, list.Count * 12, Float, "VEC3", list.Count, minMax.min, minMax.max);
+            var min = bounds ? FiniteVec3Bounds(list, isMin: true) : null;
+            var max = bounds ? FiniteVec3Bounds(list, isMin: false) : null;
+            return AddAccessor(offset, list.Count * 12, Float, "VEC3", list.Count, min, max);
         }
 
         private int WriteQuatAccessor(IEnumerable<Quaternion> values, bool bounds)
@@ -1315,10 +1313,10 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var value in list)
             {
-                _writer.Write(value.X);
-                _writer.Write(value.Y);
-                _writer.Write(value.Z);
-                _writer.Write(value.W);
+                WriteFinite(value.X);
+                WriteFinite(value.Y);
+                WriteFinite(value.Z);
+                WriteFinite(value.W);
             }
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
         }
@@ -1329,10 +1327,10 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var value in list)
             {
-                _writer.Write(value.X);
-                _writer.Write(value.Y);
-                _writer.Write(value.Z);
-                _writer.Write(value.W);
+                WriteFinite(value.X);
+                WriteFinite(value.Y);
+                WriteFinite(value.Z);
+                WriteFinite(value.W);
             }
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
         }
@@ -1343,10 +1341,10 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var value in list)
             {
-                _writer.Write(value.R);
-                _writer.Write(value.G);
-                _writer.Write(value.B);
-                _writer.Write(value.A);
+                WriteFinite(value.R);
+                WriteFinite(value.G);
+                WriteFinite(value.B);
+                WriteFinite(value.A);
             }
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
         }
@@ -1375,7 +1373,7 @@ namespace AnimeStudio
                 for (var i = 0; i < 4; i++)
                 {
                     var value = vertex.Weights != null && i < vertex.Weights.Length ? vertex.Weights[i] : 0;
-                    _writer.Write(value);
+                    WriteFinite(value);
                 }
             }
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
@@ -1398,10 +1396,11 @@ namespace AnimeStudio
             var offset = BeginWrite();
             foreach (var value in list)
             {
-                _writer.Write(value);
+                WriteFinite(value);
             }
-            var min = bounds && list.Count > 0 ? new[] { list.Min() } : null;
-            var max = bounds && list.Count > 0 ? new[] { list.Max() } : null;
+            var finite = list.Where(IsFinite).ToList();
+            var min = bounds && finite.Count > 0 ? new[] { finite.Min() } : null;
+            var max = bounds && finite.Count > 0 ? new[] { finite.Max() } : null;
             return AddAccessor(offset, list.Count * 4, Float, "SCALAR", list.Count, min, max);
         }
 
@@ -1416,7 +1415,7 @@ namespace AnimeStudio
                 {
                     for (var row = 0; row < 4; row++)
                     {
-                        _writer.Write(matrix[column, row]);
+                        WriteFinite(matrix[column, row]);
                     }
                 }
             }
@@ -1427,6 +1426,36 @@ namespace AnimeStudio
         {
             Align(4);
             return (int)_bin.Position;
+        }
+
+        private void WriteFinite(float value)
+        {
+            _writer.Write(IsFinite(value) ? value : 0.0f);
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static float[] FiniteVec3Bounds(List<Vector3> values, bool isMin)
+        {
+            if (values.Count == 0)
+            {
+                return null;
+            }
+
+            var x = values.Select(v => v.X).Where(IsFinite).ToList();
+            var y = values.Select(v => v.Y).Where(IsFinite).ToList();
+            var z = values.Select(v => v.Z).Where(IsFinite).ToList();
+            if (x.Count == 0 || y.Count == 0 || z.Count == 0)
+            {
+                return null;
+            }
+
+            return isMin
+                ? new[] { x.Min(), y.Min(), z.Min() }
+                : new[] { x.Max(), y.Max(), z.Max() };
         }
 
         private int AddAccessor(int offset, int length, int componentType, string type, int count, float[] min = null, float[] max = null)
@@ -1504,7 +1533,7 @@ namespace AnimeStudio
             {
                 WriteIndented = true,
             };
-            File.WriteAllText(path, JsonSerializer.Serialize(gltf, jsonOptions));
+            File.WriteAllText(path, JsonSerializer.Serialize(SanitizeJsonValue(gltf), jsonOptions));
         }
 
         private void WriteMaterialReport(Dictionary<string, object> gltf)
@@ -1723,7 +1752,7 @@ namespace AnimeStudio
 
         private void WriteGlb(Dictionary<string, object> gltf)
         {
-            var json = JsonSerializer.Serialize(gltf, new JsonSerializerOptions { WriteIndented = false });
+            var json = JsonSerializer.Serialize(SanitizeJsonValue(gltf), new JsonSerializerOptions { WriteIndented = false });
             var jsonBytes = Encoding.UTF8.GetBytes(json);
             var binBytes = _bin.ToArray();
             var jsonLength = AlignLength(jsonBytes.Length, 4);
@@ -1754,6 +1783,33 @@ namespace AnimeStudio
         private static int AlignLength(int value, int alignment)
         {
             return (value + alignment - 1) / alignment * alignment;
+        }
+
+        private static object SanitizeJsonValue(object value)
+        {
+            switch (value)
+            {
+                case null:
+                case string:
+                case bool:
+                case int:
+                case long:
+                case uint:
+                case ulong:
+                    return value;
+                case float f:
+                    return IsFinite(f) ? f : 0.0f;
+                case double d:
+                    return double.IsNaN(d) || double.IsInfinity(d) ? 0.0d : d;
+                case Dictionary<string, object> dictionary:
+                    return dictionary.ToDictionary(kv => kv.Key, kv => SanitizeJsonValue(kv.Value));
+                case IEnumerable<object> objects:
+                    return objects.Select(SanitizeJsonValue).ToArray();
+                case System.Collections.IEnumerable enumerable:
+                    return enumerable.Cast<object>().Select(SanitizeJsonValue).ToArray();
+                default:
+                    return value;
+            }
         }
 
         private static string ToUri(string path)

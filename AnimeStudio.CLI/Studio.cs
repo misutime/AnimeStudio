@@ -38,29 +38,68 @@ namespace AnimeStudio.CLI
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static int MaxExportTasks { get; set; } = 1;
         public static int BatchFiles { get; set; } = 16;
-        public static int ModelGcInterval { get; set; } = 32;
+        public static int ModelGcInterval { get; set; } = 0;
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
         private static ExportRunStats _exportRunStats = new ExportRunStats();
+        private static readonly HashSet<string> WeaponSemanticTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "axe",
+            "bomb",
+            "bottle",
+            "bow",
+            "crossbow",
+            "dagger",
+            "gun",
+            "mace",
+            "pistol",
+            "railgun",
+            "shield",
+            "sickle",
+            "spear",
+            "spell",
+            "sword",
+            "unarmed",
+            "wand",
+            "whip",
+        };
+        private static readonly HashSet<string> GenericSemanticStopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "animation",
+            "animationclip",
+            "asset",
+            "assets",
+            "character",
+            "contentarchives",
+            "data",
+            "export",
+            "gltf",
+            "models",
+            "prefab",
+            "standard",
+            "streamingassets",
+        };
         private const long FullStructuralAnimationPairLimit = 100_000;
         private static readonly Regex[] ModelRootExcludePatterns =
         {
-            new Regex(@"^Cs_", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"_Convert$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"(?:^|_)Vo$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|_)(Col|Collider|Collision)$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"Collider|Collision", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"(?:^|_)ShadowMesh$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Dummy|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"(?:^|[_\-\s])Decal(?:$|[_\-\s])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
         private static readonly Regex DeprecatedLibraryPathPattern = new Regex(
             @"(?:^|[\\/])(obsolete|deprecated)(?:[\\/]|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
         private static readonly Regex LowValueBrowsableModelPattern = new Regex(
-            @"(?:^|[\\/])(?:[^\\/]*PLACEHOLDER[^\\/]*|[^\\/]*(?:^|[_\-\s])Dummy(?:$|[_\-\s0-9])[^\\/]*|[^\\/]*AimPreview[^\\/]*|[^\\/]*ArenaBlock_(?:Invalid|ValidPlace|ValidRemove)[^\\/]*)$",
+            @"(?:^|[\\/])(?:[^\\/]*PLACEHOLDER[^\\/]*|[^\\/]*(?:^|[_\-\s])Dummy(?:$|[_\-\s0-9])[^\\/]*|[^\\/]*AimPreview[^\\/]*|[^\\/]*ArenaBlock_(?:Invalid|ValidPlace|ValidRemove)[^\\/]*|[^\\/]*(?:^|[_\-\s])(Camera|Light|Audio)(?:$|[_\-\s0-9])[^\\/]*)$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
+        private static readonly Regex StaticMeshLibraryPathPattern = new Regex(
+            @"(?:^|[\\/])(environment|terrain|landscape|levelbuild|levelbuildelements|building|buildings|structure|structures|prop|props|object|objects|item|items|weapon|weapons|nature|rock|rocks|tree|trees|vegetation|foliage|world|locations|rooms|pieces|map|stage|scene|scenery|decor|decoration)(?:[\\/]|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
+        private static readonly Regex StaticMeshRejectPathPattern = new Regex(
+            @"(?:^|[\\/])(?:collider|collision|physics|navmesh|occlusion|occluder|bounds?|proxy|placeholder|dummy|socket|locator|attach|joint|jnt|bone)(?:[\\/._\-\s]|$)|(?:^|[_\-\s])(col|collider|collision|navmesh|occluder|dummy|socket|locator|jnt|joint|bone)(?:$|[_\-\s0-9])",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
 
@@ -797,9 +836,11 @@ namespace AnimeStudio.CLI
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
             var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
             var sourcePartModels = new List<AssetItem>();
+            var staticMeshes = CollectLibraryStaticMeshModels(sourcePartModels);
             var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
+            models.AddRange(staticMeshes);
             models = FilterDeprecatedLibraryAssets(models, "model");
             models = FilterLowValueBrowsableModels(models, sourcePartModels);
             animations = FilterDeprecatedLibraryAssets(animations, "animation");
@@ -886,7 +927,7 @@ namespace AnimeStudio.CLI
                     ["inputCount"] = models.Count,
                     ["skippedCount"] = skipped,
                     ["keptCount"] = kept.Count,
-                    ["rule"] = "Only strong low-value browsing signals are downgraded: PLACEHOLDER, Dummy token, AimPreview, and ArenaBlock Invalid/ValidPlace/ValidRemove. Part_* is not filtered by prefix.",
+                    ["rule"] = "Only strong low-value browsing signals are downgraded: PLACEHOLDER, Dummy token, AimPreview, ArenaBlock Invalid/ValidPlace/ValidRemove, and cameras/lights/audio helpers. sfx/fx/vfx/spawner/fader, Armature, and mixamorig roots are not globally filtered because they can carry valid mesh/skeleton/effect assets in some Unity projects. Part_* is not filtered by prefix.",
                 });
             }
 
@@ -1206,6 +1247,92 @@ namespace AnimeStudio.CLI
             }
         }
 
+        private static List<AssetItem> CollectLibraryStaticMeshModels(List<AssetItem> sourcePartModels)
+        {
+            var meshes = exportableAssets.Where(x => x.Asset is Mesh).ToList();
+            if (meshes.Count == 0)
+            {
+                return new List<AssetItem>();
+            }
+
+            var selected = new List<AssetItem>();
+            var downgraded = 0;
+            foreach (var item in meshes)
+            {
+                if (IsLibraryStaticMeshPrimary(item, out var reason))
+                {
+                    item.LibraryRole = "StaticMeshPrimary";
+                    selected.Add(item);
+                    continue;
+                }
+
+                if (!string.Equals(reason, "too_small_or_empty", StringComparison.OrdinalIgnoreCase))
+                {
+                    item.LibraryRole = "StaticMeshSource";
+                    sourcePartModels.Add(item);
+                    downgraded++;
+                }
+            }
+
+            if (selected.Count > 0 || downgraded > 0)
+            {
+                Logger.Info($"Library static Mesh pipeline selected {selected.Count} container-backed static mesh asset(s) and indexed {downgraded} non-browsable mesh source part(s).");
+                ProfileLogger.Event("library_static_mesh_filter", new Dictionary<string, object>
+                {
+                    ["inputCount"] = meshes.Count,
+                    ["selectedCount"] = selected.Count,
+                    ["sourcePartCount"] = downgraded,
+                    ["rule"] = "Promote only Mesh assets with a meaningful Unity container path, enough triangle data, and environment/building/prop/static path signals. Anonymous, collision, helper, deprecated, and no-path Mesh assets stay out of the default browsable Library.",
+                });
+            }
+
+            return selected;
+        }
+
+        private static bool IsLibraryStaticMeshPrimary(AssetItem item, out string reason)
+        {
+            reason = "unknown";
+            if (item.Asset is not Mesh mesh)
+            {
+                reason = "not_mesh";
+                return false;
+            }
+
+            if (mesh.m_VertexCount < 24 || mesh.m_Vertices == null || mesh.m_Vertices.Length == 0 || mesh.m_Indices == null || mesh.m_Indices.Count < 3)
+            {
+                reason = "too_small_or_empty";
+                return false;
+            }
+
+            var container = (item.Container ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(container) || int.TryParse(container, out _))
+            {
+                reason = "missing_container";
+                return false;
+            }
+
+            var text = string.Join("/", item.Text, container, item.SourceFile?.originalPath, item.SourceFile?.fileName)
+                .Replace('\\', '/');
+            if (DeprecatedLibraryPathPattern.IsMatch(text))
+            {
+                reason = "deprecated";
+                return false;
+            }
+            if (StaticMeshRejectPathPattern.IsMatch(text))
+            {
+                reason = "low_value_static_mesh";
+                return false;
+            }
+            if (!StaticMeshLibraryPathPattern.IsMatch(text))
+            {
+                reason = "no_static_library_path_signal";
+                return false;
+            }
+
+            reason = "container_static_mesh";
+            return true;
+        }
+
         private static string InferLibraryResourceKind(string name, string container, string source)
         {
             var text = string.Join(
@@ -1224,6 +1351,14 @@ namespace AnimeStudio.CLI
             if (Regex.IsMatch(text, @"(^|/)stage|court|scene|map"))
             {
                 return "Stage";
+            }
+            if (Regex.IsMatch(text, @"(^|/)(terrain|landscape|surface|ground|levelbuild|levelbuildelements|environment|world|locations|rooms|nature|vegetation|foliage|tree|trees|rock|rocks)(/|$)"))
+            {
+                return "Environment";
+            }
+            if (Regex.IsMatch(text, @"(^|/)(building|buildings|structure|structures|wall|walls|floor|floors|roof|roofs|house|houses|castle|pieces)(/|$)|(^|/)gameelements/pieces(/|$)"))
+            {
+                return "Buildings";
             }
             if (Regex.IsMatch(text, @"(^|/)ball|basketball"))
             {
@@ -2138,6 +2273,12 @@ namespace AnimeStudio.CLI
                         continue;
                     }
 
+                    var semanticMatch = AnalyzeAnimationSemanticMatch(model, animation, requireStrictAttachmentSemantics: true);
+                    if (!semanticMatch.IsCandidate)
+                    {
+                        continue;
+                    }
+
                     var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
                     var match = AnalyzeStructuralAnimationMatch(modelBindingPaths, animationPaths, usesNodeBindingPaths);
                     if (!match.IsCandidate)
@@ -2148,11 +2289,11 @@ namespace AnimeStudio.CLI
                             continue;
                         }
 
-                        links.Add(modelKey, animationKey, BuildHumanoidLink(model, animation, humanoidMatch));
+                        links.Add(modelKey, animationKey, BuildHumanoidLink(model, animation, humanoidMatch, semanticMatch));
                         continue;
                     }
 
-                    links.Add(modelKey, animationKey, BuildStructuralLink(model, animation, match));
+                    links.Add(modelKey, animationKey, BuildStructuralLink(model, animation, match, semanticMatch));
                 }
             }
         }
@@ -2334,7 +2475,7 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static ExplicitModelAnimationLink BuildStructuralLink(JObject model, JObject animation, StructuralAnimationMatch match)
+        private static ExplicitModelAnimationLink BuildStructuralLink(JObject model, JObject animation, StructuralAnimationMatch match, AnimationSemanticMatch semanticMatch)
         {
             return new ExplicitModelAnimationLink
             {
@@ -2348,22 +2489,26 @@ namespace AnimeStudio.CLI
                 Animation = animation,
                 Relation = "animationClip.bindingPath.compatibleWithModelBones",
                 Source = "structural",
-                Score = match.Score,
-                Confidence = "structural_unity_binding",
+                Score = Math.Min(100, match.Score + semanticMatch.ScoreBonus),
+                Confidence = semanticMatch.Confidence,
                 Reasons = new[]
                 {
                     $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone/node path(s).",
                     $"Core body binding matches: {match.CoreMatchedPathCount}.",
                     "This uses Unity AnimationClip binding paths and exported model bone/node paths, not name/path fallback.",
-                },
+                }.Concat(semanticMatch.Reasons).ToArray(),
                 MatchedBindingPaths = match.MatchedPaths,
                 MatchedVisibleMeshBindingPaths = GetMatchedVisibleMeshBindingPaths(model, match.MatchedPaths),
                 UnmatchedBindingPaths = match.UnmatchedPaths,
                 RequiresHumanoidBake = IsHumanoidCharacterTarget(model) && IsHumanoidAnimationAsset(animation),
+                SemanticModelTags = semanticMatch.ModelTags,
+                SemanticAnimationTags = semanticMatch.AnimationTags,
+                SemanticSharedTags = semanticMatch.SharedTags,
+                SemanticRejectedTags = semanticMatch.RejectedTags,
             };
         }
 
-        private static ExplicitModelAnimationLink BuildHumanoidLink(JObject model, JObject animation, HumanoidAnimationMatch match)
+        private static ExplicitModelAnimationLink BuildHumanoidLink(JObject model, JObject animation, HumanoidAnimationMatch match, AnimationSemanticMatch semanticMatch)
         {
             return new ExplicitModelAnimationLink
             {
@@ -2377,15 +2522,19 @@ namespace AnimeStudio.CLI
                 Animation = animation,
                 Relation = "avatar.humanoidCompatibleWithAnimationClip",
                 Source = "structural",
-                Score = match.Score,
-                Confidence = "structural_unity_avatar",
+                Score = Math.Min(100, match.Score + semanticMatch.ScoreBonus),
+                Confidence = semanticMatch.Confidence,
                 RequiresHumanoidBake = true,
                 Reasons = new[]
                 {
                     $"Model has Unity Avatar '{match.AvatarName}' with human description.",
                     $"AnimationClip has {match.HumanoidBindingCount} Animator/Humanoid binding(s) or MuscleClip data.",
                     "This candidate is Unity Avatar compatible, but must be baked from Humanoid/Muscle curves to skeleton TRS before glTF body playback.",
-                },
+                }.Concat(semanticMatch.Reasons).ToArray(),
+                SemanticModelTags = semanticMatch.ModelTags,
+                SemanticAnimationTags = semanticMatch.AnimationTags,
+                SemanticSharedTags = semanticMatch.SharedTags,
+                SemanticRejectedTags = semanticMatch.RejectedTags,
             };
         }
 
@@ -2468,6 +2617,10 @@ namespace AnimeStudio.CLI
                 relationSource = link.Source,
                 score = link.Score,
                 matchReasons = link.Reasons,
+                semanticModelTags = link.SemanticModelTags,
+                semanticAnimationTags = link.SemanticAnimationTags,
+                semanticSharedTags = link.SemanticSharedTags,
+                semanticRejectedTags = link.SemanticRejectedTags,
                 matchedBindingPaths = TruncateArray(link.MatchedBindingPaths, 32),
                 matchedBindingPathsTruncated = link.MatchedBindingPaths?.Length > 32,
                 matchedVisibleMeshBindingPaths = TruncateArray(link.MatchedVisibleMeshBindingPaths, 32),
@@ -2908,6 +3061,232 @@ namespace AnimeStudio.CLI
             return string.Equals(modelResourceKind, animationResourceKind, StringComparison.OrdinalIgnoreCase);
         }
 
+        private static AnimationSemanticMatch AnalyzeAnimationSemanticMatch(JObject model, JObject animation, bool requireStrictAttachmentSemantics)
+        {
+            var modelTags = ExtractAnimationSemanticTags(model, includeModelHierarchy: true);
+            var animationTags = ExtractAnimationSemanticTags(animation, includeModelHierarchy: false);
+            var modelWeaponTags = modelTags.Where(IsWeaponSemanticTag).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var animationWeaponTags = animationTags.Where(IsWeaponSemanticTag).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var sharedWeaponTags = modelWeaponTags
+                .Where(modelTag => animationWeaponTags.Any(animationTag => AreCompatibleWeaponTags(modelTag, animationTag)))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var rejectedTags = new List<string>();
+            var reasons = new List<string>();
+
+            if (modelWeaponTags.Count > 0 && animationWeaponTags.Count > 0 && sharedWeaponTags.Length == 0)
+            {
+                foreach (var tag in modelWeaponTags.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    rejectedTags.Add("model:" + tag);
+                }
+                foreach (var tag in animationWeaponTags.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    rejectedTags.Add("animation:" + tag);
+                }
+                reasons.Add("Rejected: model attachment/weapon tags and AnimationClip action tags conflict.");
+                return new AnimationSemanticMatch(
+                    false,
+                    0,
+                    "semantic_rejected_attachment_conflict",
+                    reasons.ToArray(),
+                    modelTags,
+                    animationTags,
+                    Array.Empty<string>(),
+                    rejectedTags.ToArray()
+                );
+            }
+
+            if (requireStrictAttachmentSemantics && modelWeaponTags.Count > 0 && animationWeaponTags.Count > 0)
+            {
+                reasons.Add($"Semantic weapon/action tags agree: {string.Join(", ", sharedWeaponTags)}.");
+                return new AnimationSemanticMatch(
+                    true,
+                    12,
+                    "structural_unity_binding_semantic_attachment",
+                    reasons.ToArray(),
+                    modelTags,
+                    animationTags,
+                    sharedWeaponTags,
+                    Array.Empty<string>()
+                );
+            }
+
+            var modelFamilyTags = ExtractFamilySemanticTags(model);
+            var animationFamilyTags = ExtractFamilySemanticTags(animation);
+            var sharedFamilyTags = modelFamilyTags
+                .Intersect(animationFamilyTags, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (sharedFamilyTags.Length > 0)
+            {
+                reasons.Add($"Semantic family tags agree: {string.Join(", ", sharedFamilyTags)}.");
+                return new AnimationSemanticMatch(
+                    true,
+                    8,
+                    "structural_unity_binding_semantic_family",
+                    reasons.ToArray(),
+                    modelTags,
+                    animationTags,
+                    sharedFamilyTags,
+                    Array.Empty<string>()
+                );
+            }
+
+            if (requireStrictAttachmentSemantics && modelWeaponTags.Count > 0 && animationWeaponTags.Count == 0)
+            {
+                reasons.Add("Accepted: model has an attachment/weapon, but AnimationClip has no weapon-specific semantic tag.");
+                return new AnimationSemanticMatch(
+                    true,
+                    2,
+                    "structural_unity_binding_semantic_neutral_action",
+                    reasons.ToArray(),
+                    modelTags,
+                    animationTags,
+                    Array.Empty<string>(),
+                    Array.Empty<string>()
+                );
+            }
+
+            if (requireStrictAttachmentSemantics && modelWeaponTags.Count == 0 && animationWeaponTags.Count > 0)
+            {
+                rejectedTags.AddRange(animationWeaponTags.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Select(x => "animation:" + x));
+                reasons.Add("Rejected: AnimationClip is weapon/action-specific, but the model catalog has no matching attachment tag.");
+                return new AnimationSemanticMatch(
+                    false,
+                    0,
+                    "semantic_rejected_unmatched_animation_weapon",
+                    reasons.ToArray(),
+                    modelTags,
+                    animationTags,
+                    Array.Empty<string>(),
+                    rejectedTags.ToArray()
+                );
+            }
+
+            reasons.Add("Accepted: no conflicting attachment/action semantic tags were found.");
+            return new AnimationSemanticMatch(
+                true,
+                0,
+                "structural_unity_binding_semantic_neutral",
+                reasons.ToArray(),
+                modelTags,
+                animationTags,
+                Array.Empty<string>(),
+                Array.Empty<string>()
+            );
+        }
+
+        private static string[] ExtractAnimationSemanticTags(JObject entry, bool includeModelHierarchy)
+        {
+            var text = BuildSemanticText(entry, includeModelHierarchy);
+            var tags = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddSemanticTagIfMatch(text, tags, "crossbow", @"\bcross\s*bow\d*\b|\bcrossbow\d*\b");
+            AddSemanticTagIfMatch(text, tags, "bow", @"\b2h\s*bow\d*\b|\b1h\s*bow\d*\b|\bbow\d*\b");
+            AddSemanticTagIfMatch(text, tags, "bomb", @"\b[12]h\s*bomb\b|\bbomb\b");
+            AddSemanticTagIfMatch(text, tags, "bottle", @"\b[12]h\s*bottle\b|\bbottle\b|\bdrink\s*bottle\b");
+            AddSemanticTagIfMatch(text, tags, "pistol", @"\bpistol\b");
+            AddSemanticTagIfMatch(text, tags, "railgun", @"\brail\s*gun\b|\brailgun\b");
+            AddSemanticTagIfMatch(text, tags, "gun", @"\bgun\b|\brifle\b|\bbullet\s*gun\b|\bzap\s*gun\b|\bflame\s*gun\b");
+            AddSemanticTagIfMatch(text, tags, "sword", @"\b2w\s*sword\b|\b1h\s*sword\b|\bsword\b|\btwin\s*blade\b|\btwinblade\b");
+            AddSemanticTagIfMatch(text, tags, "spear", @"\bspear\b|\bthrowing\s*spear\b");
+            AddSemanticTagIfMatch(text, tags, "mace", @"\bmace\b");
+            AddSemanticTagIfMatch(text, tags, "dagger", @"\bdagger\b");
+            AddSemanticTagIfMatch(text, tags, "axe", @"\baxe\b");
+            AddSemanticTagIfMatch(text, tags, "whip", @"\bwhip\b");
+            AddSemanticTagIfMatch(text, tags, "sickle", @"\bsickle\b");
+            AddSemanticTagIfMatch(text, tags, "wand", @"\bwand\b");
+            AddSemanticTagIfMatch(text, tags, "shield", @"\bshield\b");
+            AddSemanticTagIfMatch(text, tags, "unarmed", @"\bunarmed\b");
+            AddSemanticTagIfMatch(text, tags, "spell", @"\bspell\b|\bchaos\s*bolt\b|\bchaosbolt\b|\bspectral\s*blast\b|\bbeam\b");
+            return tags.ToArray();
+        }
+
+        private static string[] ExtractFamilySemanticTags(JObject entry)
+        {
+            var text = BuildSemanticText(entry, includeModelHierarchy: false);
+            var tags = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match match in Regex.Matches(text, @"\b(?:hyb_)?(?:npc|pc)?[a-z][a-z0-9]{3,}\b", RegexOptions.IgnoreCase))
+            {
+                var token = match.Value.Trim('_').ToLowerInvariant();
+                if (token.Length >= 5
+                    && !IsWeaponSemanticTag(token)
+                    && !GenericSemanticStopWords.Contains(token))
+                {
+                    tags.Add(token);
+                }
+            }
+            return tags.Take(16).ToArray();
+        }
+
+        private static string BuildSemanticText(JObject entry, bool includeModelHierarchy)
+        {
+            var parts = new List<string>
+            {
+                (string)entry["name"],
+                (string)entry["resourceKind"],
+                (string)entry["sourceType"],
+                (string)entry["container"],
+                (string)entry["source"],
+                (string)entry["output"],
+                (string)entry["animationAsset"],
+            };
+            if (includeModelHierarchy)
+            {
+                parts.AddRange(entry["meshPaths"]?.ToObject<string[]>() ?? Array.Empty<string>());
+                parts.AddRange((entry["nodePaths"]?.ToObject<string[]>() ?? Array.Empty<string>())
+                    .Where(x => Regex.IsMatch(x ?? string.Empty, "weapon|bow|crossbow|bomb|bottle|gun|sword|spear|mace|dagger|axe|whip|sickle|wand|shield|unarmed", RegexOptions.IgnoreCase)));
+            }
+            else
+            {
+                parts.AddRange(entry["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>());
+            }
+
+            return Regex.Replace(
+                string.Join(" ", parts.Where(x => !string.IsNullOrWhiteSpace(x))),
+                @"(?<=[a-z])(?=[A-Z])|[_\-/\\.:]+",
+                " "
+            ).ToLowerInvariant();
+        }
+
+        private static void AddSemanticTagIfMatch(string text, ISet<string> tags, string tag, string pattern)
+        {
+            if (Regex.IsMatch(text ?? string.Empty, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                tags.Add(tag);
+            }
+        }
+
+        private static bool IsWeaponSemanticTag(string tag)
+        {
+            return WeaponSemanticTags.Contains(tag ?? string.Empty);
+        }
+
+        private static bool AreCompatibleWeaponTags(string modelTag, string animationTag)
+        {
+            if (string.Equals(modelTag, animationTag, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if ((string.Equals(modelTag, "crossbow", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(modelTag, "bow", StringComparison.OrdinalIgnoreCase))
+                && (string.Equals(animationTag, "crossbow", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationTag, "bow", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+            if ((string.Equals(modelTag, "pistol", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(modelTag, "railgun", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(modelTag, "gun", StringComparison.OrdinalIgnoreCase))
+                && (string.Equals(animationTag, "pistol", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationTag, "railgun", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationTag, "gun", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+            return false;
+        }
+
         private static bool IsTransformBodyAnimationAsset(JObject animation)
         {
             var animationType = (string)animation["animationType"] ?? string.Empty;
@@ -2987,6 +3366,10 @@ namespace AnimeStudio.CLI
             public string relationSource { get; set; }
             public int score { get; set; }
             public string[] matchReasons { get; set; }
+            public string[] semanticModelTags { get; set; }
+            public string[] semanticAnimationTags { get; set; }
+            public string[] semanticSharedTags { get; set; }
+            public string[] semanticRejectedTags { get; set; }
             public string[] matchedBindingPaths { get; set; }
             public bool? matchedBindingPathsTruncated { get; set; }
             public string[] matchedVisibleMeshBindingPaths { get; set; }
@@ -3056,6 +3439,10 @@ namespace AnimeStudio.CLI
             public string[] MatchedVisibleMeshBindingPaths { get; set; }
             public string[] UnmatchedBindingPaths { get; set; }
             public bool RequiresHumanoidBake { get; set; }
+            public string[] SemanticModelTags { get; set; }
+            public string[] SemanticAnimationTags { get; set; }
+            public string[] SemanticSharedTags { get; set; }
+            public string[] SemanticRejectedTags { get; set; }
         }
 
         private sealed class ExplicitAnimationRelation
@@ -3079,6 +3466,17 @@ namespace AnimeStudio.CLI
             int Score,
             string AvatarName,
             int HumanoidBindingCount
+        );
+
+        private sealed record AnimationSemanticMatch(
+            bool IsCandidate,
+            int ScoreBonus,
+            string Confidence,
+            string[] Reasons,
+            string[] ModelTags,
+            string[] AnimationTags,
+            string[] SharedTags,
+            string[] RejectedTags
         );
 
         private static void ExportModelAssets(
@@ -3130,6 +3528,7 @@ namespace AnimeStudio.CLI
                     {
                         GameObject => ExportGameObject(asset, exportPath, animations),
                         Animator => ExportAnimator(asset, exportPath, animations),
+                        Mesh when asset.LibraryRole == "StaticMeshPrimary" => ExportStaticMeshGltf(asset, exportPath),
                         _ => false,
                     };
 
@@ -3190,8 +3589,7 @@ namespace AnimeStudio.CLI
                 ["interval"] = ModelGcInterval,
             }))
             {
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
             }
         }
 
@@ -3258,6 +3656,7 @@ namespace AnimeStudio.CLI
             return asset.Type switch
             {
                 ClassIDType.GameObject or ClassIDType.Animator => "Models",
+                ClassIDType.Mesh when asset.LibraryRole == "StaticMeshPrimary" => "Models",
                 ClassIDType.AnimationClip => "Animations",
                 ClassIDType.AudioClip => "Audio",
                 ClassIDType.Shader => "Shaders",
@@ -3300,6 +3699,15 @@ namespace AnimeStudio.CLI
                 return string.IsNullOrWhiteSpace(rawSubPath)
                     ? "RawUnreferenced"
                     : Path.Combine("RawUnreferenced", rawSubPath);
+            }
+
+            if (asset.Type == ClassIDType.Mesh && asset.LibraryRole == "StaticMeshPrimary")
+            {
+                var kind = InferLibraryResourceKind(asset.Text, asset.Container, asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName);
+                var meshSubPath = GetLibrarySubPathWithoutRole(asset);
+                return string.IsNullOrWhiteSpace(meshSubPath)
+                    ? kind
+                    : Path.Combine(kind, meshSubPath);
             }
 
             return GetLibrarySubPathWithoutRole(asset);
