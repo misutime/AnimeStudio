@@ -118,6 +118,15 @@ namespace AnimeStudio
                     {
                         var m_RayTraceProcedural = reader.ReadByte();
                     }
+                    if (version[0] > 2023 || (version[0] == 2023 && version[1] >= 2)) //2023.2 and up, including Unity 6000
+                    {
+                        var m_RayTracingAccelStructBuildFlagsOverride = reader.ReadByte();
+                        var m_RayTracingAccelStructBuildFlags = reader.ReadByte();
+                    }
+                    if (version[0] > 2023 || (version[0] == 2023 && version[1] >= 3)) //2023.3 and up, including Unity 6000
+                    {
+                        var m_SmallMeshCulling = reader.ReadByte();
+                    }
                     if (reader.Game.Type.IsHYGCB1())
                     {
                         var m_UseOverrideAABBForCulling = reader.ReadByte();

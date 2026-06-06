@@ -10,12 +10,12 @@ namespace AnimeStudio.CLI
 {
     internal static class UnityBakeResultApplier
     {
-        public static void Apply(string requestOrResultPath, string outputGltfPath)
+        public static string Apply(string requestOrResultPath, string outputGltfPath)
         {
             if (string.IsNullOrWhiteSpace(requestOrResultPath) || !File.Exists(requestOrResultPath))
             {
                 Logger.Error($"Unity bake request/result not found: {requestOrResultPath}");
-                return;
+                return null;
             }
 
             var input = JObject.Parse(File.ReadAllText(requestOrResultPath));
@@ -23,7 +23,7 @@ namespace AnimeStudio.CLI
             if (requestPath == null || !File.Exists(requestPath))
             {
                 Logger.Error("Unable to find unity_bake_request.json. Apply needs the request so it can locate the source glTF.");
-                return;
+                return null;
             }
 
             var request = JObject.Parse(File.ReadAllText(requestPath));
@@ -33,21 +33,21 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(resultPath) || !File.Exists(resultPath))
             {
                 Logger.Error($"Unity bake result not found: {resultPath}");
-                return;
+                return null;
             }
 
             var result = JObject.Parse(File.ReadAllText(resultPath));
             if (!string.Equals((string)result["status"], "ok", StringComparison.OrdinalIgnoreCase))
             {
                 Logger.Error($"Unity bake result is not ok: {(string)result["message"]}");
-                return;
+                return null;
             }
 
             var sourceGltf = (string)request["animeStudioAssets"]?["model"]?["gltf"];
             if (string.IsNullOrWhiteSpace(sourceGltf) || !File.Exists(sourceGltf))
             {
                 Logger.Error($"Source glTF not found in request: {sourceGltf}");
-                return;
+                return null;
             }
 
             var clipName = (string)result["clipName"] ?? (string)request["animeStudioAssets"]?["animation"]?["name"] ?? "UnityBaked";
@@ -60,7 +60,7 @@ namespace AnimeStudio.CLI
             if (bufferFile == null)
             {
                 Logger.Error("Only file-buffer glTF is currently supported for Unity bake apply.");
-                return;
+                return null;
             }
 
             var bufferBytes = File.ReadAllBytes(bufferFile).ToList();
@@ -81,6 +81,7 @@ namespace AnimeStudio.CLI
                         ["avatarValid"] = result["avatarValid"],
                         ["sampleCount"] = result["sampleCount"],
                         ["changedTrackCount"] = result["changedTrackCount"],
+                        ["coordinateConversion"] = "Unity local TRS converted back to glTF basis: position.x=-x, rotation.y/z=-y/-z",
                     }
                 }
             };
@@ -107,8 +108,8 @@ namespace AnimeStudio.CLI
                     continue;
                 }
 
-                WriteChannel(gltf, animation, bufferBytes, nodeIndex, "translation", times, ReadVec3(track["translations"]));
-                WriteChannel(gltf, animation, bufferBytes, nodeIndex, "rotation", times, ReadVec4(track["rotations"]));
+                WriteChannel(gltf, animation, bufferBytes, nodeIndex, "translation", times, ReadVec3(track["translations"], UnityToGltfPosition));
+                WriteChannel(gltf, animation, bufferBytes, nodeIndex, "rotation", times, ReadVec4(track["rotations"], UnityToGltfRotation));
                 WriteChannel(gltf, animation, bufferBytes, nodeIndex, "scale", times, ReadVec3(track["scales"]));
                 writtenTracks++;
             }
@@ -116,7 +117,7 @@ namespace AnimeStudio.CLI
             if (writtenTracks == 0)
             {
                 Logger.Error("No baked tracks matched glTF nodes; inspect path mapping before trusting this output.");
-                return;
+                return null;
             }
 
             // 预览文件只保留当前烘焙动画，避免 F3D/Blender 默认播放旧的表情或辅助动画，
@@ -130,7 +131,7 @@ namespace AnimeStudio.CLI
             var report = new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
-                status = skippedTracks.Count == 0 && skinReport.TargetNotJointCount == 0 ? "ok" : "warning",
+                status = skippedTracks.Count == 0 && skinReport.InvalidTargetCount == 0 ? "ok" : "warning",
                 sourceGltf,
                 outputGltf = outputGltfPath,
                 request = requestPath,
@@ -145,6 +146,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Baked glTF preview: {outputGltfPath}");
             Logger.Info($"Baked apply report: {reportPath}");
+            return outputGltfPath;
         }
 
         private static bool IsRequest(JObject value) => value["animeStudioAssets"] != null && value["outputJson"] != null;
@@ -253,14 +255,20 @@ namespace AnimeStudio.CLI
                 .Select(x => x.Value)
                 .Distinct()
                 .ToHashSet();
-            var targetNotJoint = targets
-                .Where(x => !joints.Contains(x))
+            var childToParent = BuildChildToParent(nodes);
+            var hierarchyParentTargets = targets
+                .Where(x => !joints.Contains(x) && HasDescendantJoint(nodes, joints, x))
+                .Select(x => new NodeRef(x, BuildNodePath(nodes, x, childToParent)))
+                .OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var invalidTargets = targets
+                .Where(x => !joints.Contains(x) && !HasDescendantJoint(nodes, joints, x))
                 .Select(x => new NodeRef(x, BuildNodePath(nodes, x)))
                 .OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var jointNotTarget = joints
                 .Where(x => !targets.Contains(x))
-                .Select(x => new NodeRef(x, BuildNodePath(nodes, x)))
+                .Select(x => new NodeRef(x, BuildNodePath(nodes, x, childToParent)))
                 .OrderBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
                 .Take(128)
                 .ToArray();
@@ -270,16 +278,36 @@ namespace AnimeStudio.CLI
                 Skins: skins.Length,
                 SkinJoints: joints.Count,
                 AnimationTargets: targets.Count,
-                TargetNotJointCount: targetNotJoint.Length,
+                TargetNotJointCount: invalidTargets.Length + hierarchyParentTargets.Length,
+                HierarchyParentTargetCount: hierarchyParentTargets.Length,
+                InvalidTargetCount: invalidTargets.Length,
                 JointNotTargetCount: joints.Count - targets.Count(x => joints.Contains(x)),
                 MeshSkinNodes: meshSkinNodes,
-                TargetNotJoint: targetNotJoint,
+                HierarchyParentTargets: hierarchyParentTargets,
+                InvalidTargets: invalidTargets,
                 JointNotTargetSample: jointNotTarget,
-                Rule: "UnityGLTF-style check: skin.joints should be exported from SkinnedMeshRenderer.bones, and baked animation channels should target the same bone node graph. Non-joint parent targets can still affect child joints through hierarchy, but they are reported for inspection."
+                Rule: "UnityGLTF-style check: skin.joints come from SkinnedMeshRenderer.bones, and baked animation channels should target that node graph. Non-joint parent targets are valid when they have skinned joint descendants, because glTF node hierarchy propagates their transforms into the skin."
             );
         }
 
         private static string BuildNodePath(JObject[] nodes, int index)
+        {
+            return BuildNodePath(nodes, index, BuildChildToParent(nodes));
+        }
+
+        private static string BuildNodePath(JObject[] nodes, int index, int?[] parents)
+        {
+            var stack = new Stack<string>();
+            int? current = index;
+            while (current.HasValue)
+            {
+                stack.Push((string)nodes[current.Value]["name"] ?? $"node_{current.Value}");
+                current = parents[current.Value];
+            }
+            return string.Join("/", stack);
+        }
+
+        private static int?[] BuildChildToParent(JObject[] nodes)
         {
             var parents = new int?[nodes.Length];
             for (var i = 0; i < nodes.Length; i++)
@@ -292,15 +320,23 @@ namespace AnimeStudio.CLI
                     }
                 }
             }
+            return parents;
+        }
 
-            var stack = new Stack<string>();
-            int? current = index;
-            while (current.HasValue)
+        private static bool HasDescendantJoint(JObject[] nodes, HashSet<int> joints, int nodeIndex)
+        {
+            foreach (var child in nodes[nodeIndex]["children"]?.Values<int>() ?? Enumerable.Empty<int>())
             {
-                stack.Push((string)nodes[current.Value]["name"] ?? $"node_{current.Value}");
-                current = parents[current.Value];
+                if (child < 0 || child >= nodes.Length)
+                {
+                    continue;
+                }
+                if (joints.Contains(child) || HasDescendantJoint(nodes, joints, child))
+                {
+                    return true;
+                }
             }
-            return string.Join("/", stack);
+            return false;
         }
 
         private static string NormalizeBakePath(string bakePath, JObject[] nodes)
@@ -312,16 +348,37 @@ namespace AnimeStudio.CLI
             var parts = bakePath.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries).ToList();
             if (parts.Count > 0 && parts[0].EndsWith("_AnimeStudioBake", StringComparison.OrdinalIgnoreCase))
             {
+                var bakedRoot = parts[0];
                 parts.RemoveAt(0);
+                if (parts.Count == 0)
+                {
+                    return bakedRoot[..^"_AnimeStudioBake".Length];
+                }
             }
             return string.Join("/", parts);
         }
 
-        private static float[][] ReadVec3(JToken values) =>
-            values?.OfType<JObject>().Select(x => new[] { (float)x["x"], (float)x["y"], (float)x["z"] }).ToArray() ?? Array.Empty<float[]>();
+        private static float[][] ReadVec3(JToken values, Func<float[], float[]> convert = null) =>
+            values?.OfType<JObject>()
+                .Select(x =>
+                {
+                    var value = new[] { (float)x["x"], (float)x["y"], (float)x["z"] };
+                    return convert == null ? value : convert(value);
+                })
+                .ToArray() ?? Array.Empty<float[]>();
 
-        private static float[][] ReadVec4(JToken values) =>
-            values?.OfType<JObject>().Select(x => new[] { (float)x["x"], (float)x["y"], (float)x["z"], (float)x["w"] }).ToArray() ?? Array.Empty<float[]>();
+        private static float[][] ReadVec4(JToken values, Func<float[], float[]> convert = null) =>
+            values?.OfType<JObject>()
+                .Select(x =>
+                {
+                    var value = new[] { (float)x["x"], (float)x["y"], (float)x["z"], (float)x["w"] };
+                    return convert == null ? value : convert(value);
+                })
+                .ToArray() ?? Array.Empty<float[]>();
+
+        private static float[] UnityToGltfPosition(float[] value) => new[] { -value[0], value[1], value[2] };
+
+        private static float[] UnityToGltfRotation(float[] value) => new[] { value[0], -value[1], -value[2], value[3] };
 
         private static void WriteChannel(JObject gltf, JObject animation, List<byte> bufferBytes, int nodeIndex, string path, float[] times, float[][] values)
         {
@@ -411,9 +468,12 @@ namespace AnimeStudio.CLI
             int SkinJoints,
             int AnimationTargets,
             int TargetNotJointCount,
+            int HierarchyParentTargetCount,
+            int InvalidTargetCount,
             int JointNotTargetCount,
             MeshSkinNode[] MeshSkinNodes,
-            NodeRef[] TargetNotJoint,
+            NodeRef[] HierarchyParentTargets,
+            NodeRef[] InvalidTargets,
             NodeRef[] JointNotTargetSample,
             string Rule
         );

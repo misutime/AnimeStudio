@@ -47,6 +47,54 @@ namespace AnimeStudio.UnityBake
         public string name;
         public bool hasHumanDescription;
         public string[] humanBones;
+        public AnimeStudioAvatarSkeletonBone[] skeletonBones;
+        public AnimeStudioHumanDescriptionSettings humanDescription;
+    }
+
+    [Serializable]
+    public sealed class AnimeStudioAvatarSkeletonBone
+    {
+        public string name;
+        public string parentName;
+        public Vector3Value position;
+        public QuaternionValue rotation;
+        public Vector3Value scale;
+    }
+
+    [Serializable]
+    public sealed class AnimeStudioHumanDescriptionSettings
+    {
+        public float armTwist;
+        public float foreArmTwist;
+        public float upperLegTwist;
+        public float legTwist;
+        public float armStretch;
+        public float legStretch;
+        public float feetSpacing;
+        public float globalScale;
+        public string rootMotionBoneName;
+        public bool hasTranslationDoF;
+        public bool hasExtraRoot;
+        public bool skeletonHasParents;
+    }
+
+    [Serializable]
+    public struct Vector3Value
+    {
+        public float x;
+        public float y;
+        public float z;
+        public Vector3 ToVector3() => new Vector3(x, y, z);
+    }
+
+    [Serializable]
+    public struct QuaternionValue
+    {
+        public float x;
+        public float y;
+        public float z;
+        public float w;
+        public Quaternion ToQuaternion() => new Quaternion(x, y, z, w);
     }
 
     [Serializable]

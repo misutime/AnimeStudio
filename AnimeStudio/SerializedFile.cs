@@ -34,6 +34,14 @@ namespace AnimeStudio
         public List<SerializedType> m_RefTypes;
         public string userInformation;
 
+        private const int MaxSerializedTypeCount = 100_000;
+        private const int MaxSerializedObjectCount = 10_000_000;
+        private const int MaxScriptTypeCount = 1_000_000;
+        private const int MaxExternalCount = 1_000_000;
+        private const int MaxRefTypeCount = 100_000;
+        private const int MaxTypeTreeNodeCount = 1_000_000;
+        private const int MaxTypeTreeDepth = 512;
+
         public SerializedFile(FileReader reader, AssetsManager assetsManager)
         {
             this.assetsManager = assetsManager;
@@ -69,6 +77,7 @@ namespace AnimeStudio
                 reader.ReadInt64(); // unknown
 
             }
+            ValidateHeader();
 
             Logger.Verbose($"File {fileName} Info: {header}");
 
@@ -105,7 +114,7 @@ namespace AnimeStudio
             }
 
             // Read Types
-            int typeCount = reader.ReadInt32();
+            int typeCount = ReadSafeCount("serialized type", MaxSerializedTypeCount);
             m_Types = new List<SerializedType>();
             Logger.Verbose($"Found {typeCount} serialized types");
             for (int i = 0; i < typeCount; i++)
@@ -119,7 +128,7 @@ namespace AnimeStudio
             }
 
             // Read Objects
-            int objectCount = reader.ReadInt32();
+            int objectCount = ReadSafeCount("object", MaxSerializedObjectCount);
             m_Objects = new List<ObjectInfo>();
             Objects = new List<Object>();
             ObjectsDic = new Dictionary<long, Object>();
@@ -156,6 +165,10 @@ namespace AnimeStudio
                 }
                 else
                 {
+                    if (objectInfo.typeID < 0 || objectInfo.typeID >= m_Types.Count)
+                    {
+                        throw new InvalidDataException($"Object type index {objectInfo.typeID} is outside serialized type table ({m_Types.Count}) in {fileName}.");
+                    }
                     var type = m_Types[objectInfo.typeID];
                     objectInfo.serializedType = type;
                     objectInfo.classID = type.classID;
@@ -180,7 +193,7 @@ namespace AnimeStudio
 
             if (header.m_Version >= SerializedFileFormatVersion.HasScriptTypeIndex)
             {
-                int scriptCount = reader.ReadInt32();
+                int scriptCount = ReadSafeCount("script type", MaxScriptTypeCount);
                 Logger.Verbose($"Found {scriptCount} scripts");
                 m_ScriptTypes = new List<LocalSerializedObjectIdentifier>();
                 for (int i = 0; i < scriptCount; i++)
@@ -201,7 +214,7 @@ namespace AnimeStudio
                 }
             }
 
-            int externalsCount = reader.ReadInt32();
+            int externalsCount = ReadSafeCount("external", MaxExternalCount);
             m_Externals = new List<FileIdentifier>();
             Logger.Verbose($"Found {externalsCount} externals");
             for (int i = 0; i < externalsCount; i++)
@@ -224,7 +237,7 @@ namespace AnimeStudio
 
             if (header.m_Version >= SerializedFileFormatVersion.SupportsRefObject)
             {
-                int refTypesCount = reader.ReadInt32();
+                int refTypesCount = ReadSafeCount("reference type", MaxRefTypeCount);
                 m_RefTypes = new List<SerializedType>();
                 Logger.Verbose($"Found {refTypesCount} reference types");
                 for (int i = 0; i < refTypesCount; i++)
@@ -250,6 +263,43 @@ namespace AnimeStudio
                 buildType = new BuildType(buildSplit[0]);
                 var versionSplit = Regex.Replace(stringVersion, @"\D", ".").Split(new[] { "." }, StringSplitOptions.RemoveEmptyEntries);
                 version = versionSplit.Select(int.Parse).ToArray();
+            }
+        }
+
+        private void ValidateHeader()
+        {
+            if (header.m_FileSize <= 0 || header.m_FileSize > reader.Length)
+            {
+                throw new InvalidDataException($"Serialized file size {header.m_FileSize} is invalid for stream length {reader.Length} in {fileName}.");
+            }
+
+            if (header.m_DataOffset < 0 || header.m_DataOffset > header.m_FileSize)
+            {
+                throw new InvalidDataException($"Serialized data offset {header.m_DataOffset} is outside file size {header.m_FileSize} in {fileName}.");
+            }
+
+            if (header.m_MetadataSize > header.m_FileSize)
+            {
+                throw new InvalidDataException($"Serialized metadata size {header.m_MetadataSize} exceeds file size {header.m_FileSize} in {fileName}.");
+            }
+        }
+
+        private int ReadSafeCount(string label, int max)
+        {
+            var count = reader.ReadInt32();
+            if (count < 0 || count > max)
+            {
+                throw new InvalidDataException($"Serialized {label} count {count} is outside the supported range 0..{max} in {fileName}.");
+            }
+
+            return count;
+        }
+
+        private void EnsureRemaining(long bytes, string label)
+        {
+            if (bytes < 0 || reader.Remaining < bytes)
+            {
+                throw new EndOfStreamException($"Serialized file {fileName} does not have enough bytes for {label}. Need {bytes}, remaining {reader.Remaining}.");
             }
         }
 
@@ -323,6 +373,16 @@ namespace AnimeStudio
 
         private void ReadTypeTree(TypeTree m_Type, int level = 0)
         {
+            if (level > MaxTypeTreeDepth)
+            {
+                throw new InvalidDataException($"Type tree depth exceeds {MaxTypeTreeDepth} in {fileName}.");
+            }
+
+            if (m_Type.m_Nodes.Count >= MaxTypeTreeNodeCount)
+            {
+                throw new InvalidDataException($"Type tree node count exceeds {MaxTypeTreeNodeCount} in {fileName}.");
+            }
+
             Logger.Verbose($"Attempting to parse type tree...");
             var typeTreeNode = new TypeTreeNode();
             m_Type.m_Nodes.Add(typeTreeNode);
@@ -345,7 +405,7 @@ namespace AnimeStudio
                 typeTreeNode.m_MetaFlag = reader.ReadInt32();
             }
 
-            int childrenCount = reader.ReadInt32();
+            int childrenCount = ReadSafeCount("type tree child", MaxTypeTreeNodeCount);
             for (int i = 0; i < childrenCount; i++)
             {
                 ReadTypeTree(m_Type, level + 1);
@@ -357,8 +417,9 @@ namespace AnimeStudio
         private void TypeTreeBlobRead(TypeTree m_Type)
         {
             Logger.Verbose($"Attempting to parse blob type tree...");
-            int numberOfNodes = reader.ReadInt32();
-            int stringBufferSize = reader.ReadInt32();
+            int numberOfNodes = ReadSafeCount("type tree node", MaxTypeTreeNodeCount);
+            int stringBufferSize = ReadSafeCount("type tree string buffer", int.MaxValue);
+            EnsureRemaining((long)numberOfNodes * 24L, "type tree nodes");
             Logger.Verbose($"Found {numberOfNodes} nodes and {stringBufferSize} strings");
             for (int i = 0; i < numberOfNodes; i++)
             {
@@ -377,6 +438,7 @@ namespace AnimeStudio
                     typeTreeNode.m_RefTypeHash = reader.ReadUInt64();
                 }
             }
+            EnsureRemaining(stringBufferSize, "type tree string buffer");
             m_Type.m_StringBuffer = reader.ReadBytes(stringBufferSize);
 
             using (var stringBufferReader = new EndianBinaryReader(new MemoryStream(m_Type.m_StringBuffer), EndianType.LittleEndian))
@@ -396,6 +458,11 @@ namespace AnimeStudio
                 var isOffset = (value & 0x80000000) == 0;
                 if (isOffset)
                 {
+                    if (value >= stringBufferReader.BaseStream.Length)
+                    {
+                        return value.ToString();
+                    }
+
                     stringBufferReader.BaseStream.Position = value;
                     return stringBufferReader.ReadStringToNull();
                 }

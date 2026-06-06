@@ -5,6 +5,9 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Advanced;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace AnimeStudio
 {
@@ -17,6 +20,7 @@ namespace AnimeStudio
             public bool exportSkins = true;
             public bool exportAnimations = true;
             public string localTextureDirectoryName;
+            public Func<string, IDictionary<string, object>, IDisposable> profileMeasure;
         }
 
         public static class Exporter
@@ -46,7 +50,10 @@ namespace AnimeStudio
         private readonly Dictionary<string, int> _meshMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _materialMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _textureMap = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly Dictionary<int, string> _textureImagePathMap = new Dictionary<int, string>();
         private readonly Dictionary<string, int> _skinMap = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly Dictionary<string, Dictionary<string, int>> _morphTargetMap = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _morphTargetCountMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<Dictionary<string, object>> _nodes = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> _meshes = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> _materials = new List<Dictionary<string, object>>();
@@ -88,6 +95,7 @@ namespace AnimeStudio
                 File.WriteAllBytes(Path.Combine(_directory, _binName), _bin.ToArray());
                 WriteJson(_path, gltf);
             }
+            WriteMaterialReport(gltf);
         }
 
         private int BuildNodeTree(ImportedFrame frame, List<int> rootNodes)
@@ -233,6 +241,7 @@ namespace AnimeStudio
                     ["indices"] = WriteUIntAccessor(indices),
                     ["mode"] = 4,
                 };
+                AddMorphTargets(mesh, primitive);
 
                 var material = GetMaterialIndex(submesh.Material);
                 if (material >= 0)
@@ -247,10 +256,111 @@ namespace AnimeStudio
                 ["name"] = Path.GetFileName(mesh.Path),
                 ["primitives"] = primitives,
             };
+            AddMorphTargetNames(mesh, gltfMesh);
             var meshIndex = _meshes.Count;
             _meshes.Add(gltfMesh);
             _meshMap[mesh.Path] = meshIndex;
             return meshIndex;
+        }
+
+        private void AddMorphTargets(ImportedMesh mesh, Dictionary<string, object> primitive)
+        {
+            var morph = FindMorph(mesh.Path);
+            if (morph?.Channels == null || morph.Channels.Count == 0)
+            {
+                return;
+            }
+
+            var targets = new List<Dictionary<string, object>>();
+            var channelMap = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var channel in morph.Channels)
+            {
+                var keyframe = channel.KeyframeList?.LastOrDefault(x => x?.VertexList != null && x.VertexList.Count > 0);
+                if (keyframe == null)
+                {
+                    continue;
+                }
+
+                var positions = new Vector3[mesh.VertexList.Count];
+                var normals = keyframe.hasNormals ? new Vector3[mesh.VertexList.Count] : null;
+                var tangents = keyframe.hasTangents ? new Vector3[mesh.VertexList.Count] : null;
+                foreach (var morphVertex in keyframe.VertexList)
+                {
+                    var index = (int)morphVertex.Index;
+                    if (index < 0 || index >= mesh.VertexList.Count || morphVertex.Vertex == null)
+                    {
+                        continue;
+                    }
+
+                    var baseVertex = mesh.VertexList[index];
+                    positions[index] = morphVertex.Vertex.Vertex - baseVertex.Vertex;
+                    if (normals != null)
+                    {
+                        normals[index] = morphVertex.Vertex.Normal - baseVertex.Normal;
+                    }
+                    if (tangents != null)
+                    {
+                        var tangent = morphVertex.Vertex.Tangent - baseVertex.Tangent;
+                        tangents[index] = new Vector3(tangent.X, tangent.Y, tangent.Z);
+                    }
+                }
+
+                var target = new Dictionary<string, object>
+                {
+                    ["POSITION"] = WriteVec3Accessor(positions, false),
+                };
+                if (normals != null)
+                {
+                    target["NORMAL"] = WriteVec3Accessor(normals, false);
+                }
+                if (tangents != null)
+                {
+                    target["TANGENT"] = WriteVec3Accessor(tangents, false);
+                }
+
+                var channelName = channel.Name ?? $"morph_{targets.Count}";
+                channelMap[channelName] = targets.Count;
+                targets.Add(target);
+            }
+
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
+            primitive["targets"] = targets;
+            _morphTargetMap[mesh.Path] = channelMap;
+            _morphTargetCountMap[mesh.Path] = targets.Count;
+        }
+
+        private void AddMorphTargetNames(ImportedMesh mesh, Dictionary<string, object> gltfMesh)
+        {
+            var morph = FindMorph(mesh.Path);
+            if (morph?.Channels == null || !_morphTargetMap.TryGetValue(mesh.Path, out var targetMap) || targetMap.Count == 0)
+            {
+                return;
+            }
+
+            var names = targetMap
+                .OrderBy(x => x.Value)
+                .Select(x => x.Key)
+                .ToArray();
+            gltfMesh["weights"] = names.Select(_ => 0.0f).ToArray();
+            gltfMesh["extras"] = new Dictionary<string, object>
+            {
+                ["targetNames"] = names,
+                ["unityMorph"] = new Dictionary<string, object>
+                {
+                    ["path"] = morph.Path,
+                    ["channelCount"] = names.Length,
+                    ["note"] = "glTF morph targets store one shape target per Unity BlendShape channel; multi-frame Unity blend shape channels currently use the last shape frame as the target.",
+                },
+            };
+        }
+
+        private ImportedMorph FindMorph(string path)
+        {
+            return _imported.MorphList?.FirstOrDefault(x => string.Equals(x.Path, path, StringComparison.Ordinal));
         }
 
         private int BuildSkin(ImportedMesh mesh)
@@ -310,6 +420,7 @@ namespace AnimeStudio
                     AddAnimationChannel(track.Rotations, "rotation", nodeIndex, samplers, channels, WriteQuatAccessor);
                     AddAnimationChannel(track.Scalings, "scale", nodeIndex, samplers, channels, WriteVec3Accessor);
                 }
+                AddBlendShapeAnimationChannels(animation, samplers, channels);
 
                 if (channels.Count > 0)
                 {
@@ -429,6 +540,116 @@ namespace AnimeStudio
             });
         }
 
+        private void AddBlendShapeAnimationChannels(
+            ImportedKeyframedAnimation animation,
+            List<Dictionary<string, object>> samplers,
+            List<Dictionary<string, object>> channels)
+        {
+            var blendShapeTracks = animation.TrackList?
+                .Where(x => x.BlendShape?.Keyframes != null && x.BlendShape.Keyframes.Count > 0)
+                .GroupBy(x => x.Path, StringComparer.Ordinal)
+                .ToArray();
+            if (blendShapeTracks == null || blendShapeTracks.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var group in blendShapeTracks)
+            {
+                if (!_pathNodeMap.TryGetValue(group.Key, out var nodeIndex)
+                    || !_morphTargetMap.TryGetValue(group.Key, out var targetMap)
+                    || !_morphTargetCountMap.TryGetValue(group.Key, out var targetCount)
+                    || targetCount <= 0)
+                {
+                    continue;
+                }
+
+                var usableTracks = group
+                    .Where(x => !string.IsNullOrWhiteSpace(x.BlendShape?.ChannelName)
+                        && targetMap.ContainsKey(x.BlendShape.ChannelName))
+                    .ToArray();
+                if (usableTracks.Length == 0)
+                {
+                    continue;
+                }
+
+                var times = usableTracks
+                    .SelectMany(x => x.BlendShape.Keyframes.Select(k => k.time))
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .ToArray();
+                if (times.Length == 0)
+                {
+                    continue;
+                }
+
+                var weights = new List<float>(times.Length * targetCount);
+                foreach (var time in times)
+                {
+                    var values = new float[targetCount];
+                    foreach (var track in usableTracks)
+                    {
+                        var targetIndex = targetMap[track.BlendShape.ChannelName];
+                        values[targetIndex] = EvaluateFloatCurve(track.BlendShape.Keyframes, time) / 100.0f;
+                    }
+                    weights.AddRange(values);
+                }
+
+                var input = WriteFloatAccessor(times, true);
+                var output = WriteFloatAccessor(weights, false);
+                var samplerIndex = samplers.Count;
+                samplers.Add(new Dictionary<string, object>
+                {
+                    ["input"] = input,
+                    ["output"] = output,
+                    ["interpolation"] = "LINEAR",
+                });
+                channels.Add(new Dictionary<string, object>
+                {
+                    ["sampler"] = samplerIndex,
+                    ["target"] = new Dictionary<string, object>
+                    {
+                        ["node"] = nodeIndex,
+                        ["path"] = "weights",
+                    },
+                });
+            }
+        }
+
+        private static float EvaluateFloatCurve(List<ImportedKeyframe<float>> keys, float time)
+        {
+            if (keys == null || keys.Count == 0)
+            {
+                return 0.0f;
+            }
+
+            var ordered = keys.OrderBy(x => x.time).ToArray();
+            if (time <= ordered[0].time)
+            {
+                return ordered[0].value;
+            }
+            for (var i = 1; i < ordered.Length; i++)
+            {
+                if (time > ordered[i].time)
+                {
+                    continue;
+                }
+
+                var previous = ordered[i - 1];
+                var next = ordered[i];
+                var span = next.time - previous.time;
+                if (span <= 0.000001f)
+                {
+                    return next.value;
+                }
+
+                var t = (time - previous.time) / span;
+                return previous.value + (next.value - previous.value) * t;
+            }
+
+            return ordered[^1].value;
+        }
+
         private int GetMaterialIndex(string name)
         {
             if (string.IsNullOrEmpty(name))
@@ -454,6 +675,9 @@ namespace AnimeStudio
             };
             Dictionary<string, object> normalTexture = null;
             var unityTextures = new List<Dictionary<string, object>>();
+            var baseColorTextureIndex = -1;
+            var colorMaskTextureIndex = -1;
+            var maskTextureIndex = -1;
 
             foreach (var textureRef in material.Textures ?? Enumerable.Empty<ImportedMaterialTexture>())
             {
@@ -471,10 +695,19 @@ namespace AnimeStudio
                 if (textureRef.Dest == 0)
                 {
                     pbr["baseColorTexture"] = new Dictionary<string, object> { ["index"] = textureIndex };
+                    baseColorTextureIndex = textureIndex;
                 }
                 else if (textureRef.Dest == 1 || textureRef.Dest == 3)
                 {
                     normalTexture ??= new Dictionary<string, object> { ["index"] = textureIndex };
+                }
+                else if (IsColorMaskSlot(textureRef.Slot))
+                {
+                    colorMaskTextureIndex = textureIndex;
+                }
+                else if (IsMaskSlot(textureRef.Slot))
+                {
+                    maskTextureIndex = textureIndex;
                 }
             }
 
@@ -488,23 +721,273 @@ namespace AnimeStudio
                 gltfMaterial["normalTexture"] = normalTexture;
             }
             ApplyUnityMaterialState(material, gltfMaterial);
+            NormalizePbrBaseColorAlpha(material, pbr, gltfMaterial);
             if (!gltfMaterial.ContainsKey("alphaMode") && (material.Diffuse.A < 0.999f || material.Transparency > 0))
             {
                 gltfMaterial["alphaMode"] = "BLEND";
             }
             if (unityTextures.Count > 0 || material.UnityFloats?.Count > 0 || material.UnityColors?.Count > 0)
             {
-                gltfMaterial["extras"] = new Dictionary<string, object>
-                {
-                    ["unityTextures"] = unityTextures,
-                    ["unityMaterial"] = BuildUnityMaterialExtra(material, unityTextures),
-                };
+                var extras = EnsureMaterialExtras(gltfMaterial);
+                extras["unityTextures"] = unityTextures;
+                extras["unityMaterial"] = BuildUnityMaterialExtra(material, unityTextures);
             }
+            ApplyColorMaskTintPipeline(
+                material,
+                pbr,
+                gltfMaterial,
+                baseColorTextureIndex,
+                colorMaskTextureIndex,
+                maskTextureIndex);
 
             var index = _materials.Count;
             _materials.Add(gltfMaterial);
             _materialMap[name] = index;
             return index;
+        }
+
+        private void ApplyColorMaskTintPipeline(
+            ImportedMaterial material,
+            Dictionary<string, object> pbr,
+            Dictionary<string, object> gltfMaterial,
+            int baseColorTextureIndex,
+            int colorMaskTextureIndex,
+            int maskTextureIndex)
+        {
+            if (baseColorTextureIndex < 0)
+            {
+                return;
+            }
+
+            var tintColors = FindTintColors(material).ToList();
+            var maskSlots = new List<Dictionary<string, object>>();
+            if (colorMaskTextureIndex >= 0)
+            {
+                maskSlots.Add(new Dictionary<string, object>
+                {
+                    ["slot"] = "_ColorMask",
+                    ["texture"] = colorMaskTextureIndex,
+                    ["usage"] = "tint-region-mask",
+                });
+            }
+            if (maskTextureIndex >= 0 && maskTextureIndex != colorMaskTextureIndex)
+            {
+                maskSlots.Add(new Dictionary<string, object>
+                {
+                    ["slot"] = "_MaskMap",
+                    ["texture"] = maskTextureIndex,
+                    ["usage"] = "shader-mask",
+                });
+            }
+
+            if (maskSlots.Count == 0 && tintColors.Count == 0)
+            {
+                return;
+            }
+
+            var status = "indexed";
+            var notes = new List<string>();
+            if (maskSlots.Count > 0 && tintColors.Count == 0)
+            {
+                status = "needsCustomizationTint";
+                notes.Add("Color/mask textures exist, but no usable tint color was found on the Unity Material. Runtime customization data may be stored outside the material.");
+            }
+            else if (maskSlots.Count > 0 && TryBakeColorMaskPreview(material, baseColorTextureIndex, colorMaskTextureIndex, tintColors[0].color, out var bakedTextureIndex))
+            {
+                pbr["baseColorTexture"] = new Dictionary<string, object> { ["index"] = bakedTextureIndex };
+                status = "bakedPreview";
+                notes.Add("Generated a conservative preview baseColor texture from the first tint color and the color mask red channel.");
+            }
+            else if (tintColors.Count > 0)
+            {
+                status = "tintParametersOnly";
+                notes.Add("Tint colors were found, but no color mask preview texture could be baked.");
+            }
+
+            var extras = EnsureMaterialExtras(gltfMaterial);
+            extras["animeStudioMaterial"] = new Dictionary<string, object>
+            {
+                ["workflow"] = "ColorMaskTint",
+                ["status"] = status,
+                ["baseColorTexture"] = baseColorTextureIndex,
+                ["maskTextures"] = maskSlots,
+                ["tintColors"] = tintColors.Select(x => new Dictionary<string, object>
+                {
+                    ["name"] = x.name,
+                    ["color"] = new[] { x.color.R, x.color.G, x.color.B, x.color.A },
+                }).ToArray(),
+                ["notes"] = notes,
+            };
+        }
+
+        private static Dictionary<string, object> EnsureMaterialExtras(Dictionary<string, object> gltfMaterial)
+        {
+            if (gltfMaterial.TryGetValue("extras", out var value)
+                && value is Dictionary<string, object> extras)
+            {
+                return extras;
+            }
+
+            extras = new Dictionary<string, object>();
+            gltfMaterial["extras"] = extras;
+            return extras;
+        }
+
+        private bool TryBakeColorMaskPreview(
+            ImportedMaterial material,
+            int baseColorTextureIndex,
+            int colorMaskTextureIndex,
+            Color tint,
+            out int bakedTextureIndex)
+        {
+            bakedTextureIndex = -1;
+            if (colorMaskTextureIndex < 0
+                || !_textureImagePathMap.TryGetValue(baseColorTextureIndex, out var basePath)
+                || !_textureImagePathMap.TryGetValue(colorMaskTextureIndex, out var maskPath)
+                || !File.Exists(basePath)
+                || !File.Exists(maskPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var baseImage = Image.Load<Rgba32>(basePath);
+                using var maskImage = Image.Load<Rgba32>(maskPath);
+                if (baseImage.Width != maskImage.Width || baseImage.Height != maskImage.Height)
+                {
+                    return false;
+                }
+
+                var tintR = Clamp01(tint.R);
+                var tintG = Clamp01(tint.G);
+                var tintB = Clamp01(tint.B);
+                for (var y = 0; y < baseImage.Height; y++)
+                {
+                    var baseRow = baseImage.DangerousGetPixelRowMemory(y).Span;
+                    var maskRow = maskImage.DangerousGetPixelRowMemory(y).Span;
+                    for (var x = 0; x < baseRow.Length; x++)
+                    {
+                        var mask = maskRow[x].R / 255f;
+                        var pixel = baseRow[x];
+                        pixel.R = (byte)Math.Round(Lerp(pixel.R, pixel.R * tintR, mask));
+                        pixel.G = (byte)Math.Round(Lerp(pixel.G, pixel.G * tintG, mask));
+                        pixel.B = (byte)Math.Round(Lerp(pixel.B, pixel.B * tintB, mask));
+                        baseRow[x] = pixel;
+                    }
+                }
+
+                var bakedName = GetSafeTextureFileName($"{material.Name}_colormask_preview.png");
+                var bakedPath = Path.Combine(_localTextureDirectory ?? _directory, bakedName);
+                Directory.CreateDirectory(Path.GetDirectoryName(bakedPath) ?? _directory);
+                baseImage.SaveAsPng(bakedPath);
+                bakedTextureIndex = AddImageTexture(bakedPath);
+                return bakedTextureIndex >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static IEnumerable<(string name, Color color)> FindTintColors(ImportedMaterial material)
+        {
+            if (material.UnityColors == null)
+            {
+                yield break;
+            }
+
+            foreach (var color in material.UnityColors)
+            {
+                if (!IsTintColorName(color.Key) || IsNeutralTint(color.Value))
+                {
+                    continue;
+                }
+                yield return (color.Key, color.Value);
+            }
+        }
+
+        private static bool IsTintColorName(string name)
+        {
+            return !string.IsNullOrWhiteSpace(name)
+                && (name.IndexOf("Tint", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("Skin", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("Primary", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("Secondary", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("Cloth", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("Dye", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool IsNeutralTint(Color color)
+        {
+            return (Math.Abs(color.R - 1.0f) < 0.0001f
+                    && Math.Abs(color.G - 1.0f) < 0.0001f
+                    && Math.Abs(color.B - 1.0f) < 0.0001f)
+                || (Math.Abs(color.R) < 0.0001f
+                    && Math.Abs(color.G) < 0.0001f
+                    && Math.Abs(color.B) < 0.0001f
+                    && Math.Abs(color.A) < 0.0001f);
+        }
+
+        private static bool IsColorMaskSlot(string slot)
+        {
+            return string.Equals(slot, "_ColorMask", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_ColorMaskMap", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsMaskSlot(string slot)
+        {
+            return string.Equals(slot, "_MaskMap", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_Masks", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static float Clamp01(float value) => Math.Max(0.0f, Math.Min(1.0f, value));
+
+        private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+
+        private static void NormalizePbrBaseColorAlpha(
+            ImportedMaterial material,
+            Dictionary<string, object> pbr,
+            Dictionary<string, object> gltfMaterial)
+        {
+            if (!pbr.ContainsKey("baseColorTexture"))
+            {
+                return;
+            }
+
+            if (pbr["baseColorFactor"] is not float[] color || color.Length < 4)
+            {
+                return;
+            }
+
+            if (color[3] > 0.0001f)
+            {
+                return;
+            }
+
+            if (IsUnityTransparentMaterial(material, gltfMaterial))
+            {
+                return;
+            }
+
+            // Unity 的不透明/裁剪材质里，基础色 alpha 为 0 经常只是 shader 控制值。
+            // glTF 会把它直接乘到贴图上，导致贴图材质整体不可见，所以这里保留贴图 alpha 自己决定可见性。
+            color[3] = 1.0f;
+            pbr["baseColorFactor"] = color;
+        }
+
+        private static bool IsUnityTransparentMaterial(ImportedMaterial material, Dictionary<string, object> gltfMaterial)
+        {
+            if (gltfMaterial.TryGetValue("alphaMode", out var alphaMode)
+                && string.Equals(alphaMode as string, "BLEND", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return GetUnityFloat(material, "_SurfaceType") > 0.5f
+                || GetUnityFloat(material, "_BlendMode") > 0.5f
+                || (TryGetUnityFloat(material, "_SrcBlend", out var srcBlend) && srcBlend != 1.0f)
+                || (TryGetUnityFloat(material, "_DstBlend", out var dstBlend) && dstBlend != 0.0f);
         }
 
         private static Dictionary<string, object> BuildUnityTextureExtra(ImportedMaterialTexture textureRef, ImportedTexture texture)
@@ -590,6 +1073,17 @@ namespace AnimeStudio
                 : 0.0f;
         }
 
+        private static bool TryGetUnityFloat(ImportedMaterial material, string name, out float value)
+        {
+            if (material.UnityFloats != null && material.UnityFloats.TryGetValue(name, out value))
+            {
+                return true;
+            }
+
+            value = 0.0f;
+            return false;
+        }
+
         private int GetTextureIndex(ImportedTexture texture)
         {
             var exportName = texture.ExportName ?? texture.Name;
@@ -617,6 +1111,35 @@ namespace AnimeStudio
             var textureIndex = _textures.Count;
             _textures.Add(new Dictionary<string, object> { ["source"] = imageIndex });
             _textureMap[exportName] = textureIndex;
+            _textureImagePathMap[textureIndex] = imagePath;
+            return textureIndex;
+        }
+
+        private int AddImageTexture(string imagePath)
+        {
+            if (!File.Exists(imagePath) || !IsGltfSupportedImagePath(imagePath))
+            {
+                return -1;
+            }
+
+            var fullPath = Path.GetFullPath(imagePath);
+            foreach (var existing in _textureImagePathMap)
+            {
+                if (string.Equals(Path.GetFullPath(existing.Value), fullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return existing.Key;
+                }
+            }
+
+            var imageIndex = _images.Count;
+            _images.Add(new Dictionary<string, object>
+            {
+                ["uri"] = ToUri(Path.GetRelativePath(_directory, fullPath)),
+            });
+
+            var textureIndex = _textures.Count;
+            _textures.Add(new Dictionary<string, object> { ["source"] = imageIndex });
+            _textureImagePathMap[textureIndex] = fullPath;
             return textureIndex;
         }
 
@@ -641,18 +1164,23 @@ namespace AnimeStudio
             var path = Path.Combine(textureDirectory, $"{name}{ext.ToLowerInvariant()}");
             if (!File.Exists(path) && texture.Data != null)
             {
-                File.WriteAllBytes(path, texture.Data);
-                WriteTextureMetadata(path, texture);
+                var writeData = GetTextureProfileData(texture, path);
+                writeData["bytes"] = texture.Data.Length;
+                using (Measure("model_texture_write", writeData))
+                {
+                    File.WriteAllBytes(path, texture.Data);
+                    WriteTextureMetadata(path, texture);
+                }
             }
             if (!File.Exists(path))
             {
                 return null;
             }
 
-            return CreateLocalTextureLink(path, Path.GetFileName(path));
+            return CreateLocalTextureLink(path, Path.GetFileName(path), texture);
         }
 
-        private string CreateLocalTextureLink(string sharedPath, string fileName)
+        private string CreateLocalTextureLink(string sharedPath, string fileName, ImportedTexture texture)
         {
             if (_localTextureDirectory == null)
             {
@@ -671,11 +1199,41 @@ namespace AnimeStudio
                 return linkPath;
             }
 
-            if (!CreateHardLink(linkPath, sharedPath, IntPtr.Zero))
+            var linkData = GetTextureProfileData(texture, linkPath);
+            linkData["sharedPath"] = sharedPath;
+            using (Measure("model_texture_link", linkData))
             {
-                File.Copy(sharedPath, linkPath, false);
+                if (CreateHardLink(linkPath, sharedPath, IntPtr.Zero))
+                {
+                    linkData["linkMode"] = "HardLink";
+                }
+                else
+                {
+                    File.Copy(sharedPath, linkPath, false);
+                    linkData["linkMode"] = "Copy";
+                }
             }
             return linkPath;
+        }
+
+        private IDisposable Measure(string stage, IDictionary<string, object> data)
+        {
+            return _options.profileMeasure?.Invoke(stage, data);
+        }
+
+        private static Dictionary<string, object> GetTextureProfileData(ImportedTexture texture, string path)
+        {
+            return new Dictionary<string, object>
+            {
+                ["texture"] = texture.Name,
+                ["exportName"] = texture.ExportName ?? texture.Name,
+                ["path"] = path,
+                ["textureFormat"] = texture.SourceTextureFormat,
+                ["width"] = texture.Width,
+                ["height"] = texture.Height,
+                ["source"] = texture.SourceAssetPath,
+                ["pathId"] = texture.SourcePathId,
+            };
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -947,6 +1505,220 @@ namespace AnimeStudio
                 WriteIndented = true,
             };
             File.WriteAllText(path, JsonSerializer.Serialize(gltf, jsonOptions));
+        }
+
+        private void WriteMaterialReport(Dictionary<string, object> gltf)
+        {
+            if (!_materials.Any())
+            {
+                return;
+            }
+
+            var path = Path.Combine(_directory, "MATERIAL_REPORT.md");
+            var sb = new StringBuilder();
+            sb.AppendLine("# 材质说明");
+            sb.AppendLine();
+            sb.AppendLine($"模型: `{Path.GetFileName(_path)}`");
+            sb.AppendLine();
+            sb.AppendLine("这份说明面向人工查看。机器可读的完整信息仍保存在 glTF `materials[].extras.unityMaterial` 和 `materials[].extras.animeStudioMaterial`。");
+            sb.AppendLine();
+
+            for (var i = 0; i < _materials.Count; i++)
+            {
+                var material = _materials[i];
+                var name = GetString(material, "name") ?? $"Material_{i}";
+                sb.AppendLine($"## {i}. {name}");
+                sb.AppendLine();
+                AppendPbrSummary(sb, material);
+                AppendAnimeStudioMaterialSummary(sb, material);
+                AppendUnityMaterialSummary(sb, material);
+                sb.AppendLine();
+            }
+
+            File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
+        }
+
+        private static void AppendPbrSummary(StringBuilder sb, Dictionary<string, object> material)
+        {
+            if (!TryGetDictionary(material, "pbrMetallicRoughness", out var pbr))
+            {
+                return;
+            }
+
+            if (TryGetDictionary(pbr, "baseColorTexture", out var baseColorTexture)
+                && TryGetInt(baseColorTexture, "index", out var baseColorTextureIndex))
+            {
+                sb.AppendLine($"- 基础贴图: texture #{baseColorTextureIndex}");
+            }
+            if (TryGetFloatArray(pbr, "baseColorFactor", out var color) && color.Length >= 4)
+            {
+                sb.AppendLine($"- 基础颜色: `{color[0]:0.###}, {color[1]:0.###}, {color[2]:0.###}, {color[3]:0.###}`");
+            }
+            if (GetString(material, "alphaMode") is { } alphaMode)
+            {
+                sb.AppendLine($"- 透明模式: `{alphaMode}`");
+            }
+            if (TryGetBool(material, "doubleSided", out var doubleSided) && doubleSided)
+            {
+                sb.AppendLine("- 双面渲染: 是");
+            }
+        }
+
+        private static void AppendAnimeStudioMaterialSummary(StringBuilder sb, Dictionary<string, object> material)
+        {
+            if (!TryGetDictionary(material, "extras", out var extras)
+                || !TryGetDictionary(extras, "animeStudioMaterial", out var animeStudioMaterial))
+            {
+                return;
+            }
+
+            var workflow = GetString(animeStudioMaterial, "workflow");
+            var status = GetString(animeStudioMaterial, "status");
+            if (!string.IsNullOrWhiteSpace(workflow))
+            {
+                sb.AppendLine($"- AnimeStudio 材质流程: `{workflow}`");
+            }
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                sb.AppendLine($"- 状态: `{status}`");
+                if (string.Equals(status, "needsCustomizationTint", StringComparison.Ordinal))
+                {
+                    sb.AppendLine("- 说明: 发现基础贴图和 mask，但 Unity Material 里没有可直接使用的染色颜色。该模型可能依赖运行时 customization/tint 配置，当前颜色需要后续解析配置或人工修补。");
+                    sb.AppendLine("- 建议: 保留当前贴图和 mask；如果需要最终配色，继续查找角色 customization 配置或手动根据 mask 烘焙 base color。");
+                }
+                else if (string.Equals(status, "bakedPreview", StringComparison.Ordinal))
+                {
+                    sb.AppendLine("- 说明: 已根据可用 tint 参数生成预览用 base color。");
+                }
+                else if (string.Equals(status, "tintParametersOnly", StringComparison.Ordinal))
+                {
+                    sb.AppendLine("- 说明: 找到了 tint 参数，但没有成功生成预览贴图。");
+                }
+            }
+
+            if (TryGetEnumerable(animeStudioMaterial, "maskTextures", out var masks))
+            {
+                var any = false;
+                foreach (var item in masks)
+                {
+                    if (item is not Dictionary<string, object> mask)
+                    {
+                        continue;
+                    }
+                    if (!any)
+                    {
+                        sb.AppendLine("- Mask 贴图:");
+                        any = true;
+                    }
+                    var slot = GetString(mask, "slot") ?? "unknown";
+                    var usage = GetString(mask, "usage") ?? "unknown";
+                    var texture = TryGetInt(mask, "texture", out var textureIndex) ? textureIndex.ToString() : "?";
+                    sb.AppendLine($"  - `{slot}` -> texture #{texture}, 用途 `{usage}`");
+                }
+            }
+
+            if (TryGetEnumerable(animeStudioMaterial, "notes", out var notes))
+            {
+                foreach (var note in notes.OfType<string>())
+                {
+                    sb.AppendLine($"- 备注: {note}");
+                }
+            }
+        }
+
+        private static void AppendUnityMaterialSummary(StringBuilder sb, Dictionary<string, object> material)
+        {
+            if (!TryGetDictionary(material, "extras", out var extras)
+                || !TryGetDictionary(extras, "unityMaterial", out var unityMaterial))
+            {
+                return;
+            }
+
+            if (TryGetEnumerable(unityMaterial, "textures", out var textures))
+            {
+                var slots = textures
+                    .OfType<Dictionary<string, object>>()
+                    .Select(x => GetString(x, "slotName"))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                if (slots.Length > 0)
+                {
+                    sb.AppendLine($"- Unity 贴图槽: {string.Join(", ", slots.Select(x => $"`{x}`"))}");
+                }
+            }
+        }
+
+        private static string GetString(Dictionary<string, object> dictionary, string key)
+        {
+            return dictionary.TryGetValue(key, out var value) ? value as string : null;
+        }
+
+        private static bool TryGetDictionary(Dictionary<string, object> dictionary, string key, out Dictionary<string, object> value)
+        {
+            if (dictionary.TryGetValue(key, out var raw) && raw is Dictionary<string, object> typed)
+            {
+                value = typed;
+                return true;
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static bool TryGetEnumerable(Dictionary<string, object> dictionary, string key, out IEnumerable<object> value)
+        {
+            if (dictionary.TryGetValue(key, out var raw) && raw is IEnumerable<object> typed)
+            {
+                value = typed;
+                return true;
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static bool TryGetInt(Dictionary<string, object> dictionary, string key, out int value)
+        {
+            if (dictionary.TryGetValue(key, out var raw))
+            {
+                switch (raw)
+                {
+                    case int intValue:
+                        value = intValue;
+                        return true;
+                    case long longValue:
+                        value = (int)longValue;
+                        return true;
+                }
+            }
+
+            value = 0;
+            return false;
+        }
+
+        private static bool TryGetBool(Dictionary<string, object> dictionary, string key, out bool value)
+        {
+            if (dictionary.TryGetValue(key, out var raw) && raw is bool boolValue)
+            {
+                value = boolValue;
+                return true;
+            }
+
+            value = false;
+            return false;
+        }
+
+        private static bool TryGetFloatArray(Dictionary<string, object> dictionary, string key, out float[] value)
+        {
+            if (dictionary.TryGetValue(key, out var raw) && raw is float[] floatArray)
+            {
+                value = floatArray;
+                return true;
+            }
+
+            value = null;
+            return false;
         }
 
         private void WriteGlb(Dictionary<string, object> gltf)

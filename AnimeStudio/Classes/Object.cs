@@ -28,6 +28,8 @@ namespace AnimeStudio
 
         public virtual string Name => string.Empty;
 
+        protected Object() { }
+
         public Object(ObjectReader reader)
         {
             this.reader = reader;

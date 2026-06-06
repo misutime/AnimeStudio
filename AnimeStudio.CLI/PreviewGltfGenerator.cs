@@ -12,7 +12,7 @@ namespace AnimeStudio.CLI
 {
     internal static class PreviewGltfGenerator
     {
-        public static void Generate(
+        public static string Generate(
             string indexPath,
             string gameName,
             string modelSelector,
@@ -24,12 +24,12 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(gameName))
             {
                 Logger.Error("--game is required with --generate_preview_gltf.");
-                return;
+                return null;
             }
             if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
             {
                 Logger.Error($"model_animations.json not found: {indexPath}");
-                return;
+                return null;
             }
 
             var index = JObject.Parse(File.ReadAllText(indexPath));
@@ -37,7 +37,7 @@ namespace AnimeStudio.CLI
             if (selection == null)
             {
                 Logger.Error("No model/animation candidate matched the preview selectors.");
-                return;
+                return null;
             }
 
             var modelName = (string)selection.Model["model"]?["name"];
@@ -47,14 +47,14 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(animationName))
             {
                 Logger.Error("Selected preview entry is missing model or animation name.");
-                return;
+                return null;
             }
             if (!File.Exists(modelSource) || !File.Exists(animationSource))
             {
                 Logger.Error("Selected preview entry source files no longer exist. Re-run the Library export from an accessible game/source folder.");
                 Logger.Error($"Model source: {modelSource}");
                 Logger.Error($"Animation source: {animationSource}");
-                return;
+                return null;
             }
 
             var output = string.IsNullOrWhiteSpace(outputDirectory)
@@ -79,7 +79,7 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
             {
                 Logger.Error("Unable to resolve current CLI executable path.");
-                return;
+                return null;
             }
 
             Logger.Info($"Generating preview glTF: {modelName} + {animationName}");
@@ -127,7 +127,7 @@ namespace AnimeStudio.CLI
             if (process.ExitCode != 0)
             {
                 Logger.Error($"Preview export failed with exit code {process.ExitCode}.");
-                return;
+                return null;
             }
 
             var gltfPath = Directory
@@ -137,7 +137,7 @@ namespace AnimeStudio.CLI
             if (gltfPath == null)
             {
                 Logger.Error($"Preview export did not produce a glTF file in {output}.");
-                return;
+                return null;
             }
 
             var exportIssues = ExtractExportIssues(stdout, stderr);
@@ -146,6 +146,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Preview glTF: {gltfPath}");
             Logger.Info($"Preview validation: {reportPath}");
+            return gltfPath;
         }
 
         public static void GeneratePack(
@@ -490,7 +491,10 @@ namespace AnimeStudio.CLI
                 })
                 .ToArray();
             var coverage = AnalyzeAnimationCoverage(channelTargets.Select(x => (x.nodeName, x.path)));
+            var morph = AnalyzeMorphTargets(meshes, channels, animationIndex);
             var skinJointCount = skins.Sum(x => x["joints"]?.Count() ?? 0);
+            var visibleTransformChannelCount = CountChannelsAffectingVisibleMeshes(nodes, skins, channels);
+            var motion = AnalyzeAnimationMotion(gltf, buffers, nodes, skins, animation, channels);
             var meshNode = nodes
                 .Select((node, index) => new { node, index })
                 .FirstOrDefault(x => x.node["mesh"] != null && x.node["skin"] != null)
@@ -502,12 +506,30 @@ namespace AnimeStudio.CLI
             exportIssues ??= Array.Empty<string>();
             var hasExperimentalHumanoidBake = humanoid?.baked == true
                 && (humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase);
+            var nonCharacterTransformOk = string.Equals(
+                    (string)animationIndex?["animationCapability"],
+                    "NonCharacterTransformPreviewReady",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && channels.Length > 0
+                && invalidChannels == 0
+                && visibleTransformChannelCount > 0
+                && motion.visibleMovingChannelCount > 0;
+            var morphOk = morph.expected
+                && morph.meshTargetCount > 0
+                && morph.targetCount > 0
+                && morph.weightChannelCount > 0
+                && invalidChannels == 0
+                && motion.movingChannelCount > 0;
             var structurallyOk = animations.Length > 0
                 && channels.Length > 0
                 && invalidChannels == 0
-                && skins.Length > 0
-                && coverage.coreBoneChannelCount > 0
-                && coverage.coreBoneNodeCount >= 3
+                && motion.movingChannelCount > 0
+                && (morphOk
+                    || nonCharacterTransformOk
+                    || (skins.Length > 0
+                        && coverage.coreBoneChannelCount > 0
+                        && coverage.coreBoneNodeCount >= 3))
                 && bbox?.skinnedSizeLooksReasonable != false;
             var status = !structurallyOk || exportIssues.Length > 0
                 ? "warning"
@@ -533,6 +555,8 @@ namespace AnimeStudio.CLI
                     animations = animations.Length,
                     channels = channels.Length,
                     invalidChannels,
+                    morphTargets = morph.targetCount,
+                    weightChannels = morph.weightChannelCount,
                 },
                 exportIssues = new
                 {
@@ -540,10 +564,20 @@ namespace AnimeStudio.CLI
                     items = exportIssues,
                 },
                 animationCoverage = coverage,
+                morph,
+                nonCharacterTransform = new
+                {
+                    expected = nonCharacterTransformOk,
+                    capability = (string)animationIndex?["animationCapability"],
+                    channelCount = channels.Length,
+                    visibleTransformChannelCount,
+                    invalidChannels,
+                },
+                motion,
                 humanoid,
                 bounds = bbox,
                 channelTargets = channelTargets.Take(128).ToArray(),
-                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, humanoid, bbox, exportIssues),
+                notes = BuildNotes(animations.Length, channels.Length, skins.Length, invalidChannels, coverage, morph, nonCharacterTransformOk, motion, humanoid, bbox, exportIssues),
             };
         }
 
@@ -605,6 +639,43 @@ namespace AnimeStudio.CLI
             );
         }
 
+        private static MorphReport AnalyzeMorphTargets(JObject[] meshes, JObject[] channels, JObject animationIndex)
+        {
+            var meshTargetCount = 0;
+            var targetCount = 0;
+            var targetNames = new List<string>();
+            foreach (var mesh in meshes)
+            {
+                var meshHasTargets = false;
+                foreach (var primitive in mesh["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var targets = primitive["targets"] as JArray;
+                    if (targets == null || targets.Count == 0)
+                    {
+                        continue;
+                    }
+                    meshHasTargets = true;
+                    targetCount += targets.Count;
+                }
+                if (meshHasTargets)
+                {
+                    meshTargetCount++;
+                    targetNames.AddRange(mesh["extras"]?["targetNames"]?.Values<string>() ?? Enumerable.Empty<string>());
+                }
+            }
+
+            var weightChannelCount = channels.Count(x => string.Equals((string)x["target"]?["path"], "weights", StringComparison.OrdinalIgnoreCase));
+            var expectedBindingCount = (int?)animationIndex?["blendShapeBindingCount"] ?? 0;
+            return new MorphReport(
+                expectedBindingCount > 0 || weightChannelCount > 0,
+                expectedBindingCount,
+                meshTargetCount,
+                targetCount,
+                weightChannelCount,
+                targetNames.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(128).ToArray()
+            );
+        }
+
         private static bool IsCoreAnimatedBone(string nodeName)
         {
             var name = NormalizeBoneName(nodeName);
@@ -643,16 +714,39 @@ namespace AnimeStudio.CLI
             return Regex.Replace((nodeName ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
-        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
+        private static List<string> BuildNotes(int animationCount, int channelCount, int skinCount, int invalidChannels, AnimationCoverage coverage, MorphReport morph, bool nonCharacterTransformOk, AnimationMotionReport motion, HumanoidAnimationReport humanoid, BoundsReport bounds, string[] exportIssues)
         {
             var notes = new List<string>();
             if (animationCount == 0) notes.Add("No animation was embedded in the preview glTF.");
             if (channelCount == 0) notes.Add("The embedded animation has no valid glTF channels.");
-            if (skinCount == 0) notes.Add("No skin was exported for the preview model.");
+            if (skinCount == 0 && !nonCharacterTransformOk) notes.Add("No skin was exported for the preview model.");
             if (invalidChannels > 0) notes.Add($"{invalidChannels} animation channel(s) target missing nodes.");
+            if (channelCount > 0 && motion.movingChannelCount == 0)
+            {
+                notes.Add("Animation channels were written, but all sampled outputs are static or zero-duration; treat this as a static pose, not a playable animation.");
+            }
+            else if (nonCharacterTransformOk && motion.visibleMovingChannelCount == 0)
+            {
+                notes.Add("Non-character animation channels exist, but none of the moving channels affect visible meshes.");
+            }
             if (exportIssues?.Length > 0)
             {
                 notes.Add($"{exportIssues.Length} export issue(s) were reported while generating the preview; inspect exportIssues before trusting the asset.");
+            }
+            if (morph?.expected == true)
+            {
+                if (morph.meshTargetCount > 0 && morph.weightChannelCount > 0)
+                {
+                    notes.Add($"BlendShape/morph animation is present: {morph.targetCount} morph target(s), {morph.weightChannelCount} glTF weights channel(s).");
+                }
+                else
+                {
+                    notes.Add($"BlendShape bindings were expected ({morph.expectedBindingCount}), but glTF morph targets or weights channels are missing.");
+                }
+            }
+            if (nonCharacterTransformOk)
+            {
+                notes.Add("Non-character Transform animation channels target exported glTF nodes.");
             }
             if (humanoid?.requiresBake == true)
             {
@@ -671,11 +765,11 @@ namespace AnimeStudio.CLI
                     notes.Add($"Humanoid bake diagnostics: {diagnosticsStatus}, mapped {(int?)humanoid.diagnostics?["mappedTargetCount"] ?? 0}/{(int?)humanoid.diagnostics?["targetCount"] ?? 0} target bone(s), sample times {(int?)humanoid.diagnostics?["sampleTimeCount"] ?? 0}.");
                 }
             }
-            if (coverage.coreBoneChannelCount == 0)
+            if (coverage.coreBoneChannelCount == 0 && morph?.weightChannelCount == 0 && !nonCharacterTransformOk)
             {
                 notes.Add("No core body bone channels were written; the preview animation currently affects only helper/accessory/twist nodes.");
             }
-            else if (coverage.coreBoneNodeCount < 3)
+            else if (coverage.coreBoneNodeCount < 3 && !nonCharacterTransformOk)
             {
                 notes.Add("Very few core body bones were animated; inspect whether this is an auxiliary clip rather than a body animation.");
             }
@@ -688,6 +782,145 @@ namespace AnimeStudio.CLI
             return index.HasValue && index.Value >= 0 && index.Value < nodes.Length
                 ? (string)nodes[index.Value]["name"]
                 : null;
+        }
+
+        private static int CountChannelsAffectingVisibleMeshes(JObject[] nodes, JObject[] skins, JObject[] channels)
+        {
+            var skinJoints = skins
+                .SelectMany(skin => skin["joints"]?.Values<int>() ?? Enumerable.Empty<int>())
+                .ToHashSet();
+            var count = 0;
+            foreach (var channel in channels)
+            {
+                var nodeIndex = (int?)channel["target"]?["node"];
+                if (nodeIndex == null || nodeIndex < 0 || nodeIndex >= nodes.Length)
+                {
+                    continue;
+                }
+                if (skinJoints.Contains(nodeIndex.Value) || NodeOrDescendantHasMesh(nodes, nodeIndex.Value))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private static bool NodeOrDescendantHasMesh(JObject[] nodes, int nodeIndex)
+        {
+            if (nodeIndex < 0 || nodeIndex >= nodes.Length)
+            {
+                return false;
+            }
+            if (nodes[nodeIndex]["mesh"] != null)
+            {
+                return true;
+            }
+            foreach (var childIndex in nodes[nodeIndex]["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+            {
+                if (NodeOrDescendantHasMesh(nodes, childIndex))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static AnimationMotionReport AnalyzeAnimationMotion(JObject gltf, byte[][] buffers, JObject[] nodes, JObject[] skins, JObject animation, JObject[] channels)
+        {
+            var samplers = animation?["samplers"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            if (samplers.Length == 0 || channels.Length == 0)
+            {
+                return new AnimationMotionReport(0, 0, 0, 0, 0, Array.Empty<string>());
+            }
+
+            var movingSamplers = new HashSet<int>();
+            var maxDuration = 0.0f;
+            var maxOutputDelta = 0.0f;
+            for (var i = 0; i < samplers.Length; i++)
+            {
+                var inputAccessor = (int?)samplers[i]["input"];
+                var outputAccessor = (int?)samplers[i]["output"];
+                if (inputAccessor == null || outputAccessor == null)
+                {
+                    continue;
+                }
+
+                var input = ReadAccessor(gltf, buffers, inputAccessor.Value);
+                var output = ReadAccessor(gltf, buffers, outputAccessor.Value);
+                var duration = input.Length == 0 ? 0 : input.Max(x => x[0]) - input.Min(x => x[0]);
+                var delta = MaxOutputDelta(output);
+                maxDuration = Math.Max(maxDuration, duration);
+                maxOutputDelta = Math.Max(maxOutputDelta, delta);
+                if (duration > 0.0001f && delta > 0.0001f)
+                {
+                    movingSamplers.Add(i);
+                }
+            }
+
+            var movingChannelCount = 0;
+            var visibleMovingChannelCount = 0;
+            var visibleTargets = new List<string>();
+            foreach (var channel in channels)
+            {
+                var samplerIndex = (int?)channel["sampler"];
+                if (samplerIndex == null || !movingSamplers.Contains(samplerIndex.Value))
+                {
+                    continue;
+                }
+
+                movingChannelCount++;
+                var nodeIndex = (int?)channel["target"]?["node"];
+                var nodeName = NodeName(nodes, nodeIndex);
+                if (NodeAffectsVisibleMesh(nodes, skins, nodeIndex))
+                {
+                    visibleMovingChannelCount++;
+                    if (!string.IsNullOrWhiteSpace(nodeName))
+                    {
+                        visibleTargets.Add(nodeName);
+                    }
+                }
+            }
+
+            return new AnimationMotionReport(
+                maxDuration,
+                maxOutputDelta,
+                movingSamplers.Count,
+                movingChannelCount,
+                visibleMovingChannelCount,
+                visibleTargets.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(128).ToArray()
+            );
+        }
+
+        private static bool NodeAffectsVisibleMesh(JObject[] nodes, JObject[] skins, int? nodeIndex)
+        {
+            if (nodeIndex == null || nodeIndex < 0 || nodeIndex >= nodes.Length)
+            {
+                return false;
+            }
+
+            var skinJoints = skins
+                .SelectMany(skin => skin["joints"]?.Values<int>() ?? Enumerable.Empty<int>())
+                .ToHashSet();
+            return skinJoints.Contains(nodeIndex.Value) || NodeOrDescendantHasMesh(nodes, nodeIndex.Value);
+        }
+
+        private static float MaxOutputDelta(float[][] rows)
+        {
+            if (rows.Length < 2)
+            {
+                return 0;
+            }
+
+            var first = rows[0];
+            var max = 0.0f;
+            foreach (var row in rows.Skip(1))
+            {
+                for (var i = 0; i < Math.Min(first.Length, row.Length); i++)
+                {
+                    max = Math.Max(max, Math.Abs(row[i] - first[i]));
+                }
+            }
+            return max;
         }
 
         private static byte[][] LoadBuffers(JObject gltf, string directory)
@@ -843,6 +1076,15 @@ namespace AnimeStudio.CLI
             string[] accessoryPointNodes
         );
 
+        private sealed record MorphReport(
+            bool expected,
+            int expectedBindingCount,
+            int meshTargetCount,
+            int targetCount,
+            int weightChannelCount,
+            string[] targetNames
+        );
+
         private sealed record HumanoidAnimationReport(
             bool present,
             bool requiresBake,
@@ -854,6 +1096,15 @@ namespace AnimeStudio.CLI
             int keyframeCount,
             string[] attributes,
             JObject diagnostics
+        );
+
+        private sealed record AnimationMotionReport(
+            float maxDuration,
+            float maxOutputDelta,
+            int movingSamplerCount,
+            int movingChannelCount,
+            int visibleMovingChannelCount,
+            string[] visibleMovingTargets
         );
 
         private sealed record Bounds(float[] min, float[] max, float[] size)

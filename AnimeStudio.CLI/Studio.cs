@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using Newtonsoft.Json;
@@ -36,11 +37,13 @@ namespace AnimeStudio.CLI
         public static WorkMode WorkMode { get; set; } = WorkMode.Export;
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static int MaxExportTasks { get; set; } = 1;
-        public static int BatchFiles { get; set; } = 4;
+        public static int BatchFiles { get; set; } = 16;
         public static int ModelGcInterval { get; set; } = 32;
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
+        private static ExportRunStats _exportRunStats = new ExportRunStats();
+        private const long FullStructuralAnimationPairLimit = 100_000;
         private static readonly Regex[] ModelRootExcludePatterns =
         {
             new Regex(@"^Cs_", RegexOptions.IgnoreCase | RegexOptions.Compiled),
@@ -49,7 +52,13 @@ namespace AnimeStudio.CLI
             new Regex(@"(?:^|_)(Col|Collider|Collision)$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"Collider|Collision", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|_)ShadowMesh$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Dummy|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"(?:^|[_\-\s])Decal(?:$|[_\-\s])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
+        private static readonly Regex DeprecatedLibraryPathPattern = new Regex(
+            @"(?:^|[\\/])(obsolete|deprecated)(?:[\\/]|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
 
         public static Dictionary<ulong, string> Paths { get; set; } =
             new Dictionary<ulong, string>();
@@ -329,6 +338,7 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            var preFilterCounts = CountAssetItemsByType(exportableAssets);
             var matches = exportableAssets
                 .Where(x =>
                 {
@@ -352,13 +362,37 @@ namespace AnimeStudio.CLI
                         && !isContainerExcluded;
                 })
                 .ToArray();
+            var regexFilteredCounts = CountAssetItemsByType(matches);
             if (ModelRootsOnly)
             {
                 matches = FilterModelRootsOnly(matches, containerMainAssets);
                 matches = FilterUsefulModelRoots(matches);
             }
+            if (WorkMode == WorkMode.Library)
+            {
+                ProfileLogger.Event("library_candidate_counts", new Dictionary<string, object>
+                {
+                    ["beforeFilterTotal"] = exportableAssets.Count,
+                    ["beforeFilterByType"] = preFilterCounts,
+                    ["afterNameContainerFilterTotal"] = regexFilteredCounts.Values.Sum(),
+                    ["afterNameContainerFilterByType"] = regexFilteredCounts,
+                    ["afterModelRootFilterTotal"] = matches.Length,
+                    ["afterModelRootFilterByType"] = CountAssetItemsByType(matches),
+                    ["containerMainAssetCount"] = containerMainAssets.Count,
+                    ["modelRootsOnly"] = ModelRootsOnly,
+                });
+            }
             exportableAssets.Clear();
             exportableAssets.AddRange(matches);
+        }
+
+        private static Dictionary<string, int> CountAssetItemsByType(IEnumerable<AssetItem> assets)
+        {
+            return assets
+                .GroupBy(x => x.TypeString ?? x.Type.ToString(), StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(x => x.Count())
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
         }
 
         private static string GetFilterableContainerText(AssetItem asset)
@@ -381,12 +415,12 @@ namespace AnimeStudio.CLI
             var filtered = assets
                 .Where(x =>
                 {
-                    if (x.Asset is not GameObject)
+                    if (x.Asset is not GameObject && x.Asset is not Animator)
                     {
                         return true;
                     }
 
-                    var exclude = ModelRootExcludePatterns.Any(y => y.IsMatch(x.Text ?? string.Empty));
+                    var exclude = IsExcludedModelRoot(x);
                     if (exclude)
                     {
                         skipped++;
@@ -403,6 +437,21 @@ namespace AnimeStudio.CLI
             }
 
             return filtered;
+        }
+
+        private static bool IsExcludedModelRoot(AssetItem asset)
+        {
+            var filterTexts = new[]
+                {
+                    asset.Text,
+                    asset.Container,
+                    asset.SourceFile?.originalPath,
+                    asset.SourceFile?.fileName,
+                    GetFilterableContainerText(asset),
+                }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x.Replace('\\', '/'));
+            return filterTexts.Any(x => ModelRootExcludePatterns.Any(y => y.IsMatch(x)));
         }
 
         private static AssetItem[] FilterModelRootsOnly(
@@ -425,8 +474,12 @@ namespace AnimeStudio.CLI
                 }
                 if (WorkMode == WorkMode.Library)
                 {
-                    Logger.Info("Library mode keeps these model candidates to avoid producing an empty asset library.");
-                    return assets;
+                    var hierarchyRoots = FilterHierarchyModelRoots(assets, out var skippedChildren);
+                    if (skippedChildren > 0)
+                    {
+                        Logger.Info($"Library model root fallback kept hierarchy roots and skipped {skippedChildren} child model candidate(s).");
+                    }
+                    return hierarchyRoots;
                 }
                 if (skippedModels > 0)
                 {
@@ -464,6 +517,11 @@ namespace AnimeStudio.CLI
                     if (!string.IsNullOrEmpty(m_Texture2D.m_StreamData?.path))
                         assetItem.FullSize = asset.byteSize + m_Texture2D.m_StreamData.size;
                     exportable = ClassIDType.Texture2D.CanExport();
+                    break;
+                case Texture2DArray m_Texture2DArray:
+                    if (!string.IsNullOrEmpty(m_Texture2DArray.m_StreamData?.path))
+                        assetItem.FullSize = asset.byteSize + m_Texture2DArray.m_StreamData.size;
+                    exportable = ClassIDType.Texture2DArray.CanExport();
                     break;
                 case AudioClip m_AudioClip:
                     if (!string.IsNullOrEmpty(m_AudioClip.m_Source))
@@ -575,8 +633,10 @@ namespace AnimeStudio.CLI
         {
             int toExportCount = toExportAssets.Count;
             int exportedCount = 0;
+            int processedCount = 0;
             foreach (var asset in toExportAssets)
             {
+                processedCount++;
                 string exportPath;
                 switch (assetGroupOption)
                 {
@@ -620,7 +680,7 @@ namespace AnimeStudio.CLI
                         break;
                 }
                 exportPath += Path.DirectorySeparatorChar;
-                Logger.Info(
+                Logger.Verbose(
                     $"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}"
                 );
                 try
@@ -631,6 +691,7 @@ namespace AnimeStudio.CLI
                             if (ExportRawFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -638,6 +699,7 @@ namespace AnimeStudio.CLI
                             if (ExportDumpFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -645,6 +707,7 @@ namespace AnimeStudio.CLI
                             if (ExportConvertFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -652,6 +715,7 @@ namespace AnimeStudio.CLI
                             if (ExportJSONFile(asset, exportPath))
                             {
                                 exportedCount++;
+                                LogAssetExported(asset, toExportCount);
                                 AppendExportManifest(savePath, asset, exportPath);
                             }
                             break;
@@ -661,6 +725,13 @@ namespace AnimeStudio.CLI
                 {
                     Logger.Error(
                         $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
+                    );
+                }
+
+                if (processedCount % 500 == 0)
+                {
+                    Logger.Info(
+                        $"Processed {processedCount}/{toExportCount} {asset.TypeString} asset(s); exported {exportedCount}."
                     );
                 }
             }
@@ -679,6 +750,17 @@ namespace AnimeStudio.CLI
             Logger.Info(statusText);
         }
 
+        private static void LogAssetExported(AssetItem asset, int batchCount)
+        {
+            if (asset.Type == ClassIDType.AnimationClip && batchCount > 200)
+            {
+                Logger.Verbose($"Exported {asset.TypeString}: {asset.Text}");
+                return;
+            }
+
+            Logger.Info($"Exported {asset.TypeString}: {asset.Text}");
+        }
+
         public static void ExportCurrentAssets(
             string savePath,
             AssetGroupOption assetGroupOption,
@@ -689,6 +771,9 @@ namespace AnimeStudio.CLI
             {
                 case WorkMode.Library:
                     ExportAssetLibrary(savePath);
+                    break;
+                case WorkMode.AudioLibrary:
+                    ExportAudioLibrary(savePath);
                     break;
                 case WorkMode.SplitObjects:
                     ExportSplitObjects(savePath, assetGroupOption);
@@ -708,22 +793,212 @@ namespace AnimeStudio.CLI
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
             var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
             var sourcePartModels = new List<AssetItem>();
+            var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
+            models = FilterDeprecatedLibraryAssets(models, "model");
+            animations = FilterDeprecatedLibraryAssets(animations, "animation");
 
             Logger.Info(
-                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {shaders.Count} shader(s)."
+                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {libraryTextures.Count} material/terrain texture asset(s), {shaders.Count} shader(s)."
             );
             AppendModelSourcePartCatalog(savePath, sourcePartModels);
 
             var modelAnimations = CliExportOptions.ExportEmbeddedAnimations ? animations : null;
             ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, modelAnimations);
             ExportSeparateAnimationClips(savePath);
+            if (libraryTextures.Count > 0)
+            {
+                ExportAssets(savePath, libraryTextures, AssetGroupOption.ByLibrary, ExportType.Convert);
+            }
             if (shaders.Count > 0)
             {
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
-            GenerateLibraryIndexes(savePath);
+        }
+
+        private static List<AssetItem> FilterDeprecatedLibraryAssets(List<AssetItem> assets, string label)
+        {
+            var kept = new List<AssetItem>(assets.Count);
+            var skipped = 0;
+            foreach (var asset in assets)
+            {
+                if (IsDeprecatedLibraryAsset(asset))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                kept.Add(asset);
+            }
+
+            if (skipped > 0)
+            {
+                Logger.Info($"Library skipped {skipped} deprecated/obsolete {label} asset(s).");
+                ProfileLogger.Event("library_deprecated_asset_filter", new Dictionary<string, object>
+                {
+                    ["assetKind"] = label,
+                    ["inputCount"] = assets.Count,
+                    ["skippedCount"] = skipped,
+                    ["keptCount"] = kept.Count,
+                    ["rule"] = "Path segment exactly matches obsolete or deprecated. Source SQLite index remains complete; default Library export omits these browsable assets.",
+                });
+            }
+
+            return kept;
+        }
+
+        private static bool IsDeprecatedLibraryAsset(AssetItem asset)
+        {
+            return GetDeprecatedFilterTexts(asset)
+                .Any(x => DeprecatedLibraryPathPattern.IsMatch(x));
+        }
+
+        private static IEnumerable<string> GetDeprecatedFilterTexts(AssetItem asset)
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Container))
+            {
+                yield return asset.Container.Replace('\\', '/');
+            }
+            if (!string.IsNullOrWhiteSpace(asset.SourceFile?.originalPath))
+            {
+                yield return asset.SourceFile.originalPath.Replace('\\', '/');
+            }
+        }
+
+        private static List<AssetItem> CollectLibraryTextureAssets(string savePath)
+        {
+            var textureItems = exportableAssets
+                .Where(x => x.Asset is Texture2D or Texture2DArray)
+                .GroupBy(x => GetAssetKey((AnimeStudio.Object)x.Asset), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+
+            if (textureItems.Count == 0)
+            {
+                return new List<AssetItem>();
+            }
+
+            var selectedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var references = new Dictionary<string, List<object>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var arrayItem in textureItems.Values.Where(x => x.Asset is Texture2DArray))
+            {
+                var key = GetAssetKey((AnimeStudio.Object)arrayItem.Asset);
+                selectedKeys.Add(key);
+                AddTextureLibraryReference(references, key, new
+                {
+                    basis = "Texture2DArray",
+                    reason = "Texture2DArray is a standalone material/terrain/shader texture library asset.",
+                });
+            }
+
+            foreach (var materialItem in exportableAssets.Where(x => x.Asset is Material))
+            {
+                var material = (Material)materialItem.Asset;
+                foreach (var texEnv in material.m_SavedProperties?.m_TexEnvs ?? new List<KeyValuePair<string, UnityTexEnv>>())
+                {
+                    if (texEnv.Value?.m_Texture == null || texEnv.Value.m_Texture.m_PathID == 0)
+                    {
+                        continue;
+                    }
+
+                    if (!texEnv.Value.m_Texture.TryGet<Texture>(out var texture))
+                    {
+                        continue;
+                    }
+
+                    if (texture is not Texture2D and not Texture2DArray)
+                    {
+                        continue;
+                    }
+
+                    var key = GetAssetKey(texture);
+                    if (!textureItems.ContainsKey(key))
+                    {
+                        continue;
+                    }
+
+                    selectedKeys.Add(key);
+                    AddTextureLibraryReference(references, key, new
+                    {
+                        basis = "Material.m_SavedProperties.m_TexEnvs",
+                        slot = texEnv.Key,
+                        material = material.m_Name,
+                        materialSource = material.assetsFile?.originalPath ?? material.assetsFile?.fileName,
+                        materialPathId = material.m_PathID,
+                    });
+                }
+            }
+
+            var selected = selectedKeys
+                .Select(x => textureItems[x])
+                .OrderBy(x => x.TypeString, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Container ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Text ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var item in selected)
+            {
+                item.LibraryRole = item.Asset is Texture2DArray ? "Texture2DArray" : "MaterialLibrary";
+            }
+
+            WriteTextureLibraryReport(savePath, selected, references);
+            return selected;
+        }
+
+        private static void AddTextureLibraryReference(Dictionary<string, List<object>> references, string key, object reference)
+        {
+            if (!references.TryGetValue(key, out var list))
+            {
+                list = new List<object>();
+                references[key] = list;
+            }
+            list.Add(reference);
+        }
+
+        private static void WriteTextureLibraryReport(string savePath, List<AssetItem> textures, Dictionary<string, List<object>> references)
+        {
+            if (textures.Count == 0)
+            {
+                return;
+            }
+
+            var report = new JObject
+            {
+                ["schemaVersion"] = 1,
+                ["generatedUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["rule"] = "Default Library exports material-referenced Texture2D assets and all Texture2DArray assets as independent material/terrain texture library resources. Model display dependencies remain in Textures/_ModelDependencies.",
+                ["counts"] = JObject.FromObject(new
+                {
+                    total = textures.Count,
+                    texture2D = textures.Count(x => x.Asset is Texture2D),
+                    texture2DArray = textures.Count(x => x.Asset is Texture2DArray),
+                }),
+                ["textures"] = JArray.FromObject(textures.Select(x =>
+                {
+                    var key = GetAssetKey((AnimeStudio.Object)x.Asset);
+                    return new
+                    {
+                        name = x.Text,
+                        type = x.TypeString,
+                        libraryRole = x.LibraryRole,
+                        source = x.SourceFile?.originalPath ?? x.SourceFile?.fileName,
+                        container = x.Container,
+                        pathId = x.m_PathID,
+                        outputRoot = Path.Combine("Textures", x.LibraryRole == "Texture2DArray" ? "Texture2DArray" : "MaterialLibrary"),
+                        references = references.TryGetValue(key, out var refs) ? refs : new List<object>(),
+                    };
+                })),
+            };
+
+            File.WriteAllText(Path.Combine(savePath, "texture_library.json"), report.ToString(Newtonsoft.Json.Formatting.Indented));
+            File.WriteAllText(Path.Combine(savePath, "TEXTURE_LIBRARY.md"),
+                "# Texture Library\n\n" +
+                "默认 Library 会额外导出材质/地表贴图库：\n\n" +
+                "- `Textures/_ModelDependencies`：模型 glTF 直接显示需要的贴图。\n" +
+                "- `Textures/MaterialLibrary`：由 Unity `Material.m_SavedProperties.m_TexEnvs` 明确引用的 Texture2D。\n" +
+                "- `Textures/Texture2DArray`：Texture2DArray 按 layer 拆出的贴图库资源，常用于 terrain、surface、shader/material 混合。\n\n" +
+                "这些贴图不一定会直接嵌入 glTF PBR 材质；自定义 shader、terrain splat、ColorMask/Tint 或 Texture2DArray 采样方式需要结合 `texture_library.json`、材质 JSON 和后续 shader/customization 管线处理。\n");
         }
 
         private static List<AssetItem> FilterLibraryModelSources(
@@ -873,7 +1148,7 @@ namespace AnimeStudio.CLI
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
-            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)(pc|player)(/|$)"))
+            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)characterprefabs?(/|$)|(^|/)(pc|player)(/|$)"))
             {
                 return "Character";
             }
@@ -892,6 +1167,10 @@ namespace AnimeStudio.CLI
             if (Regex.IsMatch(text, @"(^|/)trophy|prop|props|object|item|weapon"))
             {
                 return "Prop";
+            }
+            if (Regex.IsMatch(text, @"(^|/)animation|\.anim$"))
+            {
+                return "Animation";
             }
             return "Unknown";
         }
@@ -932,7 +1211,65 @@ namespace AnimeStudio.CLI
                 : null;
         }
 
-        private static void GenerateLibraryIndexes(string savePath)
+        private sealed class ExportRunStats
+        {
+            private const int MaxSamples = 64;
+
+            public DateTime? StartedAtUtc { get; set; }
+            public DateTime? FinishedAtUtc { get; set; }
+            public string Mode { get; set; }
+            public int ModelCandidateCount { get; set; }
+            public int AnimationCandidateCount { get; set; }
+            public int ExportedModels { get; set; }
+            public int SkippedModels { get; private set; }
+            public int FailedModels { get; private set; }
+            public Dictionary<string, int> SkippedByReason { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, int> FailedByReason { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public List<object> SkippedSamples { get; } = new();
+            public List<object> FailedSamples { get; } = new();
+
+            public void RecordSkippedModel(string reason, AssetItem asset)
+            {
+                SkippedModels++;
+                Increment(SkippedByReason, reason);
+                AddSample(SkippedSamples, reason, asset, null);
+            }
+
+            public void RecordFailedModel(string reason, AssetItem asset, Exception exception)
+            {
+                FailedModels++;
+                Increment(FailedByReason, reason);
+                AddSample(FailedSamples, reason, asset, exception);
+            }
+
+            private static void Increment(Dictionary<string, int> map, string key)
+            {
+                key = string.IsNullOrWhiteSpace(key) ? "unknown" : key;
+                map.TryGetValue(key, out var count);
+                map[key] = count + 1;
+            }
+
+            private static void AddSample(List<object> samples, string reason, AssetItem asset, Exception exception)
+            {
+                if (samples.Count >= MaxSamples)
+                {
+                    return;
+                }
+
+                samples.Add(new
+                {
+                    reason,
+                    type = asset?.TypeString,
+                    name = asset?.Text,
+                    source = asset?.SourceFile?.originalPath ?? asset?.SourceFile?.fullName ?? asset?.SourceFile?.fileName,
+                    pathId = asset?.m_PathID,
+                    exception = exception?.GetType().Name,
+                    message = exception?.Message,
+                });
+            }
+        }
+
+        public static void GenerateLibraryIndexes(string savePath)
         {
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
             if (!File.Exists(catalogPath))
@@ -940,7 +1277,85 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            var entries = File.ReadLines(catalogPath)
+            using (ProfileLogger.Measure("generate_library_indexes", new Dictionary<string, object>
+            {
+                ["catalogPath"] = catalogPath,
+            }))
+            {
+                List<JObject> entries;
+                using (ProfileLogger.Measure("library_index_load_catalog", new Dictionary<string, object>
+                {
+                    ["catalogPath"] = catalogPath,
+                }))
+                {
+                    entries = LoadCatalogEntries(catalogPath);
+                }
+
+                using (ProfileLogger.Measure("library_index_write_summary", new Dictionary<string, object>
+                {
+                    ["entryCount"] = entries.Count,
+                }))
+                {
+                    WriteAssetSummary(savePath, catalogPath, entries);
+                    WriteExportRunSummary(savePath);
+                }
+
+                using (ProfileLogger.Measure("library_index_validate_models", new Dictionary<string, object>
+                {
+                    ["entryCount"] = entries.Count,
+                }))
+                {
+                    ModelLibraryValidator.Generate(savePath);
+                }
+
+                var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+                var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+                ExplicitAnimationLinks structuralLinks;
+                using (ProfileLogger.Measure("library_index_build_animation_links", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                    ["animationCount"] = animations.Count,
+                    ["pairCount"] = (long)models.Count * animations.Count,
+                    ["pairLimit"] = FullStructuralAnimationPairLimit,
+                }))
+                {
+                    structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
+                }
+
+                using (ProfileLogger.Measure("library_index_write_animation_indexes", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                    ["animationCount"] = animations.Count,
+                }))
+                {
+                    WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+                }
+                Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
+            }
+        }
+
+        public static void RebuildLibraryIndexes(string savePath)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                throw new FileNotFoundException("asset_catalog.jsonl was not found. Rebuild requires a previous Library export.", catalogPath);
+            }
+
+            var entries = LoadCatalogEntries(catalogPath);
+            WriteAssetSummary(savePath, catalogPath, entries);
+            ModelLibraryValidator.Generate(savePath);
+
+            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
+            var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
+            WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). Explicit Animator/Animation relations require a fresh export; structural Unity binding links were rebuilt.");
+        }
+
+        private static List<JObject> LoadCatalogEntries(string catalogPath)
+        {
+            return File.ReadLines(catalogPath)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Select(x =>
                 {
@@ -955,7 +1370,10 @@ namespace AnimeStudio.CLI
                 })
                 .Where(x => x != null)
                 .ToList();
+        }
 
+        private static void WriteAssetSummary(string savePath, string catalogPath, List<JObject> entries)
+        {
             var summary = new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
@@ -980,101 +1398,467 @@ namespace AnimeStudio.CLI
                 Path.Combine(savePath, "asset_summary.json"),
                 JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
             );
-            UnityRelationGraph.Generate(savePath, assetsManager, exportableAssets);
-            ModelLibraryValidator.Generate(savePath);
+        }
 
-            var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
-            var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-            var explicitAnimationLinks = BuildExplicitUnityAnimationLinks(models, animations);
-            GenerateSkeletonLibraryIndex(savePath, models, explicitAnimationLinks);
-            var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
-            using var writer = new StreamWriter(bindingsPath, false);
-            foreach (var animation in animations)
+        private static void WriteExportRunSummary(string savePath)
+        {
+            if (_exportRunStats == null)
             {
-                var animationKey = GetCatalogKey(animation);
-                explicitAnimationLinks.ByAnimation.TryGetValue(animationKey, out var linkedModels);
-                var candidates = (linkedModels ?? new List<ExplicitModelAnimationLink>())
-                    .OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (candidates.Count == 0)
-                {
-                    var unbound = new
-                    {
-                        animation = BuildBindingAsset(animation),
-                        candidateCount = 0,
-                        candidates = Array.Empty<object>(),
-                        note = "No exported model has an explicit Unity Animator/Animation reference to this clip in the current loaded files.",
-                    };
-                    writer.WriteLine(JsonConvert.SerializeObject(unbound));
-                    continue;
-                }
-
-                var binding = new
-                {
-                    animation = BuildBindingAsset(animation),
-                    candidateCount = candidates.Count,
-                    candidates = candidates.Take(16).Select(link => new
-                    {
-                        name = link.ModelName,
-                        resourceKind = link.ModelResourceKind,
-                        output = link.ModelOutput,
-                        skeletonHash = link.ModelSkeletonHash,
-                        boneCount = link.ModelBoneCount,
-                        meshCount = link.ModelMeshCount,
-                        textureCount = link.ModelTextureCount,
-                        relationSource = link.Source,
-                        score = link.Score,
-                        confidence = link.Confidence,
-                        relation = link.Relation,
-                        matchReasons = link.Reasons,
-                        matchedBindingPaths = link.MatchedBindingPaths,
-                        unmatchedBindingPaths = link.UnmatchedBindingPaths,
-                        requiresHumanoidBake = link.RequiresHumanoidBake,
-                    }).ToArray(),
-                };
-                writer.WriteLine(JsonConvert.SerializeObject(binding));
+                return;
             }
 
-            var modelAnimations = new
+            var parseFailures = assetsManager.ObjectParseFailureCounts
+                .OrderByDescending(x => x.Value)
+                .ThenBy(x => x.Key.ToString(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key.ToString(), x => x.Value);
+            var summary = new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
+                startedAt = _exportRunStats.StartedAtUtc?.ToString("O"),
+                finishedAt = _exportRunStats.FinishedAtUtc?.ToString("O"),
+                mode = _exportRunStats.Mode,
+                candidates = new
+                {
+                    models = _exportRunStats.ModelCandidateCount,
+                    animations = _exportRunStats.AnimationCandidateCount,
+                },
+                results = new
+                {
+                    exportedModels = _exportRunStats.ExportedModels,
+                    skippedModels = _exportRunStats.SkippedModels,
+                    failedModels = _exportRunStats.FailedModels,
+                },
+                skippedByReason = _exportRunStats.SkippedByReason
+                    .OrderByDescending(x => x.Value)
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Value),
+                failedByReason = _exportRunStats.FailedByReason
+                    .OrderByDescending(x => x.Value)
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Value),
+                objectParseFailures = new
+                {
+                    total = parseFailures.Values.Sum(),
+                    byType = parseFailures,
+                    note = "Recoverable Unity object parse failures are skipped or kept as lightweight placeholders. They are not treated as usable exported assets.",
+                },
+                samples = new
+                {
+                    skipped = _exportRunStats.SkippedSamples,
+                    failed = _exportRunStats.FailedSamples,
+                },
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "export_run_summary.json"),
+                JsonConvert.SerializeObject(summary, Newtonsoft.Json.Formatting.Indented)
+            );
+        }
+
+        private static void WriteAnimationIndexes(
+            string savePath,
+            string catalogPath,
+            List<JObject> models,
+            List<JObject> animations,
+            ExplicitAnimationLinks explicitAnimationLinks)
+        {
+            using (ProfileLogger.Measure("library_index_write_skeletons", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+                ["animationCount"] = animations.Count,
+                ["matchingDeferred"] = explicitAnimationLinks.MatchingDeferred,
+            }))
+            {
+                GenerateSkeletonLibraryIndex(savePath, models, explicitAnimationLinks);
+            }
+
+            var bindingsPath = Path.Combine(savePath, "animation_bindings.jsonl");
+            using (ProfileLogger.Measure("library_index_write_animation_bindings", new Dictionary<string, object>
+            {
+                ["animationCount"] = animations.Count,
+                ["matchingDeferred"] = explicitAnimationLinks.MatchingDeferred,
+            }))
+            {
+                using var writer = new StreamWriter(bindingsPath, false);
+                foreach (var animation in animations)
+                {
+                    var animationKey = GetCatalogKey(animation);
+                    explicitAnimationLinks.ByAnimation.TryGetValue(animationKey, out var linkedModels);
+                    var candidates = (linkedModels ?? new List<ExplicitModelAnimationLink>())
+                        .OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (candidates.Count == 0)
+                    {
+                        var unbound = new
+                        {
+                            animation = BuildBindingAsset(animation),
+                            candidateCount = 0,
+                            candidates = Array.Empty<object>(),
+                            note = explicitAnimationLinks.MatchingDeferred
+                                ? explicitAnimationLinks.DeferredReason
+                                : "No exported model has an explicit Unity Animator/Animation reference to this clip in the current loaded files.",
+                        };
+                        writer.WriteLine(JsonConvert.SerializeObject(unbound));
+                        continue;
+                    }
+
+                    var binding = new
+                    {
+                        animation = BuildBindingAsset(animation),
+                        candidateCount = candidates.Count,
+                        candidates = candidates.Take(16).Select(link => new
+                        {
+                            name = link.ModelName,
+                            resourceKind = link.ModelResourceKind,
+                            output = link.ModelOutput,
+                            skeletonHash = link.ModelSkeletonHash,
+                            boneCount = link.ModelBoneCount,
+                            meshCount = link.ModelMeshCount,
+                            textureCount = link.ModelTextureCount,
+                            relationSource = link.Source,
+                            score = link.Score,
+                            confidence = link.Confidence,
+                            relation = link.Relation,
+                            matchReasons = link.Reasons,
+                            matchedBindingPaths = link.MatchedBindingPaths,
+                            unmatchedBindingPaths = link.UnmatchedBindingPaths,
+                            requiresHumanoidBake = link.RequiresHumanoidBake,
+                        }).ToArray(),
+                    };
+                    writer.WriteLine(JsonConvert.SerializeObject(binding));
+                }
+            }
+
+            if (explicitAnimationLinks.MatchingDeferred)
+            {
+                var deferred = new
+                {
+                    generatedAt = DateTime.UtcNow.ToString("O"),
+                    catalog = catalogPath,
+                    rule = "Full verbose model-animation candidates were intentionally deferred for this large Library export. Models and animations remain clean and standalone; use model_animations.compact.json, animation_bindings.jsonl, skeletons.json, and targeted preview/pack commands.",
+                    relationRule = "No path/name/resourceKind guesses are emitted for large full exports. This preserves the usable-library rule: strict relations only,宁缺毋滥.",
+                    matchingDeferred = true,
+                    deferredReason = explicitAnimationLinks.DeferredReason,
+                    pairCount = explicitAnimationLinks.PairCount,
+                    pairLimit = explicitAnimationLinks.PairLimit,
+                    modelCount = models.Count,
+                    animationCount = animations.Count,
+                    compactIndex = Path.Combine(savePath, "model_animations.compact.json"),
+                    skeletonIndex = Path.Combine(savePath, "skeletons.json"),
+                    animationBindings = bindingsPath,
+                };
+                File.WriteAllText(
+                    Path.Combine(savePath, "model_animations.json"),
+                    JsonConvert.SerializeObject(deferred, Newtonsoft.Json.Formatting.Indented)
+                );
+            }
+            else
+            {
+                using (ProfileLogger.Measure("library_index_write_model_animations_verbose", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                    ["animationCount"] = animations.Count,
+                }))
+                {
+                    var modelAnimations = new
+                    {
+                        generatedAt = DateTime.UtcNow.ToString("O"),
+                        catalog = catalogPath,
+                        rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
+                        relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
+                        capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                        capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
+                        relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
+                        relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
+                        skeletonIndex = Path.Combine(savePath, "skeletons.json"),
+                        models = models
+                            .OrderBy(x => (string)x["resourceKind"])
+                            .ThenBy(x => (string)x["name"])
+                            .Select(model =>
+                            {
+                                var modelKey = GetCatalogKey(model);
+                                explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var linkedAnimations);
+                                var candidates = (linkedAnimations ?? new List<ExplicitModelAnimationLink>())
+                                    .Select(BuildExplicitModelAnimationCandidate)
+                                    .OrderByDescending(x => x.score)
+                                    .ThenBy(x => x.name)
+                                    .ToArray();
+
+                                return new
+                                {
+                                    model = BuildModelBindingAsset(model),
+                                    candidateCount = candidates.Length,
+                                    embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
+                                    candidates,
+                                    notes = candidates.Length == 0
+                                        ? new[] { "No explicit Unity Animator/Animation clip reference was found for this exported model in the current loaded files." }
+                                        : Array.Empty<string>(),
+                                };
+                            })
+                            .ToArray(),
+                    };
+                    File.WriteAllText(
+                        Path.Combine(savePath, "model_animations.json"),
+                        JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
+                    );
+                }
+            }
+
+            using (ProfileLogger.Measure("library_index_write_model_animations_compact", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+                ["animationCount"] = animations.Count,
+                ["matchingDeferred"] = explicitAnimationLinks.MatchingDeferred,
+            }))
+            {
+                GenerateCompactModelAnimationIndex(savePath, catalogPath, models, animations, explicitAnimationLinks);
+            }
+
+            using (ProfileLogger.Measure("library_index_write_character_assemblies", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+            }))
+            {
+                CharacterAssemblyIndexGenerator.Generate(savePath, models);
+            }
+
+            using (ProfileLogger.Measure("library_index_write_asset_readmes", new Dictionary<string, object>
+            {
+                ["modelCount"] = models.Count,
+            }))
+            {
+                AssetReadmeGenerator.Generate(savePath);
+            }
+        }
+
+        public static void ExportAudioLibrary(string savePath)
+        {
+            var audioClips = exportableAssets.Where(x => x.Asset is AudioClip).ToList();
+            Logger.Info($"Exporting audio library: {audioClips.Count} audio clip(s).");
+            ExportAssets(savePath, audioClips, AssetGroupOption.ByLibrary, ExportType.Convert);
+            WriteAudioLibraryReadme(savePath, audioClips);
+        }
+
+        private static void WriteAudioLibraryReadme(string savePath, IReadOnlyCollection<AssetItem> audioClips)
+        {
+            var counts = GetAudioLibraryCounts(savePath, audioClips);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# Audio Library");
+            sb.AppendLine();
+            sb.AppendLine("这份目录是独立音频素材库，不属于默认 3D Library。3D Library 默认只导出模型、贴图、骨骼、动画和必要材质信息；音效需要显式使用 `--mode AudioLibrary`。");
+            sb.AppendLine();
+            sb.AppendLine("## 目录分类");
+            sb.AppendLine();
+            sb.AppendLine("- `Audio/SFX/`：短音效，例如脚步、命中、按钮、技能、环境点缀等。");
+            sb.AppendLine("- `Audio/Music/`：较长音乐、BGM、主题音乐。");
+            sb.AppendLine("- `Audio/Voice/`：语音、对白、角色台词。");
+            sb.AppendLine("- `Audio/Other/`：无法可靠判断的音频。");
+            sb.AppendLine();
+            sb.AppendLine("分类优先依据 Unity container/source/name 中的通用语义，再用音频时长兜底；这是素材库浏览规则，不改变原始 Unity 资源。");
+            sb.AppendLine();
+            sb.AppendLine("## 本次统计");
+            sb.AppendLine();
+            foreach (var pair in counts)
+            {
+                sb.AppendLine($"- `{pair.Key}`: {pair.Value}");
+            }
+            if (counts.Count == 0)
+            {
+                sb.AppendLine("- 未导出可用音频。");
+            }
+            sb.AppendLine();
+            sb.AppendLine("每个导出的音频旁边会生成 `.audio.json`，记录 Unity 名称、路径、长度、声道、采样率、压缩格式、分类和导出文件。机器索引用 `asset_catalog.jsonl`。");
+            File.WriteAllText(Path.Combine(savePath, "AUDIO_LIBRARY_README.md"), sb.ToString(), Encoding.UTF8);
+        }
+
+        private static Dictionary<string, int> GetAudioLibraryCounts(string savePath, IReadOnlyCollection<AssetItem> audioClips)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (File.Exists(catalogPath))
+            {
+                return File.ReadLines(catalogPath)
+                    .Select(line =>
+                    {
+                        try
+                        {
+                            return JObject.Parse(line);
+                        }
+                        catch
+                        {
+                            return null;
+                        }
+                    })
+                    .Where(x => x?["kind"]?.ToString() == "Audio")
+                    .GroupBy(x => x["output"]?.ToString() ?? $"{x["name"]}|{x["pathId"]}")
+                    .Select(x => x.Last())
+                    .GroupBy(x => x["audioKind"]?.ToString() ?? x["resourceKind"]?.ToString() ?? "Other")
+                    .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count());
+            }
+
+            return audioClips
+                .Where(x => x.Asset is AudioClip)
+                .GroupBy(x => Exporter.ClassifyAudioClip((AudioClip)x.Asset, x.Text, x.Container, x.SourceFile?.originalPath ?? x.SourceFile?.fileName))
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count());
+        }
+
+        private static void GenerateCompactModelAnimationIndex(
+            string savePath,
+            string catalogPath,
+            List<JObject> models,
+            List<JObject> animations,
+            ExplicitAnimationLinks explicitAnimationLinks)
+        {
+            var orderedModels = models
+                .OrderBy(x => (string)x["resourceKind"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(GetCatalogKey, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var orderedAnimations = animations
+                .OrderBy(x => (string)x["resourceKind"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(GetCatalogKey, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var modelIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var animationIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < orderedModels.Length; i++)
+            {
+                modelIds[GetCatalogKey(orderedModels[i])] = $"m{i}";
+            }
+            for (var i = 0; i < orderedAnimations.Length; i++)
+            {
+                animationIds[GetCatalogKey(orderedAnimations[i])] = $"a{i}";
+            }
+
+            var compactModels = orderedModels.Select(model => new
+            {
+                id = modelIds[GetCatalogKey(model)],
+                name = (string)model["name"],
+                resourceKind = (string)model["resourceKind"],
+                output = (string)model["output"],
+                source = (string)model["source"],
+                container = (string)model["container"],
+                skeletonHash = (string)model["skeletonHash"],
+                skeletonLibraryId = (string)model["skeleton"]?["libraryId"],
+                animationTarget = ClassifyModelAnimationTarget(model),
+                boneCount = (int?)model["boneCount"] ?? 0,
+                nodeCount = (int?)model["nodeCount"] ?? 0,
+                meshCount = (int?)model["meshCount"] ?? 0,
+                textureCount = (int?)model["textureCount"] ?? 0,
+                morphCount = (int?)model["morphCount"] ?? 0,
+                nodePaths = model["nodePaths"]?.ToObject<string[]>()?.Take(128).ToArray(),
+                nodePathsTruncated = (bool?)model["nodePathsTruncated"] ?? false,
+                meshPaths = model["meshPaths"]?.ToObject<string[]>()?.Take(128).ToArray(),
+                meshPathsTruncated = (bool?)model["meshPathsTruncated"] ?? false,
+                avatar = BuildCompactAvatarSummary(model["avatar"] as JObject),
+            }).ToArray();
+
+            var compactAnimations = orderedAnimations.Select(animation => new
+            {
+                id = animationIds[GetCatalogKey(animation)],
+                name = (string)animation["name"],
+                resourceKind = (string)animation["resourceKind"],
+                output = (string)animation["output"],
+                animationAsset = (string)animation["animationAsset"],
+                source = (string)animation["source"],
+                container = (string)animation["container"],
+                sampleRate = (float?)animation["sampleRate"],
+                duration = (float?)animation["duration"],
+                curveCount = (int?)animation["curveCount"] ?? 0,
+                eventCount = (int?)animation["eventCount"] ?? 0,
+                legacy = (bool?)animation["legacy"],
+                animationType = (string)animation["animationType"],
+                animationCapability = ClassifyAnimationCapability(animation, null),
+                hasMuscleClip = (bool?)animation["hasMuscleClip"],
+                coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
+                humanoidBindingCount = (int?)animation["humanoidBindingCount"],
+                blendShapeBindingCount = (int?)animation["blendShapeBindingCount"],
+                auxiliaryBindingCount = (int?)animation["auxiliaryBindingCount"],
+                classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
+            }).ToArray();
+
+            var modelAnimationRefs = orderedModels.Select(model =>
+            {
+                var modelKey = GetCatalogKey(model);
+                explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var links);
+                var candidates = (links ?? new List<ExplicitModelAnimationLink>())
+                    .OrderByDescending(x => x.Score)
+                    .ThenBy(x => (string)x.Animation["name"], StringComparer.OrdinalIgnoreCase)
+                    .Where(x => animationIds.ContainsKey(GetCatalogKey(x.Animation)))
+                    .Select(x => new
+                    {
+                        animationId = animationIds[GetCatalogKey(x.Animation)],
+                        score = x.Score,
+                        confidence = x.Confidence,
+                        relation = x.Relation,
+                        relationSource = x.Source,
+                        requiresHumanoidBake = x.RequiresHumanoidBake,
+                        animationCapability = ClassifyAnimationCapability(x.Animation, x),
+                        nextAction = GetAnimationNextAction(x.Animation, x),
+                        matchReasons = x.Reasons,
+                        matchedBindingPaths = TruncateArray(x.MatchedBindingPaths, 16),
+                        matchedVisibleMeshBindingPaths = TruncateArray(x.MatchedVisibleMeshBindingPaths, 16),
+                        unmatchedBindingPaths = TruncateArray(x.UnmatchedBindingPaths, 16),
+                    })
+                    .ToArray();
+
+                return new
+                {
+                    modelId = modelIds[modelKey],
+                    candidateCount = candidates.Length,
+                    candidates,
+                };
+            }).ToArray();
+
+            var compact = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                version = 1,
                 catalog = catalogPath,
-                rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
-                relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
+                rule = "Normalized compact model-animation index for tools and browsing. Full verbose objects stay in model_animations.json for compatibility and diagnostics.",
+                relationRule = "Candidates are still Unity explicit/structural relations; this file removes repeated full animation/model payloads.",
+                capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
                 relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                 relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
                 skeletonIndex = Path.Combine(savePath, "skeletons.json"),
-                models = models
-                    .OrderBy(x => (string)x["resourceKind"])
-                    .ThenBy(x => (string)x["name"])
-                    .Select(model =>
-                    {
-                        var modelKey = GetCatalogKey(model);
-                        explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var linkedAnimations);
-                        var candidates = (linkedAnimations ?? new List<ExplicitModelAnimationLink>())
-                            .Select(BuildExplicitModelAnimationCandidate)
-                            .OrderByDescending(x => x.score)
-                            .ThenBy(x => x.name)
-                            .ToArray();
-
-                        return new
-                        {
-                            model = BuildModelBindingAsset(model),
-                            candidateCount = candidates.Length,
-                            embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
-                            candidates,
-                            notes = candidates.Length == 0
-                                ? new[] { "No explicit Unity Animator/Animation clip reference was found for this exported model in the current loaded files." }
-                                : Array.Empty<string>(),
-                        };
-                    })
-                    .ToArray(),
+                models = compactModels,
+                animations = compactAnimations,
+                modelAnimationRefs,
             };
             File.WriteAllText(
-                Path.Combine(savePath, "model_animations.json"),
-                JsonConvert.SerializeObject(modelAnimations, Newtonsoft.Json.Formatting.Indented)
+                Path.Combine(savePath, "model_animations.compact.json"),
+                JsonConvert.SerializeObject(compact, Newtonsoft.Json.Formatting.None)
             );
+        }
+
+        private static object BuildCompactAvatarSummary(JObject avatar)
+        {
+            if (avatar == null)
+            {
+                return null;
+            }
+
+            return new
+            {
+                name = (string)avatar["name"],
+                hasHumanDescription = (bool?)avatar["hasHumanDescription"] ?? false,
+                humanBoneCount = avatar["humanBones"] is JArray humanBones ? humanBones.Count : 0,
+                skeletonBoneCount = avatar["skeletonBones"] is JArray skeletonBones ? skeletonBones.Count : 0,
+                humanDescriptionHash = (string)avatar["humanDescriptionHash"],
+            };
+        }
+
+        private static string[] TruncateArray(string[] values, int maxCount)
+        {
+            if (values == null || values.Length <= maxCount)
+            {
+                return values;
+            }
+            return values.Take(maxCount).ToArray();
         }
 
         private static void GenerateSkeletonLibraryIndex(string savePath, List<JObject> models, ExplicitAnimationLinks animationLinks)
@@ -1151,12 +1935,12 @@ namespace AnimeStudio.CLI
                                 boneCount = (int?)model["boneCount"] ?? 0,
                                 meshCount = (int?)model["meshCount"] ?? 0,
                                 textureCount = (int?)model["textureCount"] ?? 0,
-                                avatar = model["avatar"] == null ? null : new
+                                avatar = model["avatar"] is JObject avatar ? new
                                 {
-                                    name = (string)model["avatar"]?["name"],
-                                    humanBoneCount = (int?)model["avatar"]?["humanBoneCount"] ?? 0,
-                                    skeletonBoneCount = (int?)model["avatar"]?["skeletonBoneCount"] ?? 0,
-                                },
+                                    name = (string)avatar["name"],
+                                    humanBoneCount = (int?)avatar["humanBoneCount"] ?? 0,
+                                    skeletonBoneCount = (int?)avatar["skeletonBoneCount"] ?? 0,
+                                } : null,
                             })
                             .ToArray(),
                         animationCandidateCount = candidateLinks.Length,
@@ -1235,13 +2019,43 @@ namespace AnimeStudio.CLI
             return links;
         }
 
+        private static ExplicitAnimationLinks BuildStructuralUnityAnimationLinks(List<JObject> models, List<JObject> animations)
+        {
+            var links = new ExplicitAnimationLinks();
+            AddStructuralUnityBindingLinks(links, models, animations);
+            return links;
+        }
+
+        private static ExplicitAnimationLinks BuildStructuralUnityAnimationLinksForLibrary(List<JObject> models, List<JObject> animations)
+        {
+            var pairCount = (long)models.Count * animations.Count;
+            if (pairCount > FullStructuralAnimationPairLimit)
+            {
+                Logger.Warning(
+                    $"Skipped full structural model-animation matching for large Library index: {models.Count} model(s) x {animations.Count} animation(s) = {pairCount} pair(s), limit {FullStructuralAnimationPairLimit}. Use targeted preview/pack commands or a smaller filtered export to build exact candidates."
+                );
+                return new ExplicitAnimationLinks
+                {
+                    MatchingDeferred = true,
+                    DeferredReason = $"Large Library index has {pairCount} model-animation pairs, above limit {FullStructuralAnimationPairLimit}. Default full export keeps clean models and standalone animations, and defers expensive candidate matching to targeted tools.",
+                    PairCount = pairCount,
+                    PairLimit = FullStructuralAnimationPairLimit,
+                };
+            }
+
+            return BuildStructuralUnityAnimationLinks(models, animations);
+        }
+
         private static void AddStructuralUnityBindingLinks(ExplicitAnimationLinks links, List<JObject> models, List<JObject> animations)
         {
             foreach (var model in models)
             {
                 var modelKey = GetCatalogKey(model);
-                var modelBonePaths = GetModelBonePaths(model);
-                if (modelBonePaths.Length == 0)
+                var usesNodeBindingPaths = ShouldUseNodeBindingPathsForAnimationMatch(model);
+                var modelAnimationTarget = ClassifyModelAnimationTarget(model);
+                var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
+                var modelBindingPaths = GetModelAnimationBindingPaths(model);
+                if (modelBindingPaths.Length == 0)
                 {
                     continue;
                 }
@@ -1254,8 +2068,13 @@ namespace AnimeStudio.CLI
                         continue;
                     }
 
+                    if (!IsStructuralBindingResourceCompatible(modelAnimationTarget, modelResourceKind, animation))
+                    {
+                        continue;
+                    }
+
                     var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
-                    var match = AnalyzeStructuralAnimationMatch(modelBonePaths, animationPaths);
+                    var match = AnalyzeStructuralAnimationMatch(modelBindingPaths, animationPaths, usesNodeBindingPaths);
                     if (!match.IsCandidate)
                     {
                         var humanoidMatch = AnalyzeHumanoidAnimationMatch(model, animation);
@@ -1410,6 +2229,25 @@ namespace AnimeStudio.CLI
 
         private static ExplicitModelAnimationLink BuildExplicitLink(JObject model, JObject animation, ExplicitAnimationRelation relation)
         {
+            var usesNodeBindingPaths = ShouldUseNodeBindingPathsForAnimationMatch(model);
+            var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
+            var match = AnalyzeStructuralAnimationMatch(GetModelAnimationBindingPaths(model), animationPaths, usesNodeBindingPaths);
+            var matchedPaths = match.MatchedPaths?.Length > 0 ? match.MatchedPaths : null;
+            var matchedVisibleMeshPaths = matchedPaths != null
+                ? GetMatchedVisibleMeshBindingPaths(model, matchedPaths)
+                : null;
+            var unmatchedPaths = match.UnmatchedPaths?.Length > 0 ? match.UnmatchedPaths : null;
+            var reasons = relation.Reasons ?? Array.Empty<string>();
+            if (match.MatchedPathCount > 0)
+            {
+                reasons = reasons
+                    .Concat(new[]
+                    {
+                        $"Explicit Unity reference also matches {match.MatchedPathCount} AnimationClip binding path(s) to exported model node/bone paths.",
+                    })
+                    .ToArray();
+            }
+
             return new ExplicitModelAnimationLink
             {
                 ModelName = (string)model["name"],
@@ -1424,7 +2262,10 @@ namespace AnimeStudio.CLI
                 Source = "explicit",
                 Score = 100,
                 Confidence = "explicit_unity_reference",
-                Reasons = relation.Reasons,
+                Reasons = reasons,
+                MatchedBindingPaths = matchedPaths,
+                MatchedVisibleMeshBindingPaths = matchedVisibleMeshPaths,
+                UnmatchedBindingPaths = unmatchedPaths,
             };
         }
 
@@ -1446,12 +2287,14 @@ namespace AnimeStudio.CLI
                 Confidence = "structural_unity_binding",
                 Reasons = new[]
                 {
-                    $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone path(s).",
+                    $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone/node path(s).",
                     $"Core body binding matches: {match.CoreMatchedPathCount}.",
-                    "This uses Unity AnimationClip binding paths and exported model bone paths, not name/path fallback.",
+                    "This uses Unity AnimationClip binding paths and exported model bone/node paths, not name/path fallback.",
                 },
                 MatchedBindingPaths = match.MatchedPaths,
+                MatchedVisibleMeshBindingPaths = GetMatchedVisibleMeshBindingPaths(model, match.MatchedPaths),
                 UnmatchedBindingPaths = match.UnmatchedPaths,
+                RequiresHumanoidBake = IsHumanoidCharacterTarget(model) && IsHumanoidAnimationAsset(animation),
             };
         }
 
@@ -1494,12 +2337,14 @@ namespace AnimeStudio.CLI
                 duration = (float?)entry["duration"],
                 curveCount = (int?)entry["curveCount"] ?? 0,
                 animationType = (string)entry["animationType"],
+                animationCapability = ClassifyAnimationCapability(entry, null),
                 hasMuscleClip = (bool?)entry["hasMuscleClip"],
                 coreTransformBindingCount = (int?)entry["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)entry["humanoidBindingCount"],
                 blendShapeBindingCount = (int?)entry["blendShapeBindingCount"],
                 auxiliaryBindingCount = (int?)entry["auxiliaryBindingCount"],
-                transformBindingPaths = entry["transformBindingPaths"]?.ToObject<string[]>(),
+                transformBindingPaths = TruncateArray(entry["transformBindingPaths"]?.ToObject<string[]>(), 64),
+                transformBindingPathsTruncated = (entry["transformBindingPaths"] as JArray)?.Count > 64,
                 classificationNotes = entry["classificationNotes"]?.ToObject<string[]>(),
             };
         }
@@ -1519,7 +2364,12 @@ namespace AnimeStudio.CLI
                 meshCount = (int?)entry["meshCount"] ?? 0,
                 textureCount = (int?)entry["textureCount"] ?? 0,
                 animationCount = (int?)entry["animationCount"] ?? 0,
-                bonePaths = entry["bonePaths"]?.ToObject<string[]>(),
+                bonePaths = TruncateArray(entry["bonePaths"]?.ToObject<string[]>(), 64),
+                bonePathsTruncated = (entry["bonePaths"] as JArray)?.Count > 64,
+                nodePaths = TruncateArray(entry["nodePaths"]?.ToObject<string[]>(), 96),
+                nodePathsTruncated = (entry["nodePaths"] as JArray)?.Count > 96,
+                meshPaths = TruncateArray(entry["meshPaths"]?.ToObject<string[]>(), 64),
+                meshPathsTruncated = (entry["meshPaths"] as JArray)?.Count > 64,
                 avatar = entry["avatar"],
             };
         }
@@ -1541,6 +2391,7 @@ namespace AnimeStudio.CLI
                 eventCount = (int?)animation["eventCount"] ?? 0,
                 legacy = (bool?)animation["legacy"],
                 animationType = (string)animation["animationType"],
+                animationCapability = ClassifyAnimationCapability(animation, link),
                 hasMuscleClip = (bool?)animation["hasMuscleClip"],
                 coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)animation["humanoidBindingCount"],
@@ -1552,20 +2403,217 @@ namespace AnimeStudio.CLI
                 relationSource = link.Source,
                 score = link.Score,
                 matchReasons = link.Reasons,
-                matchedBindingPaths = link.MatchedBindingPaths,
-                unmatchedBindingPaths = link.UnmatchedBindingPaths,
+                matchedBindingPaths = TruncateArray(link.MatchedBindingPaths, 32),
+                matchedBindingPathsTruncated = link.MatchedBindingPaths?.Length > 32,
+                matchedVisibleMeshBindingPaths = TruncateArray(link.MatchedVisibleMeshBindingPaths, 32),
+                matchedVisibleMeshBindingPathsTruncated = link.MatchedVisibleMeshBindingPaths?.Length > 32,
+                unmatchedBindingPaths = TruncateArray(link.UnmatchedBindingPaths, 32),
+                unmatchedBindingPathsTruncated = link.UnmatchedBindingPaths?.Length > 32,
                 requiresHumanoidBake = link.RequiresHumanoidBake,
                 verification = new
                 {
                     status = link.Confidence,
                     channelCount = (int?)null,
-                    note = link.RequiresHumanoidBake
-                        ? "This candidate is Humanoid/Avatar compatible but still needs bake-to-skeleton before a body animation preview can be trusted."
-                        : link.Source == "explicit"
-                        ? "This candidate comes from a Unity Animator/Animation reference. Preview glTF still needs to validate playable channels and skin coverage."
-                        : "This candidate comes from Unity AnimationClip binding paths matching exported model bone paths. Preview glTF still needs to validate playable channels and skin coverage.",
+                    note = BuildAnimationCapabilityNote(animation, link),
                 },
-                nextAction = "generate_preview_gltf",
+                nextAction = GetAnimationNextAction(animation, link),
+            };
+        }
+
+        private static object BuildAnimationCapabilitySummary(List<JObject> models, List<JObject> animations)
+        {
+            var animationCapabilities = animations
+                .GroupBy(x => ClassifyAnimationCapability(x, null), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+            var modelCapabilities = models
+                .GroupBy(ClassifyModelAnimationTarget, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+            return new
+            {
+                animationCapabilities,
+                modelCapabilities,
+                rule = "Humanoid body motion, Transform body motion, BlendShape/face motion, non-character Transform motion, and legacy/material/event motion are separate implementation paths.",
+            };
+        }
+
+        private static string ClassifyModelAnimationTarget(JObject model)
+        {
+            var resourceKind = (string)model["resourceKind"] ?? string.Empty;
+            var avatar = model["avatar"] as JObject;
+            if (avatar != null && ((int?)avatar["humanBoneCount"] ?? 0) > 0)
+            {
+                return "HumanoidCharacterTarget";
+            }
+            if (((int?)model["boneCount"] ?? 0) > 0)
+            {
+                var hasAvatarContext = avatar != null && ((bool?)avatar["hasHumanDescription"] ?? false);
+                return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                    || (hasAvatarContext && LooksLikeHumanCharacterSkeleton(model))
+                    ? "GenericCharacterSkeletonTarget"
+                    : "NonCharacterSkeletonTarget";
+            }
+            return string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase)
+                ? "CharacterStaticTarget"
+                : "NonCharacterStaticTarget";
+        }
+
+        private static string ClassifyAnimationCapability(JObject animation, ExplicitModelAnimationLink link)
+        {
+            var animationType = (string)animation["animationType"] ?? "UnknownAnimation";
+            var resourceKind = (string)animation["resourceKind"] ?? string.Empty;
+            var legacy = (bool?)animation["legacy"] ?? false;
+            var blendShapeCount = (int?)animation["blendShapeBindingCount"] ?? 0;
+            var coreTransformCount = (int?)animation["coreTransformBindingCount"] ?? 0;
+            var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
+            var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+            var duration = (float?)animation["duration"];
+            var isCharacter = string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase);
+            var isHumanoidLike = hasMuscleClip || humanoidBindingCount > 0;
+            var isTransformAnimation = string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase);
+            var isAuxiliaryAnimation = string.Equals(animationType, "AuxiliaryAnimation", StringComparison.OrdinalIgnoreCase);
+            var isTransformBodyAnimation = string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase);
+            var isMixedHumanoidTransform = string.Equals(animationType, "MixedHumanoidTransform", StringComparison.OrdinalIgnoreCase);
+            var isTransformLike = isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation || isMixedHumanoidTransform;
+
+            if (blendShapeCount > 0)
+            {
+                return legacy ? "BlendShapeLegacyNotImplemented" : "BlendShapePreviewReady";
+            }
+            if (legacy)
+            {
+                return "LegacyNotPlayableYet";
+            }
+            if (duration.HasValue && duration.Value <= 0.0001f && isTransformLike)
+            {
+                return "StaticPoseOnly";
+            }
+
+            if (!isCharacter
+                && link?.MatchedBindingPaths != null
+                && link.MatchedBindingPaths.Length > 0
+                && link.MatchedVisibleMeshBindingPaths != null
+                && link.MatchedVisibleMeshBindingPaths.Length > 0
+                && isTransformLike)
+            {
+                return "NonCharacterTransformPreviewReady";
+            }
+
+            if (!isCharacter && (isTransformAnimation || isAuxiliaryAnimation))
+            {
+                return "NonCharacterTransformNeedsMapping";
+            }
+
+            if (link?.RequiresHumanoidBake == true || (isCharacter && isHumanoidLike))
+            {
+                return "HumanoidBodyBakeReady";
+            }
+            if (isTransformBodyAnimation && coreTransformCount >= 3)
+            {
+                return isCharacter
+                    ? "TransformBodyPreviewReady"
+                    : "NonCharacterTransformNeedsMapping";
+            }
+            if (link?.Source == "structural"
+                && isMixedHumanoidTransform
+                && coreTransformCount >= 3
+                && link.MatchedBindingPaths != null
+                && link.MatchedBindingPaths.Length >= 4)
+            {
+                return "TransformBodyPreviewReady";
+            }
+            if (isAuxiliaryAnimation || isTransformAnimation)
+            {
+                return isCharacter
+                    ? "AuxiliaryTransformNeedsMapping"
+                    : "NonCharacterTransformNeedsMapping";
+            }
+
+            return "UnknownNeedsInspection";
+        }
+
+        private static bool ShouldUseNodeBindingPathsForAnimationMatch(JObject model)
+        {
+            var modelResourceKind = (string)model["resourceKind"] ?? string.Empty;
+            return GetModelBonePaths(model).Length == 0
+                || (!IsHumanoidCharacterTarget(model)
+                    && !string.Equals(modelResourceKind, "Character", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsHumanoidCharacterTarget(JObject model)
+        {
+            return string.Equals(ClassifyModelAnimationTarget(model), "HumanoidCharacterTarget", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsGenericCharacterSkeletonTarget(JObject model)
+        {
+            return string.Equals(ClassifyModelAnimationTarget(model), "GenericCharacterSkeletonTarget", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool LooksLikeHumanCharacterSkeleton(JObject model)
+        {
+            var keys = GetModelBonePaths(model)
+                .SelectMany(GetComparableBonePathKeys)
+                .Select(NormalizeAnimationPath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            static bool HasAny(HashSet<string> values, params string[] names)
+            {
+                return names.Any(name => values.Contains(NormalizeAnimationPath(name)));
+            }
+
+            var hasSpine = HasAny(keys, "spine", "spine_jnt", "bip001 spine", "bip001 spine1");
+            var hasHead = HasAny(keys, "head", "head_jnt", "bip001 head");
+            var hasLeftArm = HasAny(keys, "left_shoulder_jnt", "left_elbow_jnt", "left_wrist_jnt", "bip001 l upperarm", "bip001 l forearm", "bip001 l hand");
+            var hasRightArm = HasAny(keys, "right_shoulder_jnt", "right_elbow_jnt", "right_wrist_jnt", "bip001 r upperarm", "bip001 r forearm", "bip001 r hand");
+            var hasLeftLeg = HasAny(keys, "left_hip_jnt", "left_knee_jnt", "left_ankle_jnt", "bip001 l thigh", "bip001 l calf", "bip001 l foot");
+            var hasRightLeg = HasAny(keys, "right_hip_jnt", "right_knee_jnt", "right_ankle_jnt", "bip001 r thigh", "bip001 r calf", "bip001 r foot");
+
+            return hasSpine && hasHead && hasLeftArm && hasRightArm && hasLeftLeg && hasRightLeg;
+        }
+
+        private static bool IsHumanoidAnimationAsset(JObject animation)
+        {
+            var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
+            var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
+            var animationType = (string)animation["animationType"] ?? string.Empty;
+            return hasMuscleClip
+                || humanoidBindingCount > 0
+                || animationType.IndexOf("Humanoid", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string GetAnimationNextAction(JObject animation, ExplicitModelAnimationLink link)
+        {
+            return ClassifyAnimationCapability(animation, link) switch
+            {
+                "HumanoidBodyBakeReady" => "generate_unity_bake_request",
+                "TransformBodyPreviewReady" => "generate_preview_gltf",
+                "BlendShapePreviewReady" => "generate_preview_gltf",
+                "NonCharacterTransformPreviewReady" => "generate_preview_gltf",
+                "StaticPoseOnly" => "treat_as_static_model",
+                "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
+                "LegacyNotPlayableYet" => "implement_legacy_clip_sampling",
+                "NonCharacterTransformNeedsMapping" => "implement_non_character_transform_mapping",
+                "AuxiliaryTransformNeedsMapping" => "inspect_auxiliary_transform_targets",
+                _ => "inspect_animation_bindings",
+            };
+        }
+
+        private static string BuildAnimationCapabilityNote(JObject animation, ExplicitModelAnimationLink link)
+        {
+            return ClassifyAnimationCapability(animation, link) switch
+            {
+                "HumanoidBodyBakeReady" => "Humanoid/Avatar body motion can use Unity bake, but trusted playback still requires the generated bake/apply reports.",
+                "TransformBodyPreviewReady" => "Transform body bindings look playable without Humanoid retargeting, but the preview glTF report must still validate target channels.",
+                "BlendShapePreviewReady" => "BlendShape/morph animation can be written as glTF morph targets and weights channels; preview validation must confirm morph target and weights channel counts.",
+                "NonCharacterTransformPreviewReady" => "Non-character Transform animation has Unity binding paths matched to exported glTF nodes; generate a preview glTF and validate channel targets.",
+                "StaticPoseOnly" => "This Transform clip has no effective duration; keep it as a static pose/static model signal instead of exposing it as playable animation.",
+                "BlendShapeLegacyNotImplemented" => "This looks like legacy face/blendshape animation. It needs legacy clip sampling before morph target channel export.",
+                "LegacyNotPlayableYet" => "This clip is legacy; Unity Playables cannot use it directly in the current helper path.",
+                "NonCharacterTransformNeedsMapping" => "This is non-character or low-core Transform animation. It needs original prefab/node path mapping before glTF playback can be trusted.",
+                "AuxiliaryTransformNeedsMapping" => "Bindings mainly target helper/socket/auxiliary nodes; inspect targets before exposing as body animation.",
+                _ => "Animation type is not mapped to a trusted export path yet.",
             };
         }
 
@@ -1577,9 +2625,139 @@ namespace AnimeStudio.CLI
                 .ToArray() ?? Array.Empty<string>();
         }
 
-        private static StructuralAnimationMatch AnalyzeStructuralAnimationMatch(string[] modelBonePaths, string[] animationPaths)
+        private static string[] GetModelNodePaths(JObject model)
         {
-            var modelKeys = modelBonePaths
+            return model["nodePaths"]?.ToObject<string[]>()?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static string[] GetModelAnimationBindingPaths(JObject model)
+        {
+            var bonePaths = GetModelBonePaths(model);
+            var resourceKind = (string)model["resourceKind"] ?? string.Empty;
+            if (!string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase))
+            {
+                return bonePaths
+                    .Concat(GetModelNodePaths(model))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+
+            if (bonePaths.Length > 0)
+            {
+                return bonePaths;
+            }
+
+            return GetModelNodePaths(model);
+        }
+
+        private static string[] GetModelMeshPaths(JObject model)
+        {
+            return model["meshPaths"]?.ToObject<string[]>()?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+        }
+
+        private static string[] GetMatchedVisibleMeshBindingPaths(JObject model, string[] matchedBindingPaths)
+        {
+            var meshPaths = GetModelMeshPaths(model);
+            if (meshPaths.Length == 0 || matchedBindingPaths == null || matchedBindingPaths.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            return matchedBindingPaths
+                .Where(bindingPath => meshPaths.Any(meshPath => BindingPathAffectsMesh(bindingPath, meshPath)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static AssetItem[] FilterHierarchyModelRoots(AssetItem[] assets, out int skippedChildren)
+        {
+            skippedChildren = 0;
+            var modelRoots = assets
+                .Where(x => x.Asset is GameObject)
+                .Select(x => (GameObject)x.Asset)
+                .ToHashSet();
+            if (modelRoots.Count == 0)
+            {
+                return assets;
+            }
+
+            var filtered = new List<AssetItem>(assets.Length);
+            foreach (var asset in assets)
+            {
+                if (asset.Asset is not GameObject gameObject)
+                {
+                    filtered.Add(asset);
+                    continue;
+                }
+
+                if (HasAncestorInCandidateSet(gameObject, modelRoots))
+                {
+                    skippedChildren++;
+                    continue;
+                }
+
+                filtered.Add(asset);
+            }
+
+            return filtered.ToArray();
+        }
+
+        private static bool HasAncestorInCandidateSet(GameObject gameObject, HashSet<GameObject> candidates)
+        {
+            var transform = gameObject.m_Transform;
+            var visited = new HashSet<long>();
+            while (transform?.m_Father != null && !transform.m_Father.IsNull)
+            {
+                if (!transform.m_Father.TryGet(out var parent))
+                {
+                    return false;
+                }
+
+                if (!visited.Add(parent.m_PathID))
+                {
+                    return false;
+                }
+
+                if (parent.m_GameObject.TryGet(out var parentGameObject) && candidates.Contains(parentGameObject))
+                {
+                    return true;
+                }
+
+                transform = parent;
+            }
+
+            return false;
+        }
+
+        private static bool BindingPathAffectsMesh(string bindingPath, string meshPath)
+        {
+            var bindingKeys = GetComparableBonePathKeys(bindingPath).ToArray();
+            var meshKeys = GetComparableBonePathKeys(meshPath).ToArray();
+            foreach (var bindingKey in bindingKeys)
+            {
+                foreach (var meshKey in meshKeys)
+                {
+                    if (string.Equals(meshKey, bindingKey, StringComparison.OrdinalIgnoreCase)
+                        || meshKey.StartsWith(bindingKey + "/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static StructuralAnimationMatch AnalyzeStructuralAnimationMatch(string[] modelBindingPaths, string[] animationPaths, bool allowNodePathMatch)
+        {
+            var modelKeys = modelBindingPaths
                 .SelectMany(GetComparableBonePathKeys)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1604,8 +2782,12 @@ namespace AnimeStudio.CLI
             }
 
             var coreMatched = matched.Count(IsCoreAnimationPath);
-            var score = Math.Min(95, coreMatched * 10 + matched.Count * 2);
-            var isCandidate = matched.Count >= 4 && coreMatched >= 2;
+            var score = allowNodePathMatch
+                ? Math.Min(80, 50 + matched.Count * 10)
+                : Math.Min(95, coreMatched * 10 + matched.Count * 2);
+            var isCandidate = allowNodePathMatch
+                ? matched.Count > 0
+                : matched.Count >= 4 && coreMatched >= 2;
             return new StructuralAnimationMatch(
                 isCandidate,
                 score,
@@ -1630,6 +2812,51 @@ namespace AnimeStudio.CLI
                 (string)avatar?["name"],
                 humanoidBindingCount
             );
+        }
+
+        private static bool IsStructuralBindingResourceCompatible(JObject model, JObject animation)
+        {
+            var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
+            var modelAnimationTarget = ClassifyModelAnimationTarget(model);
+            return IsStructuralBindingResourceCompatible(modelAnimationTarget, modelResourceKind, animation);
+        }
+
+        private static bool IsStructuralBindingResourceCompatible(string modelAnimationTarget, string modelResourceKind, JObject animation)
+        {
+            var animationResourceKind = ((string)animation["resourceKind"] ?? string.Empty).Trim();
+            if (string.Equals(modelAnimationTarget, "HumanoidCharacterTarget", StringComparison.OrdinalIgnoreCase)
+                && IsHumanoidAnimationAsset(animation))
+            {
+                return true;
+            }
+            if (string.Equals(modelAnimationTarget, "GenericCharacterSkeletonTarget", StringComparison.OrdinalIgnoreCase)
+                && IsTransformBodyAnimationAsset(animation))
+            {
+                return true;
+            }
+
+            if (IsUnknownResourceKind(modelResourceKind) || IsUnknownResourceKind(animationResourceKind))
+            {
+                return false;
+            }
+
+            return string.Equals(modelResourceKind, animationResourceKind, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTransformBodyAnimationAsset(JObject animation)
+        {
+            var animationType = (string)animation["animationType"] ?? string.Empty;
+            var coreTransformBindingCount = (int?)animation["coreTransformBindingCount"] ?? 0;
+            return coreTransformBindingCount >= 3
+                && (string.Equals(animationType, "TransformBodyAnimation", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationType, "MixedHumanoidTransform", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationType, "TransformAnimation", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsUnknownResourceKind(string resourceKind)
+        {
+            return string.IsNullOrWhiteSpace(resourceKind)
+                || string.Equals(resourceKind, "Unknown", StringComparison.OrdinalIgnoreCase);
         }
 
         private static IEnumerable<string> GetComparableBonePathKeys(string path)
@@ -1683,6 +2910,7 @@ namespace AnimeStudio.CLI
             public int eventCount { get; set; }
             public bool? legacy { get; set; }
             public string animationType { get; set; }
+            public string animationCapability { get; set; }
             public bool? hasMuscleClip { get; set; }
             public int? coreTransformBindingCount { get; set; }
             public int? humanoidBindingCount { get; set; }
@@ -1695,7 +2923,11 @@ namespace AnimeStudio.CLI
             public int score { get; set; }
             public string[] matchReasons { get; set; }
             public string[] matchedBindingPaths { get; set; }
+            public bool? matchedBindingPathsTruncated { get; set; }
+            public string[] matchedVisibleMeshBindingPaths { get; set; }
+            public bool? matchedVisibleMeshBindingPathsTruncated { get; set; }
             public string[] unmatchedBindingPaths { get; set; }
+            public bool? unmatchedBindingPathsTruncated { get; set; }
             public bool requiresHumanoidBake { get; set; }
             public object verification { get; set; }
             public string nextAction { get; set; }
@@ -1705,6 +2937,10 @@ namespace AnimeStudio.CLI
         {
             public Dictionary<string, List<ExplicitModelAnimationLink>> ByModel { get; } = new Dictionary<string, List<ExplicitModelAnimationLink>>(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, List<ExplicitModelAnimationLink>> ByAnimation { get; } = new Dictionary<string, List<ExplicitModelAnimationLink>>(StringComparer.OrdinalIgnoreCase);
+            public bool MatchingDeferred { get; init; }
+            public string DeferredReason { get; init; }
+            public long PairCount { get; init; }
+            public long PairLimit { get; init; }
             private readonly HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             public void Add(string modelKey, string animationKey, ExplicitModelAnimationLink link)
@@ -1752,6 +2988,7 @@ namespace AnimeStudio.CLI
             public int Score { get; set; }
             public string[] Reasons { get; set; }
             public string[] MatchedBindingPaths { get; set; }
+            public string[] MatchedVisibleMeshBindingPaths { get; set; }
             public string[] UnmatchedBindingPaths { get; set; }
             public bool RequiresHumanoidBake { get; set; }
         }
@@ -1786,14 +3023,42 @@ namespace AnimeStudio.CLI
             List<AssetItem> animations
         )
         {
+            var reuseLibraryStats = WorkMode == WorkMode.Library && _exportRunStats?.StartedAtUtc != null;
+            if (!reuseLibraryStats)
+            {
+                _exportRunStats = new ExportRunStats
+                {
+                    StartedAtUtc = DateTime.UtcNow,
+                    Mode = WorkMode.ToString(),
+                };
+            }
+            else
+            {
+                _exportRunStats.Mode = WorkMode.ToString();
+            }
+
+            _exportRunStats.ModelCandidateCount += models.Count;
+            _exportRunStats.AnimationCandidateCount += animations?.Count ?? 0;
+
+            var batchStartedAt = DateTime.UtcNow;
+            if (_exportRunStats.StartedAtUtc == null || batchStartedAt < _exportRunStats.StartedAtUtc)
+            {
+                _exportRunStats.StartedAtUtc = batchStartedAt;
+            }
+
             var exportedCount = 0;
+            var processedCount = 0;
+            var skippedCount = 0;
             var toExportCount = models.Count;
             Logger.Info($"Export mode {WorkMode} using max export tasks {MaxExportTasks}.");
 
             foreach (var asset in models)
             {
                 var exportPath = GetExportPath(savePath, assetGroupOption, asset);
-                Logger.Info($"[{exportedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}");
+                processedCount++;
+                Logger.Verbose(
+                    $"[{processedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}"
+                );
                 try
                 {
                     var exported = asset.Asset switch
@@ -1806,20 +3071,39 @@ namespace AnimeStudio.CLI
                     if (exported)
                     {
                         exportedCount++;
+                        _exportRunStats.ExportedModels++;
+                        Logger.Info(
+                            $"[{processedCount}/{toExportCount}] Exported {asset.TypeString}: {asset.Text}"
+                        );
                         AppendExportManifest(savePath, asset, exportPath);
+                    }
+                    else
+                    {
+                        skippedCount++;
+                        _exportRunStats.RecordSkippedModel("export_returned_false", asset);
                     }
                     CollectAfterModelExport();
                 }
                 catch (Exception ex)
                 {
+                    _exportRunStats.RecordFailedModel("export_exception", asset, ex);
                     Logger.Error(
                         $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
                     );
                     CollectAfterModelExport();
                 }
+
+                if (processedCount % 100 == 0)
+                {
+                    Logger.Info(
+                        $"Processed {processedCount}/{toExportCount} model candidate(s); exported {exportedCount}, skipped {skippedCount}."
+                    );
+                }
             }
 
-            Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s).");
+            _exportRunStats.FinishedAtUtc = DateTime.UtcNow;
+            Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s); skipped {skippedCount} candidate(s).");
+            WriteExportRunSummary(savePath);
         }
 
         private static void CollectAfterModelExport()
@@ -1910,8 +3194,9 @@ namespace AnimeStudio.CLI
             {
                 ClassIDType.GameObject or ClassIDType.Animator => "Models",
                 ClassIDType.AnimationClip => "Animations",
+                ClassIDType.AudioClip => "Audio",
                 ClassIDType.Shader => "Shaders",
-                ClassIDType.Texture2D or ClassIDType.Sprite => "Textures",
+                ClassIDType.Texture2D or ClassIDType.Texture2DArray or ClassIDType.Sprite => "Textures",
                 ClassIDType.Material => "Materials",
                 ClassIDType.Mesh => "Meshes",
                 ClassIDType.MiHoYoBinData
@@ -1923,6 +3208,27 @@ namespace AnimeStudio.CLI
 
         private static string GetLibrarySubPath(AssetItem asset)
         {
+            if (asset.Asset is AudioClip audioClip)
+            {
+                return GetAudioLibrarySubPath(asset, audioClip);
+            }
+
+            if (asset.Type == ClassIDType.Texture2DArray || asset.LibraryRole == "Texture2DArray")
+            {
+                var textureArraySubPath = GetLibrarySubPathWithoutRole(asset);
+                return string.IsNullOrWhiteSpace(textureArraySubPath)
+                    ? "Texture2DArray"
+                    : Path.Combine("Texture2DArray", textureArraySubPath);
+            }
+
+            if (asset.Type == ClassIDType.Texture2D && asset.LibraryRole == "MaterialLibrary")
+            {
+                var textureSubPath = GetLibrarySubPathWithoutRole(asset);
+                return string.IsNullOrWhiteSpace(textureSubPath)
+                    ? "MaterialLibrary"
+                    : Path.Combine("MaterialLibrary", textureSubPath);
+            }
+
             if (asset.LibraryRole == "RawUnreferenced")
             {
                 var rawSubPath = GetLibrarySubPathWithoutRole(asset);
@@ -1945,6 +3251,32 @@ namespace AnimeStudio.CLI
             }
 
             return GetAssetNameCategory(asset.Text);
+        }
+
+        private static string GetAudioLibrarySubPath(AssetItem asset, AudioClip audioClip)
+        {
+            var category = Exporter.ClassifyAudioClip(audioClip, asset.Text, asset.Container, asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName);
+            var sourcePath = !string.IsNullOrWhiteSpace(asset.Container) && !int.TryParse(asset.Container, out _)
+                ? asset.Container
+                : asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName ?? string.Empty;
+            var container = Path.HasExtension(sourcePath) ? Path.GetDirectoryName(sourcePath) : sourcePath;
+            if (string.IsNullOrWhiteSpace(container))
+            {
+                return category;
+            }
+
+            return Path.Combine(category, SanitizeRelativePath(container));
+        }
+
+        private static string SanitizeRelativePath(string path)
+        {
+            var parts = path
+                .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+                .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => Regex.Replace(x, @"[<>:""/\\|?*]+", "_"))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            return parts.Length == 0 ? string.Empty : Path.Combine(parts);
         }
 
         private static string GetAssetNameCategory(string name)

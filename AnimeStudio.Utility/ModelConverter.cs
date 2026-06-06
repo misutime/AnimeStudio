@@ -809,11 +809,17 @@ namespace AnimeStudio
                     iMat.Transparency = 0f;
                     iMat.UnityFloats = mat.m_SavedProperties.m_Floats.ToDictionary(x => x.Key, x => x.Value);
                     iMat.UnityColors = mat.m_SavedProperties.m_Colors.ToDictionary(x => x.Key, x => x.Value);
+                    var hasColor = false;
                     foreach (var col in mat.m_SavedProperties.m_Colors)
                     {
                         switch (col.Key)
                         {
                             case "_Color":
+                                iMat.Diffuse = col.Value;
+                                hasColor = true;
+                                break;
+                            case "_BaseColor" when !hasColor:
+                                // 很多 SRP/HDRP 材质用 _BaseColor 表示基础色；没有 _Color 时用它保证 glTF 预览可见。
                                 iMat.Diffuse = col.Value;
                                 break;
                             case "_SColor":
@@ -994,7 +1000,7 @@ namespace AnimeStudio
             var stage = options.textureMode == TextureExportMode.Raw
                 ? "model_texture_raw"
                 : "model_texture";
-            using (Measure(stage, new Dictionary<string, object>
+            var textureProfileData = new Dictionary<string, object>
             {
                 ["texture"] = m_Texture2D.m_Name,
                 ["source"] = m_Texture2D.assetsFile?.fullName,
@@ -1005,7 +1011,9 @@ namespace AnimeStudio
                 ["width"] = m_Texture2D.m_Width,
                 ["height"] = m_Texture2D.m_Height,
                 ["imageFormat"] = options.imageFormat.ToString(),
-            }))
+            };
+
+            using (Measure(stage, textureProfileData))
             {
                 if (options.textureMode == TextureExportMode.Raw)
                 {
@@ -1020,7 +1028,7 @@ namespace AnimeStudio
                 }
                 else
                 {
-                    var stream = m_Texture2D.ConvertToStream(options.imageFormat, true);
+                    var stream = m_Texture2D.ConvertToStream(options.imageFormat, true, options.profileMeasure, textureProfileData);
                     if (stream != null)
                     {
                         using (stream)

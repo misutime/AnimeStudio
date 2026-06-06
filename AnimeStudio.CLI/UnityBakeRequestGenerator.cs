@@ -24,7 +24,9 @@ namespace AnimeStudio.CLI
             string unityBakeOutput,
             int frameRate,
             bool runUnityBake,
-            string bakedGltfOutput = null
+            string bakedGltfOutput = null,
+            string bakedFbxOutput = null,
+            string blender = null
         )
         {
             if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
@@ -48,6 +50,20 @@ namespace AnimeStudio.CLI
             if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(animationName))
             {
                 Logger.Error("Selected Unity bake request entry is missing model or animation name.");
+                return;
+            }
+
+            var requiresHumanoidBake = (bool?)animation?["requiresHumanoidBake"] ?? false;
+            var avatar = model?["avatar"] as JObject;
+            var humanBones = avatar?["humanBones"]?.Values<string>()?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray() ?? Array.Empty<string>();
+            if (requiresHumanoidBake && humanBones.Length == 0)
+            {
+                Logger.Error(
+                    "Selected Humanoid animation requires Unity Avatar humanBones, but model_animations.json only contains an Avatar summary. " +
+                    "Re-export the sample with the current CLI so asset_catalog.jsonl/model_animations.json keeps full Unity Avatar HumanDescription data."
+                );
                 return;
             }
 
@@ -94,7 +110,7 @@ namespace AnimeStudio.CLI
                         skeletonHash = (string)model?["skeletonHash"],
                         boneCount = (int?)model?["boneCount"] ?? 0,
                         bonePaths = model?["bonePaths"]?.Values<string>()?.Take(512).ToArray() ?? Array.Empty<string>(),
-                        avatar = model?["avatar"],
+                        avatar,
                     },
                     animation = new
                     {
@@ -105,7 +121,7 @@ namespace AnimeStudio.CLI
                         container = (string)animation?["container"],
                         animationType = (string)animation?["animationType"],
                         hasMuscleClip = (bool?)animation?["hasMuscleClip"] ?? false,
-                        requiresHumanoidBake = (bool?)animation?["requiresHumanoidBake"] ?? false,
+                        requiresHumanoidBake,
                         relation = (string)animation?["relation"],
                         relationSource = (string)animation?["relationSource"],
                         confidence = (string)animation?["confidence"],
@@ -126,7 +142,11 @@ namespace AnimeStudio.CLI
             {
                 if (RunUnity(requestPath, unityProject, unityEditor, logPath))
                 {
-                    UnityBakeResultApplier.Apply(requestPath, bakedGltfOutput);
+                    var bakedGltf = UnityBakeResultApplier.Apply(requestPath, bakedGltfOutput);
+                    if (!string.IsNullOrWhiteSpace(bakedFbxOutput))
+                    {
+                        BlenderFbxExporter.Export(bakedGltf, bakedFbxOutput, blender);
+                    }
                 }
             }
         }

@@ -1,5 +1,7 @@
 你是我的项目内编程助手。先不要急着写代码。
 
+开始任何资源导出相关开发前，先阅读 `PROJECT_EXPORT_STANDARDS.md`。它是本项目“可用素材库”目标、Unity 关系解构、glTF 主格式、动画/材质/验证节奏的团队总规范。`AGENTS.md` 里列的是必须硬遵守的执行约束；如果两者冲突，以更严格、更保护 Unity 原始关系和可用素材库目标的一方为准。
+
 请按这个顺序工作：
 
 1. 先阅读相关代码，理解当前实现
@@ -39,8 +41,15 @@
 - Unity 关系优先级固定为：1. 显式引用，包括 `Animator`、`Animation`、`AnimatorController`、`AnimatorOverrideController`、`PPtr`；2. 结构兼容，包括 `Avatar`、`HumanDescription`、`SkinnedMeshRenderer bones`、`AnimationClip binding path/type/property`、blendshape channel；3. 实际导出验证，包括 glTF channel、skin/joint、主体骨骼覆盖、bbox。container、目录名、资源名、游戏 profile 只能作为显式标注的 fallback，不能进入默认绑定结果。
 - 精准导出时可以用 `--containers`、`--names` 过滤导出候选，但 CAB / PPtr 依赖图必须来自完整源目录。不要为了样本变快而只复制少量 bundle 当输入；Unity 游戏常把脸、附件、材质或 Mesh 拆到外部 CAB，裁掉依赖源会导致模型缺件。
 - 默认 `Library` 模型来源使用 `PrefabPrimary`：`Models/` 只放 prefab、Animator 或完整 GameObject 组合模型；raw fbx 身体、face、附件等 source parts 默认不作为可浏览模型导出，但必须进入 `asset_catalog.jsonl`，标记为 `SourcePart` / `RawModel` / `AttachmentSource`。只有显式 `--model_source PrefabAndParts` 或 `RawPartsOnly` 时才导出零散部件；没有被任何组合模型覆盖的 raw fbx 可放入 `Models/RawUnreferenced`。
+- glTF/GLB 是模型、骨骼、材质和动画预览的主格式；FBX 只作为兼容旧流程、特定 DCC 或对照验证的可选/实验输出。默认正确性验证以 glTF 的节点、skin、material、animation channel、bbox 和 Unity 关系索引为准，不以 FBX 导入器表现作为核心基准。
 - 模型和动画的默认规则是：模型保持干净，动画独立入库，绑定关系通过 Unity 关系图、索引、预览验证和显式打包建立。不要默认把一个模型可能引用到的所有动画塞进 glTF/GLB。
 - Humanoid/Muscle 动画需要作为可复用身体动画验收时，必须优先通过 Unity Editor 的 `Animator`、`Avatar`、`PlayableGraph`/`AnimationClipPlayable` 采样烘焙成目标骨架 TRS。AnimeStudio 内部的近似 muscle 求解只能用于诊断和报告，不能作为最终正确动画导出路径。
+- Humanoid bake 复建 Avatar 时必须尽量使用 Unity 原始 `HumanDescription.skeletonBones` 参考姿态、`humanBones` 映射和 twist/stretch 参数。`humanBones` 只能说明人体部位对应关系，不能单独作为动画正确性依据；旧索引缺少完整 Avatar 元数据时应失败或重新导出索引，不能退回纯名称/当前姿态猜测。
+- Unity bake 判断 Transform track 是否有效时，必须同时比较采样姿态相对原始 rest pose 的变化和帧间变化。很多短动作或定格姿态 clip 第一帧已经是目标姿态，但帧间没有变化；只比较第一帧和后续帧会把这类有效动画误判为空。
 - 材质和 shader 还原也必须从 Unity `Material.m_SavedProperties`、Renderer 材质槽、贴图 PPtr、shader 引用和渲染状态出发。默认导出应优先把 Unity 的透明、裁剪、双面、基础贴图槽映射到 glTF 标准；无法标准表达的自定义 shader slot/float/color 必须保留在材质 JSON 和 glTF `extras.unityMaterial`，作为后续材质重建或贴图烘焙依据，不能按单个游戏名称硬猜。
+- ColorMask/Tint 属于“可用素材库预览材质”管线，不是完整 shader 复刻。默认逻辑必须索引 `_ColorMask`、`_MaskMap`、`_BaseColorMap`、Unity 材质颜色/float 和渲染状态；只有找到明确 tint 参数或后续 customization 配置时才自动烘焙预览 base color。找不到颜色配置时保留贴图和 mask，并在 glTF `extras.animeStudioMaterial` 标记 `needsCustomizationTint`，不要为了看起来有颜色而硬猜游戏私有配色。
+- 索引策略固定为“索引要全，导出要精”。SQLite `library_index.db` 是可复用素材库索引底座，应尽量保留 Unity 关系、导出 manifest、asset catalog、报告 JSON 和 `raw_json`；进入索引不代表默认导出或推荐使用，默认导出仍必须严格匹配、宁缺毋滥。
+- SQLite 分两类：`library_index.db` 面向已导出的素材库目录，`unity_source_index.db` 面向完整 Unity 源目录。源索引必须记录 source file、SerializedFile、Object、external CAB/PPtr、核心 Unity 关系和 AnimationClip binding；全量 Library 导出必须使用 SQLite 源索引作为依赖底座。源索引解析优先级固定为：显式 `--source_index`；输出目录 `unity_source_index.db`；输入目录 `unity_source_index.db`；都不存在时自动在输出目录构建。旧 CAB map / AssetMap 只作为显式 `--map_op` 调试或兼容旧流程，不能作为精品全量导出的默认机制。
 - 角色、NPC、道具、机关、场景物件都可能有动画。动画适配逻辑必须基于 Unity component/controller/clip binding/avatar/bone path 等通用关系，不能只服务角色动画。
+- 表情/BlendShape、legacy AnimationClip、非角色 Transform 动画、材质/激活/事件类动画要和 Humanoid 身体动画分开标注、分开验证。不能因为 Humanoid bake 成功，就把这些动画类型默认标成“可播放已验证”。
 - 如果确实需要针对某个游戏做特殊适配，必须默认关闭或放入 profile/config，并在文档里标明它是游戏 profile 规则，不是 `Normal` 通用 Unity 导出路径的一部分。

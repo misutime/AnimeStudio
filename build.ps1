@@ -2,7 +2,7 @@
 dotnet build AnimeStudio.Patcher -c Release -f net9.0
 $patcher = "AnimeStudio.Patcher\bin\Release\net9.0\AnimeStudio.Patcher.exe"
 
-foreach ($tfm in 'net8.0-windows', 'net9.0-windows') {
+foreach ($tfm in 'net9.0-windows') {
     # config
     $outputDir = ".\dist\$tfm"
     $configuration = 'Release'
@@ -15,6 +15,10 @@ foreach ($tfm in 'net8.0-windows', 'net9.0-windows') {
     $cliExe = "$cliOut/AnimeStudio.CLI.exe"
 
     # build cli and gui & patch them
+    # The patcher mutates the apphost exe in-place. Clean the per-target output first
+    # so repeated builds do not turn bin\App.dll into bin\bin\App.dll.
+    if (Test-Path $cliOut) { Remove-Item $cliOut -Recurse -Force }
+    if (Test-Path $guiOut) { Remove-Item $guiOut -Recurse -Force }
     dotnet build AnimeStudio.CLI -c $configuration -f $tfm
     & $patcher $cliExe -d bin
     dotnet build AnimeStudio.GUI -c $configuration -f $tfm

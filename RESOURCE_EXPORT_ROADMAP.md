@@ -116,10 +116,10 @@ CAB / PPtr 依赖索引策略：
 | Unity 文件读取/依赖解析 | 已可加载 UnityFS/SerializedFile，支持 CAB 依赖 map，Freedunk 1 字节前导 UnityFS 已兼容 | 75% |
 | 3D 模型导出 | 支持 `SplitObjects`、`Animator`，默认 glTF，可导出 mesh、skin、基础层级 | 70% |
 | glTF 输出 | 已有 `.gltf + .bin`、`.glb`、材质贴图引用、skin、基础 TRS 动画 | 60% |
-| FBX 输出 | 继承原有 FBX exporter，支持 blendshape 和动画能力较完整 | 70% |
+| FBX 输出 | 继承原有 FBX exporter；新增 Unity bake 后的 Blender FBX 后端，可把 baked glTF 打包为模型+骨骼+动作的成熟 FBX 验收资产 | 78% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、glTF alpha/double-sided 状态、extras 保留 Unity slot/float/color 信息 | 62% |
-| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、Humanoid/Muscle 近似 bake v1、按需生成预览 glTF、批量生成模型动画验证包、验证报告和 AnimationClip 类型分类 | 78% |
+| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、Unity Editor Humanoid bake、baked glTF 写入、Blender FBX 打包、验证报告和 AnimationClip 类型分类 | 82% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |

@@ -16,6 +16,7 @@ namespace AnimeStudio.CLI
     {
         public static float? FbxScaleFactor { get; set; }
         public static int? FbxBoneSize { get; set; }
+        public static bool FbxExportAllNodes { get; set; }
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static string HumanoidBakeSolver { get; set; } = "AvatarPreEulerPost";
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
@@ -78,20 +79,139 @@ namespace AnimeStudio.CLI
             }
         }
 
+        public static bool ExportTexture2DArray(AssetItem item, string exportPath)
+        {
+            var textureArray = (Texture2DArray)item.Asset;
+            if (!TryExportFolder(exportPath, item, out var exportFolder))
+                return false;
+
+            Directory.CreateDirectory(exportFolder);
+
+            var type = Properties.Settings.Default.convertType;
+            var extension = "." + type.ToString().ToLower();
+            var exportedLayers = new List<object>();
+            var layerIndex = 0;
+
+            foreach (var layer in textureArray.TextureList)
+            {
+                layerIndex++;
+                var layerName = FixFileName(layer.m_Name);
+                var layerPath = Path.Combine(exportFolder, $"{layerName}{extension}");
+                if (File.Exists(layerPath) && !Properties.Settings.Default.allowDuplicates)
+                {
+                    continue;
+                }
+
+                if (File.Exists(layerPath))
+                {
+                    for (var duplicate = 0; ; duplicate++)
+                    {
+                        var candidate = Path.Combine(exportFolder, $"{layerName} ({duplicate}){extension}");
+                        if (!File.Exists(candidate))
+                        {
+                            layerPath = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                using var image = layer.ConvertToImage(true);
+                if (image == null)
+                {
+                    exportedLayers.Add(new
+                    {
+                        index = layerIndex - 1,
+                        name = layer.m_Name,
+                        output = (string)null,
+                        status = "unsupportedTextureFormat",
+                        textureFormat = layer.m_TextureFormat.ToString(),
+                    });
+                    continue;
+                }
+
+                using (var file = File.OpenWrite(layerPath))
+                {
+                    image.WriteToStream(file, type);
+                }
+
+                exportedLayers.Add(new
+                {
+                    index = layerIndex - 1,
+                    name = layer.m_Name,
+                    output = layerPath,
+                    status = "exported",
+                    textureFormat = layer.m_TextureFormat.ToString(),
+                });
+            }
+
+            var metadataPath = Path.Combine(exportFolder, $"{FixFileName(item.Text)}.texture2darray.json");
+            var metadata = new
+            {
+                kind = "Texture2DArray",
+                name = textureArray.m_Name,
+                sourceType = item.TypeString,
+                source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                container = item.Container,
+                pathId = item.m_PathID,
+                width = textureArray.m_Width,
+                height = textureArray.m_Height,
+                depth = textureArray.m_Depth,
+                graphicsFormat = textureArray.m_Format.ToString(),
+                mappedTextureFormat = textureArray.m_Format.ToTextureFormat().ToString(),
+                mipCount = textureArray.m_MipCount,
+                dataSize = textureArray.m_DataSize,
+                streamPath = textureArray.m_StreamData?.path,
+                streamOffset = textureArray.m_StreamData?.offset,
+                streamSize = textureArray.m_StreamData?.size,
+                layers = exportedLayers,
+                note = "Texture2DArray is exported as independent layer images for texture/terrain/material libraries; it is not embedded into glTF PBR materials by default.",
+            };
+            File.WriteAllText(metadataPath, JsonConvert.SerializeObject(metadata, Formatting.Indented));
+
+            AppendAssetCatalog(item, exportFolder, "Texture2DArray");
+            return exportedLayers.Count > 0;
+        }
+
         public static bool ExportAudioClip(AssetItem item, string exportPath)
         {
             var m_AudioClip = (AudioClip)item.Asset;
             if (m_AudioClip.m_AudioData.Size == 0)
                 return false;
             var converter = new AudioClipConverter(m_AudioClip);
+            string exportFullPath;
+            var convertedToWav = false;
             if (Properties.Settings.Default.convertAudio && converter.IsSupport)
             {
-                if (!TryExportFile(exportPath, item, ".wav", out var exportFullPath))
-                    return false;
-                var buffer = converter.ConvertToWav();
-                if (buffer == null)
-                    return false;
-                File.WriteAllBytes(exportFullPath, buffer);
+                byte[] buffer = null;
+                try
+                {
+                    buffer = converter.ConvertToWav();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"AudioClip {item.Text} cannot be converted to wav; exporting original audio data instead. {ex.Message}");
+                }
+
+                if (buffer != null)
+                {
+                    if (!TryExportFile(exportPath, item, ".wav", out exportFullPath))
+                        return false;
+                    File.WriteAllBytes(exportFullPath, buffer);
+                    convertedToWav = true;
+                }
+                else
+                {
+                    if (
+                        !TryExportFile(
+                            exportPath,
+                            item,
+                            converter.GetExtensionName(),
+                            out exportFullPath
+                        )
+                    )
+                        return false;
+                    m_AudioClip.m_AudioData.WriteData(exportFullPath);
+                }
             }
             else
             {
@@ -100,13 +220,77 @@ namespace AnimeStudio.CLI
                         exportPath,
                         item,
                         converter.GetExtensionName(),
-                        out var exportFullPath
+                        out exportFullPath
                     )
                 )
                     return false;
                 m_AudioClip.m_AudioData.WriteData(exportFullPath);
             }
+            WriteAudioMetadata(item, m_AudioClip, exportFullPath, converter, convertedToWav);
+            AppendAssetCatalog(item, exportFullPath, "Audio");
             return true;
+        }
+
+        internal static string ClassifyAudioClip(AudioClip clip, string name, string container, string source)
+        {
+            var text = $"{name} {container} {source}".ToLowerInvariant();
+            if (Regex.IsMatch(text, @"(^|[^a-z0-9])(voice|vo|dialog|dialogue|speech|talk|line|npcvoice|character[_-]?voice)([^a-z0-9]|$)"))
+            {
+                return "Voice";
+            }
+            if (Regex.IsMatch(text, @"(^|[^a-z0-9])(bgm|music|mus|theme|ost|song|loop|ambience|ambient)([^a-z0-9]|$)"))
+            {
+                return "Music";
+            }
+            if (Regex.IsMatch(text, @"(^|[^a-z0-9])(sfx|se|sound|sounds|audio|effect|fx|hit|step|foot|jump|dash|shoot|shot|button|click|impact|skill|attack|ui)([^a-z0-9]|$)"))
+            {
+                return "SFX";
+            }
+            if (clip != null && clip.m_Length > 0 && clip.m_Length <= 15f)
+            {
+                return "SFX";
+            }
+            if (clip != null && clip.m_Length >= 45f)
+            {
+                return "Music";
+            }
+            return "Other";
+        }
+
+        private static void WriteAudioMetadata(
+            AssetItem item,
+            AudioClip audioClip,
+            string exportFullPath,
+            AudioClipConverter converter,
+            bool convertedToWav
+        )
+        {
+            var source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName;
+            var metadata = new
+            {
+                kind = "Audio",
+                resourceKind = ClassifyAudioClip(audioClip, item.Text, item.Container, source),
+                name = item.Text,
+                unityName = audioClip.m_Name,
+                container = item.Container,
+                source,
+                pathId = item.m_PathID,
+                output = exportFullPath,
+                exportedFile = Path.GetFileName(exportFullPath),
+                convertedToWav,
+                originalExtension = converter.GetExtensionName(),
+                length = audioClip.m_Length,
+                channels = audioClip.m_Channels,
+                frequency = audioClip.m_Frequency,
+                bitsPerSample = audioClip.m_BitsPerSample,
+                compressionFormat = audioClip.m_CompressionFormat.ToString(),
+                loadType = audioClip.m_LoadType,
+                preloadAudioData = audioClip.m_PreloadAudioData,
+                loadInBackground = audioClip.m_LoadInBackground,
+                dataSize = audioClip.m_AudioData.Size,
+                note = "AudioClip is intentionally exported through AudioLibrary or explicit type export; it is not part of the default 3D Library.",
+            };
+            File.WriteAllText(exportFullPath + ".audio.json", JsonConvert.SerializeObject(metadata, Formatting.Indented));
         }
 
         public static bool ExportShader(AssetItem item, string exportPath)
@@ -618,6 +802,11 @@ namespace AnimeStudio.CLI
                         )
                         : new ModelConverter(m_Animator, options);
             }
+            if (convert.MeshList.Count == 0)
+            {
+                Logger.Verbose($"Animator {item.Text} has no mesh, skipping...");
+                return false;
+            }
             if (options.exportMaterials)
             {
                 var materialExportPath = exportFullPath;
@@ -647,7 +836,7 @@ namespace AnimeStudio.CLI
             var m_GameObject = (GameObject)item.Asset;
             if (m_GameObject.m_Transform == null)
             {
-                Logger.Info($"GameObject {m_GameObject.m_Name} has no Transform, skipping...");
+                Logger.Verbose($"GameObject {m_GameObject.m_Name} has no Transform, skipping...");
                 return false;
             }
             return ExportGameObject(
@@ -709,7 +898,7 @@ namespace AnimeStudio.CLI
 
             if (convert.MeshList.Count == 0)
             {
-                Logger.Info($"GameObject {gameObject.m_Name} has no mesh, skipping...");
+                Logger.Verbose($"GameObject {gameObject.m_Name} has no mesh, skipping...");
                 return false;
             }
             if (options.exportMaterials && convert.MaterialList.Count == 0)
@@ -771,7 +960,7 @@ namespace AnimeStudio.CLI
             {
                 eulerFilter = Properties.Settings.Default.eulerFilter,
                 filterPrecision = (float)Properties.Settings.Default.filterPrecision,
-                exportAllNodes = Properties.Settings.Default.exportAllNodes,
+                exportAllNodes = CliExportOptions.FbxExportAllNodes,
                 exportSkins = Properties.Settings.Default.exportSkins,
                 exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 exportBlendShape = Properties.Settings.Default.exportBlendShape,
@@ -797,6 +986,7 @@ namespace AnimeStudio.CLI
                 exportAnimations = CliExportOptions.ExportEmbeddedAnimations,
                 textureDirectory = GetSharedTextureDirectory(exportPath),
                 localTextureDirectoryName = "Textures",
+                profileMeasure = ProfileLogger.Measure,
             };
             ModelExporter.ExportGltf(exportPath, convert, exportOptions);
         }
@@ -886,9 +1076,17 @@ namespace AnimeStudio.CLI
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(x => x, StringComparer.Ordinal)
                 .ToArray() ?? Array.Empty<string>();
+            var nodePaths = CollectFramePaths(imported.RootFrame);
+            var meshPaths = imported.MeshList?
+                .Select(x => x.Path)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
 
             var avatarInfo = GetModelAvatarInfo(source);
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
+            var skeletonValidation = BuildHumanoidSkeletonValidation(imported, avatarInfo);
             var entry = new
             {
                 kind = "Model",
@@ -915,8 +1113,13 @@ namespace AnimeStudio.CLI
                 boneCount = bonePaths.Length,
                 bonePaths = bonePaths.Take(512).ToArray(),
                 bonePathsTruncated = bonePaths.Length > 512,
+                nodePaths = nodePaths.Take(1024).ToArray(),
+                nodePathsTruncated = nodePaths.Length > 1024,
+                meshPaths = meshPaths.Take(512).ToArray(),
+                meshPathsTruncated = meshPaths.Length > 512,
                 skeletonHash = (string)skeletonInfo?["libraryId"],
                 skeleton = skeletonInfo,
+                skeletonValidation,
                 avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
@@ -946,6 +1149,19 @@ namespace AnimeStudio.CLI
                 .Select(x => string.IsNullOrWhiteSpace(x.m_ParentName) ? x.m_Name : $"{x.m_ParentName}/{x.m_Name}")
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToArray() ?? Array.Empty<string>();
+            var skeletonBonePose = avatar.m_HumanDescription?.m_Skeleton?
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_Name))
+                .Select(x => new
+                {
+                    name = x.m_Name,
+                    parentName = x.m_ParentName,
+                    position = new { x = x.m_Position.X, y = x.m_Position.Y, z = x.m_Position.Z },
+                    rotation = new { x = x.m_Rotation.X, y = x.m_Rotation.Y, z = x.m_Rotation.Z, w = x.m_Rotation.W },
+                    scale = new { x = x.m_Scale.X, y = x.m_Scale.Y, z = x.m_Scale.Z },
+                })
+                .Take(256)
+                .ToArray() ?? Array.Empty<object>();
+            var humanDescription = avatar.m_HumanDescription;
 
             return JObject.FromObject(new
             {
@@ -959,6 +1175,22 @@ namespace AnimeStudio.CLI
                 humanBoneMapHash = humanBones.Length == 0 ? null : HashText(string.Join("\n", humanBones)),
                 skeletonBoneNameHash = skeletonBones.Length == 0 ? null : HashText(string.Join("\n", skeletonBones)),
                 humanBones = humanBones.Take(128).ToArray(),
+                skeletonBones = skeletonBonePose,
+                humanDescription = humanDescription == null ? null : new
+                {
+                    armTwist = humanDescription.m_ArmTwist,
+                    foreArmTwist = humanDescription.m_ForeArmTwist,
+                    upperLegTwist = humanDescription.m_UpperLegTwist,
+                    legTwist = humanDescription.m_LegTwist,
+                    armStretch = humanDescription.m_ArmStretch,
+                    legStretch = humanDescription.m_LegStretch,
+                    feetSpacing = humanDescription.m_FeetSpacing,
+                    globalScale = humanDescription.m_GlobalScale,
+                    rootMotionBoneName = humanDescription.m_RootMotionBoneName,
+                    hasTranslationDoF = humanDescription.m_HasTranslationDoF,
+                    hasExtraRoot = humanDescription.m_HasExtraRoot,
+                    skeletonHasParents = humanDescription.m_SkeletonHasParents,
+                },
             });
         }
 
@@ -997,6 +1229,191 @@ namespace AnimeStudio.CLI
                     ? "BonePathsAndBindPose"
                     : "BonePathsOrHierarchy",
             });
+        }
+
+        private static JObject BuildHumanoidSkeletonValidation(IImported imported, JObject avatarInfo)
+        {
+            var humanBoneMap = ParseAvatarHumanBoneMap(avatarInfo);
+            var frameByName = new Dictionary<string, ImportedFrame>(StringComparer.OrdinalIgnoreCase);
+            CollectFrames(imported.RootFrame, frameByName);
+
+            var requiredHumanBones = new[]
+            {
+                "Hips",
+                "Spine",
+                "Chest",
+                "Neck",
+                "Head",
+                "LeftShoulder",
+                "LeftUpperArm",
+                "LeftLowerArm",
+                "LeftHand",
+                "RightShoulder",
+                "RightUpperArm",
+                "RightLowerArm",
+                "RightHand",
+                "LeftUpperLeg",
+                "LeftLowerLeg",
+                "LeftFoot",
+                "RightUpperLeg",
+                "RightLowerLeg",
+                "RightFoot",
+            };
+            var optionalHumanBones = new[]
+            {
+                "UpperChest",
+                "LeftToes",
+                "RightToes",
+                "Left Thumb Proximal",
+                "Left Index Proximal",
+                "Left Middle Proximal",
+                "Left Ring Proximal",
+                "Left Little Proximal",
+                "Right Thumb Proximal",
+                "Right Index Proximal",
+                "Right Middle Proximal",
+                "Right Ring Proximal",
+                "Right Little Proximal",
+            };
+            var chains = new (string Name, string[] HumanBones)[]
+            {
+                ("spine", new[] { "Hips", "Spine", "Chest", "Neck", "Head" }),
+                ("leftArm", new[] { "LeftShoulder", "LeftUpperArm", "LeftLowerArm", "LeftHand" }),
+                ("rightArm", new[] { "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand" }),
+                ("leftLeg", new[] { "Hips", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot" }),
+                ("rightLeg", new[] { "Hips", "RightUpperLeg", "RightLowerLeg", "RightFoot" }),
+            };
+
+            var missingHumanBones = requiredHumanBones
+                .Where(x => !humanBoneMap.ContainsKey(x))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var missingFrames = requiredHumanBones
+                .Where(x => humanBoneMap.TryGetValue(x, out var boneName) && !frameByName.ContainsKey(boneName))
+                .Select(x => $"{x}:{humanBoneMap[x]}")
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var optionalPresent = optionalHumanBones
+                .Count(x => humanBoneMap.TryGetValue(x, out var boneName) && frameByName.ContainsKey(boneName));
+            var chainResults = chains
+                .Select(x => BuildHumanoidChainValidation(x.Name, x.HumanBones, humanBoneMap, frameByName))
+                .ToArray();
+            var validChainCount = chainResults.Count(x => (bool)x["ok"]);
+            var status = missingHumanBones.Length == 0 && missingFrames.Length == 0 && validChainCount == chains.Length
+                ? "ok"
+                : missingHumanBones.Length <= 2 && missingFrames.Length <= 2 && validChainCount >= chains.Length - 1
+                    ? "warning"
+                    : "failed";
+
+            return JObject.FromObject(new
+            {
+                status,
+                rule = "Humanoid skeleton validation derived from Unity Avatar HumanDescription plus exported frame hierarchy. This validates reusable human bone structure before animation binding.",
+                hasAvatarHumanDescription = humanBoneMap.Count > 0,
+                mappedHumanBoneCount = humanBoneMap.Count,
+                requiredHumanBoneCount = requiredHumanBones.Length,
+                requiredPresentCount = requiredHumanBones.Length - missingHumanBones.Length,
+                requiredFramePresentCount = requiredHumanBones.Length - missingFrames.Length,
+                optionalPresentCount = optionalPresent,
+                chainCount = chains.Length,
+                validChainCount,
+                missingHumanBones,
+                missingFrames,
+                chains = chainResults,
+            });
+        }
+
+        private static Dictionary<string, string> ParseAvatarHumanBoneMap(JObject avatarInfo)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var humanBones = avatarInfo?["humanBones"]?.Values<string>() ?? Enumerable.Empty<string>();
+            foreach (var item in humanBones)
+            {
+                var separator = item.IndexOf(':');
+                if (separator <= 0 || separator >= item.Length - 1)
+                {
+                    continue;
+                }
+
+                var humanBone = item.Substring(0, separator);
+                var skeletonBone = item.Substring(separator + 1);
+                result[humanBone] = skeletonBone;
+            }
+
+            return result;
+        }
+
+        private static JObject BuildHumanoidChainValidation(
+            string name,
+            string[] humanBones,
+            Dictionary<string, string> humanBoneMap,
+            Dictionary<string, ImportedFrame> frameByName)
+        {
+            var mappedBones = humanBones
+                .Select(x => humanBoneMap.TryGetValue(x, out var boneName) ? $"{x}:{boneName}" : $"{x}:<missing>")
+                .ToArray();
+            var missing = humanBones
+                .Where(x => !humanBoneMap.TryGetValue(x, out var boneName) || !frameByName.ContainsKey(boneName))
+                .ToArray();
+            var brokenLinks = new List<string>();
+            for (var i = 1; i < humanBones.Length; i++)
+            {
+                if (!humanBoneMap.TryGetValue(humanBones[i - 1], out var parentBoneName)
+                    || !humanBoneMap.TryGetValue(humanBones[i], out var childBoneName)
+                    || !frameByName.TryGetValue(parentBoneName, out var parentFrame)
+                    || !frameByName.TryGetValue(childBoneName, out var childFrame))
+                {
+                    continue;
+                }
+
+                if (!IsDescendantOf(childFrame, parentFrame))
+                {
+                    brokenLinks.Add($"{humanBones[i - 1]}->{humanBones[i]}");
+                }
+            }
+
+            return JObject.FromObject(new
+            {
+                name,
+                ok = missing.Length == 0 && brokenLinks.Count == 0,
+                mappedBones,
+                missing,
+                brokenLinks,
+            });
+        }
+
+        private static void CollectFrames(ImportedFrame frame, Dictionary<string, ImportedFrame> frameByName)
+        {
+            if (frame == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(frame.Name) && !frameByName.ContainsKey(frame.Name))
+            {
+                frameByName.Add(frame.Name, frame);
+            }
+
+            for (var i = 0; i < frame.Count; i++)
+            {
+                CollectFrames(frame[i], frameByName);
+            }
+        }
+
+        private static bool IsDescendantOf(ImportedFrame child, ImportedFrame ancestor)
+        {
+            var current = child?.Parent;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, ancestor))
+                {
+                    return true;
+                }
+
+                current = current.Parent;
+            }
+
+            return false;
         }
 
         private static string BuildFrameHierarchySignature(ImportedFrame frame)
@@ -1534,10 +1951,14 @@ namespace AnimeStudio.CLI
             }
 
             var animationInfo = item.Asset is AnimationClip infoClip ? AnalyzeAnimationClip(infoClip) : null;
+            var audioClip = item.Asset as AudioClip;
+            var audioKind = audioClip == null
+                ? null
+                : ClassifyAudioClip(audioClip, item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName);
             var entry = new
             {
                 kind,
-                resourceKind = InferResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
+                resourceKind = audioKind ?? InferResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
                 exportedAt = DateTime.UtcNow.ToString("O"),
                 name = item.Text,
                 sourceType = item.TypeString,
@@ -1561,6 +1982,13 @@ namespace AnimeStudio.CLI
                 unknownBindingCount = animationInfo?.unknownBindingCount,
                 transformBindingPaths = animationInfo?.transformBindingPaths,
                 classificationNotes = animationInfo?.classificationNotes,
+                audioKind,
+                audioLength = audioClip?.m_Length,
+                audioChannels = audioClip?.m_Channels,
+                audioFrequency = audioClip?.m_Frequency,
+                audioBitsPerSample = audioClip?.m_BitsPerSample,
+                audioCompressionFormat = audioClip?.m_CompressionFormat.ToString(),
+                audioDataSize = audioClip?.m_AudioData.Size,
             };
             AppendCatalogEntry(entry);
         }
@@ -1759,7 +2187,7 @@ namespace AnimeStudio.CLI
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
-            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)(pc|player)(/|$)"))
+            if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)characterprefabs?(/|$)|(^|/)(pc|player)(/|$)"))
             {
                 return "Character";
             }
@@ -1803,6 +2231,36 @@ namespace AnimeStudio.CLI
                 count += CountFrames(frame[i]);
             }
             return count;
+        }
+
+        private static string[] CollectFramePaths(ImportedFrame frame)
+        {
+            if (frame == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var paths = new List<string>();
+            CollectFramePaths(frame, paths);
+            return paths
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        private static void CollectFramePaths(ImportedFrame frame, List<string> paths)
+        {
+            if (frame == null)
+            {
+                return;
+            }
+
+            paths.Add(frame.Path);
+            for (var i = 0; i < frame.Count; i++)
+            {
+                CollectFramePaths(frame[i], paths);
+            }
         }
 
         private static string HashText(string text)
@@ -1917,6 +2375,8 @@ namespace AnimeStudio.CLI
                     return ExportGameObject(item, exportPath);
                 case ClassIDType.Texture2D:
                     return ExportTexture2D(item, exportPath);
+                case ClassIDType.Texture2DArray:
+                    return ExportTexture2DArray(item, exportPath);
                 case ClassIDType.AudioClip:
                     return ExportAudioClip(item, exportPath);
                 case ClassIDType.Shader:

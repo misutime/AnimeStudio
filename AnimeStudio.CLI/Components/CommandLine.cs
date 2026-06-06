@@ -14,7 +14,8 @@ namespace AnimeStudio.CLI
         Export,
         SplitObjects,
         Animator,
-        Library
+        Library,
+        AudioLibrary
     }
 
     public enum FbxAnimationMode
@@ -84,6 +85,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.ModelRootsOnly,
                 optionsBinder.FbxScaleFactor,
                 optionsBinder.FbxBoneSize,
+                optionsBinder.FbxExportAllNodes,
                 optionsBinder.FbxAnimationMode,
                 optionsBinder.HumanoidBakeSolver,
                 optionsBinder.ModelFormat,
@@ -102,10 +104,12 @@ namespace AnimeStudio.CLI
                 optionsBinder.ConvertTextureFormat,
                 optionsBinder.UpdateGltfTextureRefs,
                 optionsBinder.GeneratePreviewGltf,
+                optionsBinder.GenerateAssembledPreviewGltf,
                 optionsBinder.PreviewModel,
                 optionsBinder.PreviewAnimation,
                 optionsBinder.PreviewOutput,
                 optionsBinder.PreviewSourceRoot,
+                optionsBinder.AssemblyModules,
                 optionsBinder.PackModelAnimations,
                 optionsBinder.PackAnimations,
                 optionsBinder.PackOutput,
@@ -120,6 +124,16 @@ namespace AnimeStudio.CLI
                 optionsBinder.RunUnityBake,
                 optionsBinder.ApplyUnityBakeResult,
                 optionsBinder.BakedGltfOutput,
+                optionsBinder.BakedFbxOutput,
+                optionsBinder.GenerateSkeletonGuide,
+                optionsBinder.SkeletonGuideCatalog,
+                optionsBinder.RebuildLibraryIndexes,
+                optionsBinder.BuildSqliteIndex,
+                optionsBinder.BuildSourceSqliteIndex,
+                optionsBinder.SourceIndex,
+                optionsBinder.IndexPath,
+                optionsBinder.InspectUnityFiles,
+                optionsBinder.Blender,
                 optionsBinder.DummyDllFolder,
                 optionsBinder.Input,
                 optionsBinder.Output
@@ -153,6 +167,7 @@ namespace AnimeStudio.CLI
         public bool ModelRootsOnly { get; set; }
         public float? FbxScaleFactor { get; set; }
         public int? FbxBoneSize { get; set; }
+        public bool FbxExportAllNodes { get; set; }
         public FbxAnimationMode FbxAnimationMode { get; set; }
         public string HumanoidBakeSolver { get; set; }
         public ModelExportFormat ModelFormat { get; set; }
@@ -171,10 +186,12 @@ namespace AnimeStudio.CLI
         public AnimeStudio.ImageFormat ConvertTextureFormat { get; set; }
         public bool UpdateGltfTextureRefs { get; set; }
         public FileInfo GeneratePreviewGltf { get; set; }
+        public FileInfo GenerateAssembledPreviewGltf { get; set; }
         public string PreviewModel { get; set; }
         public string PreviewAnimation { get; set; }
         public DirectoryInfo PreviewOutput { get; set; }
         public DirectoryInfo PreviewSourceRoot { get; set; }
+        public string AssemblyModules { get; set; }
         public FileInfo PackModelAnimations { get; set; }
         public string PackAnimations { get; set; }
         public DirectoryInfo PackOutput { get; set; }
@@ -189,6 +206,16 @@ namespace AnimeStudio.CLI
         public bool RunUnityBake { get; set; }
         public FileInfo ApplyUnityBakeResult { get; set; }
         public FileInfo BakedGltfOutput { get; set; }
+        public FileInfo BakedFbxOutput { get; set; }
+        public FileInfo GenerateSkeletonGuide { get; set; }
+        public FileInfo SkeletonGuideCatalog { get; set; }
+        public DirectoryInfo RebuildLibraryIndexes { get; set; }
+        public DirectoryInfo BuildSqliteIndex { get; set; }
+        public bool BuildSourceSqliteIndex { get; set; }
+        public FileInfo SourceIndex { get; set; }
+        public FileInfo IndexPath { get; set; }
+        public bool InspectUnityFiles { get; set; }
+        public FileInfo Blender { get; set; }
         public DirectoryInfo DummyDllFolder { get; set; }
         public FileInfo Input { get; set; }
         public DirectoryInfo Output { get; set; }
@@ -217,6 +244,7 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> ModelRootsOnly;
         public readonly Option<float?> FbxScaleFactor;
         public readonly Option<int?> FbxBoneSize;
+        public readonly Option<bool> FbxExportAllNodes;
         public readonly Option<FbxAnimationMode> FbxAnimationMode;
         public readonly Option<string> HumanoidBakeSolver;
         public readonly Option<ModelExportFormat> ModelFormat;
@@ -235,10 +263,12 @@ namespace AnimeStudio.CLI
         public readonly Option<AnimeStudio.ImageFormat> ConvertTextureFormat;
         public readonly Option<bool> UpdateGltfTextureRefs;
         public readonly Option<FileInfo> GeneratePreviewGltf;
+        public readonly Option<FileInfo> GenerateAssembledPreviewGltf;
         public readonly Option<string> PreviewModel;
         public readonly Option<string> PreviewAnimation;
         public readonly Option<DirectoryInfo> PreviewOutput;
         public readonly Option<DirectoryInfo> PreviewSourceRoot;
+        public readonly Option<string> AssemblyModules;
         public readonly Option<FileInfo> PackModelAnimations;
         public readonly Option<string> PackAnimations;
         public readonly Option<DirectoryInfo> PackOutput;
@@ -253,6 +283,16 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> RunUnityBake;
         public readonly Option<FileInfo> ApplyUnityBakeResult;
         public readonly Option<FileInfo> BakedGltfOutput;
+        public readonly Option<FileInfo> BakedFbxOutput;
+        public readonly Option<FileInfo> GenerateSkeletonGuide;
+        public readonly Option<FileInfo> SkeletonGuideCatalog;
+        public readonly Option<DirectoryInfo> RebuildLibraryIndexes;
+        public readonly Option<DirectoryInfo> BuildSqliteIndex;
+        public readonly Option<bool> BuildSourceSqliteIndex;
+        public readonly Option<FileInfo> SourceIndex;
+        public readonly Option<FileInfo> IndexPath;
+        public readonly Option<bool> InspectUnityFiles;
+        public readonly Option<FileInfo> Blender;
         public readonly Option<DirectoryInfo> DummyDllFolder;
         public readonly Argument<FileInfo> Input;
         public readonly Argument<DirectoryInfo> Output;
@@ -266,7 +306,7 @@ namespace AnimeStudio.CLI
             ContainerFilter = new Option<Regex[]>("--containers", ParseRegexOption, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
             NameExcludeFilter = new Option<Regex[]>("--names_exclude", ParseRegexOption, false, "Specify name regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
             ContainerExcludeFilter = new Option<Regex[]>("--containers_exclude", ParseRegexOption, false, "Specify container/path regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
-            WorkMode = new Option<WorkMode>("--mode", "Specify export mode: Library, Export, SplitObjects, or Animator.");
+            WorkMode = new Option<WorkMode>("--mode", "Specify export mode: Library, AudioLibrary, Export, SplitObjects, or Animator.");
             GameName = new Option<string>("--game", $"Specify Game.");
             MapOp = new Option<MapOpType>("--map_op", "Specify which map to build.");
             MapType = new Option<ExportListType>("--map_type", "AssetMap output type.");
@@ -279,6 +319,7 @@ namespace AnimeStudio.CLI
             ModelRootsOnly = new Option<bool>("--model_roots_only", "Export only top-level model GameObjects and skip child mesh parts when their parent model is also exportable.");
             FbxScaleFactor = new Option<float?>("--fbx_scale_factor", "Override FBX scale factor.");
             FbxBoneSize = new Option<int?>("--fbx_bone_size", "Override FBX bone size.");
+            FbxExportAllNodes = new Option<bool>("--fbx_export_all_nodes", "Export every Unity transform/helper node in FBX. Disabled by default for clean library models.");
             FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
             HumanoidBakeSolver = new Option<string>("--humanoid_bake_solver", "Experimental Humanoid bake solver variant used for glTF preview/animation bake.");
             ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
@@ -297,10 +338,12 @@ namespace AnimeStudio.CLI
             ConvertTextureFormat = new Option<AnimeStudio.ImageFormat>("--texture_output_format", "Output image format for --convert_model_textures.");
             UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
             GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Generate a playable preview glTF from model_animations.json by re-exporting one model with one selected animation.").LegalFilePathsOnly();
+            GenerateAssembledPreviewGltf = new Option<FileInfo>("--generate_assembled_preview_gltf", "Generate a playable preview glTF and non-destructively add compatible modular character parts such as face, hair, or accessories when their Unity joints can be remapped.").LegalFilePathsOnly();
             PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with --generate_preview_gltf.");
             PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with --generate_preview_gltf.");
             PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for --generate_preview_gltf. Defaults to Previews/<model>__<animation> next to the index.");
             PreviewSourceRoot = new Option<DirectoryInfo>("--preview_source_root", "Full Unity game/source root used by preview and animation-pack commands to resolve dependencies instead of reusing possibly incomplete indexed sample paths.").LegalFilePathsOnly();
+            AssemblyModules = new Option<string>("--assembly_modules", "Comma-separated module roles or selectors for --generate_assembled_preview_gltf. Defaults to Face,Hair,Accessory.");
             PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
             PackAnimations = new Option<string>("--pack_animations", "Comma-separated animation names or regexes used with --pack_model_animations. If omitted, top candidates are used.");
             PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for --pack_model_animations.");
@@ -315,6 +358,16 @@ namespace AnimeStudio.CLI
             RunUnityBake = new Option<bool>("--run_unity_bake", "Run Unity Editor batchmode immediately after writing the bake request.");
             ApplyUnityBakeResult = new Option<FileInfo>("--apply_unity_bake_result", "Apply unity_bake_result.json or unity_bake_request.json to the source glTF and write a baked playable preview glTF.").LegalFilePathsOnly();
             BakedGltfOutput = new Option<FileInfo>("--baked_gltf_output", "Output glTF path for --apply_unity_bake_result. Defaults to BakedPreview/<model>__<clip>.gltf next to the bake request/result.");
+            BakedFbxOutput = new Option<FileInfo>("--baked_fbx_output", "Optional compatibility FBX output path. AnimeStudio first writes the baked glTF, then asks Blender to export FBX for DCC comparison.");
+            GenerateSkeletonGuide = new Option<FileInfo>("--generate_skeleton_guide", "Generate a non-destructive Blender CoreHumanoid skeleton guide from an exported FBX/glTF/GLB. Uses asset_catalog.jsonl Unity Avatar relations when available.").LegalFilePathsOnly();
+            SkeletonGuideCatalog = new Option<FileInfo>("--skeleton_guide_catalog", "Optional asset_catalog.jsonl used by --generate_skeleton_guide. If omitted, AnimeStudio walks up from the FBX path.").LegalFilePathsOnly();
+            RebuildLibraryIndexes = new Option<DirectoryInfo>("--rebuild_library_indexes", "Rebuild summary, validation, skeleton, model-animation, and compact indexes from a previous Library export without loading the original Unity game files. Explicit Animator relations require a fresh export; catalog structural links are rebuilt.").LegalFilePathsOnly();
+            BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Build a reusable SQLite index from a previous Library or AudioLibrary export. This keeps indexing broad while export remains strict.").LegalFilePathsOnly();
+            BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
+            SourceIndex = new Option<FileInfo>("--source_index", "SQLite Unity source index used by Library export for dependency resolution. Prefer unity_source_index.db over legacy CAB maps for full exports.").LegalFilePathsOnly();
+            IndexPath = new Option<FileInfo>("--index_path", "Output SQLite database path for --build_sqlite_index. Defaults to library_index.db in the export root.");
+            InspectUnityFiles = new Option<bool>("--inspect_unity_files", "Load Unity files and write unity_file_inspect.json with object type counts and sample names, without exporting assets.");
+            Blender = new Option<FileInfo>("--blender", "Blender executable path used for optional glTF-to-FBX compatibility packaging.").LegalFilePathsOnly();
             DummyDllFolder = new Option<DirectoryInfo>("--dummy_dlls", "Specify DummyDll path.").LegalFilePathsOnly();
             Input = new Argument<FileInfo>("input_path", "Input file/folder.").LegalFilePathsOnly();
             Output = new Argument<DirectoryInfo>("output_path", "Output folder.").LegalFilePathsOnly();
@@ -347,7 +400,7 @@ namespace AnimeStudio.CLI
 
             GameName.FromAmong(GameManager.GetGameNames());
 
-            LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Debug, LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
+            LoggerFlags.SetDefaultValue(new LoggerEvent[] { LoggerEvent.Info, LoggerEvent.Warning, LoggerEvent.Error });
             GroupAssetsType.SetDefaultValue(AssetGroupOption.ByLibrary);
             AssetExportType.SetDefaultValue(ExportType.Convert);
             WorkMode.SetDefaultValue(AnimeStudio.CLI.WorkMode.Library);
@@ -359,7 +412,7 @@ namespace AnimeStudio.CLI
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.Core);
             ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
             MaxExportTasks.SetDefaultValue(1);
-            BatchFiles.SetDefaultValue(4);
+            BatchFiles.SetDefaultValue(16);
             ModelGcInterval.SetDefaultValue(32);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
@@ -430,6 +483,7 @@ namespace AnimeStudio.CLI
             ModelRootsOnly = bindingContext.ParseResult.GetValueForOption(ModelRootsOnly),
                 FbxScaleFactor = bindingContext.ParseResult.GetValueForOption(FbxScaleFactor),
                 FbxBoneSize = bindingContext.ParseResult.GetValueForOption(FbxBoneSize),
+                FbxExportAllNodes = bindingContext.ParseResult.GetValueForOption(FbxExportAllNodes),
                 FbxAnimationMode = bindingContext.ParseResult.GetValueForOption(FbxAnimationMode),
                 HumanoidBakeSolver = bindingContext.ParseResult.GetValueForOption(HumanoidBakeSolver),
                 ModelFormat = bindingContext.ParseResult.GetValueForOption(ModelFormat),
@@ -448,10 +502,12 @@ namespace AnimeStudio.CLI
                 ConvertTextureFormat = bindingContext.ParseResult.GetValueForOption(ConvertTextureFormat),
                 UpdateGltfTextureRefs = bindingContext.ParseResult.GetValueForOption(UpdateGltfTextureRefs),
                 GeneratePreviewGltf = bindingContext.ParseResult.GetValueForOption(GeneratePreviewGltf),
+                GenerateAssembledPreviewGltf = bindingContext.ParseResult.GetValueForOption(GenerateAssembledPreviewGltf),
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
                 PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),
                 PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
                 PreviewSourceRoot = bindingContext.ParseResult.GetValueForOption(PreviewSourceRoot),
+                AssemblyModules = bindingContext.ParseResult.GetValueForOption(AssemblyModules),
                 PackModelAnimations = bindingContext.ParseResult.GetValueForOption(PackModelAnimations),
                 PackAnimations = bindingContext.ParseResult.GetValueForOption(PackAnimations),
                 PackOutput = bindingContext.ParseResult.GetValueForOption(PackOutput),
@@ -466,6 +522,16 @@ namespace AnimeStudio.CLI
                 RunUnityBake = bindingContext.ParseResult.GetValueForOption(RunUnityBake),
                 ApplyUnityBakeResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeResult),
                 BakedGltfOutput = bindingContext.ParseResult.GetValueForOption(BakedGltfOutput),
+                BakedFbxOutput = bindingContext.ParseResult.GetValueForOption(BakedFbxOutput),
+                GenerateSkeletonGuide = bindingContext.ParseResult.GetValueForOption(GenerateSkeletonGuide),
+                SkeletonGuideCatalog = bindingContext.ParseResult.GetValueForOption(SkeletonGuideCatalog),
+                RebuildLibraryIndexes = bindingContext.ParseResult.GetValueForOption(RebuildLibraryIndexes),
+                BuildSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSqliteIndex),
+                BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
+                SourceIndex = bindingContext.ParseResult.GetValueForOption(SourceIndex),
+                IndexPath = bindingContext.ParseResult.GetValueForOption(IndexPath),
+                InspectUnityFiles = bindingContext.ParseResult.GetValueForOption(InspectUnityFiles),
+                Blender = bindingContext.ParseResult.GetValueForOption(Blender),
                 DummyDllFolder = bindingContext.ParseResult.GetValueForOption(DummyDllFolder),
                 Input = bindingContext.ParseResult.GetValueForArgument(Input),
                 Output = bindingContext.ParseResult.GetValueForArgument(Output)

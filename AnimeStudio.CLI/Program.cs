@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using AnimeStudio.CLI.Properties;
 using Newtonsoft.Json;
@@ -77,23 +78,66 @@ namespace AnimeStudio.CLI
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
                         o.RunUnityBake,
-                        o.BakedGltfOutput?.FullName
+                        o.BakedGltfOutput?.FullName,
+                        o.BakedFbxOutput?.FullName,
+                        o.Blender?.FullName
                     );
                     return;
                 }
 
                 if (o.ApplyUnityBakeResult != null)
                 {
-                    UnityBakeResultApplier.Apply(
+                    var bakedGltf = UnityBakeResultApplier.Apply(
                         o.ApplyUnityBakeResult.FullName,
                         o.BakedGltfOutput?.FullName
                     );
+                    if (!string.IsNullOrWhiteSpace(o.BakedFbxOutput?.FullName))
+                    {
+                        BlenderFbxExporter.Export(bakedGltf, o.BakedFbxOutput.FullName, o.Blender?.FullName);
+                    }
+                    return;
+                }
+
+                if (o.GenerateSkeletonGuide != null)
+                {
+                    BlenderSkeletonGuideGenerator.Generate(
+                        o.GenerateSkeletonGuide.FullName,
+                        o.PreviewOutput?.FullName,
+                        o.SkeletonGuideCatalog?.FullName,
+                        o.Blender?.FullName
+                    );
+                    return;
+                }
+
+                if (o.GenerateAssembledPreviewGltf != null)
+                {
+                    ModularPreviewAssembler.Generate(
+                        o.GenerateAssembledPreviewGltf.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName,
+                        o.AssemblyModules
+                    );
+                    return;
+                }
+
+                if (o.RebuildLibraryIndexes != null)
+                {
+                    Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName);
+                    return;
+                }
+
+                if (o.BuildSqliteIndex != null)
+                {
+                    SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName);
                     return;
                 }
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, or --apply_unity_bake_result for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --build_sqlite_index, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -137,6 +181,7 @@ namespace AnimeStudio.CLI
                 Studio.ModelGcInterval = Math.Max(0, o.ModelGcInterval);
                 CliExportOptions.FbxScaleFactor = o.FbxScaleFactor;
                 CliExportOptions.FbxBoneSize = o.FbxBoneSize;
+                CliExportOptions.FbxExportAllNodes = o.FbxExportAllNodes;
                 CliExportOptions.FbxAnimationMode = o.FbxAnimationMode;
                 CliExportOptions.HumanoidBakeSolver = o.HumanoidBakeSolver;
                 CliExportOptions.ModelFormat = o.ModelFormat;
@@ -151,6 +196,7 @@ namespace AnimeStudio.CLI
                 ProfileLogger.Initialize(o.Output.FullName, o.ProfileLog);
 
                 TypeFlags.SetTypes(JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Settings.Default.types));
+                TypeFlags.SetType(ClassIDType.Texture2DArray, true, true);
 
                 var classTypeFilter = Array.Empty<ClassIDType>();
                 if (!o.TypeFilter.IsNullOrEmpty())
@@ -203,6 +249,7 @@ namespace AnimeStudio.CLI
                     if (ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport())
                     {
                         TypeFlags.SetType(ClassIDType.Texture2D, true, exportTexture2D);
+                        TypeFlags.SetType(ClassIDType.Texture2DArray, true, false);
                         if (Settings.Default.exportMaterials)
                         {
                             TypeFlags.SetType(ClassIDType.Material, true, exportMaterial);
@@ -214,6 +261,10 @@ namespace AnimeStudio.CLI
                     }
                 }
                 ConfigureWorkModeTypes(o.WorkMode, o.FbxAnimationMode);
+                if (o.BuildSourceSqliteIndex)
+                {
+                    ConfigureSourceIndexTypes();
+                }
                 if (o.WorkMode != WorkMode.Export)
                 {
                     classTypeFilter = Array.Empty<ClassIDType>();
@@ -262,21 +313,55 @@ namespace AnimeStudio.CLI
                     assemblyLoader.Load(o.DummyDllFolder.FullName);
                 }
 
+                if (o.BuildSourceSqliteIndex)
+                {
+                    SQLiteSourceIndexBuilder.Build(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.UnityVersion,
+                        Math.Max(1, o.BatchFiles),
+                        o.IndexPath?.FullName
+                    );
+                    return;
+                }
+
                 Logger.Info("Scanning for files...");
-                var files = o.Input.Attributes.HasFlag(FileAttributes.Directory) ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories).OrderBy(x => x.Length).ToArray() : new string[] { o.Input.FullName };
+                var allFiles = o.Input.Attributes.HasFlag(FileAttributes.Directory)
+                    ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories)
+                    : new string[] { o.Input.FullName };
+                var files = allFiles
+                    .Where(SQLiteSourceIndexBuilder.IsLikelyUnityLoadableFile)
+                    .OrderBy(SafeFileLength)
+                    .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var skippedNonUnityFiles = allFiles.Length - files.Length;
+                if (skippedNonUnityFiles > 0)
+                {
+                    Logger.Info($"Skipped {skippedNonUnityFiles} sidecar/non-Unity file(s) before Library load.");
+                }
                 var dependencyMapFiles = files;
+                var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
+                    ? o.Input.FullName
+                    : Path.GetDirectoryName(o.Input.FullName);
                 var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.Profile3D, o.ContainerExcludeFilter);
                 var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.Profile3D, o.NameExcludeFilter);
                 if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
                 {
                     var originalCount = files.Length;
-                    files = files.Where(x => !containerExcludeFilters.Any(y => y.IsMatch(x))).ToArray();
+                    files = files
+                        .Where(x =>
+                        {
+                            var filterPath = NormalizeFilterPath(x, inputBaseFolder);
+                            return !containerExcludeFilters.Any(y => y.IsMatch(filterPath));
+                        })
+                        .ToArray();
                     Logger.Info($"Excluded {originalCount - files.Length} file(s) by 3D path filters.");
                 }
                 if (o.WorkMode != WorkMode.Export && !o.ContainerFilter.IsNullOrEmpty())
                 {
                     var matchedFiles = files
-                        .Where(x => o.ContainerFilter.Any(y => y.IsMatch(NormalizeFilterPath(x))))
+                        .Where(x => o.ContainerFilter.Any(y => y.IsMatch(NormalizeFilterPath(x, inputBaseFolder))))
                         .ToArray();
                     if (matchedFiles.Length > 0 && matchedFiles.Length < files.Length)
                     {
@@ -290,16 +375,64 @@ namespace AnimeStudio.CLI
                     Logger.Warning("No files left after applying filters.");
                     return;
                 }
-                var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
-                    ? o.Input.FullName
-                    : Path.GetDirectoryName(o.Input.FullName);
+                var sourceIndexPath = SQLiteSourceIndexRuntime.ResolveIndexPath(
+                    o.SourceIndex?.FullName,
+                    o.Input.FullName,
+                    o.Output.FullName
+                );
+                SQLiteSourceIndexRuntime.LoadResult sourceIndexResult = null;
+                if (string.IsNullOrWhiteSpace(sourceIndexPath)
+                    && o.WorkMode == WorkMode.Library
+                    && o.MapOp.Equals(MapOpType.None))
+                {
+                    Logger.Info("No SQLite source index was supplied or found. Building unity_source_index.db in the output directory before Library export.");
+                    sourceIndexPath = SQLiteSourceIndexBuilder.Build(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.UnityVersion,
+                        Math.Max(1, o.BatchFiles)
+                    );
+                }
+
+                if (!string.IsNullOrWhiteSpace(sourceIndexPath))
+                {
+                    sourceIndexResult = SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(
+                        sourceIndexPath,
+                        o.Input.FullName,
+                        game.Name
+                    );
+                    SQLiteSourceIndexRuntime.WriteUsageReport(o.Output.FullName, sourceIndexResult);
+                    if (sourceIndexResult != null)
+                    {
+                        assetsManager.ResolveDependencies = true;
+                    }
+                }
+                else if (o.WorkMode == WorkMode.Library || o.WorkMode == WorkMode.AudioLibrary)
+                {
+                    Logger.Warning("No SQLite source index was supplied or found. Legacy CAB/Asset maps are only available through explicit --map_op compatibility commands.");
+                }
+
                 var mapName = ResolveMapName(o.MapName, game, inputBaseFolder);
                 Logger.Info($"Using map name {mapName}");
-                var needsModelDependencies = ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport();
+                var needsModelDependencies = !o.InspectUnityFiles && (ClassIDType.GameObject.CanExport() || ClassIDType.Animator.CanExport());
                 var cabMapSourceFiles = needsModelDependencies ? dependencyMapFiles : files;
                 var expectedCabMapFileCount = cabMapSourceFiles.Length;
 
-                if (o.MapOp.HasFlag(MapOpType.CABMap))
+                if (sourceIndexResult == null
+                    && o.WorkMode == WorkMode.Library
+                    && o.MapOp.Equals(MapOpType.None)
+                    && needsModelDependencies)
+                {
+                    throw new InvalidOperationException("Library export requires a SQLite Unity source index. Build it with --build_source_sqlite_index, pass --source_index, or let the default Library command auto-build unity_source_index.db in the output directory.");
+                }
+
+                if (sourceIndexResult != null && (o.MapOp.HasFlag(MapOpType.CABMap) || o.MapOp.HasFlag(MapOpType.Both)))
+                {
+                    Logger.Warning("SQLite source index is active; skipping legacy CABMap build/load. Use --source_index as the dependency source for full exports.");
+                }
+
+                if (sourceIndexResult == null && o.MapOp.HasFlag(MapOpType.CABMap))
                 {
                     if (o.MapOp.HasFlag(MapOpType.Load))
                     {
@@ -344,11 +477,15 @@ namespace AnimeStudio.CLI
                         Task.Run(() => AssetsHelper.BuildAssetMap(files, mapName, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                     }
                 }
-                if (o.MapOp.HasFlag(MapOpType.Both))
+                if (sourceIndexResult == null && o.MapOp.HasFlag(MapOpType.Both))
                 {
                     Task.Run(() => AssetsHelper.BuildBoth(cabMapSourceFiles, mapName, inputBaseFolder, game, o.Output.FullName, o.MapType, classTypeFilter, o.NameFilter, o.ContainerFilter)).Wait();
                 }
-                if (needsModelDependencies && o.MapOp.Equals(MapOpType.None))
+                if (sourceIndexResult != null && o.MapOp.HasFlag(MapOpType.AssetMap))
+                {
+                    Logger.Warning("Legacy AssetMap is still an explicit compatibility command. SQLite source index remains the preferred dependency source.");
+                }
+                if (sourceIndexResult == null && needsModelDependencies && o.MapOp.Equals(MapOpType.None))
                 {
                     bool cabMapLoaded;
                     using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
@@ -380,6 +517,7 @@ namespace AnimeStudio.CLI
                 if (o.MapOp.Equals(MapOpType.None) || o.MapOp.HasFlag(MapOpType.Load))
                 {
                     var i = 0;
+                    var inspectReports = new List<object>();
 
                     var path = Path.GetDirectoryName(Path.GetFullPath(files[0]));
                     ImportHelper.MergeSplitAssets(path);
@@ -388,13 +526,28 @@ namespace AnimeStudio.CLI
                     var fileList = new List<string>(toReadFile);
                     foreach (var batch in ChunkFiles(fileList, GetEffectiveBatchSize(o.WorkMode)))
                     {
+                        var largestBatchFile = batch
+                            .Select(x => new { Path = x, Bytes = SafeFileLength(x) })
+                            .OrderByDescending(x => x.Bytes)
+                            .FirstOrDefault();
+                        var batchBytes = batch.Sum(SafeFileLength);
+                        using (StartLibraryLoadHeartbeat(batch.Count, batchBytes, largestBatchFile?.Path, largestBatchFile?.Bytes ?? 0, assetsManager))
                         using (ProfileLogger.Measure("load_batch", new Dictionary<string, object>
                         {
                             ["batchSize"] = batch.Count,
+                            ["batchBytes"] = batchBytes,
+                            ["largestFile"] = largestBatchFile?.Path,
+                            ["largestFileBytes"] = largestBatchFile?.Bytes ?? 0,
                             ["firstFile"] = batch.FirstOrDefault(),
                         }))
                         {
                             assetsManager.LoadFiles(batch.ToArray());
+                        }
+                        if (o.InspectUnityFiles)
+                        {
+                            inspectReports.AddRange(BuildUnityFileInspect(assetsManager, batch));
+                            assetsManager.Clear();
+                            continue;
                         }
                         if (assetsManager.assetsFileList.Count > 0)
                         {
@@ -434,6 +587,14 @@ namespace AnimeStudio.CLI
                             assetsManager.Clear();
                         }
                     }
+                    if (o.InspectUnityFiles)
+                    {
+                        WriteUnityFileInspect(o.Output.FullName, inspectReports);
+                    }
+                    else if (o.WorkMode == WorkMode.Library)
+                    {
+                        GenerateLibraryIndexes(o.Output.FullName);
+                    }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
                 {
@@ -464,13 +625,71 @@ namespace AnimeStudio.CLI
             return $"auto_{game.Type}_{hash}";
         }
 
+        private static IEnumerable<object> BuildUnityFileInspect(AssetsManager assetsManager, IReadOnlyCollection<string> batch)
+        {
+            foreach (var assetsFile in assetsManager.assetsFileList)
+            {
+                var rawTypeCounts = assetsFile.m_Objects
+                    .GroupBy(x => Enum.IsDefined(typeof(ClassIDType), x.classID) ? ((ClassIDType)x.classID).ToString() : $"Unknown_{x.classID}")
+                    .OrderByDescending(x => x.Count())
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count());
+                var parsedTypeCounts = assetsFile.Objects
+                    .GroupBy(x => x.type.ToString())
+                    .OrderByDescending(x => x.Count())
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count());
+                var sampleNames = assetsFile.Objects
+                    .Where(x => x is NamedObject && !string.IsNullOrWhiteSpace(x.Name))
+                    .GroupBy(x => x.type.ToString())
+                    .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x
+                            .Select(y => y.Name)
+                            .Where(y => !string.IsNullOrWhiteSpace(y))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Take(30)
+                            .ToArray()
+                    );
+
+                yield return new
+                {
+                    source = assetsFile.originalPath ?? assetsFile.fullName,
+                    file = assetsFile.fileName,
+                    unityVersion = assetsFile.unityVersion,
+                    platform = assetsFile.m_TargetPlatform.ToString(),
+                    rawObjectCount = assetsFile.m_Objects.Count,
+                    parsedObjectCount = assetsFile.Objects.Count,
+                    rawTypeCounts,
+                    parsedTypeCounts,
+                    sampleNames,
+                    batch = batch.ToArray(),
+                };
+            }
+        }
+
+        private static void WriteUnityFileInspect(string outputFolder, IReadOnlyCollection<object> reports)
+        {
+            Directory.CreateDirectory(outputFolder);
+            var output = Path.Combine(outputFolder, "unity_file_inspect.json");
+            var summary = new
+            {
+                generatedAt = DateTime.UtcNow,
+                fileCount = reports.Count,
+                files = reports,
+            };
+            File.WriteAllText(output, JsonConvert.SerializeObject(summary, Formatting.Indented));
+            Logger.Info($"Wrote Unity file inspect report: {output}");
+        }
+
         private static Regex[] GetContainerExcludeFilters(
             WorkMode workMode,
             Model3DProfile profile3D,
             Regex[] userExcludeFilters
         )
         {
-            if (workMode == WorkMode.Export)
+            if (workMode == WorkMode.Export || workMode == WorkMode.AudioLibrary)
             {
                 return userExcludeFilters ?? Array.Empty<Regex>();
             }
@@ -478,7 +697,7 @@ namespace AnimeStudio.CLI
             var filters = new List<Regex>();
             filters.Add(
                 new Regex(
-                    @"(^|[\\/])([^\\/]*(ui|emoji)[^\\/]*|sounds?|audio|videos?|camera)([\\/]|\.|$)",
+                    @"(^|[\\/])((ui|uiassets?|uiprefabs?|userinterface|emoji|emojis|sounds?|audio|videos?|camera)([\\/]|\.|$)|[^\\/]*[_\-.](ui|emoji)([_\-.]|[\\/]|$))",
                     RegexOptions.IgnoreCase | RegexOptions.Compiled
                 )
             );
@@ -517,14 +736,36 @@ namespace AnimeStudio.CLI
             return filters.ToArray();
         }
 
-        private static string NormalizeFilterPath(string path)
+        private static string NormalizeFilterPath(string path, string baseFolder = null)
         {
-            return path?.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/') ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+
+            var filterPath = path;
+            if (!string.IsNullOrWhiteSpace(baseFolder))
+            {
+                try
+                {
+                    filterPath = Path.GetRelativePath(baseFolder, path);
+                    if (filterPath.StartsWith("..", StringComparison.Ordinal))
+                    {
+                        filterPath = path;
+                    }
+                }
+                catch
+                {
+                    filterPath = path;
+                }
+            }
+
+            return filterPath.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
         }
 
         private static Regex[] GetNameExcludeFilters(WorkMode workMode, Model3DProfile profile3D, Regex[] userExcludeFilters)
         {
-            if (workMode == WorkMode.Export)
+            if (workMode == WorkMode.Export || workMode == WorkMode.AudioLibrary)
             {
                 return userExcludeFilters ?? Array.Empty<Regex>();
             }
@@ -562,6 +803,32 @@ namespace AnimeStudio.CLI
                 return;
             }
 
+            if (workMode == WorkMode.AudioLibrary)
+            {
+                TypeFlags.SetType(ClassIDType.AnimationClip, false, false);
+                TypeFlags.SetType(ClassIDType.Animator, false, false);
+                TypeFlags.SetType(ClassIDType.GameObject, false, false);
+                TypeFlags.SetType(ClassIDType.Transform, false, false);
+                TypeFlags.SetType(ClassIDType.MeshFilter, false, false);
+                TypeFlags.SetType(ClassIDType.MeshRenderer, false, false);
+                TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, false, false);
+                TypeFlags.SetType(ClassIDType.Mesh, false, false);
+                TypeFlags.SetType(ClassIDType.Material, false, false);
+                TypeFlags.SetType(ClassIDType.Texture2D, false, false);
+                TypeFlags.SetType(ClassIDType.Texture2DArray, false, false);
+                TypeFlags.SetType(ClassIDType.AudioClip, true, true);
+                TypeFlags.SetType(ClassIDType.VideoClip, false, false);
+                TypeFlags.SetType(ClassIDType.MovieTexture, false, false);
+                TypeFlags.SetType(ClassIDType.Sprite, false, false);
+                TypeFlags.SetType(ClassIDType.SpriteAtlas, false, false);
+                TypeFlags.SetType(ClassIDType.Font, false, false);
+                TypeFlags.SetType(ClassIDType.TextAsset, false, false);
+                TypeFlags.SetType(ClassIDType.MonoBehaviour, false, false);
+                TypeFlags.SetType(ClassIDType.MiHoYoBinData, false, false);
+                TypeFlags.SetType(ClassIDType.Shader, false, false);
+                return;
+            }
+
             TypeFlags.SetType(ClassIDType.GameObject, true, workMode == WorkMode.SplitObjects || workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.Animator, true, workMode == WorkMode.Animator || workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.Transform, true, false);
@@ -570,7 +837,8 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, true, false);
             TypeFlags.SetType(ClassIDType.Mesh, true, false);
             TypeFlags.SetType(ClassIDType.Material, true, false);
-            TypeFlags.SetType(ClassIDType.Texture2D, true, false);
+            TypeFlags.SetType(ClassIDType.Texture2D, true, workMode == WorkMode.Library);
+            TypeFlags.SetType(ClassIDType.Texture2DArray, true, workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.AudioClip, false, false);
             TypeFlags.SetType(ClassIDType.VideoClip, false, false);
             TypeFlags.SetType(ClassIDType.MovieTexture, false, false);
@@ -596,9 +864,149 @@ namespace AnimeStudio.CLI
             }
         }
 
+        private static void ConfigureSourceIndexTypes()
+        {
+            TypeFlags.SetTypes(new Dictionary<ClassIDType, (bool, bool)>());
+            foreach (ClassIDType type in Enum.GetValues(typeof(ClassIDType)))
+            {
+                TypeFlags.SetType(type, false, false);
+            }
+
+            var parseTypes = new[]
+            {
+                ClassIDType.Animation,
+                ClassIDType.AnimationClip,
+                ClassIDType.Animator,
+                ClassIDType.AnimatorController,
+                ClassIDType.AnimatorOverrideController,
+                ClassIDType.AssetBundle,
+                ClassIDType.AudioClip,
+                ClassIDType.Avatar,
+                ClassIDType.GameObject,
+                ClassIDType.IndexObject,
+                ClassIDType.Material,
+                ClassIDType.Mesh,
+                ClassIDType.MeshFilter,
+                ClassIDType.MeshRenderer,
+                ClassIDType.MonoBehaviour,
+                ClassIDType.MonoScript,
+                ClassIDType.RectTransform,
+                ClassIDType.ResourceManager,
+                ClassIDType.Shader,
+                ClassIDType.SkinnedMeshRenderer,
+                ClassIDType.Sprite,
+                ClassIDType.SpriteAtlas,
+                ClassIDType.TextAsset,
+                ClassIDType.Texture2D,
+                ClassIDType.Texture2DArray,
+                ClassIDType.Transform,
+            };
+
+            foreach (var type in parseTypes)
+            {
+                TypeFlags.SetType(type, true, false);
+            }
+        }
+
         private static int GetEffectiveBatchSize(WorkMode workMode)
         {
             return workMode == WorkMode.Export ? 1 : Math.Max(1, Studio.BatchFiles);
+        }
+
+        private static long SafeFileLength(string path)
+        {
+            try
+            {
+                return new FileInfo(path).Length;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static IDisposable StartLibraryLoadHeartbeat(
+            int batchFileCount,
+            long batchBytes,
+            string largestFile,
+            long largestFileBytes,
+            AssetsManager manager)
+        {
+            return new LibraryLoadHeartbeat(batchFileCount, batchBytes, largestFile, largestFileBytes, manager);
+        }
+
+        private sealed class LibraryLoadHeartbeat : IDisposable
+        {
+            private readonly CancellationTokenSource cancellation = new();
+            private readonly Task task;
+            private readonly DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+            private readonly int batchFileCount;
+            private readonly long batchBytes;
+            private readonly string largestFile;
+            private readonly long largestFileBytes;
+            private readonly AssetsManager manager;
+
+            public LibraryLoadHeartbeat(
+                int batchFileCount,
+                long batchBytes,
+                string largestFile,
+                long largestFileBytes,
+                AssetsManager manager)
+            {
+                this.batchFileCount = batchFileCount;
+                this.batchBytes = batchBytes;
+                this.largestFile = largestFile;
+                this.largestFileBytes = largestFileBytes;
+                this.manager = manager;
+                task = Task.Run(Run);
+            }
+
+            private async Task Run()
+            {
+                while (!cancellation.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), cancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        break;
+                    }
+
+                    if (cancellation.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
+                    var data = new Dictionary<string, object>
+                    {
+                        ["batchFileCount"] = batchFileCount,
+                        ["batchBytes"] = batchBytes,
+                        ["largestFile"] = largestFile,
+                        ["largestFileBytes"] = largestFileBytes,
+                        ["loadedAssetFiles"] = manager.assetsFileList.Count,
+                        ["elapsedMs"] = elapsedMs,
+                    };
+                    ProfileLogger.Event("load_batch_heartbeat", data);
+                    Logger.Info($"Library load heartbeat: {batchFileCount} file(s), loaded {manager.assetsFileList.Count} asset file(s), elapsed {elapsedMs / 1000:0}s, largest {Path.GetFileName(largestFile)}.");
+                }
+            }
+
+            public void Dispose()
+            {
+                cancellation.Cancel();
+                try
+                {
+                    task.Wait(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // Heartbeat is diagnostic only.
+                }
+                cancellation.Dispose();
+            }
         }
 
         private static IEnumerable<List<string>> ChunkFiles(List<string> files, int size)

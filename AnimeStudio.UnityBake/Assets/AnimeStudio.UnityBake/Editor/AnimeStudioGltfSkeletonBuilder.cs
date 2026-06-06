@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -89,6 +90,43 @@ namespace AnimeStudio.UnityBake
                 });
             }
 
+            var skeleton = BuildSkeletonBones(root, avatarAsset);
+            var settings = avatarAsset.humanDescription;
+
+            var description = new HumanDescription
+            {
+                human = humanBones.ToArray(),
+                skeleton = skeleton.ToArray(),
+                armStretch = settings != null ? settings.armStretch : 0.05f,
+                legStretch = settings != null ? settings.legStretch : 0.05f,
+                upperArmTwist = settings != null ? settings.armTwist : 0.5f,
+                lowerArmTwist = settings != null ? settings.foreArmTwist : 0.5f,
+                upperLegTwist = settings != null ? settings.upperLegTwist : 0.5f,
+                lowerLegTwist = settings != null ? settings.legTwist : 0.5f,
+                feetSpacing = settings != null ? settings.feetSpacing : 0,
+                hasTranslationDoF = settings != null && settings.hasTranslationDoF,
+            };
+            var avatar = AvatarBuilder.BuildHumanAvatar(root, description);
+            avatar.name = string.IsNullOrWhiteSpace(avatarAsset.name) ? root.name + "Avatar" : avatarAsset.name;
+            return avatar;
+        }
+
+        private static List<SkeletonBone> BuildSkeletonBones(GameObject root, AnimeStudioAvatarAsset avatarAsset)
+        {
+            if (avatarAsset?.skeletonBones != null && avatarAsset.skeletonBones.Length > 0)
+            {
+                return avatarAsset.skeletonBones
+                    .Where(x => !string.IsNullOrWhiteSpace(x.name))
+                    .Select(x => new SkeletonBone
+                    {
+                        name = x.name,
+                        position = x.position.ToVector3(),
+                        rotation = x.rotation.ToQuaternion(),
+                        scale = x.scale.ToVector3(),
+                    })
+                    .ToList();
+            }
+
             var skeleton = new List<SkeletonBone>();
             foreach (var transform in root.GetComponentsInChildren<Transform>(true))
             {
@@ -100,39 +138,33 @@ namespace AnimeStudio.UnityBake
                     scale = transform.localScale,
                 });
             }
-
-            var description = new HumanDescription
-            {
-                human = humanBones.ToArray(),
-                skeleton = skeleton.ToArray(),
-                armStretch = 0.05f,
-                legStretch = 0.05f,
-                upperArmTwist = 0.5f,
-                lowerArmTwist = 0.5f,
-                upperLegTwist = 0.5f,
-                lowerLegTwist = 0.5f,
-                feetSpacing = 0,
-                hasTranslationDoF = false,
-            };
-            var avatar = AvatarBuilder.BuildHumanAvatar(root, description);
-            avatar.name = string.IsNullOrWhiteSpace(avatarAsset.name) ? root.name + "Avatar" : avatarAsset.name;
-            return avatar;
+            return skeleton;
         }
 
         private static void ApplyLocalTransform(Transform transform, GltfNode node)
         {
             if (node.translation != null && node.translation.Length >= 3)
             {
-                transform.localPosition = new Vector3(node.translation[0], node.translation[1], node.translation[2]);
+                transform.localPosition = GltfToUnityPosition(node.translation);
             }
             if (node.rotation != null && node.rotation.Length >= 4)
             {
-                transform.localRotation = new Quaternion(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]);
+                transform.localRotation = GltfToUnityRotation(node.rotation);
             }
             if (node.scale != null && node.scale.Length >= 3)
             {
                 transform.localScale = new Vector3(node.scale[0], node.scale[1], node.scale[2]);
             }
+        }
+
+        private static Vector3 GltfToUnityPosition(float[] value)
+        {
+            return new Vector3(-value[0], value[1], value[2]);
+        }
+
+        private static Quaternion GltfToUnityRotation(float[] value)
+        {
+            return new Quaternion(value[0], -value[1], -value[2], value[3]);
         }
 
         [Serializable]

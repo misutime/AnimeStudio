@@ -16,9 +16,25 @@ namespace AnimeStudio
         public bool Silent = false;
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
+        public bool LoadSerializedFileExternals = true;
+        public bool StoreUnparsedObjects = true;
+        public Func<ClassIDType, bool> ObjectParseFilter;
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
+        public string CurrentReadAssetsFile { get; private set; }
+        public string CurrentLoadFile { get; private set; }
+        public string CurrentLoadPhase { get; private set; }
+        public string CurrentLoadInnerFile { get; private set; }
+        public int CurrentLoadInnerFileIndex { get; private set; }
+        public int CurrentLoadInnerFileCount { get; private set; }
+        public int CurrentReadObjectIndex { get; private set; }
+        public int CurrentReadObjectCount { get; private set; }
+        public long CurrentReadPathId { get; private set; }
+        public ClassIDType CurrentReadType { get; private set; }
+        private readonly Dictionary<ClassIDType, int> objectParseFailureCounts = new();
+
+        public IReadOnlyDictionary<ClassIDType, int> ObjectParseFailureCounts => objectParseFailureCounts;
 
         internal Dictionary<string, int> assetsFileIndexCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, BinaryReader> resourceFileReaders = new Dictionary<string, BinaryReader>(StringComparer.OrdinalIgnoreCase);
@@ -118,7 +134,10 @@ namespace AnimeStudio
             //use a for loop because list size can change
             for (var i = 0; i < importFiles.Count; i++)
             {
+                CurrentLoadFile = importFiles[i];
+                CurrentLoadPhase = "load_file";
                 LoadFile(importFiles[i]);
+                CurrentLoadPhase = "loaded_file";
                 Progress.Report(i + 1, importFiles.Count);
                 if (tokenSource.IsCancellationRequested)
                 {
@@ -135,9 +154,17 @@ namespace AnimeStudio
 
             if (!SkipProcess)
             {
+                CurrentLoadPhase = "read_assets";
                 ReadAssets();
+                CurrentLoadPhase = "process_assets";
                 ProcessAssets();
             }
+            else
+            {
+                CurrentLoadPhase = "read_assets";
+                ReadAssets();
+            }
+            CurrentLoadPhase = "loaded";
         }
 
         private void LoadFile(string fullName)
@@ -221,6 +248,8 @@ namespace AnimeStudio
             if (!assetsFileListHash.Contains(reader.FileName))
             {
                 Logger.Info($"Loading {reader.FullPath}");
+                CurrentLoadFile = reader.FullPath;
+                CurrentLoadPhase = "load_serialized_metadata";
                 try
                 {
                     var assetsFile = new SerializedFile(reader, this);
@@ -229,34 +258,37 @@ namespace AnimeStudio
                     assetsFileIndexCache.Add(assetsFile.fileName, assetsFileList.Count - 1);
                     assetsFileListHash.Add(assetsFile.fileName);
 
-                    foreach (var sharedFile in assetsFile.m_Externals)
+                    if (LoadSerializedFileExternals)
                     {
-                        Logger.Verbose($"{assetsFile.fileName} needs external file {sharedFile.fileName}, attempting to look it up...");
-                        var sharedFileName = sharedFile.fileName;
-
-                        if (!importFilesHash.Contains(sharedFileName))
+                        foreach (var sharedFile in assetsFile.m_Externals)
                         {
-                            var sharedFilePath = Path.Combine(Path.GetDirectoryName(reader.FullPath), sharedFileName);
-                            if (!noexistFiles.Contains(sharedFilePath))
+                            Logger.Verbose($"{assetsFile.fileName} needs external file {sharedFile.fileName}, attempting to look it up...");
+                            var sharedFileName = sharedFile.fileName;
+
+                            if (!importFilesHash.Contains(sharedFileName))
                             {
-                                if (!File.Exists(sharedFilePath))
+                                var sharedFilePath = Path.Combine(Path.GetDirectoryName(reader.FullPath), sharedFileName);
+                                if (!noexistFiles.Contains(sharedFilePath))
                                 {
-                                    var findFiles = Directory.GetFiles(Path.GetDirectoryName(reader.FullPath), sharedFileName, SearchOption.AllDirectories);
-                                    if (findFiles.Length > 0)
+                                    if (!File.Exists(sharedFilePath))
                                     {
-                                        Logger.Verbose($"Found {findFiles.Length} matching files, picking first file {findFiles[0]} !!");
-                                        sharedFilePath = findFiles[0];
+                                        var findFiles = Directory.GetFiles(Path.GetDirectoryName(reader.FullPath), sharedFileName, SearchOption.AllDirectories);
+                                        if (findFiles.Length > 0)
+                                        {
+                                            Logger.Verbose($"Found {findFiles.Length} matching files, picking first file {findFiles[0]} !!");
+                                            sharedFilePath = findFiles[0];
+                                        }
                                     }
-                                }
-                                if (File.Exists(sharedFilePath))
-                                {
-                                    importFiles.Add(sharedFilePath);
-                                    importFilesHash.Add(sharedFileName);
-                                }
-                                else
-                                {
-                                    Logger.Verbose("Nothing was found, caching into non existant files to avoid repeated searching !!");
-                                    noexistFiles.Add(sharedFilePath);
+                                    if (File.Exists(sharedFilePath))
+                                    {
+                                        importFiles.Add(sharedFilePath);
+                                        importFilesHash.Add(sharedFileName);
+                                    }
+                                    else
+                                    {
+                                        Logger.Verbose("Nothing was found, caching into non existant files to avoid repeated searching !!");
+                                        noexistFiles.Add(sharedFilePath);
+                                    }
                                 }
                             }
                         }
@@ -280,6 +312,8 @@ namespace AnimeStudio
             Logger.Verbose($"Loading asset file {reader.FileName} with version {unityVersion} from {originalPath} at offset 0x{originalOffset:X8}");
             if (!assetsFileListHash.Contains(reader.FileName))
             {
+                CurrentLoadFile = originalPath ?? reader.FullPath;
+                CurrentLoadPhase = $"load_inner_serialized_metadata:{reader.FileName}";
                 try
                 {
                     var assetsFile = new SerializedFile(reader, this);
@@ -512,6 +546,7 @@ namespace AnimeStudio
                 {
                     case FileType.ENCRFile:
                     case FileType.BundleFile:
+                        CurrentLoadPhase = "read_bundle_blocks";
                         file = new BundleFile(reader, Game);
                         break;
                     case FileType.Blb3File:
@@ -536,20 +571,29 @@ namespace AnimeStudio
                 }
 
                 Logger.Verbose($"file total size: {file.m_Header.size:X8}");
+                CurrentLoadPhase = "load_bundle_inner_files";
+                CurrentLoadInnerFileCount = file.fileList.Count;
+                var innerFileIndex = 0;
                 foreach (var innerFile in file.fileList)
                 {
+                    innerFileIndex++;
+                    CurrentLoadInnerFileIndex = innerFileIndex;
+                    CurrentLoadInnerFile = innerFile.fileName;
                     var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), innerFile.fileName);
                     var cabReader = new FileReader(dummyPath, innerFile.stream);
                     if (cabReader.FileType == FileType.AssetsFile)
                     {
+                        CurrentLoadPhase = "load_bundle_inner_assets_file";
                         LoadAssetsFromMemory(cabReader, originalPath ?? reader.FullPath, file.m_Header.unityRevision, originalOffset);
                     }
                     else
                     {
+                        CurrentLoadPhase = "cache_bundle_inner_resource";
                         Logger.Verbose("Caching resource stream");
                         resourceFileReaders.TryAdd(innerFile.fileName, cabReader); //TODO
                     }
                 }
+                CurrentLoadPhase = "loaded_bundle_inner_files";
             }
             catch (InvalidCastException)
             {
@@ -652,10 +696,31 @@ namespace AnimeStudio
                         Logger.Info("Reading assets has been cancelled !!");
                         return;
                     }
+                    if (!IsObjectRangeReadable(assetsFile, objectInfo))
+                    {
+                        Logger.Warning($"Skipping object with invalid byte range in {assetsFile.fileName}: PathID {objectInfo.m_PathID}, byteStart {objectInfo.byteStart}, byteSize {objectInfo.byteSize}, streamLength {assetsFile.reader.Length}.");
+                        Progress.Report(++i, progressCount);
+                        continue;
+                    }
+
                     var objectReader = new ObjectReader(assetsFile.reader, assetsFile, objectInfo, Game);
+                    CurrentReadAssetsFile = assetsFile.fileName;
+                    CurrentReadObjectIndex = i + 1;
+                    CurrentReadObjectCount = progressCount;
+                    CurrentReadPathId = objectInfo.m_PathID;
+                    CurrentReadType = objectReader.type;
                     try
                     {
-                        Object obj = objectReader.type switch
+                        var shouldParseObject = ObjectParseFilter == null || ObjectParseFilter(objectReader.type);
+                        if (!shouldParseObject && !StoreUnparsedObjects)
+                        {
+                            Progress.Report(++i, progressCount);
+                            continue;
+                        }
+
+                        Object obj = !shouldParseObject
+                            ? new Object(objectReader)
+                            : objectReader.type switch
                         {
                             ClassIDType.Animation when ClassIDType.Animation.CanParse() => new Animation(objectReader),
                             ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanParse() => new AnimationClip(objectReader),
@@ -684,6 +749,7 @@ namespace AnimeStudio
                             ClassIDType.SpriteAtlas when ClassIDType.SpriteAtlas.CanParse() => new SpriteAtlas(objectReader),
                             ClassIDType.TextAsset when ClassIDType.TextAsset.CanParse() => new TextAsset(objectReader),
                             ClassIDType.Texture2D when ClassIDType.Texture2D.CanParse() => new Texture2D(objectReader),
+                            ClassIDType.Texture2DArray when ClassIDType.Texture2DArray.CanParse() => new Texture2DArray(objectReader),
                             ClassIDType.Transform when ClassIDType.Transform.CanParse() => new Transform(objectReader),
                             ClassIDType.VideoClip when ClassIDType.VideoClip.CanParse() => new VideoClip(objectReader),
                             ClassIDType.ResourceManager when ClassIDType.ResourceManager.CanParse() => new ResourceManager(objectReader),
@@ -694,19 +760,74 @@ namespace AnimeStudio
                     }
                     catch (Exception e)
                     {
-                        var sb = new StringBuilder();
-                        sb.AppendLine("Unable to load object")
-                            .AppendLine($"Assets {assetsFile.fileName}")
-                            .AppendLine($"Path {assetsFile.originalPath}")
-                            .AppendLine($"Type {objectReader.type}")
-                            .AppendLine($"PathID {objectInfo.m_PathID}")
-                            .Append(e);
-                        Logger.Error(sb.ToString());
+                        HandleObjectParseFailure(assetsFile, objectInfo, objectReader, e);
+                        if (StoreUnparsedObjects)
+                        {
+                            assetsFile.AddObject(new Object(objectReader));
+                        }
                     }
 
                     Progress.Report(++i, progressCount);
                 }
             }
+        }
+
+        private void HandleObjectParseFailure(SerializedFile assetsFile, ObjectInfo objectInfo, ObjectReader objectReader, Exception exception)
+        {
+            objectParseFailureCounts.TryGetValue(objectReader.type, out var count);
+            count++;
+            objectParseFailureCounts[objectReader.type] = count;
+
+            var message =
+                $"Unable to parse {objectReader.type} object in {assetsFile.fileName}: PathID {objectInfo.m_PathID}, " +
+                $"byteStart {objectInfo.byteStart}, byteSize {objectInfo.byteSize}. " +
+                $"The object will be kept as a lightweight placeholder. {exception.GetType().Name}: {exception.Message}";
+
+            if (IsRecoverableObjectParseFailure(exception))
+            {
+                if (count <= 5)
+                {
+                    Logger.Debug(message);
+                }
+                else if (count == 6)
+                {
+                    Logger.Info($"Further {objectReader.type} parse failures are suppressed for this load batch; affected objects are kept as lightweight placeholders.");
+                }
+                else
+                {
+                    Logger.Debug(message);
+                }
+                return;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Unable to load object")
+                .AppendLine($"Assets {assetsFile.fileName}")
+                .AppendLine($"Path {assetsFile.originalPath}")
+                .AppendLine($"Type {objectReader.type}")
+                .AppendLine($"PathID {objectInfo.m_PathID}")
+                .Append(exception);
+            Logger.Error(sb.ToString());
+        }
+
+        private static bool IsRecoverableObjectParseFailure(Exception exception)
+        {
+            return exception is EndOfStreamException
+                or InvalidDataException
+                or ArgumentOutOfRangeException
+                or IndexOutOfRangeException
+                or OverflowException;
+        }
+
+        private static bool IsObjectRangeReadable(SerializedFile assetsFile, ObjectInfo objectInfo)
+        {
+            if (objectInfo.byteStart < 0 || objectInfo.byteSize > int.MaxValue)
+            {
+                return false;
+            }
+
+            var end = objectInfo.byteStart + (long)objectInfo.byteSize;
+            return end >= objectInfo.byteStart && end <= assetsFile.reader.Length;
         }
 
         private void ProcessAssets()

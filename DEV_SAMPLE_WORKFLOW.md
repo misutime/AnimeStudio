@@ -250,6 +250,72 @@ humanoid.keyframeCount: 3177
 
 这说明动画数据已经被读取并保留到 glTF `animations[].extras.unityHumanoid`；下一步不是再找动画文件，而是实现 Humanoid/Muscle -> skeleton TRS bake。
 
+## 骨骼验收准则
+
+骨骼阶段先验收 Unity 关系和人体结构，不直接用 Blender 里骨骼锥形是否首尾相连作为唯一判断。FBX importer 会按自己的骨骼显示规则生成 head/tail/use_connect，可能出现视觉上“手臂没连起来”，但这不等价于 Unity 骨架层级或 skin bindpose 错误。
+
+默认验收项：
+
+- `asset_catalog.jsonl` 中模型条目的 `skeletonValidation.status` 应为 `ok`。
+- `skeletonValidation.hasAvatarHumanDescription` 为 `true` 时，优先使用 Unity `Avatar HumanDescription` 验证人体骨架。
+- 核心人体骨必须覆盖 Hips、Spine、Chest、Neck、Head、左右肩、左右上臂、左右前臂、左右手、左右大腿、左右小腿、左右脚。
+- 脊柱、左臂、右臂、左腿、右腿 5 条人体链必须能在导出的 frame hierarchy 中由父子/祖先关系连通。
+- 动画阶段只能在 `skeletonValidation.status == ok` 的模型上继续推进；否则先修模型/骨架。
+
+已验证参考结论：
+
+- AssetStudio 原版 FBX 导出和 AnimeStudio 当前 FBX 在 Bill 样本上的核心骨架指标一致：`Bip001` 单根、78 个 Blender bones、Unity Humanoid 映射完整。
+- AssetStudio 原版在 Blender 中同样会出现大量 `disconnected` bones，因此“Blender 骨锥没连起来”不是判断 Unity 骨架错误的充分证据。
+- `AsFbxSetJointsNode_BoneInPath` 应保持和 AssetStudio 一致：当前节点及其父节点都标记为 `FbxSkeleton::eLimbNode`。
+- Bill 样本的默认 FBX 在 Blender 中，手臂/腿/脊柱的 bone display tail 与真实 child joint 方向约为 `90°`，这是 FBX/Blender 骨骼可视化轴问题；同一条 Unity frame hierarchy 中的 child joint 位置和 Avatar HumanDescription 关系是连通的。
+- 作为 DCC 友好预览层，可以用 Blender 后处理把 edit-bone tail 对齐到人体 child joint。Bill 样本验证后，关键人体链 display-to-child angle 可从 `90°` 降到 `0°`，mesh bounding box 不变。这类输出只能标为 preview/inspection asset，不能替代默认 Unity 关系源文件。
+
+已尝试但不作为默认方案：
+
+- 给 FBX SDK `FbxSkeleton.LimbLength` 手动设置 `1.0`：对 Blender 导入后的骨骼显示没有实际改善，不保留。
+- Blender `ignore_leaf_bones`：会减少骨骼数量，可能损失手指、末端骨和附件骨，不符合“完整素材库”目标，不作为默认处理。
+- Blender `automatic_bone_orientation` / `force_connect_children`：可作为 DCC 友好预览/打包层实验，不能替代 Unity 关系导出的核心骨架。
+- 直接修改默认 FBX 的骨骼 local axes 来“看起来连起来”：会改变 DCC 里的骨骼 rest orientation，可能影响后续动画/重定向判断；默认素材库不这样做。需要人眼验收时，生成单独的 connected-bone preview。
+- `ConnectedBonePreview` 仅作为失败实验/诊断样本保留，不能作为生产素材输出。Bill 样本中它只把 17 根核心 Humanoid 链的 edit-bone tail 对齐到 child joint；脸 mesh 顶点数和面数没有减少，但 Blender 二次导出 FBX 后会重建 `.fbm` 贴图目录和材质节点，导致脸部透明、双面或贴图表现可能变坏。后续如果需要可读骨架，应生成不改动模型本体的骨骼预览或 core skeleton guide，而不是重导出模型 FBX。
+- 人工看骨架时要区分两类骨：`CoreHumanoid` 是 Unity Avatar HumanDescription 映射出的头、脊柱、手臂、腿等主链；`Accessory/Helper/Twist/Finger/Cloth` 是手指、twist、附件、衣物、挂点或辅助节点。后者可能在 Blender 里显示成短小、横向或垂直的骨骼锥体，不等价于主骨架错误。默认验收先看 `skeletonValidation` 和 CoreHumanoid 主链，预览工具再做降噪显示。
+- `--generate_skeleton_guide` 已固化为正式诊断命令。它优先读取 `asset_catalog.jsonl` 的 Unity Avatar `HumanDescription`，生成不修改原 FBX 的 `.blend` 骨架验收文件；Bill 样本验收通过时应看到 `relationSource=unity_avatar_human_description`、`createdEdgeCount=21`、`missingEdgeCount=0`。
+
+FBX 人工验收默认使用 `scaleFactor=100`。这会把 Freedunk/Bill 这类角色导入 Blender 后保持在约 2 米高的可见尺寸；如果某个测试要保留原始 Unity 单位，必须在命令里显式写 `--fbx_scale_factor 1`，并在样本说明里标注。
+
+## Unity bake + FBX 验收样本
+
+动画资产进入人工验收时，优先使用成熟工具链：
+
+```text
+AnimeStudio Unity 关系索引
+  -> Unity Editor Animator/Avatar bake
+  -> AnimeStudio 写入 baked glTF
+  -> Blender 导出 FBX
+```
+
+当前固定样本输出：
+
+```text
+D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\CliFbxPreview
+```
+
+正式 CLI 命令：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --apply_unity_bake_result "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\unity_bake_request.json" `
+  --baked_gltf_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\CliFbxPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.gltf" `
+  --baked_fbx_output "D:\Assets\Freedunk_Data_Dev\UnityBake_Bill_NormalMove_EndToEnd2\CliFbxPreview\Bill_01_00_ingame__NORMALMOVE_STAND_01.fbx" `
+  --blender "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"
+```
+
+验收重点：
+
+- `unity_bake_apply_report.json`：确认 `writtenTracks` 非 0，`skippedTrackCount` 为 0 或有明确说明。
+- `blender_fbx_export_report.json`：确认 FBX 导出 `status: ok`，并记录 mesh、armature、action。
+- 用 Blender/F3D/Unity 打开 `.fbx` 人工检查模型、脸、贴图、骨架和动作。
+- 如果 glTF 预览和 FBX 表现不一致，优先以 FBX 作为当前动画验收格式；glTF 问题单独归入 glTF runtime/viewer 兼容性排查。
+
 ## 完整模型动画样本
 
 当需要验证“模型 + PNG 贴图 + skin/bones + 可播放身体动画”时，使用固定小输入样本，不要直接扫完整 `Freedunk_Data`：

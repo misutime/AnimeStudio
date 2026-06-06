@@ -11,6 +11,7 @@ namespace AnimeStudio
         private long size;
         private BinaryReader reader;
 
+        public long Offset { get => offset; }
         public int Size { get => (int)size; }
 
         public ResourceReader(string path, SerializedFile assetsFile, long offset, long size)

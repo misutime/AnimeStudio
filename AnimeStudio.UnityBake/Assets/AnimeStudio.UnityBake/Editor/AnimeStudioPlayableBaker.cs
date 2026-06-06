@@ -222,6 +222,9 @@ namespace AnimeStudio.UnityBake
             private readonly Quaternion[] rotations;
             private readonly Vector3[] scales;
             private readonly string path;
+            private readonly Vector3 restTranslation;
+            private readonly Quaternion restRotation;
+            private readonly Vector3 restScale;
 
             public TrackRecorder(Transform root, Transform transform, float[] sampleTimes)
             {
@@ -229,6 +232,9 @@ namespace AnimeStudio.UnityBake
                 this.transform = transform;
                 this.sampleTimes = sampleTimes;
                 path = GetPath(root, transform);
+                restTranslation = transform.localPosition;
+                restRotation = transform.localRotation;
+                restScale = transform.localScale;
                 translations = new Vector3[sampleTimes.Length];
                 rotations = new Quaternion[sampleTimes.Length];
                 scales = new Vector3[sampleTimes.Length];
@@ -265,6 +271,13 @@ namespace AnimeStudio.UnityBake
 
             private bool HasChanged()
             {
+                for (var i = 0; i < translations.Length; i++)
+                {
+                    if ((translations[i] - restTranslation).sqrMagnitude > PositionEpsilon) return true;
+                    if (Quaternion.Dot(rotations[i], restRotation) < 1f - RotationEpsilon) return true;
+                    if ((scales[i] - restScale).sqrMagnitude > ScaleEpsilon) return true;
+                }
+
                 for (var i = 1; i < translations.Length; i++)
                 {
                     if ((translations[i] - translations[0]).sqrMagnitude > PositionEpsilon) return true;

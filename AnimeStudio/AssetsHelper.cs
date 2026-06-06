@@ -39,6 +39,36 @@ namespace AnimeStudio
             public List<string> Dependencies { get; set; }
         }
 
+        public static void LoadCABMapEntries(
+            string baseFolder,
+            IEnumerable<KeyValuePair<string, Entry>> entries,
+            int sourceFileCount = -1,
+            string sourceFingerprint = null)
+        {
+            CABMap.Clear();
+            Offsets.Clear();
+            BaseFolder = baseFolder ?? string.Empty;
+            CABMapSourceFileCount = sourceFileCount;
+            CABMapSourceFingerprint = sourceFingerprint ?? string.Empty;
+
+            foreach (var pair in entries)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key) || pair.Value == null)
+                {
+                    continue;
+                }
+
+                CABMap[pair.Key] = new Entry
+                {
+                    Path = NormalizeRelativePath(pair.Value.Path),
+                    Offset = pair.Value.Offset,
+                    Dependencies = pair.Value.Dependencies ?? new List<string>(),
+                };
+            }
+
+            Logger.Info($"Loaded runtime CAB dependency map from source index: {CABMap.Count} serialized file entries.");
+        }
+
         public static void SetUnityVersion(string version)
         {
             assetsManager.SpecifyUnityVersion = version;
@@ -94,7 +124,7 @@ namespace AnimeStudio
                 var cab = work.Dequeue();
                 if (CABMap.TryGetValue(cab, out var entry))
                 {
-                    var fullPath = Path.Combine(BaseFolder, entry.Path);
+                    var fullPath = NormalizeFullPath(Path.Combine(BaseFolder, entry.Path));
                     Logger.Verbose($"Found {cab} in {fullPath}");
                     if (!paths.Contains(fullPath))
                     {
@@ -116,15 +146,15 @@ namespace AnimeStudio
 
         public static bool FindCAB(string path, out HashSet<string> cabs)
         {
-            var relativePath = Path.GetRelativePath(BaseFolder, path);
-            cabs = CABMap.AsParallel().Where(x => x.Value.Path.Equals(relativePath, StringComparison.OrdinalIgnoreCase)).Select(x => x.Key).Distinct().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var relativePath = NormalizeRelativePath(Path.GetRelativePath(BaseFolder, path));
+            cabs = CABMap.AsParallel().Where(x => NormalizeRelativePath(x.Value.Path).Equals(relativePath, StringComparison.OrdinalIgnoreCase)).Select(x => x.Key).Distinct().ToHashSet(StringComparer.OrdinalIgnoreCase);
             Logger.Verbose($"Found {cabs.Count} that belongs to {relativePath}");
             return cabs.Count != 0;
         }
 
         public static string[] ProcessFiles(string[] files_list)
         {
-            HashSet<string> files = new HashSet<string>(files_list, StringComparer.OrdinalIgnoreCase);
+            HashSet<string> files = new HashSet<string>(files_list.Select(NormalizeFullPath), StringComparer.OrdinalIgnoreCase);
             foreach (var file in files)
             {
                 Offsets.TryAdd(file, new HashSet<long>());
@@ -147,9 +177,21 @@ namespace AnimeStudio
             else
             {
                 Logger.Info("Resolving Dependencies...");
+                var inputCount = files.Length;
                 files = ProcessFiles(files);
+                Logger.Info($"Resolved Dependencies: {inputCount} input file(s), {files.Length} file(s) to load including dependency closure.");
             }
             return files;
+        }
+
+        private static string NormalizeFullPath(string path)
+        {
+            return Path.GetFullPath(path ?? string.Empty);
+        }
+
+        private static string NormalizeRelativePath(string path)
+        {
+            return (path ?? string.Empty).Replace('\\', '/').TrimStart('/');
         }
 
         public static bool IsCABMapCompleteFor(int expectedSourceFileCount)
@@ -491,6 +533,7 @@ namespace AnimeStudio
                             case ClassIDType.Sprite when ClassIDType.Sprite.CanExport():
                             case ClassIDType.TextAsset when ClassIDType.TextAsset.CanExport():
                             case ClassIDType.Texture2D when ClassIDType.Texture2D.CanExport():
+                            case ClassIDType.Texture2DArray when ClassIDType.Texture2DArray.CanExport():
                             case ClassIDType.VideoClip when ClassIDType.VideoClip.CanExport():
                             case ClassIDType.AudioClip when ClassIDType.AudioClip.CanExport():
                             case ClassIDType.AnimationClip when ClassIDType.AnimationClip.CanExport():
