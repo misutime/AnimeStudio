@@ -54,10 +54,6 @@ namespace AnimeStudio.CLI
             new Regex(@"(?:^|_)ShadowMesh$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Dummy|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|[_\-\s])Decal(?:$|[_\-\s])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"^(p?VFX|FX|Part(?:_|$)|Particle|Particles|Trail|TrailTemplate|Beam|Smoke|Flames?|Embers?|Spark(?:s|ies)?|Glow|GlowTip|SmallTip|Soft Shockwave|Distortion|Multiply|EnergyBillboard|Light)$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"^(?:Morgana)?FogPlane\d*$|^Tendrils?\s+Trails?$|^InnerTrails?(?:\s*\(\d+\))?$|^Front Rings?$|^Streaks$|^BlackSpots$|^Burst_Droplet$|^TrailTemplate(?:Thin)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"(?:^|[\n_\-\s/])(p?VFX|FX|Part|Particle|Particles|Trail|Beam|Smoke|Flames?|Embers?|Spark(?:s|ies)?|Glow|Shockwave|Distortion|Billboard|Light)(?:$|[\n_\-\s/0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            new Regex(@"(?:^|[_\-\s/])(Projectile|Hit|Miss|Aoe|AoE|Buff|Debuff|Cast|Travel|Impact|Explosion|TargetAreaIndicator)(?:$|[_\-\s/0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
 
         public static Dictionary<ulong, string> Paths { get; set; } =

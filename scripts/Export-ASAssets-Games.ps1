@@ -26,7 +26,11 @@ if (-not (Test-Path -LiteralPath $CliPath)) {
 $games = @(
     @{
         Name = "VRising"
-        Input = "D:\BaiduNetdiskDownload\unity-VRising\VRising_Data"
+        Input = "D:\BaiduNetdiskDownload\unity-VRising"
+    },
+    @{
+        Name = "OldWorld"
+        Input = "D:\BaiduNetdiskDownload\unity-Old World"
     },
     @{
         Name = "Humankind"
@@ -34,15 +38,15 @@ $games = @(
     },
     @{
         Name = "Valheim"
-        Input = "D:\BaiduNetdiskDownload\unity-Valheim.Build.21981559\valheim_Data"
+        Input = "D:\BaiduNetdiskDownload\unity-Valheim.Build.21981559"
     },
     @{
         Name = "Freedunk"
-        Input = "C:\Program Files (x86)\Freedunk\Game\Freedunk_Data"
+        Input = "C:\Program Files (x86)\Freedunk\Game"
     },
     @{
         Name = "Homura Hime"
-        Input = "D:\BaiduNetdiskDownload\unity-Homura Hime\HomuraHime_Data"
+        Input = "D:\BaiduNetdiskDownload\unity-Homura Hime"
     }
 )
 
