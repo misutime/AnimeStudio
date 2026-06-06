@@ -1260,31 +1260,31 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                     return;
                 }
 
-                if (string.Equals(path, "m_GameObject", StringComparison.Ordinal))
+                if (EndsWithField(path, "m_GameObject"))
                 {
                     relations.Add(new LightweightPPtrRelation { Relation = "component.gameObject", FileId = fileId, PathId = pathId, TypeHint = "GameObject" });
                     return;
                 }
 
-                if (string.Equals(path, "m_Mesh", StringComparison.Ordinal))
+                if (EndsWithField(path, "m_Mesh"))
                 {
                     relations.Add(new LightweightPPtrRelation { Relation = "skinnedMeshRenderer.mesh", FileId = fileId, PathId = pathId, TypeHint = "Mesh" });
                     return;
                 }
 
-                if (string.Equals(path, "m_RootBone", StringComparison.Ordinal))
+                if (EndsWithField(path, "m_RootBone"))
                 {
                     relations.Add(new LightweightPPtrRelation { Relation = "skinnedMeshRenderer.rootBone", FileId = fileId, PathId = pathId, TypeHint = "Transform" });
                     return;
                 }
 
-                if (path.StartsWith("m_Materials.", StringComparison.Ordinal))
+                if (ContainsField(path, "m_Materials"))
                 {
                     relations.Add(new LightweightPPtrRelation { Relation = "renderer.material", FileId = fileId, PathId = pathId, TypeHint = "Material" });
                     return;
                 }
 
-                if (path.StartsWith("m_Bones.", StringComparison.Ordinal))
+                if (ContainsField(path, "m_Bones"))
                 {
                     bones.Add(new
                     {
@@ -1293,6 +1293,19 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         typeHint = "Transform",
                     });
                 }
+            }
+
+            private static bool EndsWithField(string path, string fieldName)
+            {
+                return string.Equals(path, fieldName, StringComparison.Ordinal)
+                    || path.EndsWith("." + fieldName, StringComparison.Ordinal);
+            }
+
+            private static bool ContainsField(string path, string fieldName)
+            {
+                return string.Equals(path, fieldName, StringComparison.Ordinal)
+                    || path.StartsWith(fieldName + ".", StringComparison.Ordinal)
+                    || path.Contains("." + fieldName + ".", StringComparison.Ordinal);
             }
 
             private static List<TypeTreeNode> GetNodes(List<TypeTreeNode> nodeList, int index)

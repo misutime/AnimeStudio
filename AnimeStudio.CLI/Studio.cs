@@ -3023,13 +3023,29 @@ namespace AnimeStudio.CLI
             List<AssetItem> animations
         )
         {
-            _exportRunStats = new ExportRunStats
+            var reuseLibraryStats = WorkMode == WorkMode.Library && _exportRunStats?.StartedAtUtc != null;
+            if (!reuseLibraryStats)
             {
-                StartedAtUtc = DateTime.UtcNow,
-                Mode = WorkMode.ToString(),
-                ModelCandidateCount = models.Count,
-                AnimationCandidateCount = animations?.Count ?? 0,
-            };
+                _exportRunStats = new ExportRunStats
+                {
+                    StartedAtUtc = DateTime.UtcNow,
+                    Mode = WorkMode.ToString(),
+                };
+            }
+            else
+            {
+                _exportRunStats.Mode = WorkMode.ToString();
+            }
+
+            _exportRunStats.ModelCandidateCount += models.Count;
+            _exportRunStats.AnimationCandidateCount += animations?.Count ?? 0;
+
+            var batchStartedAt = DateTime.UtcNow;
+            if (_exportRunStats.StartedAtUtc == null || batchStartedAt < _exportRunStats.StartedAtUtc)
+            {
+                _exportRunStats.StartedAtUtc = batchStartedAt;
+            }
+
             var exportedCount = 0;
             var processedCount = 0;
             var skippedCount = 0;
