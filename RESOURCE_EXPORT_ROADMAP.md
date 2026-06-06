@@ -18,18 +18,20 @@
 - 完整还原 Unity 工程。
 - 还原运行时代码逻辑、MonoBehaviour 行为。
 - 规避加密、绕过保护或破解私有协议。
-- 默认导出所有零散资源。为了效率和可用性，默认可以接受轻微不完整。
+- 无脑导出所有零散资源且不分类、不标注。默认 Library 应尽量完整，但必须保持目录分类、标签和报告清晰。
 
 验收取向：
 
-- 默认 `Core` 导出能覆盖 90% 以上真实游戏开发需要的高价值 3D 资源。
+- 默认 `Library` 是“完整可浏览素材库”，优先把可能有用的模型、贴图、材质、动画、音效等资源拿出来。
 - 模型、骨骼、动画、贴图、材质这些核心资产不能系统性缺失。
-- 输出目录能像素材库一样浏览，单个模型目录可以直接查看模型和相关贴图。
+- 输出目录能像素材库一样浏览，单个模型目录可以直接查看模型、相关贴图、材质报告和使用说明。
+- 只过滤非常确定的垃圾或损坏对象；不确定对象优先分类、打标签、写报告。
+- 精品筛选作为后处理能力推进，后续通过 `Core` / `Curated` / `Playable` / `ProductionReady` 等层从完整素材库里筛出高质量子集。
 - 保持准确前提下优先提升批量导出速度和内存稳定性。
 
 基础准则：
 
-> 后续每一步实现都以“导出可用素材库”为准。默认输出必须服务于开发者浏览、筛选、复用素材；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
+> 后续每一步实现都以“导出完整可浏览素材库”为准。默认输出必须优先保留可能有用的素材，并通过分类、标签、报告、索引和后续筛选控制质量；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
 
 Unity 关系解构准则：
 
@@ -94,7 +96,7 @@ CAB / PPtr 依赖索引策略：
 默认素材库形态：
 
 - 模型默认 glTF，进入 `Models`。
-- `Models` 默认只放完整 prefab、Animator 或 GameObject 组合模型，也就是 `--model_source PrefabPrimary`。
+- `Models` 默认放完整 prefab、Animator、GameObject 组合模型，以及有明确 Unity 关系或静态素材语义的独立 Mesh；raw/source parts 只进索引或 `RawUnreferenced`。
 - raw fbx 身体、face、附件等 source parts 默认不作为可浏览模型导出；它们必须写入 `asset_catalog.jsonl`，标记为 `ModelSourcePart`、`RawModel`、`SourcePart`、`AttachmentSource` 或类似角色。
 - 如果 raw fbx 没有被任何组合模型覆盖，但它本身是可用模型，则进入 `Models/RawUnreferenced`。
 - 需要研究零散 fbx/source parts 时，显式使用 `--model_source PrefabAndParts` 或 `RawPartsOnly`。
@@ -103,7 +105,7 @@ CAB / PPtr 依赖索引策略：
 - 动画默认独立进入 `Animations`，不嵌入每个模型。
 - Shader 默认不导出；实验研究时显式 `--include_shaders`，进入 `Shaders`，以安全 raw archive + metadata 形式保留。
 - 材质、贴图、动画、源路径关系由 manifest/catalog 记录。
-- `Core` profile 默认过滤 UI、sound、video、camera、effect、manager、test、dummy 等低价值噪声。
+- 默认 Library 不再以过早 Core 过滤作为覆盖策略。UI、video、camera、manager、明确空对象、collider、navmesh、socket、joint、bone、损坏对象等确定垃圾可以过滤；effect、decal、helper、terrain tile、building part、VFX mesh 等不确定对象优先分类、标注或写报告。
 
 ## 当前完成度
 
@@ -121,38 +123,34 @@ CAB / PPtr 依赖索引策略：
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、glTF alpha/double-sided 状态、extras 保留 Unity slot/float/color 信息 | 62% |
 | 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、Unity Editor Humanoid bake、baked glTF 写入、Blender FBX 打包、验证报告和 AnimationClip 类型分类 | 82% |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
-| 噪声过滤 | 已有 `--profile_3d Core|All`，默认过滤常见非核心模型 | 65% |
+| 覆盖与分类 | 已从过早 Core 过滤转向默认完整可浏览 Library；StaticMeshPrimary、Renderer/Material 关系绑定和报告标注仍需继续增强 | 70% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
-| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 只放组合模型，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录；新增 `skeletons.json` 从骨架视角聚合可浏览模型和候选动画 | 78% |
+| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 放组合模型和有意义的 StaticMeshPrimary，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录；新增 `skeletons.json` 从骨架视角聚合可浏览模型和候选动画 | 78% |
 
 ## 已有关键能力
 
-### 默认 3D Core Profile
+### 默认完整 Library 与后处理筛选
 
-`--profile_3d Core` 已作为默认 3D profile。
+默认 Library 的目标是完整可浏览素材库，不是最终精品包。工具应优先保留可能有用的模型、贴图、材质、动画、音效等资源；只过滤非常确定的垃圾或损坏对象。
 
-默认排除：
+底层导出阶段可以确定过滤：
 
-- `assets/outgame/res/effect`
-- `assets/graphics/effect`
-- `assets/ingame/prefabs/managers`
-- `assets/ingame/prefabs/datas`
-- `assets/stagetest`
-- `assets/graphics/temp`
-- `assets/graphics/stageoutgame/playerselect`
-- `assets/graphics/character/pc/_common`
-- `sphere`
-- `shadow` / `dummy` / `test` / `groundshadow` 等名称噪声
+- collider、navmesh、occlusion。
+- socket、joint、bone、纯空挂点。
+- 明确损坏、不可解析或没有几何/贴图/动画价值的对象。
+- 明确 obsolete/deprecated 路径下的资源。
 
-保留方向：
+不确定对象优先保留并分类：
 
-- 角色、NPC、球、场景、篮筐、道具、奖杯、可直接用于开发素材浏览的高价值模型。
+- debug box、基础体、decal、helper、VFX mesh、terrain tile、building part、LOD/部件级模型。
+- 这类资源必须通过 `asset_catalog.jsonl`、`ASSET_README.md`、`MATERIAL_REPORT.md`、分类目录和后续报告说明可信度、材质绑定状态和使用注意事项。
 
-需要完整排查时可以使用：
+后续再基于完整素材库做精品筛选：
 
-```powershell
---profile_3d All
-```
+- `Core`：高概率游戏核心素材。
+- `Curated`：人工或规则确认过的精选素材。
+- `Playable`：模型、骨骼、材质、动画已验证可播放。
+- `ProductionReady`：材质、动画、模块组装和报告都达到可直接复用标准。
 
 ### 默认 glTF + PNG 素材库工作流
 
@@ -350,15 +348,16 @@ Freedunk 当前验证结论：
 
 优先级：P1
 
-### 4. Core profile 还需要数据驱动
+### 4. 精品筛选层需要数据驱动
 
-当前 Core profile 是基于 Freedunk 观察和通用经验写的规则。
+当前阶段先保证默认 Library 覆盖完整；Core/Curated/Playable/ProductionReady 这类精品层应作为后处理筛选能力，不应在底层导出阶段提前误伤素材。
 
 缺口：
 
-- 不同游戏目录命名差异很大，硬编码规则容易误伤。
-- 缺少导出后噪声分析报告，无法量化 Core 命中率。
-- 缺少 allowlist/denylist 配置文件，团队调规则不够方便。
+- 不同游戏目录命名差异很大，硬编码过滤容易误伤。
+- 缺少基于索引、验证报告、材质完整度、动画匹配度、模型尺寸和人工标记的筛选器。
+- 缺少“为什么被推荐/为什么被降级”的人读报告。
+- 缺少 allowlist/denylist/tag 配置文件，团队调筛选规则不够方便。
 
 优先级：P1
 
@@ -452,43 +451,44 @@ Freedunk 当前验证结论：
 
 - 用户可以按类型找到模型。
 - 单个模型目录能知道它依赖哪些贴图、材质、动画。
-- Core 排除的资源也能在报告里看到数量和原因。
+- 后处理筛选推荐、降级或排除的资源都能在报告里看到数量和原因。
 
-### P1：Core profile 数据驱动化
+### P1：精品筛选层数据驱动化
 
-目标：保持默认高效率，同时减少误伤。
+目标：默认 Library 尽量完整，后处理筛出精品子集，同时减少误伤。
 
 任务：
 
-1. 增加 profile 配置文件，例如：
+1. 增加筛选 profile 配置文件，例如：
 
 ```text
-Profiles/3d-core.json
-Profiles/3d-all.json
-Profiles/freedunk-core.json
+Profiles/core.json
+Profiles/curated.json
+Profiles/playable.json
+Profiles/production-ready.json
 ```
 
 2. 支持：
 
 ```powershell
---profile_3d Core
---profile_3d All
---profile_file "Profiles/freedunk-core.json"
+--curate_library Core
+--curate_library Playable
+--curate_profile "Profiles/production-ready.json"
 ```
 
-3. 输出 filter report：
+3. 输出筛选报告：
 
 ```text
-export_filter_report.json
+curation_report.json
 ```
 
-4. 记录每条被排除资源的规则来源。
+4. 记录每条资源被推荐、降级或排除的规则来源。
 
 验收：
 
-- 团队可以不改代码调过滤规则。
-- 每次导出能知道排除了多少 effect、manager、test、shadow。
-- 如果发现误伤，能快速加入 allowlist。
+- 团队可以不改代码调筛选规则。
+- 每次筛选能知道哪些资源进入 Core/Playable，哪些只保留在完整 Library。
+- 如果发现误伤，能快速加入 allowlist 或人工标记。
 
 ### P1：材质语义增强
 
@@ -566,7 +566,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --game Normal
 ```
 
-等价于 `Library + ByLibrary + Core + glTF + PNG + Separate animations`。这是团队后续开发、测试和验收的主路径。
+等价于 `Library + ByLibrary + 完整可浏览素材库 + glTF + PNG + Separate animations`。这是团队后续开发、测试和验收的主路径。
 
 ### 快速模型扫描
 
@@ -615,7 +615,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 3. glTF morph target / blendshape 动画。
 4. asset catalog 和 filter report。
 5. 材质语义 schema。
-6. Core profile 配置化。
+6. Core/Curated/Playable 等后处理筛选层配置化。
 7. 固定 Freedunk 样本集做回归验证。
 
 这样工具会从“能导出”进入“能稳定产出可用素材库”的阶段。

@@ -8,19 +8,20 @@ AnimeStudio 的核心目标是面向 PC 端 Unity 游戏，把已经打包过的
 
 可用素材库不是 Unity 运行时对象转储，也不是完整 Unity 工程恢复。它应该满足：
 
-- 打开输出目录就能浏览高价值资产。
+- 打开输出目录就能浏览尽可能完整、可用、可分类的资产。
 - 模型、骨骼、贴图、材质、动画尽可能准确、可复用。
-- 默认输出干净，少噪声，少无关 UI、声音、视频、管理器、测试对象。
+- 默认输出优先保留可能有用的素材；通过分类、标签、报告和后续筛选控制质量，而不是在底层导出阶段过早丢弃。
 - 关系来源可追溯，能说明模型、模块、动画、材质、贴图来自哪个 Unity 引用或结构。
 - 对无法完整还原的部分明确标注，不假装成功。
 
 当前接受的工程取向：
 
 - 面向 PC Unity 游戏。
-- 默认优先 3D 资产。
-- 可以接受轻微不完整，换取更高准确性、可浏览性和效率。
-- 默认宁缺毋滥：不确定的动画、模块、材质效果不应污染素材库。
-- 高价值素材的 80% 到 90% 可用，比低质量全量 dump 更重要。
+- 默认优先 3D 资产，同时保留材质贴图、Texture2DArray、动画、音效等可用开发素材。
+- 默认 Library 是“完整可浏览素材库”，不是最终精品包。工具应优先把可能有用的素材拿出来，避免系统性漏掉成熟游戏里的建筑、植被、POI、岩石、地形块、道具或静态 Mesh。
+- 可以接受少量 debug 基础体、VFX mesh、helper、decal、terrain tile、building part 混入素材库，但必须分类、打标签、写报告，说明可信度、材质绑定状态和使用注意事项。
+- 只在底层导出阶段过滤非常确定的垃圾或损坏对象，例如 collider、navmesh、socket、joint、bone、明显空对象、不可解析对象、明确 obsolete/deprecated 资源。
+- 精品筛选是后处理能力。`Core`、`Curated`、`Playable`、`ProductionReady` 等筛选层应基于 SQLite 索引、验证报告、模型尺寸、材质完整度、动画匹配度、命名语义和人工标记生成。
 
 ## 2. 非目标
 
@@ -84,7 +85,7 @@ FBX 只作为兼容旧 DCC、对照验证或实验输出。默认正确性验证
 
 SQLite 索引规则：
 
-- 索引要全，导出要精。进入 SQLite 不代表默认导出、推荐使用或视觉验收通过。
+- 索引要全，默认 Library 要尽量完整，精品筛选后处理。进入 SQLite 不代表推荐使用或视觉验收通过；进入默认 Library 也不代表最终精品，只代表它可能是可用开发素材。
 - SQLite 应尽量记录 `asset_catalog.jsonl`、`unity_relations.jsonl`、`animation_bindings.jsonl`、`export_manifest.jsonl`、报告 JSON、模型/动画/模块索引和实际文件列表。
 - 结构化字段用于常见查询，`raw_json` 用于保留原始信息，避免后续字段扩展时必须重新导出。
 - 当前 SQLite v1 面向“已导出的 Library/AudioLibrary 目录”建库；后续可扩展为直接读取完整 Unity 源目录的 CAB/Object/PPtr 全量索引。
@@ -93,7 +94,7 @@ SQLite 索引规则：
 SQLite 源索引规则：
 
 - `unity_source_index.db` 面向完整 Unity 源目录，不导出素材，只记录源关系。
-- 全量 `Library` 导出必须使用 SQLite 源索引作为依赖底座。优先级固定为：显式 `--source_index`；输出目录 `unity_source_index.db`；输入目录 `unity_source_index.db`；都不存在时自动在输出目录构建。旧 CAB map / AssetMap 只作为显式 `--map_op` 调试或兼容旧流程，不能作为精品全量导出的默认路径。
+- 全量 `Library` 导出必须使用 SQLite 源索引作为依赖底座。优先级固定为：显式 `--source_index`；输出目录 `unity_source_index.db`；输入目录 `unity_source_index.db`；都不存在时自动在输出目录构建。旧 CAB map / AssetMap 只作为显式 `--map_op` 调试或兼容旧流程，不能作为完整 Library 导出的默认路径。
 - 源索引必须按批加载、写库、清理，避免全量游戏建库时内存无止境增长。
 - 源索引至少包含 `source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。
 - 跨 bundle 关系不能依赖当前批次是否已加载目标对象；必须记录原始 PPtr 的 `fileID`、`pathID` 和 external `fileName/pathName`，避免分批加载切断 Unity 引用。
@@ -111,25 +112,26 @@ SQLite 源索引规则：
 - 当前允许先保存 `.fsb` 等原始音频数据；FMOD/native 转 WAV 作为后续批量转换阶段处理。`.audio.json` 必须记录 `convertedToWav=false` 或实际输出格式，不能假装已转码。
 - `VideoClip` / `MovieTexture` 只属于显式媒体提取，不进入默认可用素材库。
 
-默认 `Models/` 使用“可用模型主资源”策略：
+默认 `Models/` 使用“完整可浏览模型资源”策略：
 
 - prefab、Animator、完整 GameObject 组合模型是主资源。
-- 有明确 Unity container/preload 路径、或来源包本身具备强静态素材语义的静态 Mesh，也是主资源，默认必须进入 Library。
+- 有明确 Unity container/preload 路径、来源包本身具备强静态素材语义、或能通过 Renderer/Material 关系证明可见的静态 Mesh，也是主资源，默认必须进入 Library。
 - raw fbx 身体、face、附件等 source part 默认不作为可浏览模型导出。
 - raw/source part 必须进入 `asset_catalog.jsonl`，标记为 `SourcePart`、`RawModel`、`AttachmentSource` 等。
 - 没有被任何组合模型覆盖、但本身可用的 raw 模型可进入 `Models/RawUnreferenced`。
 - 需要研究零散部件时，显式使用 `PrefabAndParts` 或 `RawPartsOnly`。
 
-静态环境/建筑/道具 Mesh 是默认 Library 的一等资源，不是次要补丁，也不是放开所有 Mesh：
+静态环境/建筑/道具 Mesh 是默认 Library 的一等资源，不是次要补丁：
 
-- 直接导出所有 Mesh 会产生大量匿名 OBJ/碎片，默认禁止。
-- 静态环境覆盖优先“更多有效模型”。在 Unity 路径或来源包语义明确时，可以接受少量 LOD/部件级重复，先把建筑、地形块、植被、POI、道具等可浏览模型导出来；不能因为早期只偏向 prefab 而漏掉成熟游戏中大量独立 Mesh 资源。
+- 默认目标是完整覆盖可见几何模型。不能因为早期只偏向 prefab 而漏掉成熟游戏中大量独立 Mesh 资源。
+- 可以接受少量 LOD/部件级重复和少量 debug 基础体混入，前提是输出分类清晰、报告标注充分、文件名稳定可追溯。
+- 仍然不能无脑导出全部 Mesh。非常确定的 collider、NavMesh、Occlusion、Socket、Joint、Bone、损坏对象和明确 obsolete/deprecated 资源应跳过或只进索引。
 - 具备以下任一强信号、且几何数据完整的 Mesh，可升级为 `StaticMeshPrimary`：
   - 有明确 Unity `AssetBundle.m_Container` / preload 容器路径，且路径语义指向 environment/building/prop/world/stage/terrain/levelbuild 等可浏览素材。
   - 没有独立容器路径，但来源 AssetBundle / SerializedFile 本身具有明确静态素材语义，例如 `LevelBuildElements`、`Terrain`、`Environment`、`World`、`Building` 等。此类游戏常把大量场景/地形/建筑 Mesh 作为匿名 Mesh 存在，不能因为 Mesh 名为空就丢弃。
   - SQLite 源索引能证明该 Mesh 通过 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用，并且该 Renderer 有 `renderer.material` 关系。这个信号来自 Unity PPtr 关系链，不是名称猜测。
 - `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
-- 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Dummy、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Decal`、`Shadow`、`SFX/FX/VFX` 等名字不能单独作为静默丢弃理由；如果具备明确容器路径或强来源语义和可见几何，应分类或标注进入素材库。
+- 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Dummy`、`Decal`、`Shadow`、`SFX/FX/VFX`、helper 等名字不能单独作为静默丢弃理由；如果具备明确容器路径、强来源语义、Renderer 关系或可见几何，应分类或标注进入素材库。
 - StaticMeshPrimary 应优先使用 SQLite 源索引恢复材质关系：`Mesh -> MeshFilter/SkinnedMeshRenderer -> GameObject/Renderer -> Material -> Texture2D`。命中时 glTF material 必须写入 `extras.animeStudioMaterial.status=boundRendererMaterial`，贴图进入 `Textures/_ModelDependencies`，模型旁 `ASSET_README.md` 记录选中的 Renderer 和 Material。
 - 裸 Mesh 没有 Renderer 的 submesh-material 强绑定时，不要伪造材质关系。可以记录同容器 Material/Texture 候选，并在 `asset_catalog.jsonl` 与模型旁说明文件标记 `needsRendererBinding` 或 `missingRendererMaterial`。
 - 对匿名静态 Mesh，应使用来源包名 + PathID 生成稳定文件名，避免 `Mesh#123` 这类不利于排查的名字，也避免文件互相覆盖。
@@ -242,7 +244,7 @@ Shader 默认作为实验功能：
 优化方向：
 
 - 完整 CAB / PPtr map 一次构建、长期复用。
-- 导出候选可以过滤，但依赖图必须完整。
+- 只过滤确定垃圾；不确定候选优先分类、标注和报告，避免为了短期干净输出牺牲全量覆盖。
 - 模型、材质、贴图、Mesh、AnimationClip 做跨模型缓存。
 - 静态模型导出彻底跳过动画转换。
 - 模型导出和动画导出分阶段，避免默认重复做无关工作。
