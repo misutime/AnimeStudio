@@ -2113,18 +2113,32 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
 
             var modelIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var animationIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var modelIdsByIndex = new string[orderedModels.Length];
+            var animationIdsByIndex = new string[orderedAnimations.Length];
             for (var i = 0; i < orderedModels.Length; i++)
             {
-                modelIds[GetCatalogKey(orderedModels[i])] = $"m{i}";
+                var id = $"m{i}";
+                modelIdsByIndex[i] = id;
+                var key = GetCatalogKey(orderedModels[i]);
+                if (!modelIds.ContainsKey(key))
+                {
+                    modelIds[key] = id;
+                }
             }
             for (var i = 0; i < orderedAnimations.Length; i++)
             {
-                animationIds[GetCatalogKey(orderedAnimations[i])] = $"a{i}";
+                var id = $"a{i}";
+                animationIdsByIndex[i] = id;
+                var key = GetCatalogKey(orderedAnimations[i]);
+                if (!animationIds.ContainsKey(key))
+                {
+                    animationIds[key] = id;
+                }
             }
 
-            var compactModels = orderedModels.Select(model => new
+            var compactModels = orderedModels.Select((model, index) => new
             {
-                id = modelIds[GetCatalogKey(model)],
+                id = modelIdsByIndex[index],
                 name = (string)model["name"],
                 resourceKind = (string)model["resourceKind"],
                 output = (string)model["output"],
@@ -2145,9 +2159,9 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 avatar = BuildCompactAvatarSummary(model["avatar"] as JObject),
             }).ToArray();
 
-            var compactAnimations = orderedAnimations.Select(animation => new
+            var compactAnimations = orderedAnimations.Select((animation, index) => new
             {
-                id = animationIds[GetCatalogKey(animation)],
+                id = animationIdsByIndex[index],
                 name = (string)animation["name"],
                 resourceKind = (string)animation["resourceKind"],
                 output = (string)animation["output"],
@@ -2169,7 +2183,7 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
             }).ToArray();
 
-            var modelAnimationRefs = orderedModels.Select(model =>
+            var modelAnimationRefs = orderedModels.Select((model, index) =>
             {
                 var modelKey = GetCatalogKey(model);
                 explicitAnimationLinks.ByModel.TryGetValue(modelKey, out var links);
@@ -2196,7 +2210,7 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
 
                 return new
                 {
-                    modelId = modelIds[modelKey],
+                    modelId = modelIdsByIndex[index],
                     candidateCount = candidates.Length,
                     candidates,
                 };

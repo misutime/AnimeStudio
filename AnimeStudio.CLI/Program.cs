@@ -590,7 +590,8 @@ namespace AnimeStudio.CLI
             }
             catch (Exception e)
             {
-                Console.WriteLine(e);
+                Console.Error.WriteLine(e);
+                Environment.ExitCode = 1;
             }
         }
 

@@ -326,28 +326,48 @@ namespace AnimeStudio.CLI
 
         private static Dictionary<string, JObject> BuildAnimationMap(JObject compact)
         {
-            return (compact?["animations"] as JArray)?
+            return ((compact?["animations"] as JArray)?
                 .OfType<JObject>()
                 .Where(x => !string.IsNullOrWhiteSpace((string)x["id"]))
-                .ToDictionary(x => (string)x["id"], x => x, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(x => (string)x["id"], StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase))
                 ?? new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
         }
 
         private static Dictionary<string, JArray> BuildAnimationRefs(JObject compact)
         {
-            return (compact?["modelAnimationRefs"] as JArray)?
+            return ((compact?["modelAnimationRefs"] as JArray)?
                 .OfType<JObject>()
                 .Where(x => !string.IsNullOrWhiteSpace((string)x["modelId"]))
-                .ToDictionary(x => (string)x["modelId"], x => (JArray)x["candidates"] ?? new JArray(), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(x => (string)x["modelId"], StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    x => x.Key,
+                    x =>
+                    {
+                        var merged = new JArray();
+                        foreach (var item in x)
+                        {
+                            if (item["candidates"] is JArray candidates)
+                            {
+                                foreach (var candidate in candidates)
+                                {
+                                    merged.Add(candidate);
+                                }
+                            }
+                        }
+                        return merged;
+                    },
+                    StringComparer.OrdinalIgnoreCase))
                 ?? new Dictionary<string, JArray>(StringComparer.OrdinalIgnoreCase);
         }
 
         private static Dictionary<string, JObject> BuildAssemblyMap(JObject assemblies)
         {
-            return (assemblies?["assemblies"] as JArray)?
+            return ((assemblies?["assemblies"] as JArray)?
                 .OfType<JObject>()
                 .Where(x => !string.IsNullOrWhiteSpace((string)x["baseModel"]?["output"]))
-                .ToDictionary(x => NormalizePath((string)x["baseModel"]["output"]), x => x, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(x => NormalizePath((string)x["baseModel"]["output"]), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase))
                 ?? new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
         }
 
