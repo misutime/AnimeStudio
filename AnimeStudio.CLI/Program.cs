@@ -237,7 +237,7 @@ namespace AnimeStudio.CLI
                     
                             classTypeFilterList.Add(type);
                         }
-                        catch(Exception e)
+                        catch
                         {
                             Logger.Error($"{typeStr} has invalid format, skipping...");
                             continue;
@@ -814,7 +814,7 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.MeshFilter, true, false);
             TypeFlags.SetType(ClassIDType.MeshRenderer, true, false);
             TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, true, false);
-            TypeFlags.SetType(ClassIDType.Mesh, true, false);
+            TypeFlags.SetType(ClassIDType.Mesh, true, workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.Material, true, false);
             TypeFlags.SetType(ClassIDType.Texture2D, true, workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.Texture2DArray, true, workMode == WorkMode.Library);

@@ -2663,9 +2663,29 @@ namespace AnimeStudio.CLI
             {
                 return "Character";
             }
+            if (Regex.IsMatch(text, @"(^|/)avatars?(/|$)|(^|/)bodies(/|$)|(^|/)costumes?(/|$)"))
+            {
+                return "Avatar";
+            }
             if (Regex.IsMatch(text, @"(^|/)character/npc|(^|/)npc(/|$)"))
             {
                 return "NPC";
+            }
+            if (Regex.IsMatch(text, @"(^|/)units?(/|$)"))
+            {
+                if (Regex.IsMatch(text, @"(^|/)vehicles?(/|$)|tank|ship|boat|submarine|carrier|frigate|corvette|helicopter|fighter|aircraft|artiller|cannon"))
+                {
+                    return "Vehicle";
+                }
+                if (Regex.IsMatch(text, @"(^|/)animals?(/|$)|horse|deer|bear|camel|elephant|mammoth"))
+                {
+                    return "Animal";
+                }
+                return "Unit";
+            }
+            if (Regex.IsMatch(text, @"(^|/)(accessor|accessories|hat|hats|hair|weapon|weapons|shield|shields)(/|$)"))
+            {
+                return "Accessory";
             }
             if (Regex.IsMatch(text, @"(^|/)stage|court|scene|map"))
             {

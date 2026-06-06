@@ -114,7 +114,7 @@ SQLite 源索引规则：
 默认 `Models/` 使用“可用模型主资源”策略：
 
 - prefab、Animator、完整 GameObject 组合模型是主资源。
-- 有明确 Unity container/preload 路径、几何完整、语义明确的静态 Mesh 也是主资源，默认必须进入 Library。
+- 有明确 Unity container/preload 路径、或来源包本身具备强静态素材语义的静态 Mesh，也是主资源，默认必须进入 Library。
 - raw fbx 身体、face、附件等 source part 默认不作为可浏览模型导出。
 - raw/source part 必须进入 `asset_catalog.jsonl`，标记为 `SourcePart`、`RawModel`、`AttachmentSource` 等。
 - 没有被任何组合模型覆盖、但本身可用的 raw 模型可进入 `Models/RawUnreferenced`。
@@ -123,10 +123,14 @@ SQLite 源索引规则：
 静态环境/建筑/道具 Mesh 是默认 Library 的一等资源，不是次要补丁，也不是放开所有 Mesh：
 
 - 直接导出所有 Mesh 会产生大量匿名 OBJ/碎片，默认禁止。
-- 只有具备明确 Unity `AssetBundle.m_Container` / preload 容器路径、几何数据完整、路径语义指向 environment/building/prop/world/stage 等可浏览素材的 Mesh，才可升级为 `StaticMeshPrimary`。
+- 静态环境覆盖优先“更多有效模型”。在 Unity 路径或来源包语义明确时，可以接受少量 LOD/部件级重复，先把建筑、地形块、植被、POI、道具等可浏览模型导出来；不能因为早期只偏向 prefab 而漏掉成熟游戏中大量独立 Mesh 资源。
+- 具备以下任一强信号、且几何数据完整的 Mesh，可升级为 `StaticMeshPrimary`：
+  - 有明确 Unity `AssetBundle.m_Container` / preload 容器路径，且路径语义指向 environment/building/prop/world/stage/terrain/levelbuild 等可浏览素材。
+  - 没有独立容器路径，但来源 AssetBundle / SerializedFile 本身具有明确静态素材语义，例如 `LevelBuildElements`、`Terrain`、`Environment`、`World`、`Building` 等。此类游戏常把大量场景/地形/建筑 Mesh 作为匿名 Mesh 存在，不能因为 Mesh 名为空就丢弃。
 - `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
-- 匿名、无容器路径、碰撞、NavMesh、Occlusion、Dummy、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Decal`、`Shadow`、`SFX/FX/VFX` 等名字不能单独作为静默丢弃理由；如果具备明确容器路径和可见几何，应分类或标注进入素材库。
+- 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Dummy、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Decal`、`Shadow`、`SFX/FX/VFX` 等名字不能单独作为静默丢弃理由；如果具备明确容器路径或强来源语义和可见几何，应分类或标注进入素材库。
 - 裸 Mesh 没有 Renderer 的 submesh-material 强绑定时，不要伪造材质关系。可以记录同容器 Material/Texture 候选，并在 `asset_catalog.jsonl` 与模型旁说明文件标记 `needsRendererBinding` 或 `missingRendererMaterial`。
+- 对匿名静态 Mesh，应使用来源包名 + PathID 生成稳定文件名，避免 `Mesh#123` 这类不利于排查的名字，也避免文件互相覆盖。
 
 ## 5. 模型、骨骼、模块
 

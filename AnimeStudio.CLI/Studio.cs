@@ -99,7 +99,7 @@ namespace AnimeStudio.CLI
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
         private static readonly Regex StaticMeshRejectPathPattern = new Regex(
-            @"(?:^|[\\/])(?:collider|collision|physics|navmesh|occlusion|occluder|bounds?|proxy|placeholder|dummy|socket|locator|attach|joint|jnt|bone)(?:[\\/._\-\s]|$)|(?:^|[_\-\s])(col|collider|collision|navmesh|occluder|dummy|socket|locator|jnt|joint|bone)(?:$|[_\-\s0-9])",
+            @"(?:^|[\\/])(?:debug|collider|collision|physics|navmesh|occlusion|occluder|bounds?|proxy|placeholder|dummy|socket|locator|attach|joint|jnt|bone)(?:[\\/._\-\s]|$)|(?:^|[_\-\s])(col|collider|collision|navmesh|occluder|dummy|socket|locator|jnt|joint|bone)(?:$|[_\-\s0-9])",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
 
@@ -908,9 +908,7 @@ namespace AnimeStudio.CLI
             {
                 if (IsLowValueBrowsableModel(model))
                 {
-                    model.LibraryRole = string.IsNullOrWhiteSpace(model.LibraryRole)
-                        ? "SourcePart"
-                        : model.LibraryRole;
+                    model.LibraryRole = "SourcePart";
                     sourcePartModels.Add(model);
                     skipped++;
                     continue;
@@ -1261,18 +1259,21 @@ namespace AnimeStudio.CLI
             {
                 if (IsLibraryStaticMeshPrimary(item, out var reason))
                 {
+                    EnsureStaticMeshDisplayName(item);
                     item.LibraryRole = "StaticMeshPrimary";
                     selected.Add(item);
                     continue;
                 }
 
-                if (!string.Equals(reason, "too_small_or_empty", StringComparison.OrdinalIgnoreCase))
+                if (ShouldIndexStaticMeshSourcePart(reason))
                 {
                     item.LibraryRole = "StaticMeshSource";
                     sourcePartModels.Add(item);
                     downgraded++;
                 }
             }
+
+            EnsureStaticMeshDuplicateNamesAreStable(selected);
 
             if (selected.Count > 0 || downgraded > 0)
             {
@@ -1282,11 +1283,20 @@ namespace AnimeStudio.CLI
                     ["inputCount"] = meshes.Count,
                     ["selectedCount"] = selected.Count,
                     ["sourcePartCount"] = downgraded,
-                    ["rule"] = "Promote only Mesh assets with a meaningful Unity container path, enough triangle data, and environment/building/prop/static path signals. Anonymous, collision, helper, deprecated, and no-path Mesh assets stay out of the default browsable Library.",
+                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. Prefer explicit container/preload paths; when a game stores static world meshes as unnamed Mesh assets inside semantic source bundles such as LevelBuildElements/Terrain/Environment, promote them with stable source-based names and mark material binding as incomplete if no Renderer binding exists. Anonymous, collision, helper, deprecated, and no-signal Mesh assets stay out of the default browsable Library.",
                 });
             }
 
             return selected;
+        }
+
+        private static bool ShouldIndexStaticMeshSourcePart(string reason)
+        {
+            return reason switch
+            {
+                "source_static_mesh" or "container_static_mesh" => true,
+                _ => false,
+            };
         }
 
         private static bool IsLibraryStaticMeshPrimary(AssetItem item, out string reason)
@@ -1305,12 +1315,6 @@ namespace AnimeStudio.CLI
             }
 
             var container = (item.Container ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(container) || int.TryParse(container, out _))
-            {
-                reason = "missing_container";
-                return false;
-            }
-
             var text = string.Join("/", item.Text, container, item.SourceFile?.originalPath, item.SourceFile?.fileName)
                 .Replace('\\', '/');
             if (DeprecatedLibraryPathPattern.IsMatch(text))
@@ -1323,14 +1327,70 @@ namespace AnimeStudio.CLI
                 reason = "low_value_static_mesh";
                 return false;
             }
-            if (!StaticMeshLibraryPathPattern.IsMatch(text))
+
+            var hasContainer = !string.IsNullOrWhiteSpace(container) && !int.TryParse(container, out _);
+            var hasStaticSignal = StaticMeshLibraryPathPattern.IsMatch(text);
+            if (!hasStaticSignal)
             {
                 reason = "no_static_library_path_signal";
                 return false;
             }
 
-            reason = "container_static_mesh";
+            reason = hasContainer ? "container_static_mesh" : "source_static_mesh";
             return true;
+        }
+
+        private static void EnsureStaticMeshDuplicateNamesAreStable(List<AssetItem> selected)
+        {
+            foreach (var group in selected
+                .GroupBy(
+                    item => $"{GetStaticMeshLibrarySubPath(item)}\u001f{item.Text ?? string.Empty}",
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .Where(group => group.Count() > 1))
+            {
+                foreach (var item in group)
+                {
+                    item.Text = $"{item.Text}_{GetShortPathId(item.m_PathID)}";
+                }
+            }
+        }
+
+        private static void EnsureStaticMeshDisplayName(AssetItem item)
+        {
+            if (!IsAutoGeneratedAssetName(item.Text, item.TypeString))
+            {
+                return;
+            }
+
+            var source = item.SourceFile?.originalPath ?? item.SourceFile?.fileName ?? "source";
+            var stem = Path.GetFileNameWithoutExtension(source);
+            if (string.IsNullOrWhiteSpace(stem))
+            {
+                stem = "static_mesh";
+            }
+
+            var pathId = unchecked((ulong)item.m_PathID).ToString("X16", CultureInfo.InvariantCulture);
+            item.Text = $"{stem}_Mesh_{pathId}";
+        }
+
+        private static string GetShortPathId(long pathId)
+        {
+            return unchecked((ulong)pathId).ToString("X16", CultureInfo.InvariantCulture)[^8..];
+        }
+
+        private static bool IsAutoGeneratedAssetName(string name, string typeString)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return true;
+            }
+
+            return Regex.IsMatch(
+                name.Trim(),
+                $"^{Regex.Escape(typeString ?? string.Empty)}#\\d+$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            );
         }
 
         private static string InferLibraryResourceKind(string name, string container, string source)
@@ -1344,9 +1404,29 @@ namespace AnimeStudio.CLI
             {
                 return "Character";
             }
+            if (Regex.IsMatch(text, @"(^|/)avatars?(/|$)|(^|/)bodies(/|$)|(^|/)costumes?(/|$)"))
+            {
+                return "Avatar";
+            }
             if (Regex.IsMatch(text, @"(^|/)character/npc|(^|/)npc(/|$)"))
             {
                 return "NPC";
+            }
+            if (Regex.IsMatch(text, @"(^|/)units?(/|$)"))
+            {
+                if (Regex.IsMatch(text, @"(^|/)vehicles?(/|$)|tank|ship|boat|submarine|carrier|frigate|corvette|helicopter|fighter|aircraft|artiller|cannon"))
+                {
+                    return "Vehicle";
+                }
+                if (Regex.IsMatch(text, @"(^|/)animals?(/|$)|horse|deer|bear|camel|elephant|mammoth"))
+                {
+                    return "Animal";
+                }
+                return "Unit";
+            }
+            if (Regex.IsMatch(text, @"(^|/)(accessor|accessories|hat|hats|hair|weapon|weapons|shield|shields)(/|$)"))
+            {
+                return "Accessory";
             }
             if (Regex.IsMatch(text, @"(^|/)stage|court|scene|map"))
             {
@@ -3536,9 +3616,15 @@ namespace AnimeStudio.CLI
                     {
                         exportedCount++;
                         _exportRunStats.ExportedModels++;
-                        Logger.Info(
-                            $"[{processedCount}/{toExportCount}] Exported {asset.TypeString}: {asset.Text}"
-                        );
+                        var exportMessage = $"[{processedCount}/{toExportCount}] Exported {asset.TypeString}: {asset.Text}";
+                        if (processedCount <= 20 || processedCount % 100 == 0 || processedCount == toExportCount)
+                        {
+                            Logger.Info(exportMessage);
+                        }
+                        else
+                        {
+                            Logger.Verbose(exportMessage);
+                        }
                         AppendExportManifest(savePath, asset, exportPath);
                     }
                     else
@@ -3704,13 +3790,73 @@ namespace AnimeStudio.CLI
             if (asset.Type == ClassIDType.Mesh && asset.LibraryRole == "StaticMeshPrimary")
             {
                 var kind = InferLibraryResourceKind(asset.Text, asset.Container, asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName);
-                var meshSubPath = GetLibrarySubPathWithoutRole(asset);
+                var meshSubPath = GetStaticMeshLibrarySubPath(asset);
                 return string.IsNullOrWhiteSpace(meshSubPath)
                     ? kind
                     : Path.Combine(kind, meshSubPath);
             }
 
             return GetLibrarySubPathWithoutRole(asset);
+        }
+
+        private static string GetStaticMeshLibrarySubPath(AssetItem asset)
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Container) && !int.TryParse(asset.Container, out _))
+            {
+                return GetLibrarySubPathWithoutRole(asset);
+            }
+
+            var source = asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return GetAssetNameCategory(asset.Text);
+            }
+
+            var sourcePath = GetRelativeStaticMeshSourcePath(source);
+            if (Path.HasExtension(sourcePath))
+            {
+                sourcePath = Path.GetDirectoryName(sourcePath);
+            }
+
+            return string.IsNullOrWhiteSpace(sourcePath)
+                ? GetAssetNameCategory(asset.Text)
+                : sourcePath;
+        }
+
+        private static string GetRelativeStaticMeshSourcePath(string source)
+        {
+            var normalized = (source ?? string.Empty)
+                .Replace('\\', '/')
+                .Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return string.Empty;
+            }
+
+            var markers = new[]
+            {
+                "/AssetBundles/",
+                "/StreamingAssets/",
+                "/Resources/",
+                "/ContentArchives/",
+                "/Data/",
+            };
+            foreach (var marker in markers)
+            {
+                var index = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (index >= 0)
+                {
+                    return normalized.Substring(index + 1).Replace('/', Path.DirectorySeparatorChar);
+                }
+            }
+
+            var dataIndex = normalized.LastIndexOf("_Data/", StringComparison.OrdinalIgnoreCase);
+            if (dataIndex >= 0)
+            {
+                return normalized.Substring(dataIndex + "_Data/".Length).Replace('/', Path.DirectorySeparatorChar);
+            }
+
+            return Path.GetFileName(normalized);
         }
 
         private static string GetLibrarySubPathWithoutRole(AssetItem asset)

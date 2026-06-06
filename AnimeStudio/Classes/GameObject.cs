@@ -64,9 +64,9 @@ namespace AnimeStudio
 
                 return meshes.Any(x => x == true);
             }
-            catch(Exception e)
+            catch
             {
-                Logger.Warning($"Unable to verify if {m_Transform?.Name} has meshes, skipping...");
+                Logger.Debug($"Unable to verify if {m_Transform?.Name} has meshes, skipping...");
                 return false;
             }
         }
