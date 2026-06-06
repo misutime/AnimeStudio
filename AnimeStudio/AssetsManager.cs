@@ -17,11 +17,17 @@ namespace AnimeStudio
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;        
         public bool LoadSerializedFileExternals = true;
+        public bool StoreUnparsedObjects = true;
         public Func<ClassIDType, bool> ObjectParseFilter;
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
         public string CurrentReadAssetsFile { get; private set; }
+        public string CurrentLoadFile { get; private set; }
+        public string CurrentLoadPhase { get; private set; }
+        public string CurrentLoadInnerFile { get; private set; }
+        public int CurrentLoadInnerFileIndex { get; private set; }
+        public int CurrentLoadInnerFileCount { get; private set; }
         public int CurrentReadObjectIndex { get; private set; }
         public int CurrentReadObjectCount { get; private set; }
         public long CurrentReadPathId { get; private set; }
@@ -128,7 +134,10 @@ namespace AnimeStudio
             //use a for loop because list size can change
             for (var i = 0; i < importFiles.Count; i++)
             {
+                CurrentLoadFile = importFiles[i];
+                CurrentLoadPhase = "load_file";
                 LoadFile(importFiles[i]);
+                CurrentLoadPhase = "loaded_file";
                 Progress.Report(i + 1, importFiles.Count);
                 if (tokenSource.IsCancellationRequested)
                 {
@@ -145,9 +154,17 @@ namespace AnimeStudio
 
             if (!SkipProcess)
             {
+                CurrentLoadPhase = "read_assets";
                 ReadAssets();
+                CurrentLoadPhase = "process_assets";
                 ProcessAssets();
             }
+            else
+            {
+                CurrentLoadPhase = "read_assets";
+                ReadAssets();
+            }
+            CurrentLoadPhase = "loaded";
         }
 
         private void LoadFile(string fullName)
@@ -231,6 +248,8 @@ namespace AnimeStudio
             if (!assetsFileListHash.Contains(reader.FileName))
             {
                 Logger.Info($"Loading {reader.FullPath}");
+                CurrentLoadFile = reader.FullPath;
+                CurrentLoadPhase = "load_serialized_metadata";
                 try
                 {
                     var assetsFile = new SerializedFile(reader, this);
@@ -293,6 +312,8 @@ namespace AnimeStudio
             Logger.Verbose($"Loading asset file {reader.FileName} with version {unityVersion} from {originalPath} at offset 0x{originalOffset:X8}");
             if (!assetsFileListHash.Contains(reader.FileName))
             {
+                CurrentLoadFile = originalPath ?? reader.FullPath;
+                CurrentLoadPhase = $"load_inner_serialized_metadata:{reader.FileName}";
                 try
                 {
                     var assetsFile = new SerializedFile(reader, this);
@@ -525,6 +546,7 @@ namespace AnimeStudio
                 {
                     case FileType.ENCRFile:
                     case FileType.BundleFile:
+                        CurrentLoadPhase = "read_bundle_blocks";
                         file = new BundleFile(reader, Game);
                         break;
                     case FileType.Blb3File:
@@ -549,20 +571,29 @@ namespace AnimeStudio
                 }
 
                 Logger.Verbose($"file total size: {file.m_Header.size:X8}");
+                CurrentLoadPhase = "load_bundle_inner_files";
+                CurrentLoadInnerFileCount = file.fileList.Count;
+                var innerFileIndex = 0;
                 foreach (var innerFile in file.fileList)
                 {
+                    innerFileIndex++;
+                    CurrentLoadInnerFileIndex = innerFileIndex;
+                    CurrentLoadInnerFile = innerFile.fileName;
                     var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), innerFile.fileName);
                     var cabReader = new FileReader(dummyPath, innerFile.stream);
                     if (cabReader.FileType == FileType.AssetsFile)
                     {
+                        CurrentLoadPhase = "load_bundle_inner_assets_file";
                         LoadAssetsFromMemory(cabReader, originalPath ?? reader.FullPath, file.m_Header.unityRevision, originalOffset);
                     }
                     else
                     {
+                        CurrentLoadPhase = "cache_bundle_inner_resource";
                         Logger.Verbose("Caching resource stream");
                         resourceFileReaders.TryAdd(innerFile.fileName, cabReader); //TODO
                     }
                 }
+                CurrentLoadPhase = "loaded_bundle_inner_files";
             }
             catch (InvalidCastException)
             {
@@ -680,7 +711,14 @@ namespace AnimeStudio
                     CurrentReadType = objectReader.type;
                     try
                     {
-                        Object obj = ObjectParseFilter != null && !ObjectParseFilter(objectReader.type)
+                        var shouldParseObject = ObjectParseFilter == null || ObjectParseFilter(objectReader.type);
+                        if (!shouldParseObject && !StoreUnparsedObjects)
+                        {
+                            Progress.Report(++i, progressCount);
+                            continue;
+                        }
+
+                        Object obj = !shouldParseObject
                             ? new Object(objectReader)
                             : objectReader.type switch
                         {
@@ -723,7 +761,10 @@ namespace AnimeStudio
                     catch (Exception e)
                     {
                         HandleObjectParseFailure(assetsFile, objectInfo, objectReader, e);
-                        assetsFile.AddObject(new Object(objectReader));
+                        if (StoreUnparsedObjects)
+                        {
+                            assetsFile.AddObject(new Object(objectReader));
+                        }
                     }
 
                     Progress.Report(++i, progressCount);

@@ -143,6 +143,8 @@ namespace AnimeStudio.CLI
                     SpecifyUnityVersion = unityVersion,
                     ResolveDependencies = false,
                     LoadSerializedFileExternals = false,
+                    SkipProcess = true,
+                    StoreUnparsedObjects = false,
                     ObjectParseFilter = ShouldParseObjectForSourceIndex,
                     Silent = true,
                 };
@@ -187,7 +189,7 @@ namespace AnimeStudio.CLI
                 catch (Exception e)
                 {
                     counts["failedBatches"]++;
-                    Logger.Warning($"Source index batch failed: {e.Message}");
+                    Logger.Warning($"Source index batch failed: {e}");
                 }
                 finally
                 {
@@ -843,19 +845,22 @@ VALUES ($relation, $confidence, $fromSource, $fromFile, $fromType, $fromName, $f
         private static void InsertAnimationBindings(SqliteConnection connection, SqliteTransaction transaction, AnimationClip clip)
         {
             var bindings = clip.m_ClipBindingConstant?.genericBindings ?? new List<GenericBinding>();
-            var tos = clip.FindTOS();
             var entries = bindings.Select(x => new
             {
-                path = tos != null && tos.TryGetValue(x.path, out var path) ? path : null,
+                path = (string)null,
+                pathHash = x.path,
                 type = x.typeID.ToString(),
+                typeId = (int)x.typeID,
                 attribute = x.attribute,
                 customType = ((BindingCustomType)x.customType).ToString(),
+                customTypeId = x.customType,
                 isPPtrCurve = x.isPPtrCurve == 1,
             }).ToArray();
             var raw = new
             {
                 kind = "sourceAnimationBindings",
                 confidence = "structural",
+                pathResolution = "deferred_source_index_hash_only",
                 animation = DescribeObject(clip),
                 hasMuscleClip = clip.m_MuscleClip != null,
                 bindingCount = entries.Length,
@@ -1393,6 +1398,11 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                     var serializedFileCount = manager.assetsFileList.Count;
                     var objectInfoCount = manager.assetsFileList.Sum(x => x.m_Objects?.Count ?? 0);
                     var parsedObjectCount = manager.assetsFileList.Sum(x => x.Objects?.Count ?? 0);
+                    var currentLoadFile = manager.CurrentLoadFile ?? string.Empty;
+                    var currentLoadPhase = manager.CurrentLoadPhase ?? string.Empty;
+                    var currentLoadInnerFile = manager.CurrentLoadInnerFile ?? string.Empty;
+                    var currentLoadInnerFileIndex = manager.CurrentLoadInnerFileIndex;
+                    var currentLoadInnerFileCount = manager.CurrentLoadInnerFileCount;
                     var currentFile = manager.CurrentReadAssetsFile ?? string.Empty;
                     var currentType = manager.CurrentReadType.ToString();
                     var currentObjectIndex = manager.CurrentReadObjectIndex;
@@ -1410,6 +1420,11 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         ["serializedFileCount"] = serializedFileCount,
                         ["objectInfoCount"] = objectInfoCount,
                         ["parsedObjectCount"] = parsedObjectCount,
+                        ["currentLoadFile"] = currentLoadFile,
+                        ["currentLoadPhase"] = currentLoadPhase,
+                        ["currentLoadInnerFile"] = currentLoadInnerFile,
+                        ["currentLoadInnerFileIndex"] = currentLoadInnerFileIndex,
+                        ["currentLoadInnerFileCount"] = currentLoadInnerFileCount,
                         ["currentFile"] = currentFile,
                         ["currentType"] = currentType,
                         ["currentObjectIndex"] = currentObjectIndex,
@@ -1420,6 +1435,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         $"[source-index {batchIndex}/{totalBatches}] Still loading after {FormatDuration(elapsed)}; " +
                         $"{batchFileCount} file(s), {FormatBytes(batchBytes)}; largest {largestFile} ({FormatBytes(largestFileBytes)}); " +
                         $"serialized {serializedFileCount}, objectInfos {objectInfoCount}, parsed {parsedObjectCount}; " +
+                        $"loadPhase {currentLoadPhase}, loadFile {currentLoadFile}, inner {currentLoadInnerFileIndex}/{currentLoadInnerFileCount} {currentLoadInnerFile}; " +
                         $"current {currentFile} {currentObjectIndex}/{currentObjectCount} {currentType} pathId {currentPathId}; " +
                         $"workingSet {FormatBytes(process.WorkingSet64)}, private {FormatBytes(process.PrivateMemorySize64)}, managed {FormatBytes(GC.GetTotalMemory(false))}.");
                 }
