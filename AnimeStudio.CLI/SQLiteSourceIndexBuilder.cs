@@ -16,6 +16,8 @@ namespace AnimeStudio.CLI
     public static class SQLiteSourceIndexBuilder
     {
         private const long LargeSourceIndexFileBytes = 256L * 1024L * 1024L;
+        private const int SourceIndexWriteCommitInterval = 10_000;
+        private const int SourceIndexMaxLightweightArrayCount = 100_000;
         private static readonly TimeSpan SourceIndexHeartbeatInterval = TimeSpan.FromSeconds(30);
 
         public static string Build(
@@ -87,6 +89,9 @@ namespace AnimeStudio.CLI
                 ["sourceExternals"] = 0,
                 ["sourceRelations"] = 0,
                 ["sourceAnimationBindings"] = 0,
+                ["lightweightRendererObjects"] = 0,
+                ["lightweightRendererRelations"] = 0,
+                ["lightweightRendererFailures"] = 0,
                 ["failedBatches"] = 0,
             };
 
@@ -174,9 +179,9 @@ namespace AnimeStudio.CLI
                         ["parsedObjectCount"] = manager.assetsFileList.Sum(x => x.Objects?.Count ?? 0),
                     }))
                     {
-                        using var transaction = connection.BeginTransaction();
-                        IndexLoadedAssets(connection, transaction, sourceRoot, manager, counts);
-                        transaction.Commit();
+                        var progress = new SourceIndexWriteProgress(batchIndex + 1, batches.Count, manager.assetsFileList.Sum(x => x.m_Objects?.Count ?? 0));
+                        using var heartbeat = StartSourceIndexWriteHeartbeat(progress);
+                        IndexLoadedAssets(connection, sourceRoot, manager, counts, progress);
                     }
                 }
                 catch (Exception e)
@@ -324,30 +329,93 @@ CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(ani
             }
         }
 
-        private static void IndexLoadedAssets(SqliteConnection connection, SqliteTransaction transaction, string sourceRoot, AssetsManager manager, Dictionary<string, long> counts)
+        private static void IndexLoadedAssets(SqliteConnection connection, string sourceRoot, AssetsManager manager, Dictionary<string, long> counts, SourceIndexWriteProgress progress)
         {
-            foreach (var assetsFile in manager.assetsFileList)
+            SqliteTransaction transaction = null;
+            var operationsSinceCommit = 0;
+
+            void EnsureTransaction()
             {
-                InsertSerializedFile(connection, transaction, sourceRoot, assetsFile);
-                counts["serializedFiles"]++;
+                transaction ??= connection.BeginTransaction();
+            }
 
-                for (var i = 0; i < assetsFile.m_Externals.Count; i++)
+            void CommitIfNeeded(bool force = false)
+            {
+                if (transaction == null)
                 {
-                    InsertExternal(connection, transaction, sourceRoot, assetsFile, i + 1, assetsFile.m_Externals[i]);
-                    counts["sourceExternals"]++;
+                    return;
                 }
 
-                foreach (var objectInfo in assetsFile.m_Objects)
+                if (!force && operationsSinceCommit < SourceIndexWriteCommitInterval)
                 {
-                    var obj = assetsFile.ObjectsDic.TryGetValue(objectInfo.m_PathID, out var parsed) ? parsed : null;
-                    InsertSourceObject(connection, transaction, sourceRoot, assetsFile, objectInfo, obj);
-                    counts["sourceObjects"]++;
+                    return;
                 }
 
-                foreach (var obj in assetsFile.Objects)
+                transaction.Commit();
+                transaction.Dispose();
+                transaction = null;
+                operationsSinceCommit = 0;
+            }
+
+            void CountOperation()
+            {
+                operationsSinceCommit++;
+                CommitIfNeeded();
+            }
+
+            try
+            {
+                foreach (var assetsFile in manager.assetsFileList)
                 {
-                    WriteObjectRelations(connection, transaction, obj, counts);
+                    progress.CurrentFile = assetsFile.fileName ?? string.Empty;
+                    progress.CurrentSource = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName);
+                    EnsureTransaction();
+                    InsertSerializedFile(connection, transaction, sourceRoot, assetsFile);
+                    counts["serializedFiles"]++;
+                    progress.SerializedFilesWritten++;
+                    CountOperation();
+
+                    for (var i = 0; i < assetsFile.m_Externals.Count; i++)
+                    {
+                        EnsureTransaction();
+                        InsertExternal(connection, transaction, sourceRoot, assetsFile, i + 1, assetsFile.m_Externals[i]);
+                        counts["sourceExternals"]++;
+                        progress.ExternalsWritten++;
+                        CountOperation();
+                    }
+
+                    foreach (var objectInfo in assetsFile.m_Objects)
+                    {
+                        progress.CurrentObjectIndex++;
+                        progress.CurrentPathId = objectInfo.m_PathID;
+                        progress.CurrentType = Enum.IsDefined(typeof(ClassIDType), objectInfo.classID) ? ((ClassIDType)objectInfo.classID).ToString() : objectInfo.classID.ToString(CultureInfo.InvariantCulture);
+                        var obj = assetsFile.ObjectsDic.TryGetValue(objectInfo.m_PathID, out var parsed) ? parsed : null;
+                        EnsureTransaction();
+                        InsertSourceObject(connection, transaction, sourceRoot, assetsFile, objectInfo, obj);
+                        counts["sourceObjects"]++;
+                        progress.ObjectsWritten++;
+                        CountOperation();
+                        EnsureTransaction();
+                        var lightweightRelations = TryWriteLightweightRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress);
+                        if (lightweightRelations > 0)
+                        {
+                            operationsSinceCommit += lightweightRelations;
+                            CommitIfNeeded();
+                        }
+                    }
+
+                    foreach (var obj in assetsFile.Objects)
+                    {
+                        EnsureTransaction();
+                        WriteObjectRelations(connection, transaction, obj, counts);
+                        progress.RelationsWritten = counts["sourceRelations"];
+                        CountOperation();
+                    }
                 }
+            }
+            finally
+            {
+                CommitIfNeeded(force: true);
             }
         }
 
@@ -518,6 +586,173 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
         }
 
+        private static int TryWriteLightweightRendererRelations(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string sourceRoot,
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            Dictionary<string, long> counts,
+            SourceIndexWriteProgress progress)
+        {
+            if (objectInfo.classID != (int)ClassIDType.MeshRenderer && objectInfo.classID != (int)ClassIDType.SkinnedMeshRenderer)
+            {
+                return 0;
+            }
+
+            counts["lightweightRendererObjects"]++;
+            progress.LightweightRendererObjects++;
+
+            if (objectInfo.serializedType?.m_Type?.m_Nodes == null || objectInfo.serializedType.m_Type.m_Nodes.Count == 0)
+            {
+                return TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, "missing_typetree");
+            }
+
+            if (!IsObjectRangeReadable(assetsFile, objectInfo))
+            {
+                counts["lightweightRendererFailures"]++;
+                progress.LightweightRendererFailures++;
+                return 0;
+            }
+
+            try
+            {
+                var reader = new ObjectReader(assetsFile.reader, assetsFile, objectInfo, assetsFile.game);
+                var relations = LightweightRendererRelationReader.Read(reader, objectInfo.serializedType.m_Type);
+                var relationCount = 0;
+                var type = (ClassIDType)objectInfo.classID;
+                var fromSource = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName);
+                var fromType = type.ToString();
+
+                foreach (var relation in relations)
+                {
+                    if (InsertPPtrRelation(
+                        connection,
+                        transaction,
+                        relation.Relation,
+                        "explicit_pptr_lightweight",
+                        assetsFile,
+                        fromSource,
+                        assetsFile.fileName ?? string.Empty,
+                        fromType,
+                        string.Empty,
+                        objectInfo.m_PathID,
+                        relation.FileId,
+                        relation.PathId,
+                        relation.TypeHint,
+                        relation.Details))
+                    {
+                        counts["sourceRelations"]++;
+                        counts["lightweightRendererRelations"]++;
+                        progress.RelationsWritten = counts["sourceRelations"];
+                        progress.LightweightRendererRelations++;
+                        relationCount++;
+                    }
+                }
+
+                return relationCount;
+            }
+            catch (Exception e) when (e is EndOfStreamException || e is IOException || e is InvalidDataException || e is OverflowException || e is ArgumentOutOfRangeException)
+            {
+                return TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name);
+            }
+        }
+
+        private static int TryWriteFallbackParsedRendererRelations(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string sourceRoot,
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            Dictionary<string, long> counts,
+            SourceIndexWriteProgress progress,
+            string reason)
+        {
+            try
+            {
+                var reader = new ObjectReader(assetsFile.reader, assetsFile, objectInfo, assetsFile.game);
+                AnimeStudio.Object renderer = objectInfo.classID == (int)ClassIDType.SkinnedMeshRenderer
+                    ? new SkinnedMeshRenderer(reader)
+                    : new MeshRenderer(reader);
+                var before = counts["sourceRelations"];
+                WriteParsedRendererRelations(connection, transaction, renderer, sourceRoot, counts, "explicit_pptr_lightweight_fallback");
+                var added = (int)(counts["sourceRelations"] - before);
+                counts["lightweightRendererRelations"] += added;
+                progress.RelationsWritten = counts["sourceRelations"];
+                progress.LightweightRendererRelations += added;
+                return added;
+            }
+            catch (Exception e) when (e is EndOfStreamException || e is IOException || e is InvalidDataException || e is OverflowException || e is ArgumentOutOfRangeException)
+            {
+                counts["lightweightRendererFailures"]++;
+                progress.LightweightRendererFailures++;
+                ProfileLogger.Event("source_index_lightweight_renderer_failed", new Dictionary<string, object>
+                {
+                    ["source"] = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName),
+                    ["file"] = assetsFile.fileName ?? string.Empty,
+                    ["pathId"] = objectInfo.m_PathID,
+                    ["type"] = Enum.IsDefined(typeof(ClassIDType), objectInfo.classID) ? ((ClassIDType)objectInfo.classID).ToString() : objectInfo.classID.ToString(CultureInfo.InvariantCulture),
+                    ["reason"] = reason,
+                    ["errorType"] = e.GetType().Name,
+                    ["message"] = e.Message,
+                });
+                return 0;
+            }
+        }
+
+        private static void WriteParsedRendererRelations(SqliteConnection connection, SqliteTransaction transaction, AnimeStudio.Object renderer, string sourceRoot, Dictionary<string, long> counts, string confidence)
+        {
+            if (renderer is not Renderer typedRenderer)
+            {
+                return;
+            }
+
+            void Add(string relation, int fileId, long pathId, string typeHint, object details = null)
+            {
+                if (InsertPPtrRelation(
+                    connection,
+                    transaction,
+                    relation,
+                    confidence,
+                    renderer.assetsFile,
+                    MakeRelativeOrName(sourceRoot, renderer.assetsFile?.originalPath ?? renderer.assetsFile?.fullName),
+                    renderer.assetsFile?.fileName ?? string.Empty,
+                    renderer.type.ToString(),
+                    renderer.Name ?? string.Empty,
+                    renderer.m_PathID,
+                    fileId,
+                    pathId,
+                    typeHint,
+                    details))
+                {
+                    counts["sourceRelations"]++;
+                }
+            }
+
+            Add("component.gameObject", typedRenderer.m_GameObject.m_FileID, typedRenderer.m_GameObject.m_PathID, "GameObject");
+            foreach (var ptr in typedRenderer.m_Materials ?? Enumerable.Empty<PPtr<Material>>())
+            {
+                Add("renderer.material", ptr.m_FileID, ptr.m_PathID, "Material");
+            }
+
+            if (renderer is SkinnedMeshRenderer skinned)
+            {
+                Add("skinnedMeshRenderer.mesh", skinned.m_Mesh.m_FileID, skinned.m_Mesh.m_PathID, "Mesh");
+                if (skinned.m_RootBone != null && !skinned.m_RootBone.IsNull)
+                {
+                    Add("skinnedMeshRenderer.rootBone", skinned.m_RootBone.m_FileID, skinned.m_RootBone.m_PathID, "Transform");
+                }
+
+                var bones = skinned.m_Bones ?? new List<PPtr<Transform>>();
+                Add("skinnedMeshRenderer.bones", 0, 0, "Transform", new
+                {
+                    count = bones.Count,
+                    targets = bones.Take(512).Select(x => DescribePPtr(skinned.assetsFile, x.m_FileID, x.m_PathID, "Transform")).ToArray(),
+                    truncated = bones.Count > 512,
+                });
+            }
+        }
+
         private static void AddPPtrRelation(SqliteConnection connection, SqliteTransaction transaction, Dictionary<string, long> counts, string relation, AnimeStudio.Object from, int toFileId, long toPathId, string toTypeHint, object details)
         {
             if (InsertPPtrRelation(connection, transaction, relation, from, toFileId, toPathId, toTypeHint, details))
@@ -528,18 +763,58 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 
         private static bool InsertPPtrRelation(SqliteConnection connection, SqliteTransaction transaction, string relation, AnimeStudio.Object from, int toFileId, long toPathId, string toTypeHint, object details)
         {
+            return InsertPPtrRelation(
+                connection,
+                transaction,
+                relation,
+                "explicit_pptr",
+                from.assetsFile,
+                from.assetsFile?.originalPath ?? from.assetsFile?.fullName ?? string.Empty,
+                from.assetsFile?.fileName ?? string.Empty,
+                from.type.ToString(),
+                from.Name ?? string.Empty,
+                from.m_PathID,
+                toFileId,
+                toPathId,
+                toTypeHint,
+                details);
+        }
+
+        private static bool InsertPPtrRelation(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string relation,
+            string confidence,
+            SerializedFile fromAssetsFile,
+            string fromSource,
+            string fromFile,
+            string fromType,
+            string fromName,
+            long fromPathId,
+            int toFileId,
+            long toPathId,
+            string toTypeHint,
+            object details)
+        {
             if (toPathId == 0 && details == null)
             {
                 return false;
             }
 
-            var target = DescribePPtr(from.assetsFile, toFileId, toPathId, toTypeHint);
+            var target = DescribePPtr(fromAssetsFile, toFileId, toPathId, toTypeHint);
             var raw = new
             {
                 kind = "sourceRelation",
                 relation,
-                confidence = "explicit_pptr",
-                from = DescribeObject(from),
+                confidence,
+                from = new
+                {
+                    source = fromSource,
+                    file = fromFile,
+                    type = fromType,
+                    name = fromName,
+                    pathId = fromPathId,
+                },
                 to = target,
                 details,
             };
@@ -549,12 +824,12 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 INSERT INTO source_relations(relation, confidence, from_source, from_file, from_type, from_name, from_path_id, to_file_id, to_file, to_type_hint, to_path_id, target_count, raw_json)
 VALUES ($relation, $confidence, $fromSource, $fromFile, $fromType, $fromName, $fromPathId, $toFileId, $toFile, $toTypeHint, $toPathId, $targetCount, $rawJson);";
             command.Parameters.AddWithValue("$relation", relation);
-            command.Parameters.AddWithValue("$confidence", "explicit_pptr");
-            command.Parameters.AddWithValue("$fromSource", from.assetsFile?.originalPath ?? from.assetsFile?.fullName ?? string.Empty);
-            command.Parameters.AddWithValue("$fromFile", from.assetsFile?.fileName ?? string.Empty);
-            command.Parameters.AddWithValue("$fromType", from.type.ToString());
-            command.Parameters.AddWithValue("$fromName", from.Name ?? string.Empty);
-            command.Parameters.AddWithValue("$fromPathId", from.m_PathID);
+            command.Parameters.AddWithValue("$confidence", confidence);
+            command.Parameters.AddWithValue("$fromSource", fromSource ?? string.Empty);
+            command.Parameters.AddWithValue("$fromFile", fromFile ?? string.Empty);
+            command.Parameters.AddWithValue("$fromType", fromType ?? string.Empty);
+            command.Parameters.AddWithValue("$fromName", fromName ?? string.Empty);
+            command.Parameters.AddWithValue("$fromPathId", fromPathId);
             command.Parameters.AddWithValue("$toFileId", toFileId);
             command.Parameters.AddWithValue("$toFile", target["file"]?.ToString() ?? string.Empty);
             command.Parameters.AddWithValue("$toTypeHint", toTypeHint ?? string.Empty);
@@ -652,8 +927,10 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 "# Unity Source SQLite Index\n\n" +
                 "这是完整 Unity 源目录索引，不是导出结果索引。它用于一次性记录源文件、SerializedFile、Object、external CAB/PPtr、Animator/Animation/Renderer/Skin/AnimationClip binding 等关系。\n\n" +
                 "核心原则：索引要全，导出要精。源索引中出现的对象不代表默认素材库会导出，也不代表视觉验收通过。\n\n" +
+                "Renderer/Skin 关系采用 SourceIndex 专用轻量读取：优先按 Unity TypeTree 捕获 `component.gameObject`、`renderer.material`、`skinnedMeshRenderer.mesh/rootBone/bones`；TypeTree 不可用时仅对当前 Renderer 小对象做受控 fallback 解析。失败会记录为 partial/failure，不会阻塞整个索引。\n\n" +
                 "主要表：`source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。\n\n" +
-                "性能日志：启用 `--profile_log` 后，重点比较 `source_index_load_batch`、`source_index_write_batch`、`source_index_create_sql_indexes` 和 `source_index_total`。\n\n" +
+                "性能日志：启用 `--profile_log` 后，重点比较 `source_index_load_batch`、`source_index_write_batch`、`source_index_load_batch_heartbeat`、`source_index_write_batch_heartbeat`、`source_index_create_sql_indexes` 和 `source_index_total`。长时间大文件处理时，heartbeat 会持续记录当前文件、对象序号、关系计数和内存。\n\n" +
+                "统计项：`lightweightRendererObjects` 是索引阶段尝试补关系的 Renderer 数；`lightweightRendererRelations` 是成功补到的 mesh/material/bone/gameObject 关系数；`lightweightRendererFailures` 是单对象失败数，通常代表版本字段不兼容或对象数据异常。\n\n" +
                 "第二阶段当前重点是建好可查询底座；后续导出器可以逐步改为读取这个数据库来减少重复扫描。\n");
         }
 
@@ -710,6 +987,22 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             return batches;
         }
 
+        private static bool IsObjectRangeReadable(SerializedFile assetsFile, ObjectInfo objectInfo)
+        {
+            if (assetsFile?.reader == null || objectInfo == null)
+            {
+                return false;
+            }
+
+            if (objectInfo.byteStart < 0 || objectInfo.byteSize > int.MaxValue)
+            {
+                return false;
+            }
+
+            var end = objectInfo.byteStart + (long)objectInfo.byteSize;
+            return end >= objectInfo.byteStart && end <= assetsFile.reader.Length;
+        }
+
         private static IDisposable StartSourceIndexLoadHeartbeat(
             int batchIndex,
             int totalBatches,
@@ -720,6 +1013,11 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             AssetsManager manager)
         {
             return new SourceIndexHeartbeat(batchIndex, totalBatches, batchFileCount, batchBytes, largestFile, largestFileBytes, manager);
+        }
+
+        private static IDisposable StartSourceIndexWriteHeartbeat(SourceIndexWriteProgress progress)
+        {
+            return new SourceIndexWriteHeartbeat(progress);
         }
 
         private static bool ShouldParseObjectForSourceIndex(ClassIDType type)
@@ -736,6 +1034,294 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 or ClassIDType.Avatar
                 or ClassIDType.AssetBundle
                 or ClassIDType.ResourceManager;
+        }
+
+        private sealed class LightweightPPtrRelation
+        {
+            public string Relation { get; init; }
+            public int FileId { get; init; }
+            public long PathId { get; init; }
+            public string TypeHint { get; init; }
+            public object Details { get; init; }
+        }
+
+        private sealed class LightweightRendererRelationReader
+        {
+            private readonly ObjectReader reader;
+            private readonly List<TypeTreeNode> nodes;
+            private readonly List<LightweightPPtrRelation> relations = new();
+            private readonly List<object> bones = new();
+
+            private LightweightRendererRelationReader(ObjectReader reader, TypeTree typeTree)
+            {
+                this.reader = reader;
+                nodes = typeTree.m_Nodes;
+            }
+
+            public static List<LightweightPPtrRelation> Read(ObjectReader reader, TypeTree typeTree)
+            {
+                var collector = new LightweightRendererRelationReader(reader, typeTree);
+                collector.ReadRoot();
+                return collector.relations;
+            }
+
+            private void ReadRoot()
+            {
+                reader.Reset();
+                for (var i = 1; i < nodes.Count; i++)
+                {
+                    ReadNode(nodes, reader, ref i, string.Empty);
+                }
+
+                if (bones.Count > 0)
+                {
+                    relations.Add(new LightweightPPtrRelation
+                    {
+                        Relation = "skinnedMeshRenderer.bones",
+                        TypeHint = "Transform",
+                        Details = new
+                        {
+                            count = bones.Count,
+                            targets = bones.Take(512).ToArray(),
+                            truncated = bones.Count > 512,
+                        },
+                    });
+                }
+            }
+
+            private void ReadNode(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string parentPath)
+            {
+                var node = nodeList[index];
+                var path = string.IsNullOrEmpty(parentPath) ? node.m_Name : $"{parentPath}.{node.m_Name}";
+                var align = (node.m_MetaFlag & 0x4000) != 0;
+
+                if (node.m_Type != null && node.m_Type.StartsWith("PPtr<", StringComparison.Ordinal))
+                {
+                    var ptr = new PPtr<AnimeStudio.Object>(reader);
+                    CapturePPtr(path, ptr.m_FileID, ptr.m_PathID);
+                    index = GetNodeEnd(nodeList, index) - 1;
+                    if (align)
+                    {
+                        binaryReader.AlignStream();
+                    }
+                    return;
+                }
+
+                switch (node.m_Type)
+                {
+                    case "SInt8":
+                        binaryReader.ReadSByte();
+                        break;
+                    case "UInt8":
+                        binaryReader.ReadByte();
+                        break;
+                    case "char":
+                        binaryReader.ReadBytes(2);
+                        break;
+                    case "short":
+                    case "SInt16":
+                        binaryReader.ReadInt16();
+                        break;
+                    case "UInt16":
+                    case "unsigned short":
+                        binaryReader.ReadUInt16();
+                        break;
+                    case "int":
+                    case "SInt32":
+                        binaryReader.ReadInt32();
+                        break;
+                    case "UInt32":
+                    case "unsigned int":
+                    case "Type*":
+                        binaryReader.ReadUInt32();
+                        break;
+                    case "long long":
+                    case "SInt64":
+                        binaryReader.ReadInt64();
+                        break;
+                    case "UInt64":
+                    case "unsigned long long":
+                    case "FileSize":
+                        binaryReader.ReadUInt64();
+                        break;
+                    case "float":
+                        binaryReader.ReadSingle();
+                        break;
+                    case "double":
+                        binaryReader.ReadDouble();
+                        break;
+                    case "bool":
+                        binaryReader.ReadBoolean();
+                        break;
+                    case "string":
+                        binaryReader.ReadAlignedString();
+                        index = GetNodeEnd(nodeList, index) - 1;
+                        break;
+                    case "TypelessData":
+                        {
+                            var size = binaryReader.ReadInt32();
+                            if (size < 0 || size > reader.BytesLeft())
+                            {
+                                throw new InvalidDataException($"Invalid TypelessData size {size} while reading lightweight renderer relation.");
+                            }
+                            binaryReader.ReadBytes(size);
+                            index = GetNodeEnd(nodeList, index) - 1;
+                            break;
+                        }
+                    case "map":
+                        ReadMap(nodeList, binaryReader, ref index, path);
+                        break;
+                    default:
+                        if (index < nodeList.Count - 1 && nodeList[index + 1].m_Type == "Array")
+                        {
+                            ReadArray(nodeList, binaryReader, ref index, path);
+                        }
+                        else
+                        {
+                            var end = GetNodeEnd(nodeList, index);
+                            for (var child = index + 1; child < end; child++)
+                            {
+                                ReadNode(nodeList, binaryReader, ref child, path);
+                            }
+                            index = end - 1;
+                        }
+                        break;
+                }
+
+                if (align)
+                {
+                    binaryReader.AlignStream();
+                }
+            }
+
+            private void ReadArray(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string path)
+            {
+                var arrayAlign = (nodeList[index + 1].m_MetaFlag & 0x4000) != 0;
+                var vector = GetNodes(nodeList, index);
+                index += vector.Count - 1;
+                var size = binaryReader.ReadInt32();
+                if (size < 0 || size > SourceIndexMaxLightweightArrayCount)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer array size {size} at {path}.");
+                }
+
+                for (var item = 0; item < size; item++)
+                {
+                    var dataIndex = 3;
+                    ReadNode(vector, binaryReader, ref dataIndex, path);
+                }
+
+                if (arrayAlign)
+                {
+                    binaryReader.AlignStream();
+                }
+            }
+
+            private void ReadMap(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string path)
+            {
+                var map = GetNodes(nodeList, index);
+                index += map.Count - 1;
+                var first = GetNodes(map, 4);
+                var next = 4 + first.Count;
+                var second = GetNodes(map, next);
+                var size = binaryReader.ReadInt32();
+                if (size < 0 || size > SourceIndexMaxLightweightArrayCount)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer map size {size} at {path}.");
+                }
+
+                for (var item = 0; item < size; item++)
+                {
+                    var firstIndex = 0;
+                    ReadNode(first, binaryReader, ref firstIndex, $"{path}.key");
+                    var secondIndex = 0;
+                    ReadNode(second, binaryReader, ref secondIndex, $"{path}.value");
+                }
+            }
+
+            private void CapturePPtr(string path, int fileId, long pathId)
+            {
+                if (pathId == 0)
+                {
+                    return;
+                }
+
+                if (string.Equals(path, "m_GameObject", StringComparison.Ordinal))
+                {
+                    relations.Add(new LightweightPPtrRelation { Relation = "component.gameObject", FileId = fileId, PathId = pathId, TypeHint = "GameObject" });
+                    return;
+                }
+
+                if (string.Equals(path, "m_Mesh", StringComparison.Ordinal))
+                {
+                    relations.Add(new LightweightPPtrRelation { Relation = "skinnedMeshRenderer.mesh", FileId = fileId, PathId = pathId, TypeHint = "Mesh" });
+                    return;
+                }
+
+                if (string.Equals(path, "m_RootBone", StringComparison.Ordinal))
+                {
+                    relations.Add(new LightweightPPtrRelation { Relation = "skinnedMeshRenderer.rootBone", FileId = fileId, PathId = pathId, TypeHint = "Transform" });
+                    return;
+                }
+
+                if (path.StartsWith("m_Materials.", StringComparison.Ordinal))
+                {
+                    relations.Add(new LightweightPPtrRelation { Relation = "renderer.material", FileId = fileId, PathId = pathId, TypeHint = "Material" });
+                    return;
+                }
+
+                if (path.StartsWith("m_Bones.", StringComparison.Ordinal))
+                {
+                    bones.Add(new
+                    {
+                        fileId,
+                        pathId,
+                        typeHint = "Transform",
+                    });
+                }
+            }
+
+            private static List<TypeTreeNode> GetNodes(List<TypeTreeNode> nodeList, int index)
+            {
+                return nodeList.GetRange(index, GetNodeEnd(nodeList, index) - index);
+            }
+
+            private static int GetNodeEnd(List<TypeTreeNode> nodeList, int index)
+            {
+                var level = nodeList[index].m_Level;
+                var end = index + 1;
+                while (end < nodeList.Count && nodeList[end].m_Level > level)
+                {
+                    end++;
+                }
+                return end;
+            }
+        }
+
+        private sealed class SourceIndexWriteProgress
+        {
+            public SourceIndexWriteProgress(int batchIndex, int totalBatches, long totalObjects)
+            {
+                BatchIndex = batchIndex;
+                TotalBatches = totalBatches;
+                TotalObjects = totalObjects;
+            }
+
+            public int BatchIndex { get; }
+            public int TotalBatches { get; }
+            public long TotalObjects { get; }
+            public string CurrentFile { get; set; } = string.Empty;
+            public string CurrentSource { get; set; } = string.Empty;
+            public string CurrentType { get; set; } = string.Empty;
+            public long CurrentPathId { get; set; }
+            public long CurrentObjectIndex { get; set; }
+            public long SerializedFilesWritten { get; set; }
+            public long ExternalsWritten { get; set; }
+            public long ObjectsWritten { get; set; }
+            public long RelationsWritten { get; set; }
+            public long LightweightRendererObjects { get; set; }
+            public long LightweightRendererRelations { get; set; }
+            public long LightweightRendererFailures { get; set; }
         }
 
         private sealed class SourceIndexHeartbeat : IDisposable
@@ -835,6 +1421,82 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         $"{batchFileCount} file(s), {FormatBytes(batchBytes)}; largest {largestFile} ({FormatBytes(largestFileBytes)}); " +
                         $"serialized {serializedFileCount}, objectInfos {objectInfoCount}, parsed {parsedObjectCount}; " +
                         $"current {currentFile} {currentObjectIndex}/{currentObjectCount} {currentType} pathId {currentPathId}; " +
+                        $"workingSet {FormatBytes(process.WorkingSet64)}, private {FormatBytes(process.PrivateMemorySize64)}, managed {FormatBytes(GC.GetTotalMemory(false))}.");
+                }
+            }
+        }
+
+        private sealed class SourceIndexWriteHeartbeat : IDisposable
+        {
+            private readonly CancellationTokenSource cancellation = new();
+            private readonly Task task;
+            private readonly Stopwatch stopwatch = Stopwatch.StartNew();
+            private readonly SourceIndexWriteProgress progress;
+
+            public SourceIndexWriteHeartbeat(SourceIndexWriteProgress progress)
+            {
+                this.progress = progress;
+                task = Task.Run(Run);
+            }
+
+            public void Dispose()
+            {
+                cancellation.Cancel();
+                try
+                {
+                    task.Wait(TimeSpan.FromSeconds(2));
+                }
+                catch
+                {
+                    // Best-effort heartbeat shutdown.
+                }
+                cancellation.Dispose();
+            }
+
+            private async Task Run()
+            {
+                while (!cancellation.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(SourceIndexHeartbeatInterval, cancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        break;
+                    }
+
+                    if (cancellation.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    var process = Process.GetCurrentProcess();
+                    var elapsed = stopwatch.Elapsed;
+                    ProfileLogger.Event("source_index_write_batch_heartbeat", new Dictionary<string, object>
+                    {
+                        ["batchIndex"] = progress.BatchIndex,
+                        ["totalBatches"] = progress.TotalBatches,
+                        ["elapsedMs"] = elapsed.TotalMilliseconds,
+                        ["currentSource"] = progress.CurrentSource ?? string.Empty,
+                        ["currentFile"] = progress.CurrentFile ?? string.Empty,
+                        ["currentType"] = progress.CurrentType ?? string.Empty,
+                        ["currentPathId"] = progress.CurrentPathId,
+                        ["currentObjectIndex"] = progress.CurrentObjectIndex,
+                        ["totalObjects"] = progress.TotalObjects,
+                        ["serializedFilesWritten"] = progress.SerializedFilesWritten,
+                        ["externalsWritten"] = progress.ExternalsWritten,
+                        ["objectsWritten"] = progress.ObjectsWritten,
+                        ["relationsWritten"] = progress.RelationsWritten,
+                        ["lightweightRendererObjects"] = progress.LightweightRendererObjects,
+                        ["lightweightRendererRelations"] = progress.LightweightRendererRelations,
+                        ["lightweightRendererFailures"] = progress.LightweightRendererFailures,
+                    });
+                    ForceInfo(
+                        $"[source-index {progress.BatchIndex}/{progress.TotalBatches}] Still writing after {FormatDuration(elapsed)}; " +
+                        $"file {progress.CurrentFile}; object {progress.CurrentObjectIndex}/{progress.TotalObjects} {progress.CurrentType} pathId {progress.CurrentPathId}; " +
+                        $"written serialized {progress.SerializedFilesWritten}, objects {progress.ObjectsWritten}, relations {progress.RelationsWritten}; " +
+                        $"lightweightRenderer objects {progress.LightweightRendererObjects}, relations {progress.LightweightRendererRelations}, failures {progress.LightweightRendererFailures}; " +
                         $"workingSet {FormatBytes(process.WorkingSet64)}, private {FormatBytes(process.PrivateMemorySize64)}, managed {FormatBytes(GC.GetTotalMemory(false))}.");
                 }
             }
