@@ -127,8 +127,10 @@ SQLite 源索引规则：
 - 具备以下任一强信号、且几何数据完整的 Mesh，可升级为 `StaticMeshPrimary`：
   - 有明确 Unity `AssetBundle.m_Container` / preload 容器路径，且路径语义指向 environment/building/prop/world/stage/terrain/levelbuild 等可浏览素材。
   - 没有独立容器路径，但来源 AssetBundle / SerializedFile 本身具有明确静态素材语义，例如 `LevelBuildElements`、`Terrain`、`Environment`、`World`、`Building` 等。此类游戏常把大量场景/地形/建筑 Mesh 作为匿名 Mesh 存在，不能因为 Mesh 名为空就丢弃。
+  - SQLite 源索引能证明该 Mesh 通过 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用，并且该 Renderer 有 `renderer.material` 关系。这个信号来自 Unity PPtr 关系链，不是名称猜测。
 - `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
 - 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Dummy、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Decal`、`Shadow`、`SFX/FX/VFX` 等名字不能单独作为静默丢弃理由；如果具备明确容器路径或强来源语义和可见几何，应分类或标注进入素材库。
+- StaticMeshPrimary 应优先使用 SQLite 源索引恢复材质关系：`Mesh -> MeshFilter/SkinnedMeshRenderer -> GameObject/Renderer -> Material -> Texture2D`。命中时 glTF material 必须写入 `extras.animeStudioMaterial.status=boundRendererMaterial`，贴图进入 `Textures/_ModelDependencies`，模型旁 `ASSET_README.md` 记录选中的 Renderer 和 Material。
 - 裸 Mesh 没有 Renderer 的 submesh-material 强绑定时，不要伪造材质关系。可以记录同容器 Material/Texture 候选，并在 `asset_catalog.jsonl` 与模型旁说明文件标记 `needsRendererBinding` 或 `missingRendererMaterial`。
 - 对匿名静态 Mesh，应使用来源包名 + PathID 生成稳定文件名，避免 `Mesh#123` 这类不利于排查的名字，也避免文件互相覆盖。
 

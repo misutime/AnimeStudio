@@ -10,6 +10,8 @@ namespace AnimeStudio.CLI
 {
     internal static class SQLiteSourceIndexRuntime
     {
+        public static LoadResult CurrentLoadResult { get; private set; }
+
         public sealed class LoadResult
         {
             public string DatabasePath { get; init; }
@@ -47,6 +49,7 @@ namespace AnimeStudio.CLI
         {
             if (string.IsNullOrWhiteSpace(dbPath))
             {
+                CurrentLoadResult = null;
                 return null;
             }
 
@@ -109,7 +112,7 @@ namespace AnimeStudio.CLI
             Logger.Info($"Using SQLite source index: {dbPath}");
             Logger.Info($"SQLite source index stats: sourceFiles={sourceFileCount}, serializedFiles={serializedFileCount}, relations={relationCount}, animationBindings={animationBindingCount}");
 
-            return new LoadResult
+            CurrentLoadResult = new LoadResult
             {
                 DatabasePath = dbPath,
                 SourceRoot = sourceRoot,
@@ -121,6 +124,7 @@ namespace AnimeStudio.CLI
                 AnimationBindingCount = animationBindingCount,
                 FailedBatches = failedBatches,
             };
+            return CurrentLoadResult;
         }
 
         public static void WriteUsageReport(string outputRoot, LoadResult result)

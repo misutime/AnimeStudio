@@ -170,6 +170,14 @@ CLI 生成索引时，关系优先级应为：
 - 如果某个 raw fbx/source part 没有对应的 prefab/Animator 组合模型，它会作为 `libraryRole=RawUnreferenced` 导出到 `Models/RawUnreferenced`。
 - 需要研究零散部件时显式使用 `--model_source PrefabAndParts`；只看 raw 部件时使用 `--model_source RawPartsOnly`。
 
+静态环境、建筑、地形块、植被、道具等独立 Mesh 也会进入默认 Library，但必须有强 Unity 信号。当前 `StaticMeshPrimary` 的信号包括：
+
+- 明确的 `AssetBundle.m_Container` / preload 容器路径，且路径语义指向 environment、building、prop、world、stage、terrain、levelbuild 等素材。
+- 来源 AssetBundle / SerializedFile 本身具有静态素材语义，例如 `LevelBuildElements`、`Terrain`、`Environment`、`World`、`Building`。
+- SQLite 源索引能证明该 Mesh 经 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用，并且 Renderer 有 `renderer.material`。
+
+第三种情况会直接恢复材质：glTF 的 `materials[].extras.animeStudioMaterial.status` 会写 `boundRendererMaterial`，模型旁 `ASSET_README.md` 会列出选中的 Renderer 和 Material，贴图会落到 `Textures/_ModelDependencies` 并被 glTF 引用。没有 Renderer 材质绑定的裸 Mesh 不会硬猜材质，只会标记 `needsRendererBinding` 或 `missingRendererMaterial`。
+
 ### 材质和 ColorMask/Tint 规则
 
 默认 glTF 导出会优先生成“可浏览、可复用”的标准材质，而不是尝试完整复刻每个游戏的 Unity shader。标准 PBR 能表达的内容会直接写入 glTF，例如基础贴图、透明/裁剪、双面、法线贴图等。

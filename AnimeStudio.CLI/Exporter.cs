@@ -7,6 +7,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
@@ -647,6 +648,7 @@ namespace AnimeStudio.CLI
                 var bufferViews = new JArray();
                 var accessors = new JArray();
                 var primitives = new JArray();
+                var materialBinding = ResolveStaticMeshMaterialBinding(item, gltfPath);
                 using var stream = File.Create(binPath);
 
                 var positionAccessor = WriteFloatAccessor(
@@ -724,7 +726,7 @@ namespace AnimeStudio.CLI
                         ["attributes"] = attributes,
                         ["indices"] = indexAccessor,
                         ["mode"] = 4,
-                        ["material"] = 0,
+                        ["material"] = materialBinding.GetMaterialIndexForSubMesh(subMeshIndex),
                         ["extras"] = new JObject
                         {
                             ["unitySubMesh"] = subMeshIndex,
@@ -739,11 +741,9 @@ namespace AnimeStudio.CLI
                 }
 
                 AlignStream4(stream);
-                var sameContainerMaterials = FindSameContainerMaterials(item).ToArray();
-                var materialStatus = sameContainerMaterials.Length > 0 ? "needsRendererBinding" : "missingRendererMaterial";
-                var materialNote = sameContainerMaterials.Length > 0
-                    ? "Static Mesh was exported from a direct Unity Mesh. Same-container Material assets were indexed as candidates, but no Renderer submesh binding exists on the Mesh object itself."
-                    : "Static Mesh was exported from a direct Unity Mesh. No same-container Material candidate was found; material/shader binding may require a prefab/renderer or external configuration.";
+                var images = new JArray();
+                var textures = new JArray();
+                var materials = BuildStaticMeshGltfMaterials(item, gltfPath, materialBinding, images, textures);
 
                 var gltf = new JObject
                 {
@@ -771,26 +771,7 @@ namespace AnimeStudio.CLI
                         ["name"] = mesh.m_Name,
                         ["primitives"] = primitives,
                     }),
-                    ["materials"] = new JArray(new JObject
-                    {
-                        ["name"] = "StaticMesh_Default",
-                        ["pbrMetallicRoughness"] = new JObject
-                        {
-                            ["baseColorFactor"] = new JArray(0.8, 0.8, 0.8, 1.0),
-                            ["metallicFactor"] = 0.0,
-                            ["roughnessFactor"] = 0.6,
-                        },
-                        ["extras"] = new JObject
-                        {
-                            ["animeStudioMaterial"] = new JObject
-                            {
-                                ["workflow"] = "StaticMeshContainer",
-                                ["status"] = materialStatus,
-                                ["notes"] = new JArray(materialNote),
-                                ["sameContainerMaterials"] = JArray.FromObject(sameContainerMaterials),
-                            },
-                        },
-                    }),
+                    ["materials"] = materials,
                     ["buffers"] = new JArray(new JObject
                     {
                         ["uri"] = binName,
@@ -799,10 +780,18 @@ namespace AnimeStudio.CLI
                     ["bufferViews"] = bufferViews,
                     ["accessors"] = accessors,
                 };
+                if (images.Count > 0)
+                {
+                    gltf["images"] = images;
+                }
+                if (textures.Count > 0)
+                {
+                    gltf["textures"] = textures;
+                }
 
                 File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
-                WriteStaticMeshReadme(gltfPath, item, mesh, materialStatus, sameContainerMaterials);
-                AppendStaticMeshAssetCatalog(item, gltfPath, materialStatus, sameContainerMaterials);
+                WriteStaticMeshReadme(gltfPath, item, mesh, materialBinding);
+                AppendStaticMeshAssetCatalog(item, gltfPath, materialBinding);
             }
 
             return true;
@@ -995,6 +984,473 @@ namespace AnimeStudio.CLI
             return result.Select(SanitizeFloat).ToArray();
         }
 
+        private static StaticMeshMaterialBinding ResolveStaticMeshMaterialBinding(AssetItem item, string gltfPath)
+        {
+            var binding = new StaticMeshMaterialBinding
+            {
+                SameContainerMaterials = FindSameContainerMaterials(item).ToArray(),
+            };
+
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                binding.Status = binding.SameContainerMaterials.Length > 0 ? "needsRendererBinding" : "missingRendererMaterial";
+                binding.Notes.Add("No active SQLite source index is available during StaticMesh export; only same-container Material candidates can be reported.");
+                return binding;
+            }
+
+            var meshObject = (AnimeStudio.Object)item.Asset;
+            var meshFile = meshObject.assetsFile?.fileName ?? item.SourceFile?.fileName ?? string.Empty;
+            var refs = QueryStaticMeshMaterialReferences(indexPath, meshFile, item.m_PathID);
+            binding.RendererBindings = refs
+                .GroupBy(x => $"{x.RendererFile}:{x.RendererPathId}", StringComparer.OrdinalIgnoreCase)
+                .Select(x => new StaticMeshRendererBindingInfo
+                {
+                    RendererFile = x.First().RendererFile,
+                    RendererPathId = x.First().RendererPathId,
+                    RendererType = x.First().RendererType,
+                    MaterialCount = x.Count(),
+                    Materials = x.Select(y => new StaticMeshMaterialRefInfo
+                    {
+                        Name = y.MaterialName,
+                        File = y.MaterialFile,
+                        PathId = y.MaterialPathId,
+                    }).ToList(),
+                })
+                .ToList();
+
+            if (refs.Count == 0)
+            {
+                binding.Status = binding.SameContainerMaterials.Length > 0 ? "needsRendererBinding" : "missingRendererMaterial";
+                binding.Notes.Add(binding.SameContainerMaterials.Length > 0
+                    ? "No Renderer->Material binding was found for this Mesh in the SQLite source index; same-container materials are listed as candidates only."
+                    : "No Renderer->Material binding or same-container Material candidate was found for this direct Mesh.");
+                return binding;
+            }
+
+            var grouped = refs
+                .GroupBy(x => $"{x.RendererFile}:{x.RendererPathId}", StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    RendererKey = x.Key,
+                    RendererFile = x.First().RendererFile,
+                    RendererPathId = x.First().RendererPathId,
+                    RendererType = x.First().RendererType,
+                    Materials = x.OrderBy(y => y.RelationId).ToList(),
+                    ResolvedCount = x.Count(y => TryGetLoadedObject(item, y.MaterialFile, y.MaterialPathId, out Material _)),
+                })
+                .OrderByDescending(x => x.ResolvedCount)
+                .ThenByDescending(x => x.Materials.Count)
+                .ToList();
+            var selected = grouped.FirstOrDefault();
+            if (selected == null || selected.ResolvedCount == 0)
+            {
+                binding.Status = "rendererMaterialUnresolved";
+                binding.Notes.Add("Renderer->Material relations were found in SQLite, but none of the Material objects could be resolved in the currently loaded dependency closure.");
+                return binding;
+            }
+
+            binding.SelectedRenderer = new StaticMeshRendererBindingInfo
+            {
+                RendererFile = selected.RendererFile,
+                RendererPathId = selected.RendererPathId,
+                RendererType = selected.RendererType,
+                MaterialCount = selected.Materials.Count,
+                Materials = selected.Materials.Select(y => new StaticMeshMaterialRefInfo
+                {
+                    Name = y.MaterialName,
+                    File = y.MaterialFile,
+                    PathId = y.MaterialPathId,
+                }).ToList(),
+            };
+            foreach (var materialRef in selected.Materials)
+            {
+                if (!TryGetLoadedObject(item, materialRef.MaterialFile, materialRef.MaterialPathId, out Material material))
+                {
+                    continue;
+                }
+
+                binding.Materials.Add(new StaticMeshResolvedMaterial
+                {
+                    Material = material,
+                    Name = string.IsNullOrWhiteSpace(material.m_Name) ? materialRef.MaterialName : material.m_Name,
+                    File = materialRef.MaterialFile,
+                    PathId = materialRef.MaterialPathId,
+                });
+            }
+
+            binding.Status = binding.Materials.Count > 0 ? "boundRendererMaterial" : "rendererMaterialUnresolved";
+            binding.Notes.Add("Material binding was resolved from Unity source index relation chain: Mesh -> MeshFilter/SkinnedMeshRenderer -> GameObject/Renderer -> Material.");
+            if (binding.RendererBindings.Count > 1)
+            {
+                binding.Notes.Add("This Mesh is referenced by multiple Renderer material sets; AnimeStudio selected the first resolvable set for browsable StaticMesh glTF and records alternatives in extras.");
+            }
+            return binding;
+        }
+
+        private static List<StaticMeshMaterialReference> QueryStaticMeshMaterialReferences(string indexPath, string meshFile, long meshPathId)
+        {
+            var refs = new List<StaticMeshMaterialReference>();
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+WITH direct_renderers AS (
+    SELECT r.from_file, r.from_path_id, r.from_type
+    FROM source_relations r
+    WHERE r.relation = 'skinnedMeshRenderer.mesh'
+      AND r.to_file = $meshFile
+      AND r.to_path_id = $meshPathId
+),
+mesh_filters AS (
+    SELECT mf.from_file, mf.from_path_id
+    FROM source_relations mf
+    WHERE mf.relation = 'meshFilter.mesh'
+      AND mf.to_file = $meshFile
+      AND mf.to_path_id = $meshPathId
+),
+game_objects AS (
+    SELECT go.to_file AS go_file, go.to_path_id AS go_path_id
+    FROM source_relations go
+    JOIN mesh_filters mf ON go.from_file = mf.from_file AND go.from_path_id = mf.from_path_id
+    WHERE go.relation = 'component.gameObject'
+),
+static_renderers AS (
+    SELECT r.from_file, r.from_path_id, r.from_type
+    FROM source_relations r
+    JOIN game_objects go ON r.to_file = go.go_file AND r.to_path_id = go.go_path_id
+    WHERE r.relation = 'component.gameObject'
+      AND r.from_type IN ('MeshRenderer', 'SkinnedMeshRenderer')
+),
+renderers AS (
+    SELECT * FROM direct_renderers
+    UNION
+    SELECT * FROM static_renderers
+)
+SELECT mat.id,
+       r.from_file,
+       r.from_path_id,
+       r.from_type,
+       mat.to_file,
+       mat.to_path_id,
+       COALESCE(mo.name, '') AS material_name
+FROM renderers r
+JOIN source_relations mat ON mat.from_file = r.from_file AND mat.from_path_id = r.from_path_id
+LEFT JOIN source_objects mo ON mo.serialized_file = mat.to_file AND mo.path_id = mat.to_path_id
+WHERE mat.relation = 'renderer.material'
+ORDER BY r.from_file, r.from_path_id, mat.id;";
+                command.Parameters.AddWithValue("$meshFile", meshFile ?? string.Empty);
+                command.Parameters.AddWithValue("$meshPathId", meshPathId);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    refs.Add(new StaticMeshMaterialReference
+                    {
+                        RelationId = reader.GetInt64(0),
+                        RendererFile = reader.GetString(1),
+                        RendererPathId = reader.GetInt64(2),
+                        RendererType = reader.GetString(3),
+                        MaterialFile = reader.GetString(4),
+                        MaterialPathId = reader.GetInt64(5),
+                        MaterialName = reader.GetString(6),
+                    });
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to query StaticMesh material bindings from SQLite source index: {e.Message}");
+            }
+
+            return refs;
+        }
+
+        private static bool TryGetLoadedObject<T>(AssetItem sourceItem, string serializedFile, long pathId, out T result)
+            where T : AnimeStudio.Object
+        {
+            result = null;
+            if (pathId == 0 || sourceItem?.Asset is not AnimeStudio.Object sourceObject)
+            {
+                return false;
+            }
+
+            var assetsManager = sourceObject.assetsFile?.assetsManager;
+            if (assetsManager?.assetsFileList == null)
+            {
+                return false;
+            }
+
+            foreach (var assetsFile in assetsManager.assetsFileList)
+            {
+                if (!string.Equals(assetsFile.fileName ?? string.Empty, serializedFile ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (assetsFile.ObjectsDic.TryGetValue(pathId, out var obj) && obj is T typed)
+                {
+                    result = typed;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static JArray BuildStaticMeshGltfMaterials(
+            AssetItem item,
+            string gltfPath,
+            StaticMeshMaterialBinding binding,
+            JArray images,
+            JArray textures)
+        {
+            if (binding.Materials.Count == 0)
+            {
+                return new JArray(BuildStaticMeshDefaultMaterial(binding));
+            }
+
+            var materials = new JArray();
+            foreach (var materialInfo in binding.Materials)
+            {
+                materials.Add(BuildStaticMeshGltfMaterial(item, gltfPath, materialInfo, binding, images, textures));
+            }
+            return materials;
+        }
+
+        private static JObject BuildStaticMeshDefaultMaterial(StaticMeshMaterialBinding binding)
+        {
+            return new JObject
+            {
+                ["name"] = "StaticMesh_Default",
+                ["pbrMetallicRoughness"] = new JObject
+                {
+                    ["baseColorFactor"] = new JArray(0.8, 0.8, 0.8, 1.0),
+                    ["metallicFactor"] = 0.0,
+                    ["roughnessFactor"] = 0.6,
+                },
+                ["extras"] = new JObject
+                {
+                    ["animeStudioMaterial"] = binding.ToJson(),
+                },
+            };
+        }
+
+        private static JObject BuildStaticMeshGltfMaterial(
+            AssetItem item,
+            string gltfPath,
+            StaticMeshResolvedMaterial materialInfo,
+            StaticMeshMaterialBinding binding,
+            JArray images,
+            JArray textures)
+        {
+            var material = materialInfo.Material;
+            var diffuse = GetStaticMeshMaterialColor(material);
+            var pbr = new JObject
+            {
+                ["baseColorFactor"] = new JArray(diffuse.R, diffuse.G, diffuse.B, diffuse.A),
+                ["metallicFactor"] = GetUnityFloat(material, "_Metallic", 0.0f),
+                ["roughnessFactor"] = 1.0f - Math.Clamp(GetUnityFloat(material, "_Glossiness", 0.2f), 0.0f, 1.0f),
+            };
+            JObject normalTexture = null;
+            var textureExtras = new JArray();
+
+            foreach (var texEnv in material.m_SavedProperties?.m_TexEnvs ?? new List<KeyValuePair<string, UnityTexEnv>>())
+            {
+                if (texEnv.Value?.m_Texture == null || !texEnv.Value.m_Texture.TryGet<Texture2D>(out var texture))
+                {
+                    continue;
+                }
+
+                var destination = GetStaticMeshTextureDestination(texEnv.Key);
+                var textureInfo = new JObject
+                {
+                    ["slot"] = texEnv.Key,
+                    ["dest"] = destination,
+                    ["texture"] = texture.m_Name,
+                    ["source"] = texture.assetsFile?.originalPath ?? texture.assetsFile?.fileName,
+                    ["pathId"] = texture.m_PathID,
+                };
+                if (TryExportStaticMeshTexture(gltfPath, texture, out var textureUri, out var exportName))
+                {
+                    var imageIndex = images.Count;
+                    images.Add(new JObject
+                    {
+                        ["uri"] = textureUri,
+                        ["name"] = texture.m_Name,
+                    });
+                    var textureIndex = textures.Count;
+                    textures.Add(new JObject
+                    {
+                        ["source"] = imageIndex,
+                        ["name"] = texture.m_Name,
+                    });
+                    textureInfo["uri"] = textureUri;
+                    textureInfo["exportName"] = exportName;
+                    textureInfo["gltfTextureIndex"] = textureIndex;
+
+                    if (destination == 0 && pbr["baseColorTexture"] == null)
+                    {
+                        pbr["baseColorTexture"] = new JObject { ["index"] = textureIndex };
+                    }
+                    else if ((destination == 1 || destination == 3) && normalTexture == null)
+                    {
+                        normalTexture = new JObject { ["index"] = textureIndex };
+                    }
+                }
+                else
+                {
+                    textureInfo["status"] = "textureExportUnavailable";
+                }
+                textureExtras.Add(textureInfo);
+            }
+
+            var gltfMaterial = new JObject
+            {
+                ["name"] = string.IsNullOrWhiteSpace(materialInfo.Name) ? "StaticMesh_Material" : materialInfo.Name,
+                ["pbrMetallicRoughness"] = pbr,
+                ["extras"] = new JObject
+                {
+                    ["animeStudioMaterial"] = binding.ToJson(materialInfo, textureExtras),
+                },
+            };
+            if (normalTexture != null)
+            {
+                gltfMaterial["normalTexture"] = normalTexture;
+            }
+            if (diffuse.A < 0.999f || GetUnityFloat(material, "_Surface", 0.0f) > 0.5f)
+            {
+                gltfMaterial["alphaMode"] = "BLEND";
+            }
+
+            return gltfMaterial;
+        }
+
+        private static bool TryExportStaticMeshTexture(string gltfPath, Texture2D texture, out string textureUri, out string exportName)
+        {
+            textureUri = null;
+            exportName = null;
+            if (texture == null || CliExportOptions.TextureMode == AnimeStudio.TextureExportMode.Raw)
+            {
+                return false;
+            }
+
+            var textureDirectory = GetSharedTextureDirectory(gltfPath)
+                ?? Path.Combine(Path.GetDirectoryName(gltfPath), "Textures");
+            Directory.CreateDirectory(textureDirectory);
+
+            var extension = "." + Properties.Settings.Default.convertType.ToString().ToLowerInvariant();
+            exportName = GetStaticMeshTextureExportName(texture, extension);
+            var texturePath = Path.Combine(textureDirectory, exportName);
+            if (!File.Exists(texturePath))
+            {
+                var profileData = new Dictionary<string, object>
+                {
+                    ["texture"] = texture.m_Name,
+                    ["source"] = texture.assetsFile?.fullName,
+                    ["pathId"] = texture.m_PathID,
+                    ["exportName"] = exportName,
+                    ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                    ["textureFormat"] = texture.m_TextureFormat.ToString(),
+                    ["width"] = texture.m_Width,
+                    ["height"] = texture.m_Height,
+                    ["imageFormat"] = Properties.Settings.Default.convertType.ToString(),
+                    ["usage"] = "static_mesh_renderer_material",
+                };
+                using (ProfileLogger.Measure("static_mesh_texture", profileData))
+                using (var stream = texture.ConvertToStream(Properties.Settings.Default.convertType, true, ProfileLogger.Measure, profileData))
+                {
+                    if (stream == null)
+                    {
+                        return false;
+                    }
+                    using var file = File.OpenWrite(texturePath);
+                    stream.WriteTo(file);
+                }
+            }
+
+            textureUri = Path.GetRelativePath(Path.GetDirectoryName(gltfPath), texturePath).Replace('\\', '/');
+            return true;
+        }
+
+        private static string GetStaticMeshTextureExportName(Texture2D texture, string extension)
+        {
+            var rawName = GetSafeTextureFileName(texture.m_Name ?? "Texture");
+            if (rawName.Length > 100)
+            {
+                rawName = rawName.Substring(0, 67) + "_" + rawName.Substring(rawName.Length - 32);
+            }
+            var sourceFile = GetSafeTextureFileName(texture.assetsFile?.fileName ?? "source");
+            return $"{rawName}_{sourceFile}_{texture.m_PathID}{extension}";
+        }
+
+        private static Color GetStaticMeshMaterialColor(Material material)
+        {
+            var result = new Color(0.8f, 0.8f, 0.8f, 1);
+            var hasColor = false;
+            foreach (var color in material.m_SavedProperties?.m_Colors ?? new List<KeyValuePair<string, Color>>())
+            {
+                if (string.Equals(color.Key, "_Color", StringComparison.OrdinalIgnoreCase))
+                {
+                    result = color.Value;
+                    hasColor = true;
+                }
+                else if (!hasColor && string.Equals(color.Key, "_BaseColor", StringComparison.OrdinalIgnoreCase))
+                {
+                    result = color.Value;
+                }
+            }
+            return result;
+        }
+
+        private static float GetUnityFloat(Material material, string name, float fallback)
+        {
+            foreach (var value in material.m_SavedProperties?.m_Floats ?? new List<KeyValuePair<string, float>>())
+            {
+                if (string.Equals(value.Key, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return value.Value;
+                }
+            }
+            return fallback;
+        }
+
+        private static int GetStaticMeshTextureDestination(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return -1;
+            }
+            if (
+                key == "_MainTex"
+                || key.Contains("Diffuse")
+                || key.Contains("Albedo")
+                || key.Contains("BaseMap")
+                || key.Contains("BaseColor")
+            )
+            {
+                return 0;
+            }
+            if (key == "_BumpMap" || key.Contains("Normal"))
+            {
+                return 1;
+            }
+            if (key.Contains("Specular"))
+            {
+                return 2;
+            }
+            if (key.Contains("Emission") || key.Contains("Emissive"))
+            {
+                return 5;
+            }
+            if (key.Contains("Reflect"))
+            {
+                return 6;
+            }
+            return -1;
+        }
+
         private static IEnumerable<object> FindSameContainerMaterials(AssetItem item)
         {
             if (string.IsNullOrWhiteSpace(item.Container))
@@ -1022,7 +1478,7 @@ namespace AnimeStudio.CLI
             }
         }
 
-        private static void WriteStaticMeshReadme(string gltfPath, AssetItem item, Mesh mesh, string materialStatus, object[] sameContainerMaterials)
+        private static void WriteStaticMeshReadme(string gltfPath, AssetItem item, Mesh mesh, StaticMeshMaterialBinding materialBinding)
         {
             var readmePath = Path.Combine(Path.GetDirectoryName(gltfPath), $"{FixFileName(item.Text)}.ASSET_README.md");
             var sb = new StringBuilder();
@@ -1036,12 +1492,26 @@ namespace AnimeStudio.CLI
             sb.AppendLine($"- PathID: `{item.m_PathID}`");
             sb.AppendLine($"- Vertex Count: `{mesh.m_VertexCount}`");
             sb.AppendLine($"- SubMesh Count: `{mesh.m_SubMeshes?.Count ?? 0}`");
-            sb.AppendLine($"- Material Binding: `{materialStatus}`");
+            sb.AppendLine($"- Material Binding: `{materialBinding.Status}`");
             sb.AppendLine();
-            if (sameContainerMaterials.Length > 0)
+            foreach (var note in materialBinding.Notes)
+            {
+                sb.AppendLine($"- {note}");
+            }
+            if (materialBinding.SelectedRenderer != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine("已通过 Unity Renderer 关系绑定材质：");
+                sb.AppendLine($"- Renderer: `{materialBinding.SelectedRenderer.RendererType}` `{materialBinding.SelectedRenderer.RendererFile}:{materialBinding.SelectedRenderer.RendererPathId}`");
+                foreach (var material in materialBinding.Materials)
+                {
+                    sb.AppendLine($"- Material: `{material.Name}` `{material.File}:{material.PathId}`");
+                }
+            }
+            else if (materialBinding.SameContainerMaterials.Length > 0)
             {
                 sb.AppendLine("同容器内找到了 Material 候选，但裸 Mesh 没有 Renderer 的 submesh-material 绑定，当前仅记录候选关系：");
-                foreach (var material in sameContainerMaterials)
+                foreach (var material in materialBinding.SameContainerMaterials)
                 {
                     sb.AppendLine($"- `{JsonConvert.SerializeObject(material)}`");
                 }
@@ -1053,7 +1523,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(readmePath, sb.ToString());
         }
 
-        private static void AppendStaticMeshAssetCatalog(AssetItem item, string outputPath, string materialStatus, object[] sameContainerMaterials)
+        private static void AppendStaticMeshAssetCatalog(AssetItem item, string outputPath, StaticMeshMaterialBinding materialBinding)
         {
             if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
             {
@@ -1081,9 +1551,93 @@ namespace AnimeStudio.CLI
                 vertexCount = mesh.m_VertexCount,
                 subMeshCount = mesh.m_SubMeshes?.Count ?? 0,
                 indexCount = mesh.m_Indices?.Count ?? 0,
-                materialBindingStatus = materialStatus,
-                sameContainerMaterials,
+                materialBindingStatus = materialBinding.Status,
+                materialCount = materialBinding.Materials.Count,
+                selectedRenderer = materialBinding.SelectedRenderer,
+                rendererBindings = materialBinding.RendererBindings,
+                sameContainerMaterials = materialBinding.SameContainerMaterials,
             });
+        }
+
+        private sealed class StaticMeshMaterialBinding
+        {
+            public string Status { get; set; } = "missingRendererMaterial";
+            public List<string> Notes { get; } = new List<string>();
+            public object[] SameContainerMaterials { get; set; } = Array.Empty<object>();
+            public List<StaticMeshRendererBindingInfo> RendererBindings { get; set; } = new List<StaticMeshRendererBindingInfo>();
+            public StaticMeshRendererBindingInfo SelectedRenderer { get; set; }
+            public List<StaticMeshResolvedMaterial> Materials { get; } = new List<StaticMeshResolvedMaterial>();
+
+            public int GetMaterialIndexForSubMesh(int subMeshIndex)
+            {
+                if (Materials.Count == 0)
+                {
+                    return 0;
+                }
+                return Math.Min(subMeshIndex, Materials.Count - 1);
+            }
+
+            public JObject ToJson(StaticMeshResolvedMaterial material = null, JArray textureExtras = null)
+            {
+                var json = new JObject
+                {
+                    ["workflow"] = "StaticMeshContainer",
+                    ["status"] = Status,
+                    ["notes"] = new JArray(Notes),
+                    ["selectedRenderer"] = SelectedRenderer != null ? JObject.FromObject(SelectedRenderer) : null,
+                    ["rendererBindings"] = JArray.FromObject(RendererBindings),
+                    ["sameContainerMaterials"] = JArray.FromObject(SameContainerMaterials),
+                };
+                if (material != null)
+                {
+                    json["material"] = new JObject
+                    {
+                        ["name"] = material.Name,
+                        ["file"] = material.File,
+                        ["pathId"] = material.PathId,
+                    };
+                }
+                if (textureExtras != null)
+                {
+                    json["unityTextures"] = textureExtras;
+                }
+                return json;
+            }
+        }
+
+        private sealed class StaticMeshResolvedMaterial
+        {
+            public Material Material { get; init; }
+            public string Name { get; init; }
+            public string File { get; init; }
+            public long PathId { get; init; }
+        }
+
+        private sealed class StaticMeshMaterialReference
+        {
+            public long RelationId { get; init; }
+            public string RendererFile { get; init; }
+            public long RendererPathId { get; init; }
+            public string RendererType { get; init; }
+            public string MaterialFile { get; init; }
+            public long MaterialPathId { get; init; }
+            public string MaterialName { get; init; }
+        }
+
+        private sealed class StaticMeshRendererBindingInfo
+        {
+            public string RendererFile { get; init; }
+            public long RendererPathId { get; init; }
+            public string RendererType { get; init; }
+            public int MaterialCount { get; init; }
+            public List<StaticMeshMaterialRefInfo> Materials { get; init; } = new List<StaticMeshMaterialRefInfo>();
+        }
+
+        private sealed class StaticMeshMaterialRefInfo
+        {
+            public string Name { get; init; }
+            public string File { get; init; }
+            public long PathId { get; init; }
         }
 
         public static bool ExportVideoClip(AssetItem item, string exportPath)

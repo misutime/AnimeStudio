@@ -137,9 +137,9 @@ Unity 游戏资源通常不是“一个模型一个文件”：
 ### 仍需增强
 
 - `source_animation_bindings` 目前主要记录 binding hash/type/attribute，path resolution 仍是 deferred。后续应进一步解析 path hash 到 Transform 路径，提升动画匹配准确性。
-- `unity_source_index.db` 目前主要用于加载依赖闭包；导出器还没有全面直接按 SQL 关系查询 Mesh/Material/Texture/Animator。也就是说它是“依赖底座 + 可查询证据库”，还不是完全的“SQL 驱动导出计划器”。
+- `unity_source_index.db` 已开始直接参与导出计划：StaticMeshPrimary 会用 SQL 查询 `MeshFilter.mesh` / `SkinnedMeshRenderer.mesh`、`component.gameObject`、`renderer.material`，恢复普通 Mesh 的 Renderer/Material 绑定。但 GameObject/Animator、动画、terrain/customization 等仍未全面 SQL-driven。
 - Renderer 轻量读取依赖 TypeTree；TypeTree 不完整或版本异常时有 fallback，但仍可能存在 `lightweightRendererFailures`。报告必须保留这个计数。
-- Material/Texture 参数关系目前仍需要继续扩展：标准材质、URP/HDRP、Texture2DArray、ColorMask/Tint 都应逐步进入源关系表或派生索引。
+- Material/Texture 参数关系目前已有第一阶段消费：StaticMeshPrimary 能从 Renderer Material 读 `Material.m_SavedProperties.m_TexEnvs` 并导出标准 Texture2D 到 glTF。仍需要继续扩展：URP/HDRP、Texture2DArray、ColorMask/Tint、terrain/customization 都应逐步进入源关系表或派生索引。
 
 ## 5. 性能复查
 
@@ -168,13 +168,13 @@ Unity 游戏资源通常不是“一个模型一个文件”：
 - 默认 `profile_3d` 是 `All`，不再默认启用 Core 的强路径过滤。
 - 默认不再按 `sfx/fx/vfx/spawner/fader/Armature/mixamorig` 静默排除潜在有效模型。
 - `Decal`、`Shadow` 不再仅凭名字从 StaticMeshPrimary 中排除。
-- StaticMeshPrimary 管线已补：有明确 Unity container/preload 路径和环境/建筑/道具语义的 Mesh 可以作为默认模型资产导出为 glTF。
+- StaticMeshPrimary 管线已补：有明确 Unity container/preload 路径、环境/建筑/道具语义，或 SQLite 证明存在 Renderer/Material 绑定的 Mesh，可以作为默认模型资产导出为 glTF。
 - Prefab/Animator/GameObject 组合模型仍是主资源；raw source part 不默认污染 Models，但会进入索引。
 
 ### 仍需增强
 
-- StaticMeshPrimary 目前仍依赖路径语义识别 environment/building/prop/world/stage 等。如果游戏资源路径命名很特殊，可能漏掉有意义静态 Mesh。
-- 裸 Mesh 没有 Renderer 材质绑定时，目前只能给同容器材质候选和 `needsRendererBinding` 标记，不能保证材质准确。
+- StaticMeshPrimary 不再只依赖路径语义；Renderer/Material 关系已经作为强 Unity 信号进入默认导出。但如果游戏既没有明确路径语义，也没有可解析 Renderer 关系，仍可能漏掉有意义静态 Mesh。
+- 裸 Mesh 没有 Renderer 材质绑定时，目前仍只能给同容器材质候选和 `needsRendererBinding` / `missingRendererMaterial` 标记，不能保证材质准确。
 - 对环境资产、地形、Texture2DArray、材质调色/ColorMask/Tint 的关联还未达到“自动可用 90%”的成熟程度。
 - 目前分类规则仍以通用路径词为主，后续应将“分类不确定但几何有效”的资源进入 `Models/Unclassified` 或报告，而不是完全沉默。
 
@@ -199,7 +199,7 @@ Unity 游戏资源通常不是“一个模型一个文件”：
 | --- | --- | --- | --- |
 | 源依赖完整性 | Library 强制使用源 SQLite，源文件不再被候选过滤裁剪 | 通过 | 满足“不切断 Unity 引用”的 1.0 标准 |
 | 源关系覆盖 | 已覆盖 GameObject/Transform/Animator/Renderer/Skin/MeshFilter/AnimationClip 基础关系 | 基本通过 | Material/Texture/Animation path resolution 仍需增强 |
-| 导出候选完整度 | 默认 All，StaticMeshPrimary 进入默认模型库 | 基本通过 | 特殊命名静态 Mesh 仍可能漏 |
+| 导出候选完整度 | 默认 All，StaticMeshPrimary 进入默认模型库；Renderer/Material-bound Mesh 也会提升 | 基本通过 | 无路径语义且无可解析 Renderer 关系的 Mesh 仍可能漏 |
 | 噪声控制 | raw part 不默认污染 Models，大量动画匹配 defer | 通过 | 宁缺毋滥策略成立 |
 | 性能 | batch、large singleton、heartbeat、profile、GC 优化已具备 | 基本通过 | 超大 bundle 仍需 watchdog 和更流式 reader |
 | 可恢复性 | failed batch 会阻止导出，parse failure 有统计 | 通过 | 符合精品资源安全策略 |
@@ -239,8 +239,8 @@ Unity 游戏资源通常不是“一个模型一个文件”：
 优先级：
 
 1. 按 GameObject/Animator 找 Renderer。
-2. 按 Renderer 找 Mesh / Material。
-3. 按 Material 找 Texture / Texture2DArray / ColorMask/Tint 参数。
+2. 按 Renderer 找 Mesh / Material。StaticMeshPrimary 已完成第一阶段，后续应推广到 GameObject/Animator 导出计划。
+3. 按 Material 找 Texture / Texture2DArray / ColorMask/Tint 参数。StaticMeshPrimary 已能消费标准 Texture2D，数组贴图和 tint 仍需增强。
 4. 按 Animator/Controller/Animation 找 AnimationClip。
 5. 按 SkinnedMeshRenderer 找 bones/rootBone/Avatar。
 
@@ -312,4 +312,3 @@ D:\misutime\AnimeStudio\dist\net9.0-windows\bin\AnimeStudio.CLI.exe `
 D:\misutime\AnimeStudio\dist\net9.0-windows\bin\AnimeStudio.CLI.exe `
   --build_sqlite_index "D:\Assets\VRising_AS_Library"
 ```
-

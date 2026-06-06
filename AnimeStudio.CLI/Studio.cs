@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
@@ -43,6 +44,8 @@ namespace AnimeStudio.CLI
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
         private static ExportRunStats _exportRunStats = new ExportRunStats();
+        private static string _rendererBoundStaticMeshIndexPath;
+        private static HashSet<string> _rendererBoundStaticMeshKeys;
         private static readonly HashSet<string> WeaponSemanticTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "axe",
@@ -1255,9 +1258,10 @@ namespace AnimeStudio.CLI
 
             var selected = new List<AssetItem>();
             var downgraded = 0;
+            var rendererBoundMeshKeys = GetRendererBoundStaticMeshKeys();
             foreach (var item in meshes)
             {
-                if (IsLibraryStaticMeshPrimary(item, out var reason))
+                if (IsLibraryStaticMeshPrimary(item, rendererBoundMeshKeys, out var reason))
                 {
                     EnsureStaticMeshDisplayName(item);
                     item.LibraryRole = "StaticMeshPrimary";
@@ -1283,7 +1287,8 @@ namespace AnimeStudio.CLI
                     ["inputCount"] = meshes.Count,
                     ["selectedCount"] = selected.Count,
                     ["sourcePartCount"] = downgraded,
-                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. Prefer explicit container/preload paths; when a game stores static world meshes as unnamed Mesh assets inside semantic source bundles such as LevelBuildElements/Terrain/Environment, promote them with stable source-based names and mark material binding as incomplete if no Renderer binding exists. Anonymous, collision, helper, deprecated, and no-signal Mesh assets stay out of the default browsable Library.",
+                    ["rendererBoundMeshCount"] = rendererBoundMeshKeys.Count,
+                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. Signals include explicit container/preload paths, semantic source bundle paths, and SQLite-proven MeshFilter/SkinnedMeshRenderer -> Renderer -> Material relations. Anonymous, collision, helper, deprecated, and no-signal Mesh assets stay out of the default browsable Library.",
                 });
             }
 
@@ -1294,12 +1299,12 @@ namespace AnimeStudio.CLI
         {
             return reason switch
             {
-                "source_static_mesh" or "container_static_mesh" => true,
+                "source_static_mesh" or "container_static_mesh" or "renderer_bound_static_mesh" => true,
                 _ => false,
             };
         }
 
-        private static bool IsLibraryStaticMeshPrimary(AssetItem item, out string reason)
+        private static bool IsLibraryStaticMeshPrimary(AssetItem item, HashSet<string> rendererBoundMeshKeys, out string reason)
         {
             reason = "unknown";
             if (item.Asset is not Mesh mesh)
@@ -1330,14 +1335,118 @@ namespace AnimeStudio.CLI
 
             var hasContainer = !string.IsNullOrWhiteSpace(container) && !int.TryParse(container, out _);
             var hasStaticSignal = StaticMeshLibraryPathPattern.IsMatch(text);
-            if (!hasStaticSignal)
+            var hasRendererMaterialBinding = rendererBoundMeshKeys.Contains(GetSourceObjectKey(item));
+            if (!hasStaticSignal && !hasRendererMaterialBinding)
             {
                 reason = "no_static_library_path_signal";
                 return false;
             }
 
-            reason = hasContainer ? "container_static_mesh" : "source_static_mesh";
+            reason = hasRendererMaterialBinding
+                ? "renderer_bound_static_mesh"
+                : hasContainer ? "container_static_mesh" : "source_static_mesh";
             return true;
+        }
+
+        private static HashSet<string> GetRendererBoundStaticMeshKeys()
+        {
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            if (
+                _rendererBoundStaticMeshKeys != null
+                && string.Equals(_rendererBoundStaticMeshIndexPath, indexPath, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return _rendererBoundStaticMeshKeys;
+            }
+
+            _rendererBoundStaticMeshIndexPath = indexPath;
+            _rendererBoundStaticMeshKeys = QueryRendererBoundStaticMeshKeys(indexPath);
+            if (_rendererBoundStaticMeshKeys.Count > 0)
+            {
+                Logger.Info($"SQLite source index identified {_rendererBoundStaticMeshKeys.Count} renderer/material-bound Mesh asset(s) for StaticMeshPrimary promotion.");
+            }
+            return _rendererBoundStaticMeshKeys;
+        }
+
+        private static HashSet<string> QueryRendererBoundStaticMeshKeys(string indexPath)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+WITH direct_meshes AS (
+    SELECT mesh.to_file AS mesh_file, mesh.to_path_id AS mesh_path_id
+    FROM source_relations mesh
+    JOIN source_relations material
+      ON material.relation = 'renderer.material'
+     AND material.from_file = mesh.from_file
+     AND material.from_path_id = mesh.from_path_id
+    WHERE mesh.relation = 'skinnedMeshRenderer.mesh'
+),
+mesh_filters AS (
+    SELECT mf.from_file AS mf_file, mf.from_path_id AS mf_path_id, mf.to_file AS mesh_file, mf.to_path_id AS mesh_path_id
+    FROM source_relations mf
+    WHERE mf.relation = 'meshFilter.mesh'
+),
+mesh_game_objects AS (
+    SELECT mf.mesh_file, mf.mesh_path_id, go.to_file AS go_file, go.to_path_id AS go_path_id
+    FROM mesh_filters mf
+    JOIN source_relations go
+      ON go.relation = 'component.gameObject'
+     AND go.from_file = mf.mf_file
+     AND go.from_path_id = mf.mf_path_id
+),
+static_meshes AS (
+    SELECT mgo.mesh_file, mgo.mesh_path_id
+    FROM mesh_game_objects mgo
+    JOIN source_relations renderer
+      ON renderer.relation = 'component.gameObject'
+     AND renderer.to_file = mgo.go_file
+     AND renderer.to_path_id = mgo.go_path_id
+     AND renderer.from_type IN ('MeshRenderer', 'SkinnedMeshRenderer')
+    JOIN source_relations material
+      ON material.relation = 'renderer.material'
+     AND material.from_file = renderer.from_file
+     AND material.from_path_id = renderer.from_path_id
+)
+SELECT DISTINCT mesh_file, mesh_path_id FROM direct_meshes
+UNION
+SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    result.Add(GetSourceObjectKey(reader.GetString(0), reader.GetInt64(1)));
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to query renderer/material-bound StaticMesh keys from SQLite source index: {e.Message}");
+            }
+
+            return result;
+        }
+
+        private static string GetSourceObjectKey(AssetItem item)
+        {
+            if (item?.Asset is AnimeStudio.Object obj)
+            {
+                return GetSourceObjectKey(obj.assetsFile?.fileName ?? item.SourceFile?.fileName ?? string.Empty, item.m_PathID);
+            }
+            return GetSourceObjectKey(item?.SourceFile?.fileName ?? string.Empty, item?.m_PathID ?? 0);
+        }
+
+        private static string GetSourceObjectKey(string serializedFile, long pathId)
+        {
+            return $"{serializedFile ?? string.Empty}\u001f{pathId}";
         }
 
         private static void EnsureStaticMeshDuplicateNamesAreStable(List<AssetItem> selected)
