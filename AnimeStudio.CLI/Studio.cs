@@ -338,6 +338,7 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            var preFilterCounts = CountAssetItemsByType(exportableAssets);
             var matches = exportableAssets
                 .Where(x =>
                 {
@@ -361,13 +362,37 @@ namespace AnimeStudio.CLI
                         && !isContainerExcluded;
                 })
                 .ToArray();
+            var regexFilteredCounts = CountAssetItemsByType(matches);
             if (ModelRootsOnly)
             {
                 matches = FilterModelRootsOnly(matches, containerMainAssets);
                 matches = FilterUsefulModelRoots(matches);
             }
+            if (WorkMode == WorkMode.Library)
+            {
+                ProfileLogger.Event("library_candidate_counts", new Dictionary<string, object>
+                {
+                    ["beforeFilterTotal"] = exportableAssets.Count,
+                    ["beforeFilterByType"] = preFilterCounts,
+                    ["afterNameContainerFilterTotal"] = regexFilteredCounts.Values.Sum(),
+                    ["afterNameContainerFilterByType"] = regexFilteredCounts,
+                    ["afterModelRootFilterTotal"] = matches.Length,
+                    ["afterModelRootFilterByType"] = CountAssetItemsByType(matches),
+                    ["containerMainAssetCount"] = containerMainAssets.Count,
+                    ["modelRootsOnly"] = ModelRootsOnly,
+                });
+            }
             exportableAssets.Clear();
             exportableAssets.AddRange(matches);
+        }
+
+        private static Dictionary<string, int> CountAssetItemsByType(IEnumerable<AssetItem> assets)
+        {
+            return assets
+                .GroupBy(x => x.TypeString ?? x.Type.ToString(), StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(x => x.Count())
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
         }
 
         private static string GetFilterableContainerText(AssetItem asset)

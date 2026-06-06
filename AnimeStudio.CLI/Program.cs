@@ -697,7 +697,7 @@ namespace AnimeStudio.CLI
             var filters = new List<Regex>();
             filters.Add(
                 new Regex(
-                    @"(^|[\\/])([^\\/]*(ui|emoji)[^\\/]*|sounds?|audio|videos?|camera)([\\/]|\.|$)",
+                    @"(^|[\\/])((ui|uiassets?|uiprefabs?|userinterface|emoji|emojis|sounds?|audio|videos?|camera)([\\/]|\.|$)|[^\\/]*[_\-.](ui|emoji)([_\-.]|[\\/]|$))",
                     RegexOptions.IgnoreCase | RegexOptions.Compiled
                 )
             );

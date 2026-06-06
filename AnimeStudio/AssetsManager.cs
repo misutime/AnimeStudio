@@ -746,11 +746,11 @@ namespace AnimeStudio
             {
                 if (count <= 5)
                 {
-                    Logger.Warning(message);
+                    Logger.Debug(message);
                 }
                 else if (count == 6)
                 {
-                    Logger.Warning($"Further {objectReader.type} parse failures are suppressed for this load batch.");
+                    Logger.Info($"Further {objectReader.type} parse failures are suppressed for this load batch; affected objects are kept as lightweight placeholders.");
                 }
                 else
                 {

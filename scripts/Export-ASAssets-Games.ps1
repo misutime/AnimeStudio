@@ -9,11 +9,18 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($CliPath)) {
-    $CliPath = Join-Path $repoRoot "dist\net9.0-windows\AnimeStudio.CLI.exe"
+    $releaseDll = Join-Path $repoRoot "AnimeStudio.CLI\bin\Release\net9.0-windows\AnimeStudio.CLI.dll"
+    $distExe = Join-Path $repoRoot "dist\net9.0-windows\AnimeStudio.CLI.exe"
+    if (Test-Path -LiteralPath $releaseDll) {
+        $CliPath = $releaseDll
+    }
+    else {
+        $CliPath = $distExe
+    }
 }
 
 if (-not (Test-Path -LiteralPath $CliPath)) {
-    throw "AnimeStudio.CLI.exe not found: $CliPath. Run .\build.ps1 first, or pass -CliPath."
+    throw "AnimeStudio.CLI not found: $CliPath. Run dotnet build AnimeStudio.CLI\AnimeStudio.CLI.csproj -c Release -f net9.0-windows, or pass -CliPath."
 }
 
 $games = @(
@@ -23,7 +30,7 @@ $games = @(
     },
     @{
         Name = "Humankind"
-        Input = "D:\BaiduNetdiskDownload\unity-Humankind\Humankind_Data"
+        Input = "D:\BaiduNetdiskDownload\unity-Humankind"
     },
     @{
         Name = "Valheim"
@@ -47,7 +54,7 @@ $startedAll = Get-Date
 foreach ($game in $games) {
     $name = [string]$game.Name
     $inputPath = [string]$game.Input
-    $outputPath = Join-Path $OutputRoot "$name Assets"
+    $outputPath = Join-Path $OutputRoot "$name-Assets"
 
     if (-not (Test-Path -LiteralPath $inputPath)) {
         $message = "Input path not found: $inputPath"
@@ -82,7 +89,12 @@ foreach ($game in $games) {
     Write-Host "[$name] Output: $outputPath"
     Write-Host "============================================================"
 
-    & $CliPath $inputPath $outputPath --game Normal
+    if ([System.IO.Path]::GetExtension($CliPath).Equals(".dll", [System.StringComparison]::OrdinalIgnoreCase)) {
+        & dotnet $CliPath $inputPath $outputPath --game Normal
+    }
+    else {
+        & $CliPath $inputPath $outputPath --game Normal
+    }
     $exitCode = $LASTEXITCODE
     $ended = Get-Date
     $duration = $ended - $started
