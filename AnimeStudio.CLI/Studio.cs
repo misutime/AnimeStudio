@@ -55,6 +55,10 @@ namespace AnimeStudio.CLI
             new Regex(@"(?:^|[_\-\s])(JNT|Joint|Bone|Dummy|Socket|Attach|Locator|Point|Empty)(?:$|[_\-\s0-9])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"(?:^|[_\-\s])Decal(?:$|[_\-\s])", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
+        private static readonly Regex DeprecatedLibraryPathPattern = new Regex(
+            @"(?:^|[\\/])(obsolete|deprecated)(?:[\\/]|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
 
         public static Dictionary<ulong, string> Paths { get; set; } =
             new Dictionary<ulong, string>();
@@ -792,6 +796,8 @@ namespace AnimeStudio.CLI
             var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
+            models = FilterDeprecatedLibraryAssets(models, "model");
+            animations = FilterDeprecatedLibraryAssets(animations, "animation");
 
             Logger.Info(
                 $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {libraryTextures.Count} material/terrain texture asset(s), {shaders.Count} shader(s)."
@@ -808,6 +814,55 @@ namespace AnimeStudio.CLI
             if (shaders.Count > 0)
             {
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
+            }
+        }
+
+        private static List<AssetItem> FilterDeprecatedLibraryAssets(List<AssetItem> assets, string label)
+        {
+            var kept = new List<AssetItem>(assets.Count);
+            var skipped = 0;
+            foreach (var asset in assets)
+            {
+                if (IsDeprecatedLibraryAsset(asset))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                kept.Add(asset);
+            }
+
+            if (skipped > 0)
+            {
+                Logger.Info($"Library skipped {skipped} deprecated/obsolete {label} asset(s).");
+                ProfileLogger.Event("library_deprecated_asset_filter", new Dictionary<string, object>
+                {
+                    ["assetKind"] = label,
+                    ["inputCount"] = assets.Count,
+                    ["skippedCount"] = skipped,
+                    ["keptCount"] = kept.Count,
+                    ["rule"] = "Path segment exactly matches obsolete or deprecated. Source SQLite index remains complete; default Library export omits these browsable assets.",
+                });
+            }
+
+            return kept;
+        }
+
+        private static bool IsDeprecatedLibraryAsset(AssetItem asset)
+        {
+            return GetDeprecatedFilterTexts(asset)
+                .Any(x => DeprecatedLibraryPathPattern.IsMatch(x));
+        }
+
+        private static IEnumerable<string> GetDeprecatedFilterTexts(AssetItem asset)
+        {
+            if (!string.IsNullOrWhiteSpace(asset.Container))
+            {
+                yield return asset.Container.Replace('\\', '/');
+            }
+            if (!string.IsNullOrWhiteSpace(asset.SourceFile?.originalPath))
+            {
+                yield return asset.SourceFile.originalPath.Replace('\\', '/');
             }
         }
 
