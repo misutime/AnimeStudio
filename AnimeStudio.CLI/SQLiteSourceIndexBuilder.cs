@@ -220,6 +220,15 @@ namespace AnimeStudio.CLI
             {
                 WriteSummary(outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts);
             }
+
+            using (ProfileLogger.Measure("source_index_checkpoint", new Dictionary<string, object>
+            {
+                ["dbPath"] = dbPath,
+            }))
+            {
+                Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+            }
+
             Logger.Info($"SQLite Unity source index written: {dbPath}");
             return dbPath;
         }
