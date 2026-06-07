@@ -89,6 +89,12 @@ namespace AnimeStudio.CLI
 
             Directory.CreateDirectory(exportFolder);
 
+            var isDataArray = IsDataTexture2DArray(
+                textureArray,
+                item.Text,
+                item.Container,
+                item.SourceFile?.originalPath ?? item.SourceFile?.fileName);
+            var textureArrayUsage = isDataArray ? "DataTextureArray" : "VisualTextureArray";
             var type = Properties.Settings.Default.convertType;
             var extension = "." + type.ToString().ToLower();
             var exportedLayers = new List<object>();
@@ -160,18 +166,57 @@ namespace AnimeStudio.CLI
                 depth = textureArray.m_Depth,
                 graphicsFormat = textureArray.m_Format.ToString(),
                 mappedTextureFormat = textureArray.m_Format.ToTextureFormat().ToString(),
+                textureArrayUsage,
+                isDiagnosticPreview = isDataArray,
+                previewNote = isDataArray
+                    ? "This Texture2DArray appears to be a float/HDR/unknown shader or terrain data array. Exported PNG layers are diagnostic previews and may look noisy; use the metadata/raw Unity reference for material or terrain reconstruction."
+                    : null,
                 mipCount = textureArray.m_MipCount,
                 dataSize = textureArray.m_DataSize,
                 streamPath = textureArray.m_StreamData?.path,
                 streamOffset = textureArray.m_StreamData?.offset,
                 streamSize = textureArray.m_StreamData?.size,
                 layers = exportedLayers,
-                note = "Texture2DArray is exported as independent layer images for texture/terrain/material libraries; it is not embedded into glTF PBR materials by default.",
+                note = isDataArray
+                    ? "Data Texture2DArray is exported as independent diagnostic layer images plus metadata. It is not a normal glTF PBR image and may require shader/terrain/customization logic."
+                    : "Texture2DArray is exported as independent layer images for texture/terrain/material libraries; it is not embedded into glTF PBR materials by default.",
             };
             File.WriteAllText(metadataPath, JsonConvert.SerializeObject(metadata, Formatting.Indented));
 
-            AppendAssetCatalog(item, exportFolder, "Texture2DArray");
+            AppendAssetCatalog(item, exportFolder, isDataArray ? "DataTexture2DArray" : "Texture2DArray");
             return exportedLayers.Count > 0;
+        }
+
+        internal static bool IsDataTexture2DArray(Texture2DArray textureArray, string name, string container, string source)
+        {
+            var text = string.Join(
+                    "/",
+                    new[] { name, container, source }
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Select(x => x.Replace('\\', '/')))
+                .ToLowerInvariant();
+
+            if (Regex.IsMatch(
+                    text,
+                    @"(^|[/_.\-\s])(albedo|basecolor|base_color|diffuse|color|alpha|normal|metallic|roughness|mask|emissive|atlas|palette)(?:$|[/_.\-\s0-9])",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                return false;
+            }
+
+            var graphicsFormat = textureArray.m_Format.ToString();
+            var mappedTextureFormat = textureArray.m_Format.ToTextureFormat().ToString();
+            var formatText = $"{graphicsFormat}/{mappedTextureFormat}";
+            if (Regex.IsMatch(
+                    formatText,
+                    @"SFloat|UFloat|RGBAFloat|RGFloat|RFloat|Half|BC6H|UInt|Int",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                return true;
+            }
+
+            var hasHumanReadableName = !string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(container);
+            return !hasHumanReadableName && textureArray.m_Format.ToTextureFormat() == 0;
         }
 
         public static bool ExportAudioClip(AssetItem item, string exportPath)

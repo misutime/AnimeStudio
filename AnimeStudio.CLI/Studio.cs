@@ -998,8 +998,10 @@ namespace AnimeStudio.CLI
                 selectedKeys.Add(key);
                 AddTextureLibraryReference(references, key, new
                 {
-                    basis = "Texture2DArray",
-                    reason = "Texture2DArray is a standalone material/terrain/shader texture library asset.",
+                    basis = GetTexture2DArrayUsage(arrayItem),
+                    reason = IsDataTexture2DArray(arrayItem)
+                        ? "Texture2DArray appears to be a float/HDR/unknown shader or terrain data array; PNG layers are diagnostic previews."
+                        : "Texture2DArray is a standalone material/terrain/shader texture library asset.",
                 });
             }
 
@@ -1083,20 +1085,28 @@ namespace AnimeStudio.CLI
                 {
                     total = textures.Count,
                     texture2D = textures.Count(x => x.Asset is Texture2D),
-                    texture2DArray = textures.Count(x => x.Asset is Texture2DArray),
+                    texture2DArray = textures.Count(x => x.Asset is Texture2DArray && !IsDataTexture2DArray(x)),
+                    dataTexture2DArray = textures.Count(IsDataTexture2DArray),
                 }),
                 ["textures"] = JArray.FromObject(textures.Select(x =>
                 {
                     var key = GetAssetKey((AnimeStudio.Object)x.Asset);
+                    var isDataTextureArray = IsDataTexture2DArray(x);
                     return new
                     {
                         name = x.Text,
                         type = x.TypeString,
                         libraryRole = x.LibraryRole,
+                        textureArrayUsage = x.Asset is Texture2DArray ? GetTexture2DArrayUsage(x) : null,
+                        isDiagnosticPreview = isDataTextureArray,
                         source = x.SourceFile?.originalPath ?? x.SourceFile?.fileName,
                         container = x.Container,
                         pathId = x.m_PathID,
-                        outputRoot = Path.Combine("Textures", x.LibraryRole == "Texture2DArray" ? "Texture2DArray" : "MaterialLibrary"),
+                        outputRoot = Path.Combine(
+                            "Textures",
+                            x.LibraryRole == "Texture2DArray"
+                                ? GetTexture2DArrayRoot(x)
+                                : "MaterialLibrary"),
                         references = references.TryGetValue(key, out var refs) ? refs : new List<object>(),
                     };
                 })),
@@ -1108,8 +1118,29 @@ namespace AnimeStudio.CLI
                 "默认 Library 会额外导出材质/地表贴图库：\n\n" +
                 "- `Textures/_ModelDependencies`：模型 glTF 直接显示需要的贴图。\n" +
                 "- `Textures/MaterialLibrary`：由 Unity `Material.m_SavedProperties.m_TexEnvs` 明确引用的 Texture2D。\n" +
-                "- `Textures/Texture2DArray`：Texture2DArray 按 layer 拆出的贴图库资源，常用于 terrain、surface、shader/material 混合。\n\n" +
+                "- `Textures/Texture2DArray`：Texture2DArray 按 layer 拆出的可视贴图库资源，常用于 terrain、surface、shader/material 混合。\n" +
+                "- `Textures/DataTexture2DArray`：float/HDR/未知语义数组贴图，常用于 shader、terrain 或运行时数据采样；PNG 只是诊断预览，看起来像雪花不一定代表导出错误。\n\n" +
                 "这些贴图不一定会直接嵌入 glTF PBR 材质；自定义 shader、terrain splat、ColorMask/Tint 或 Texture2DArray 采样方式需要结合 `texture_library.json`、材质 JSON 和后续 shader/customization 管线处理。\n");
+        }
+
+        private static bool IsDataTexture2DArray(AssetItem item)
+        {
+            return item.Asset is Texture2DArray textureArray
+                && Exporter.IsDataTexture2DArray(
+                    textureArray,
+                    item.Text,
+                    item.Container,
+                    item.SourceFile?.originalPath ?? item.SourceFile?.fileName);
+        }
+
+        private static string GetTexture2DArrayRoot(AssetItem item)
+        {
+            return IsDataTexture2DArray(item) ? "DataTexture2DArray" : "Texture2DArray";
+        }
+
+        private static string GetTexture2DArrayUsage(AssetItem item)
+        {
+            return IsDataTexture2DArray(item) ? "DataTextureArray" : "VisualTextureArray";
         }
 
         private static List<AssetItem> FilterLibraryModelSources(
@@ -3923,9 +3954,10 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             if (asset.Type == ClassIDType.Texture2DArray || asset.LibraryRole == "Texture2DArray")
             {
                 var textureArraySubPath = GetLibrarySubPathWithoutRole(asset);
+                var textureArrayRoot = GetTexture2DArrayRoot(asset);
                 return string.IsNullOrWhiteSpace(textureArraySubPath)
-                    ? "Texture2DArray"
-                    : Path.Combine("Texture2DArray", textureArraySubPath);
+                    ? textureArrayRoot
+                    : Path.Combine(textureArrayRoot, textureArraySubPath);
             }
 
             if (asset.Type == ClassIDType.Texture2D && asset.LibraryRole == "MaterialLibrary")

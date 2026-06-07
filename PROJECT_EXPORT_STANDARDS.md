@@ -226,7 +226,8 @@ ColorMask/Tint 管线规则：
 Texture2DArray 规则：
 
 - `Texture2DArray` 常用于地形、地表、shader 采样、材质变体或运行时混合，默认视为独立贴图库/材质库资源。
-- 默认 Library 必须导出材质/地表贴图库：模型显示贴图进入 `Textures/_ModelDependencies`，材质明确引用的 `Texture2D` 进入 `Textures/MaterialLibrary`，所有 `Texture2DArray` 进入 `Textures/Texture2DArray`。
+- 默认 Library 必须导出材质/地表贴图库：模型显示贴图进入 `Textures/_ModelDependencies`，材质明确引用的 `Texture2D` 进入 `Textures/MaterialLibrary`，可视 `Texture2DArray` 进入 `Textures/Texture2DArray`，float/HDR/未知语义数组进入 `Textures/DataTexture2DArray`。
+- `Textures/DataTexture2DArray` 中的 PNG layer 是诊断预览，不是最终 PBR 贴图。它们可能看起来像雪花或数据噪声；这类资源应通过 `.texture2darray.json`、材质参数、terrain/customization 配置或 shader 管线解释，不能简单判定为贴图损坏。
 - 全局贴图库的来源必须来自 Unity 引用或结构，例如 `Material.m_SavedProperties.m_TexEnvs`、`Texture2DArray` 对象本身、后续 terrain/customization 配置。不要为了“全”而默认导出未被材质引用的 UI、图标、视频帧等噪声贴图。
 - 默认模型 glTF 不强行嵌入数组贴图；普通 PBR 无法表达其 shader 采样逻辑时，必须保留引用和报告，而不是硬猜。
 - 导出时按 AssetStudio 思路拆成 fake `Texture2DArrayImage` 层图，并写 metadata 记录 width、height、depth、GraphicsFormat、TextureFormat、源文件、PathID、stream offset/size 和每层状态。
