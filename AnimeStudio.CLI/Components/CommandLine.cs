@@ -104,6 +104,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.ConvertTextureFormat,
                 optionsBinder.UpdateGltfTextureRefs,
                 optionsBinder.GeneratePreviewGltf,
+                optionsBinder.GeneratePreviewFromLibrary,
                 optionsBinder.GenerateAssembledPreviewGltf,
                 optionsBinder.PreviewModel,
                 optionsBinder.PreviewAnimation,
@@ -186,6 +187,7 @@ namespace AnimeStudio.CLI
         public AnimeStudio.ImageFormat ConvertTextureFormat { get; set; }
         public bool UpdateGltfTextureRefs { get; set; }
         public FileInfo GeneratePreviewGltf { get; set; }
+        public DirectoryInfo GeneratePreviewFromLibrary { get; set; }
         public FileInfo GenerateAssembledPreviewGltf { get; set; }
         public string PreviewModel { get; set; }
         public string PreviewAnimation { get; set; }
@@ -263,6 +265,7 @@ namespace AnimeStudio.CLI
         public readonly Option<AnimeStudio.ImageFormat> ConvertTextureFormat;
         public readonly Option<bool> UpdateGltfTextureRefs;
         public readonly Option<FileInfo> GeneratePreviewGltf;
+        public readonly Option<DirectoryInfo> GeneratePreviewFromLibrary;
         public readonly Option<FileInfo> GenerateAssembledPreviewGltf;
         public readonly Option<string> PreviewModel;
         public readonly Option<string> PreviewAnimation;
@@ -338,10 +341,11 @@ namespace AnimeStudio.CLI
             ConvertTextureFormat = new Option<AnimeStudio.ImageFormat>("--texture_output_format", "Output image format for --convert_model_textures.");
             UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
             GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Generate a playable preview glTF from model_animations.json by re-exporting one model with one selected animation.").LegalFilePathsOnly();
+            GeneratePreviewFromLibrary = new Option<DirectoryInfo>("--generate_preview_from_library", "Generate a playable preview glTF by selecting model and animation from library_index.db in a Library root.").LegalFilePathsOnly();
             GenerateAssembledPreviewGltf = new Option<FileInfo>("--generate_assembled_preview_gltf", "Generate a playable preview glTF and non-destructively add compatible modular character parts such as face, hair, or accessories when their Unity joints can be remapped.").LegalFilePathsOnly();
-            PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with --generate_preview_gltf.");
-            PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with --generate_preview_gltf.");
-            PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for --generate_preview_gltf. Defaults to Previews/<model>__<animation> next to the index.");
+            PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with preview commands.");
+            PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with preview commands.");
+            PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for preview commands. Defaults to Previews/<model>__<animation> next to the index or Library root.");
             PreviewSourceRoot = new Option<DirectoryInfo>("--preview_source_root", "Full Unity game/source root used by preview and animation-pack commands to resolve dependencies instead of reusing possibly incomplete indexed sample paths.").LegalFilePathsOnly();
             AssemblyModules = new Option<string>("--assembly_modules", "Comma-separated module roles or selectors for --generate_assembled_preview_gltf. Defaults to Face,Hair,Accessory.");
             PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
@@ -362,7 +366,7 @@ namespace AnimeStudio.CLI
             GenerateSkeletonGuide = new Option<FileInfo>("--generate_skeleton_guide", "Generate a non-destructive Blender CoreHumanoid skeleton guide from an exported FBX/glTF/GLB. Uses asset_catalog.jsonl Unity Avatar relations when available.").LegalFilePathsOnly();
             SkeletonGuideCatalog = new Option<FileInfo>("--skeleton_guide_catalog", "Optional asset_catalog.jsonl used by --generate_skeleton_guide. If omitted, AnimeStudio walks up from the FBX path.").LegalFilePathsOnly();
             RebuildLibraryIndexes = new Option<DirectoryInfo>("--rebuild_library_indexes", "Rebuild summary, validation, skeleton, model-animation, and compact indexes from a previous Library export without loading the original Unity game files. Explicit Animator relations require a fresh export; catalog structural links are rebuilt.").LegalFilePathsOnly();
-            BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Build a reusable SQLite index from a previous Library or AudioLibrary export. This keeps indexing broad while export remains strict.").LegalFilePathsOnly();
+            BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Rebuild the reusable SQLite index from a previous Library or AudioLibrary export. Default Library export already writes library_index.db.").LegalFilePathsOnly();
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
             SourceIndex = new Option<FileInfo>("--source_index", "SQLite Unity source index used by Library export for dependency resolution. Prefer unity_source_index.db over legacy CAB maps for full exports.").LegalFilePathsOnly();
             IndexPath = new Option<FileInfo>("--index_path", "Output SQLite database path for --build_sqlite_index. Defaults to library_index.db in the export root.");
@@ -502,6 +506,7 @@ namespace AnimeStudio.CLI
                 ConvertTextureFormat = bindingContext.ParseResult.GetValueForOption(ConvertTextureFormat),
                 UpdateGltfTextureRefs = bindingContext.ParseResult.GetValueForOption(UpdateGltfTextureRefs),
                 GeneratePreviewGltf = bindingContext.ParseResult.GetValueForOption(GeneratePreviewGltf),
+                GeneratePreviewFromLibrary = bindingContext.ParseResult.GetValueForOption(GeneratePreviewFromLibrary),
                 GenerateAssembledPreviewGltf = bindingContext.ParseResult.GetValueForOption(GenerateAssembledPreviewGltf),
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
                 PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),

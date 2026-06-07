@@ -704,8 +704,8 @@ namespace AnimeStudio.CLI
             using (ProfileLogger.Measure("static_mesh_gltf_export", GetModelProfileData(item, gltfPath)))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(gltfPath));
-                var binPath = Path.ChangeExtension(gltfPath, ".bin");
-                var binName = Path.GetFileName(binPath);
+                var binName = BuildSafeGltfBufferFileName(item.Text, item.m_PathID);
+                var binPath = Path.Combine(Path.GetDirectoryName(gltfPath), binName);
                 var bufferViews = new JArray();
                 var accessors = new JArray();
                 var primitives = new JArray();
@@ -851,6 +851,7 @@ namespace AnimeStudio.CLI
                 }
 
                 File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
+                NormalizeGltfForViewerCompatibility(gltfPath);
                 WriteStaticMeshReadme(gltfPath, item, mesh, materialBinding);
                 AppendStaticMeshAssetCatalog(item, gltfPath, materialBinding);
             }
@@ -1308,6 +1309,7 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
         {
             var material = materialInfo.Material;
             var diffuse = GetStaticMeshMaterialColor(material);
+            var hasBaseColorTexture = false;
             var pbr = new JObject
             {
                 ["baseColorFactor"] = new JArray(diffuse.R, diffuse.G, diffuse.B, diffuse.A),
@@ -1354,6 +1356,7 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                     if (destination == 0 && pbr["baseColorTexture"] == null)
                     {
                         pbr["baseColorTexture"] = new JObject { ["index"] = textureIndex };
+                        hasBaseColorTexture = true;
                     }
                     else if ((destination == 1 || destination == 3) && normalTexture == null)
                     {
@@ -1380,7 +1383,8 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
             {
                 gltfMaterial["normalTexture"] = normalTexture;
             }
-            if (diffuse.A < 0.999f || GetUnityFloat(material, "_Surface", 0.0f) > 0.5f)
+            ProtectPreviewBaseColorFactor(pbr, diffuse, hasBaseColorTexture, gltfMaterial);
+            if (ShouldExportPreviewBlend(material, diffuse, hasBaseColorTexture))
             {
                 gltfMaterial["alphaMode"] = "BLEND";
             }
@@ -1444,6 +1448,137 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
             }
             var sourceFile = GetSafeTextureFileName(texture.assetsFile?.fileName ?? "source");
             return $"{rawName}_{sourceFile}_{texture.m_PathID}{extension}";
+        }
+
+        private static string BuildSafeGltfBufferFileName(string sourceName, long stableId)
+        {
+            var name = GetSafeAsciiFileStem(sourceName);
+            return $"{name}_{stableId:X}.bin";
+        }
+
+        private static string GetSafeAsciiFileStem(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "buffer";
+            }
+
+            var builder = new StringBuilder();
+            foreach (var ch in value)
+            {
+                if ((ch >= 'a' && ch <= 'z')
+                    || (ch >= 'A' && ch <= 'Z')
+                    || (ch >= '0' && ch <= '9')
+                    || ch == '_' || ch == '-' || ch == '.')
+                {
+                    builder.Append(ch);
+                }
+                else if (char.IsWhiteSpace(ch))
+                {
+                    builder.Append('_');
+                }
+            }
+
+            var result = builder.ToString().Trim('.', '_', '-');
+            if (string.IsNullOrWhiteSpace(result))
+            {
+                result = "buffer";
+            }
+            if (result.Length > 64)
+            {
+                result = result.Substring(0, 64).Trim('.', '_', '-');
+            }
+            return result;
+        }
+
+        private static bool IsViewerSafeGltfUri(string uri)
+        {
+            foreach (var ch in uri)
+            {
+                if (ch > 127 || char.IsWhiteSpace(ch) || ch == '(' || ch == ')' || ch == '[' || ch == ']')
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static void ProtectPreviewBaseColorFactor(JObject pbr, Color original, bool hasBaseColorTexture, JObject material)
+        {
+            if (!hasBaseColorTexture)
+            {
+                return;
+            }
+
+            var protectedFactor = BuildProtectedPreviewBaseColorFactor(original, out var reason);
+            if (protectedFactor == null)
+            {
+                return;
+            }
+
+            PreserveOriginalBaseColorFactor(material, original, reason);
+            pbr["baseColorFactor"] = protectedFactor;
+        }
+
+        private static JArray BuildProtectedPreviewBaseColorFactor(Color original, out string reason)
+        {
+            reason = null;
+            var rgbNearlyBlack = original.R <= 0.02f && original.G <= 0.02f && original.B <= 0.02f;
+            var transparent = original.A <= 0.001f;
+            if (!rgbNearlyBlack && !transparent)
+            {
+                return null;
+            }
+
+            reason = transparent
+                ? "Unity material color alpha is 0, but the material has a base color texture. The glTF preview keeps the texture visible and preserves the original factor in extras."
+                : "Unity material color is near black, but the material has a base color texture. The glTF preview keeps the texture visible and preserves the original factor in extras.";
+            return new JArray(1.0, 1.0, 1.0, 1.0);
+        }
+
+        private static void PreserveOriginalBaseColorFactor(JObject material, Color original, string reason)
+        {
+            var extras = material["extras"] as JObject;
+            if (extras == null)
+            {
+                extras = new JObject();
+                material["extras"] = extras;
+            }
+
+            var anime = extras["animeStudioMaterial"] as JObject;
+            if (anime == null)
+            {
+                anime = new JObject();
+                extras["animeStudioMaterial"] = anime;
+            }
+
+            anime["originalBaseColorFactor"] = new JArray(original.R, original.G, original.B, original.A);
+            anime["previewBaseColorFactorProtected"] = true;
+            anime["previewBaseColorFactorReason"] = reason;
+        }
+
+        private static Color? ReadColorFactor(JArray factor)
+        {
+            if (factor == null || factor.Count < 4)
+            {
+                return null;
+            }
+
+            return new Color(
+                (float)factor[0],
+                (float)factor[1],
+                (float)factor[2],
+                (float)factor[3]);
+        }
+
+        private static bool ShouldExportPreviewBlend(Material material, Color diffuse, bool hasBaseColorTexture)
+        {
+            if (hasBaseColorTexture && diffuse.A <= 0.001f)
+            {
+                return false;
+            }
+
+            return diffuse.A < 0.999f || GetUnityFloat(material, "_Surface", 0.0f) > 0.5f;
         }
 
         private static Color GetStaticMeshMaterialColor(Material material)
@@ -2074,6 +2209,141 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                 profileMeasure = ProfileLogger.Measure,
             };
             ModelExporter.ExportGltf(exportPath, convert, exportOptions);
+            if (!binary)
+            {
+                NormalizeGltfForViewerCompatibility(exportPath);
+            }
+        }
+
+        private static void NormalizeGltfForViewerCompatibility(string gltfPath)
+        {
+            if (string.IsNullOrWhiteSpace(gltfPath)
+                || !File.Exists(gltfPath)
+                || !string.Equals(Path.GetExtension(gltfPath), ".gltf", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            try
+            {
+                var gltf = JObject.Parse(File.ReadAllText(gltfPath));
+                var changed = false;
+
+                changed |= NormalizeGltfBufferUris(gltfPath, gltf);
+                changed |= ProtectGltfPreviewMaterials(gltf);
+
+                if (changed)
+                {
+                    File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"glTF viewer compatibility normalize failed: {gltfPath}. {ex.Message}");
+            }
+        }
+
+        private static bool NormalizeGltfBufferUris(string gltfPath, JObject gltf)
+        {
+            // f3d/VTK 对 glTF URI 比较严格，空格、括号和中文文件名会直接导致模型加载失败。
+            // 这里把外部 bin 统一挪成 ASCII 稳定名，glTF 里只引用这个安全文件名。
+            var buffers = gltf["buffers"] as JArray;
+            if (buffers == null || buffers.Count == 0)
+            {
+                return false;
+            }
+
+            var changed = false;
+            var directory = Path.GetDirectoryName(gltfPath);
+            for (var i = 0; i < buffers.Count; i++)
+            {
+                if (buffers[i] is not JObject buffer)
+                {
+                    continue;
+                }
+
+                var uri = (string)buffer["uri"];
+                if (string.IsNullOrWhiteSpace(uri) || uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var decodedUri = Uri.UnescapeDataString(uri);
+                if (IsViewerSafeGltfUri(uri))
+                {
+                    continue;
+                }
+
+                var sourcePath = Path.GetFullPath(Path.Combine(directory, decodedUri.Replace('/', Path.DirectorySeparatorChar)));
+                if (!File.Exists(sourcePath))
+                {
+                    Logger.Warning($"glTF buffer uri normalize skipped, file not found: {sourcePath}");
+                    continue;
+                }
+
+                var newName = BuildSafeGltfBufferFileName(Path.GetFileNameWithoutExtension(gltfPath), i);
+                var targetPath = Path.Combine(directory, newName);
+                if (!string.Equals(sourcePath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Copy(sourcePath, targetPath, true);
+                    File.Delete(sourcePath);
+                }
+
+                buffer["uri"] = newName;
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static bool ProtectGltfPreviewMaterials(JObject gltf)
+        {
+            // Unity 自定义 shader 里的 _Color/_BaseColor 不一定是最终 PBR 颜色。
+            // 如果已有 base color 贴图，黑色或 alpha=0 的颜色因子会让 f3d 里整模变黑/透明，所以预览层保护为可见。
+            var materials = gltf["materials"] as JArray;
+            if (materials == null)
+            {
+                return false;
+            }
+
+            var changed = false;
+            foreach (var material in materials.OfType<JObject>())
+            {
+                var pbr = material["pbrMetallicRoughness"] as JObject;
+                if (pbr == null)
+                {
+                    continue;
+                }
+
+                var factor = ReadColorFactor(pbr["baseColorFactor"] as JArray);
+                if (factor == null)
+                {
+                    continue;
+                }
+
+                var hasBaseColorTexture = pbr["baseColorTexture"] != null;
+                if (!hasBaseColorTexture)
+                {
+                    continue;
+                }
+
+                var protectedFactor = BuildProtectedPreviewBaseColorFactor(factor.Value, out var reason);
+                if (protectedFactor == null)
+                {
+                    continue;
+                }
+
+                PreserveOriginalBaseColorFactor(material, factor.Value, reason);
+                pbr["baseColorFactor"] = protectedFactor;
+                if (string.Equals((string)material["alphaMode"], "BLEND", StringComparison.OrdinalIgnoreCase)
+                    && factor.Value.A <= 0.001f)
+                {
+                    material.Remove("alphaMode");
+                }
+                changed = true;
+            }
+
+            return changed;
         }
 
         private static string GetSharedTextureDirectory(string exportPath)
@@ -3375,6 +3645,10 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
+            if (Regex.IsMatch(text, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
+            {
+                return "VFX";
+            }
             if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)characterprefabs?(/|$)|(^|/)(pc|player)(/|$)"))
             {
                 return "Character";

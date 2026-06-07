@@ -82,7 +82,9 @@ namespace AnimeStudio.LibraryBrowser
                     VertexCount = ReadInt32(obj, "vertexCount"),
                     MaterialCount = ReadInt32(obj, "materialCount"),
                     TextureCount = ReadInt32(obj, "textureCount"),
-                    BoneCount = ReadInt32(obj, "boneCount")
+                    BoneCount = ReadInt32(obj, "boneCount"),
+                    BonePaths = ReadStringArray(obj, "bonePaths"),
+                    NodePaths = ReadStringArray(obj, "nodePaths")
                 });
             }
 
@@ -114,6 +116,20 @@ namespace AnimeStudio.LibraryBrowser
         private static long ReadInt64(JsonElement obj, string name)
         {
             return obj.TryGetProperty(name, out var property) && property.TryGetInt64(out var value) ? value : 0;
+        }
+
+        private static string[] ReadStringArray(JsonElement obj, string name)
+        {
+            if (!obj.TryGetProperty(name, out var property) || property.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            return property.EnumerateArray()
+                .Where(x => x.ValueKind == JsonValueKind.String)
+                .Select(x => x.GetString())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
         }
     }
 }

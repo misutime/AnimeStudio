@@ -606,7 +606,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             Dictionary<string, long> counts,
             SourceIndexWriteProgress progress)
         {
-            if (objectInfo.classID != (int)ClassIDType.MeshRenderer && objectInfo.classID != (int)ClassIDType.SkinnedMeshRenderer)
+            if (!IsLightweightRendererRelationType(objectInfo.classID))
             {
                 return 0;
             }
@@ -616,7 +616,9 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 
             if (objectInfo.serializedType?.m_Type?.m_Nodes == null || objectInfo.serializedType.m_Type.m_Nodes.Count == 0)
             {
-                return TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, "missing_typetree");
+                return IsFallbackParsedRendererType(objectInfo.classID)
+                    ? TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, "missing_typetree")
+                    : 0;
             }
 
             if (!IsObjectRangeReadable(assetsFile, objectInfo))
@@ -665,8 +667,27 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
             catch (Exception e) when (e is EndOfStreamException || e is IOException || e is InvalidDataException || e is OverflowException || e is ArgumentOutOfRangeException)
             {
-                return TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name);
+                return IsFallbackParsedRendererType(objectInfo.classID)
+                    ? TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name)
+                    : RecordLightweightRendererFailure(sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name, e);
             }
+        }
+
+        private static bool IsLightweightRendererRelationType(int classId)
+        {
+            return classId == (int)ClassIDType.MeshRenderer
+                || classId == (int)ClassIDType.SkinnedMeshRenderer
+                || classId == (int)ClassIDType.ParticleSystemRenderer
+                || classId == (int)ClassIDType.LineRenderer
+                || classId == (int)ClassIDType.TrailRenderer
+                || classId == (int)ClassIDType.VFXRenderer
+                || classId == (int)ClassIDType.GPUParticleSystemRenderer;
+        }
+
+        private static bool IsFallbackParsedRendererType(int classId)
+        {
+            return classId == (int)ClassIDType.MeshRenderer
+                || classId == (int)ClassIDType.SkinnedMeshRenderer;
         }
 
         private static int TryWriteFallbackParsedRendererRelations(
@@ -695,20 +716,32 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
             catch (Exception e) when (e is EndOfStreamException || e is IOException || e is InvalidDataException || e is OverflowException || e is ArgumentOutOfRangeException)
             {
-                counts["lightweightRendererFailures"]++;
-                progress.LightweightRendererFailures++;
-                ProfileLogger.Event("source_index_lightweight_renderer_failed", new Dictionary<string, object>
-                {
-                    ["source"] = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName),
-                    ["file"] = assetsFile.fileName ?? string.Empty,
-                    ["pathId"] = objectInfo.m_PathID,
-                    ["type"] = Enum.IsDefined(typeof(ClassIDType), objectInfo.classID) ? ((ClassIDType)objectInfo.classID).ToString() : objectInfo.classID.ToString(CultureInfo.InvariantCulture),
-                    ["reason"] = reason,
-                    ["errorType"] = e.GetType().Name,
-                    ["message"] = e.Message,
-                });
-                return 0;
+                return RecordLightweightRendererFailure(sourceRoot, assetsFile, objectInfo, counts, progress, reason, e);
             }
+        }
+
+        private static int RecordLightweightRendererFailure(
+            string sourceRoot,
+            SerializedFile assetsFile,
+            ObjectInfo objectInfo,
+            Dictionary<string, long> counts,
+            SourceIndexWriteProgress progress,
+            string reason,
+            Exception e)
+        {
+            counts["lightweightRendererFailures"]++;
+            progress.LightweightRendererFailures++;
+            ProfileLogger.Event("source_index_lightweight_renderer_failed", new Dictionary<string, object>
+            {
+                ["source"] = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName),
+                ["file"] = assetsFile.fileName ?? string.Empty,
+                ["pathId"] = objectInfo.m_PathID,
+                ["type"] = Enum.IsDefined(typeof(ClassIDType), objectInfo.classID) ? ((ClassIDType)objectInfo.classID).ToString() : objectInfo.classID.ToString(CultureInfo.InvariantCulture),
+                ["reason"] = reason,
+                ["errorType"] = e.GetType().Name,
+                ["message"] = e.Message,
+            });
+            return 0;
         }
 
         private static void WriteParsedRendererRelations(SqliteConnection connection, SqliteTransaction transaction, AnimeStudio.Object renderer, string sourceRoot, Dictionary<string, long> counts, string confidence)

@@ -133,6 +133,16 @@ SQLite 源索引规则：
   - SQLite 源索引能证明该 Mesh 通过 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用。这个信号来自 Unity PPtr 关系链，不是名称猜测；如果 Renderer 缺少或无法解析 `renderer.material`，仍应导出灰模并清楚标注缺材质绑定。
 - `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
 - 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Dummy`、`Decal`、`Shadow`、`SFX/FX/VFX`、helper 等名字不能单独作为静默丢弃理由；如果具备明确容器路径、强来源语义、Renderer 关系或可见几何，应分类或标注进入素材库。
+
+### VFX Library
+
+特效素材是默认 Library 的一等资源域，不再只作为模型目录里的偶然产物处理。
+
+- `ParticleSystem`、`ParticleSystemRenderer`、`ParticleSystemForceField`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象进入 `VFX/` 元数据索引。
+- 通过模型/路径/命名识别出的 slash、impact、projectile、beam、trail、explosion、aura、skill 等 mesh 型特效，模型仍可作为 glTF 进入 `Models/`，但 `resourceKind` 应标注为 `VFX`。
+- `VFX/vfx_library.json` 是全局机器索引，`VFX/VFX_LIBRARY.md` 是人工说明，每个特效目录下写 `vfx.json` 和 `VFX_REPORT.md`。
+- 当前策略是 metadata-first：记录 Unity 组件、来源、分类、mesh 预览和限制；ParticleSystem module、shader 动画、动画事件触发、运行时 prefab 绑定没有完整还原时必须明确标注，不能伪装成可直接播放。
+- `fx` / `vfx` / `sfx` / `effect` 不能作为底层过滤理由。若资源可见或有 Unity VFX 组件证据，优先导出或入索引；质量由分类、报告和后续筛选处理。
 - StaticMeshPrimary 应优先使用 SQLite 源索引恢复材质关系：`Mesh -> MeshFilter/SkinnedMeshRenderer -> GameObject/Renderer -> Material -> Texture2D`。命中时 glTF material 必须写入 `extras.animeStudioMaterial.status=boundRendererMaterial`，贴图进入 `Textures/_ModelDependencies`，模型旁 `ASSET_README.md` 记录选中的 Renderer 和 Material。
 - 裸 Mesh 或 Renderer-used Mesh 没有 submesh-material 强绑定时，不要伪造材质关系。宁可导出默认灰模并在 `asset_catalog.jsonl`、glTF `extras` 与模型旁说明文件标记 `needsRendererBinding`、`missingRendererMaterial` 或 `rendererMaterialUnresolved`，也不要把可能是建筑、地形、道具的有效模型漏掉。
 - 对匿名静态 Mesh，应使用来源包名 + PathID 生成稳定文件名，避免 `Mesh#123` 这类不利于排查的名字，也避免文件互相覆盖。
@@ -340,7 +350,7 @@ Shader 默认作为实验功能：
 ## 12. Git 和文档
 
 - 每个重要变更都要有中文 git message。
-- 改动影响项目准则时，同步更新 `AGENTS.md` 或本文档。
+- 改动影响项目准则时，同步更新 `../AGENTS.md` 或本文档。
 - 新增 CLI 行为时，同步更新 `CLI_USAGE.md`。
 - 新增验证样本或流程时，同步更新 `DEV_SAMPLE_WORKFLOW.md`。
 - 路线图、阶段完成度和待办放 `RESOURCE_EXPORT_ROADMAP.md`。

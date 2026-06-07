@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -12,18 +13,25 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class MainForm : Form
     {
-        private readonly ToolStrip _toolStrip = new();
+        private readonly TableLayoutPanel _toolbarPanel = new();
+        private readonly ToolStrip _commandStrip = new();
+        private readonly ToolStrip _searchStrip = new();
+        private readonly ToolStrip _filterStrip = new();
         private readonly ToolStripButton _openButton = new("选择素材库");
         private readonly ToolStripDropDownButton _recentButton = new("最近");
         private readonly ToolStripButton _refreshListButton = new("刷新列表");
         private readonly ToolStripButton _reloadButton = new("重新加载");
         private readonly ToolStripTextBox _searchBox = new();
+        private readonly ToolStripButton _clearSearchButton = new("清除");
+        private readonly ToolStripLabel _typeLabel = new("类型");
         private readonly ToolStripComboBox _kindBox = new();
         private readonly ToolStripComboBox _thumbnailStateBox = new();
         private readonly ToolStripComboBox _concurrencyBox = new();
         private readonly ToolStripButton _hideIgnoredButton = new("隐藏忽略");
         private readonly SplitContainer _split = new();
+        private readonly SplitContainer _detailSplit = new();
         private readonly ListView _modelList = new();
+        private readonly ListView _animationList = new();
         private readonly ImageList _images = new();
         private readonly TextBox _detailBox = new();
         private readonly StatusStrip _statusStrip = new();
@@ -37,6 +45,12 @@ namespace AnimeStudio.LibraryBrowser
         private List<LibraryModelItem> _visibleModels = new();
         private ThumbnailCache _thumbnailCache;
         private LibraryCurationStore _curationStore;
+        private LibraryAnimationIndex _animationIndex = LibraryAnimationIndex.Empty;
+        private AnimationPreviewCache _previewCache;
+        private LibraryModelItem _detailModel;
+        private List<LibraryAnimationCandidate> _detailAnimations = new();
+        private readonly List<ToolStripButton> _typeButtons = new();
+        private string _selectedModelType = "全部";
         private CancellationTokenSource _thumbnailCts;
         private int _thumbnailTotal;
         private int _thumbnailCached;
@@ -45,12 +59,13 @@ namespace AnimeStudio.LibraryBrowser
         private int _thumbnailActive;
         private bool _listRefreshRequested;
         private bool _statusRefreshRequested;
+        private int _detailRequestId;
 
         public MainForm()
         {
             Text = "AnimeStudio Library Browser";
-            Width = 1280;
-            Height = 840;
+            Width = 1600;
+            Height = 940;
             StartPosition = FormStartPosition.CenterScreen;
 
             BuildUi();
@@ -64,8 +79,10 @@ namespace AnimeStudio.LibraryBrowser
             _refreshListButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _reloadButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _searchBox.AutoSize = false;
-            _searchBox.Width = 260;
-            _searchBox.ToolTipText = "按名称、路径、来源搜索";
+            _searchBox.Width = 360;
+            _searchBox.ToolTipText = "按当前类型标签里的模型继续搜索。支持 * ? 通配符、空格多词、-排除、name:/path:/kind:/type:/source:/role:";
+            _searchBox.TextBox.PlaceholderText = "搜索当前标签，例如 *player*  -debug";
+            _clearSearchButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _kindBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _kindBox.Width = 160;
             _thumbnailStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -79,24 +96,56 @@ namespace AnimeStudio.LibraryBrowser
             _hideIgnoredButton.CheckOnClick = true;
             _hideIgnoredButton.Checked = true;
 
-            _toolStrip.Items.AddRange(new ToolStripItem[]
+            ConfigureToolStrip(_commandStrip);
+            ConfigureToolStrip(_searchStrip);
+            ConfigureToolStrip(_filterStrip);
+            _toolbarPanel.Dock = DockStyle.Top;
+            _toolbarPanel.AutoSize = true;
+            _toolbarPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _toolbarPanel.ColumnCount = 2;
+            _toolbarPanel.RowCount = 2;
+            _toolbarPanel.Padding = new Padding(0, 2, 0, 2);
+            _toolbarPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _toolbarPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            _toolbarPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _toolbarPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            _commandStrip.Items.AddRange(new ToolStripItem[]
             {
                 _openButton,
                 _recentButton,
                 _refreshListButton,
                 _reloadButton,
+            });
+            _searchStrip.Items.AddRange(new ToolStripItem[]
+            {
                 new ToolStripLabel("搜索"),
                 _searchBox,
+                _clearSearchButton,
+                new ToolStripSeparator(),
+                _typeLabel,
+                new ToolStripSeparator(),
+            });
+            _filterStrip.Items.AddRange(new ToolStripItem[]
+            {
                 new ToolStripLabel("分类"),
                 _kindBox,
+                new ToolStripSeparator(),
                 new ToolStripLabel("缩略图"),
                 _thumbnailStateBox,
+                new ToolStripSeparator(),
                 new ToolStripLabel("并发"),
                 _concurrencyBox,
+                new ToolStripSeparator(),
                 _hideIgnoredButton
             });
+            _toolbarPanel.Controls.Add(_commandStrip, 0, 0);
+            _toolbarPanel.SetColumnSpan(_commandStrip, 2);
+            _toolbarPanel.Controls.Add(_searchStrip, 0, 1);
+            _toolbarPanel.Controls.Add(_filterStrip, 1, 1);
+            RebuildModelTypeFilter();
             RebuildRecentMenu();
-            Controls.Add(_toolStrip);
+            Controls.Add(_toolbarPanel);
 
             _images.ImageSize = new Size(144, 144);
             _images.ColorDepth = ColorDepth.Depth32Bit;
@@ -117,11 +166,31 @@ namespace AnimeStudio.LibraryBrowser
             _detailBox.ReadOnly = true;
             _detailBox.ScrollBars = ScrollBars.Vertical;
             _detailBox.Font = new Font(FontFamily.GenericMonospace, 9);
+            _detailBox.BackColor = SystemColors.Control;
+            _detailBox.ForeColor = SystemColors.GrayText;
+            _detailBox.BorderStyle = BorderStyle.FixedSingle;
+
+            _animationList.Dock = DockStyle.Fill;
+            _animationList.View = View.Details;
+            _animationList.FullRowSelect = true;
+            _animationList.HideSelection = false;
+            _animationList.Columns.Add("状态", 84);
+            _animationList.Columns.Add("来源", 72);
+            _animationList.Columns.Add("动画", 460);
+            _animationList.Columns.Add("时长", 64);
+            _animationList.Columns.Add("命中骨骼", 88);
+            _animationList.Columns.Add("能力", 220);
+            _animationList.DoubleClick += async (_, _) => await GenerateSelectedAnimationPreviewAsync(openAfterGenerate: true);
 
             _split.Dock = DockStyle.Fill;
-            _split.SplitterDistance = 900;
+            _split.SplitterDistance = 1100;
             _split.Panel1.Controls.Add(_modelList);
-            _split.Panel2.Controls.Add(_detailBox);
+            _detailSplit.Dock = DockStyle.Fill;
+            _detailSplit.Orientation = Orientation.Horizontal;
+            _detailSplit.SplitterDistance = 520;
+            _detailSplit.Panel1.Controls.Add(_animationList);
+            _detailSplit.Panel2.Controls.Add(_detailBox);
+            _split.Panel2.Controls.Add(_detailSplit);
             Controls.Add(_split);
             _split.BringToFront();
 
@@ -134,11 +203,24 @@ namespace AnimeStudio.LibraryBrowser
             _menu.Items.Add("用 f3d 打开", null, (_, _) => OpenSelectedWithF3d());
             _menu.Items.Add("打开所在目录", null, (_, _) => OpenSelectedFolder());
             _menu.Items.Add(new ToolStripSeparator());
+            _menu.Items.Add("复制匹配动画路径", null, (_, _) => CopySelectedAnimationPaths());
+            _menu.Items.Add("打开首个动画目录", null, (_, _) => OpenFirstAnimationFolder());
+            _menu.Items.Add("生成并打开动画预览", null, async (_, _) => await GenerateSelectedAnimationPreviewAsync(openAfterGenerate: true));
+            _menu.Items.Add(new ToolStripSeparator());
             _menu.Items.Add("加入忽略", null, (_, _) => SetSelectedIgnored(true));
             _menu.Items.Add("取消忽略", null, (_, _) => SetSelectedIgnored(false));
             _menu.Items.Add(new ToolStripSeparator());
             _menu.Items.Add("复制路径", null, (_, _) => CopySelectedPath());
             _modelList.ContextMenuStrip = _menu;
+        }
+
+        private static void ConfigureToolStrip(ToolStrip strip)
+        {
+            strip.GripStyle = ToolStripGripStyle.Hidden;
+            strip.Dock = DockStyle.Fill;
+            strip.AutoSize = true;
+            strip.CanOverflow = true;
+            strip.Padding = new Padding(6, 2, 6, 2);
         }
 
         private void WireEvents()
@@ -147,6 +229,8 @@ namespace AnimeStudio.LibraryBrowser
             _refreshListButton.Click += (_, _) => RefreshListOnly();
             _reloadButton.Click += async (_, _) => await ReloadAsync();
             _searchBox.TextChanged += (_, _) => ApplyFilter();
+            _searchBox.KeyDown += SearchBox_KeyDown;
+            _clearSearchButton.Click += (_, _) => ClearSearch();
             _kindBox.SelectedIndexChanged += (_, _) => ApplyFilter();
             _thumbnailStateBox.SelectedIndexChanged += (_, _) => ApplyFilter();
             _concurrencyBox.SelectedIndexChanged += (_, _) => RestartThumbnailQueue();
@@ -198,10 +282,13 @@ namespace AnimeStudio.LibraryBrowser
                 _allModels = models.OrderBy(x => x.ResourceKind).ThenBy(x => x.Name).ToList();
                 _thumbnailCache = new ThumbnailCache(root, GetThumbnailConcurrency());
                 _curationStore = new LibraryCurationStore(root);
+                _animationIndex = await Task.Run(() => LibraryAnimationIndex.Load(root));
+                _previewCache = new AnimationPreviewCache(root);
                 _recentStore.Add(root);
                 RebuildRecentMenu();
                 Text = $"AnimeStudio Library Browser - {Path.GetFileName(root)}";
                 ResetThumbnailProgress();
+                RebuildModelTypeFilter();
                 RebuildKindFilter();
                 ApplyFilter();
                 UpdateStatus(_thumbnailCache.HasF3d ? "缩略图后台生成中" : "没有找到 f3d.exe");
@@ -271,8 +358,14 @@ namespace AnimeStudio.LibraryBrowser
         private void ApplyFilter()
         {
             var text = _searchBox.Text?.Trim() ?? "";
+            var searchTerms = BuildSearchTerms(text);
             var kind = _kindBox.SelectedItem as string ?? "All";
             IEnumerable<LibraryModelItem> query = _allModels;
+
+            if (!IsAllModelType(_selectedModelType))
+            {
+                query = query.Where(x => string.Equals(x.ModelSourceLabel, _selectedModelType, StringComparison.OrdinalIgnoreCase));
+            }
 
             if (!string.Equals(kind, "All", StringComparison.OrdinalIgnoreCase))
             {
@@ -281,11 +374,7 @@ namespace AnimeStudio.LibraryBrowser
 
             if (!string.IsNullOrWhiteSpace(text))
             {
-                query = query.Where(x =>
-                    Contains(x.Name, text)
-                    || Contains(x.OutputPath, text)
-                    || Contains(x.Source, text)
-                    || Contains(x.LibraryRole, text));
+                query = query.Where(x => MatchesSearch(x, searchTerms));
             }
 
             if (_hideIgnoredButton.Checked && _curationStore != null)
@@ -305,6 +394,78 @@ namespace AnimeStudio.LibraryBrowser
             UpdateStatus("筛选已更新");
         }
 
+        private void RebuildModelTypeFilter()
+        {
+            foreach (var button in _typeButtons)
+            {
+                _searchStrip.Items.Remove(button);
+                button.Dispose();
+            }
+            _typeButtons.Clear();
+
+            var labels = BuildModelTypeLabels();
+            if (!labels.Any(x => string.Equals(x, _selectedModelType, StringComparison.OrdinalIgnoreCase)))
+            {
+                _selectedModelType = "全部";
+            }
+
+            var insertIndex = _searchStrip.Items.IndexOf(_typeLabel) + 1;
+            foreach (var label in labels)
+            {
+                var button = new ToolStripButton(label)
+                {
+                    DisplayStyle = ToolStripItemDisplayStyle.Text,
+                    Checked = string.Equals(label, _selectedModelType, StringComparison.OrdinalIgnoreCase),
+                    ToolTipText = IsAllModelType(label)
+                        ? "显示所有模型类型"
+                        : $"只显示 {label} 类型模型",
+                };
+                button.Click += (_, _) => SelectModelType(label);
+                _typeButtons.Add(button);
+                _searchStrip.Items.Insert(insertIndex++, button);
+            }
+        }
+
+        private List<string> BuildModelTypeLabels()
+        {
+            var knownOrder = new[] { "全部", "Prefab", "Mesh", "Raw", "Part", "Unknown" };
+            var found = _allModels
+                .Select(x => x.ModelSourceLabel)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var labels = new List<string>();
+            foreach (var label in knownOrder)
+            {
+                if (IsAllModelType(label) || found.Any(x => string.Equals(x, label, StringComparison.OrdinalIgnoreCase)))
+                {
+                    labels.Add(label);
+                }
+            }
+
+            labels.AddRange(found
+                .Where(x => !labels.Any(label => string.Equals(label, x, StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+            return labels;
+        }
+
+        private void SelectModelType(string label)
+        {
+            _selectedModelType = string.IsNullOrWhiteSpace(label) ? "全部" : label;
+            foreach (var button in _typeButtons)
+            {
+                button.Checked = string.Equals(button.Text, _selectedModelType, StringComparison.OrdinalIgnoreCase);
+            }
+            ApplyFilter();
+        }
+
+        private static bool IsAllModelType(string label)
+        {
+            return string.Equals(label, "全部", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(label, "All", StringComparison.OrdinalIgnoreCase);
+        }
+
         private IEnumerable<LibraryModelItem> ApplyThumbnailStateFilter(IEnumerable<LibraryModelItem> query)
         {
             return (_thumbnailStateBox.SelectedItem as string) switch
@@ -321,14 +482,191 @@ namespace AnimeStudio.LibraryBrowser
             return value?.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private void SearchBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape)
+            {
+                ClearSearch();
+                e.SuppressKeyPress = true;
+                return;
+            }
+
+            if (e.KeyCode == Keys.Enter)
+            {
+                ApplyFilter();
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        private void ClearSearch()
+        {
+            if (string.IsNullOrEmpty(_searchBox.Text))
+            {
+                return;
+            }
+
+            _searchBox.Clear();
+        }
+
+        private static List<SearchTerm> BuildSearchTerms(string text)
+        {
+            var terms = new List<SearchTerm>();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return terms;
+            }
+
+            foreach (Match match in Regex.Matches(text, "\"([^\"]+)\"|'([^']+)'|(\\S+)"))
+            {
+                var raw = match.Groups[1].Success
+                    ? match.Groups[1].Value
+                    : match.Groups[2].Success
+                        ? match.Groups[2].Value
+                        : match.Groups[3].Value;
+
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    continue;
+                }
+
+                var exclude = raw.StartsWith("-", StringComparison.Ordinal) && raw.Length > 1;
+                if (exclude)
+                {
+                    raw = raw[1..];
+                }
+
+                var field = "";
+                var separator = raw.IndexOf(':');
+                if (separator > 0)
+                {
+                    var fieldName = raw[..separator].Trim().ToLowerInvariant();
+                    if (IsKnownSearchField(fieldName))
+                    {
+                        field = fieldName;
+                        raw = raw[(separator + 1)..];
+                    }
+                }
+
+                raw = raw.Trim();
+                if (raw.Length == 0)
+                {
+                    continue;
+                }
+
+                terms.Add(new SearchTerm(field, raw, exclude, CreateWildcardRegex(raw)));
+            }
+
+            return terms;
+        }
+
+        private static bool IsKnownSearchField(string field)
+        {
+            return field is "name" or "path" or "kind" or "source" or "role" or "file" or "type";
+        }
+
+        private static Regex CreateWildcardRegex(string pattern)
+        {
+            if (!HasWildcard(pattern))
+            {
+                return null;
+            }
+
+            // 搜索框按资源管理器习惯处理，* 表示任意字符，? 表示单个字符。
+            var regexPattern = "^" + Regex.Escape(pattern)
+                .Replace("\\*", ".*")
+                .Replace("\\?", ".") + "$";
+            return new Regex(regexPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        private static bool HasWildcard(string value)
+        {
+            return value.IndexOf('*') >= 0 || value.IndexOf('?') >= 0;
+        }
+
+        private static bool MatchesSearch(LibraryModelItem item, List<SearchTerm> terms)
+        {
+            if (terms.Count == 0)
+            {
+                return true;
+            }
+
+            foreach (var term in terms)
+            {
+                var matched = SearchValues(item, term.Field).Any(value => term.IsMatch(value));
+                if (term.Exclude ? matched : !matched)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static IEnumerable<string> SearchValues(LibraryModelItem item, string field)
+        {
+            return field switch
+            {
+                "name" => Values(item.Name, item.FileName),
+                "file" => Values(item.FileName),
+                "path" => Values(item.OutputPath),
+                "kind" => Values(item.ResourceKind),
+                "source" => Values(item.Source, item.SourceType),
+                "role" => Values(item.LibraryRole),
+                "type" => Values(item.ModelSourceLabel, item.SourceType, item.LibraryRole),
+                _ => Values(item.Name, item.FileName, item.OutputPath, item.ResourceKind, item.ModelSourceLabel, item.Source, item.SourceType, item.LibraryRole)
+            };
+        }
+
+        private static IEnumerable<string> Values(params string[] values)
+        {
+            foreach (var value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    yield return value;
+                }
+            }
+        }
+
+        private sealed class SearchTerm
+        {
+            public SearchTerm(string field, string pattern, bool exclude, Regex wildcardRegex)
+            {
+                Field = field;
+                Pattern = pattern;
+                Exclude = exclude;
+                WildcardRegex = wildcardRegex;
+            }
+
+            public string Field { get; }
+            public string Pattern { get; }
+            public bool Exclude { get; }
+            public Regex WildcardRegex { get; }
+
+            public bool IsMatch(string value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return false;
+                }
+
+                return WildcardRegex != null
+                    ? WildcardRegex.IsMatch(value)
+                    : Contains(value, Pattern);
+            }
+        }
+
         private void ModelList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleModels[e.ItemIndex];
             var imageIndex = GetImageIndex(item);
-            e.Item = new ListViewItem(ShortLabel(item))
+            var animationCount = _animationIndex.CountExplicitForModel(item);
+            e.Item = new ListViewItem(ShortLabel(item, animationCount))
             {
                 ImageIndex = imageIndex,
-                ToolTipText = item.OutputPath
+                ToolTipText = animationCount > 0
+                    ? $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}{Environment.NewLine}显式动画: {animationCount}"
+                    : $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}"
             };
         }
 
@@ -409,10 +747,14 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private static string ShortLabel(LibraryModelItem item)
+        private static string ShortLabel(LibraryModelItem item, int animationCount)
         {
             var name = string.IsNullOrWhiteSpace(item.Name) ? item.FileName : item.Name;
-            return name.Length <= 34 ? name : name[..31] + "...";
+            var suffix = animationCount > 0 ? $" [显式 {animationCount}]" : "";
+            var sourceBadge = $" [{item.ModelSourceLabel}]";
+            var maxNameLength = Math.Max(8, 34 - suffix.Length - sourceBadge.Length);
+            var shortName = name.Length <= maxNameLength ? name : name[..Math.Max(1, maxNameLength - 3)] + "...";
+            return shortName + sourceBadge + suffix;
         }
 
         private void StartThumbnailQueue(CancellationToken cancellationToken)
@@ -603,15 +945,25 @@ namespace AnimeStudio.LibraryBrowser
 
         private void UpdateDetails()
         {
+            var requestId = ++_detailRequestId;
             var item = SelectedItems().FirstOrDefault();
             if (item == null)
             {
                 _detailBox.Clear();
+                _detailModel = null;
+                _detailAnimations.Clear();
+                _animationList.Items.Clear();
                 return;
             }
 
+            var animations = _animationIndex.FindForModel(item);
+            _detailModel = item;
+            _detailAnimations = animations.ToList();
+            RebuildAnimationList();
+            var explicitCount = animations.Count(x => x.IsExplicit);
             _detailBox.Text =
                 $"名称: {item.Name}{Environment.NewLine}" +
+                $"模型来源: {item.ModelSourceLabel}{Environment.NewLine}" +
                 $"分类: {item.ResourceKind}{Environment.NewLine}" +
                 $"角色: {item.LibraryRole}{Environment.NewLine}" +
                 $"来源类型: {item.SourceType}{Environment.NewLine}" +
@@ -623,7 +975,187 @@ namespace AnimeStudio.LibraryBrowser
                 $"贴图: {item.TextureCount}{Environment.NewLine}" +
                 $"骨骼: {item.BoneCount}{Environment.NewLine}" +
                 $"已忽略: {_curationStore?.IsIgnored(item)}{Environment.NewLine}" +
-                $"文件:{Environment.NewLine}{item.OutputPath}";
+                $"文件:{Environment.NewLine}{item.OutputPath}{Environment.NewLine}{Environment.NewLine}" +
+                BuildAnimationDetails(animations);
+
+            if (explicitCount == 0)
+            {
+                _detailBox.AppendText($"{Environment.NewLine}{Environment.NewLine}定向匹配: 正在扫描 animation_bindings.jsonl ...");
+                _ = LoadTargetedAnimationDetailsAsync(item, requestId);
+            }
+        }
+
+        private static string BuildAnimationDetails(IReadOnlyList<LibraryAnimationCandidate> animations)
+        {
+            if (animations.Count == 0)
+            {
+                return "显式动画: 0\r\n当前索引没有记录 Animator/Animation 直接绑定。";
+            }
+
+            var explicitCount = animations.Count(x => x.IsExplicit);
+            var lines = new List<string>
+            {
+                $"显式动画: {explicitCount}",
+                $"索引候选: {animations.Count}"
+            };
+
+            foreach (var animation in animations.Take(24))
+            {
+                var score = animation.Score > 0 ? $" score={animation.Score:0.###}" : "";
+                var confidence = string.IsNullOrWhiteSpace(animation.Confidence) ? "" : $" {animation.Confidence}";
+                var capability = string.IsNullOrWhiteSpace(animation.Capability) ? "" : $" {animation.Capability}";
+                var bake = animation.RequiresHumanoidBake ? " 需要Humanoid烘焙" : "";
+                var source = animation.IsExplicit ? "显式" : "结构";
+                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{bake}");
+                if (!string.IsNullOrWhiteSpace(animation.BestPath))
+                {
+                    lines.Add($"  {animation.BestPath}");
+                }
+            }
+
+            if (animations.Count > 24)
+            {
+                lines.Add($"... 还有 {animations.Count - 24} 个候选未显示");
+            }
+
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        private async Task LoadTargetedAnimationDetailsAsync(LibraryModelItem item, int requestId)
+        {
+            IReadOnlyList<LibraryAnimationCandidate> targeted;
+            try
+            {
+                targeted = await Task.Run(() => _animationIndex.FindTargetedForModel(item));
+            }
+            catch (Exception ex)
+            {
+                if (requestId == _detailRequestId && !IsDisposed)
+                {
+                    BeginInvoke(() => _detailBox.AppendText($"{Environment.NewLine}定向匹配失败: {ex.Message}"));
+                }
+                return;
+            }
+
+            if (requestId != _detailRequestId || IsDisposed)
+            {
+                return;
+            }
+
+            BeginInvoke(() =>
+            {
+                if (requestId != _detailRequestId)
+                {
+                    return;
+                }
+
+                _detailAnimations = targeted.ToList();
+                RebuildAnimationList();
+                _detailBox.AppendText(Environment.NewLine + BuildTargetedAnimationDetails(targeted));
+            });
+        }
+
+        private void RebuildAnimationList()
+        {
+            _animationList.BeginUpdate();
+            try
+            {
+                _animationList.Items.Clear();
+                if (_detailModel == null)
+                {
+                    return;
+                }
+
+                foreach (var animation in _detailAnimations.Take(512))
+                {
+                    var preview = _previewCache?.GetStatus(_detailModel, animation);
+                    var status = preview?.Status ?? "未生成";
+                    if (animation.RequiresHumanoidBake && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
+                    {
+                        status = "需烘焙";
+                    }
+
+                    var source = animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
+                    var item = new ListViewItem(status)
+                    {
+                        Tag = animation,
+                        ToolTipText = animation.BestPath
+                    };
+                    item.SubItems.Add(source);
+                    item.SubItems.Add(animation.Name);
+                    item.SubItems.Add(animation.Duration > 0 ? $"{animation.Duration:0.##}s" : "");
+                    item.SubItems.Add(animation.MatchedPathCount > 0 ? animation.MatchedPathCount.ToString() : "");
+                    item.SubItems.Add(DescribeAnimationCapability(animation));
+                    _animationList.Items.Add(item);
+                }
+            }
+            finally
+            {
+                _animationList.EndUpdate();
+            }
+        }
+
+        private static string DescribeAnimationCapability(LibraryAnimationCandidate animation)
+        {
+            if (animation == null)
+            {
+                return "";
+            }
+
+            if (!string.IsNullOrWhiteSpace(animation.Capability))
+            {
+                return animation.Capability switch
+                {
+                    "TransformBodyPreviewReady" => "快速预览",
+                    "HumanoidBodyBakeReady" => "需 Unity 烘焙",
+                    "BlendShapePreviewReady" => "BlendShape",
+                    "NonCharacterTransformPreviewReady" => "Transform 预览",
+                    _ => animation.Capability,
+                };
+            }
+
+            if (animation.RequiresHumanoidBake)
+            {
+                return "需 Unity 烘焙";
+            }
+
+            if (animation.MatchedPathCount > 0)
+            {
+                return "快速预览";
+            }
+
+            return "未知";
+        }
+
+        private static string BuildTargetedAnimationDetails(IReadOnlyList<LibraryAnimationCandidate> animations)
+        {
+            if (animations.Count == 0)
+            {
+                return "可匹配动画: 0\r\n没有从当前模型骨骼/节点路径命中 AnimationClip binding。";
+            }
+
+            var lines = new List<string>
+            {
+                $"可匹配动画: {animations.Count} [需验证]"
+            };
+
+            foreach (var animation in animations.Take(24))
+            {
+                var matched = animation.MatchedPathCount > 0 ? $" matched={animation.MatchedPathCount}" : "";
+                var bake = animation.RequiresHumanoidBake ? " 需要Humanoid烘焙" : "";
+                lines.Add($"- [需验证] {animation.Name}{matched} score={animation.Score:0.###}{bake}");
+                if (!string.IsNullOrWhiteSpace(animation.BestPath))
+                {
+                    lines.Add($"  {animation.BestPath}");
+                }
+            }
+
+            if (animations.Count > 24)
+            {
+                lines.Add($"... 还有 {animations.Count - 24} 个候选未显示");
+            }
+
+            return string.Join(Environment.NewLine, lines);
         }
 
         private IEnumerable<LibraryModelItem> SelectedItems()
@@ -654,6 +1186,93 @@ namespace AnimeStudio.LibraryBrowser
             if (!string.IsNullOrWhiteSpace(f3d))
             {
                 startInfo.ArgumentList.Add(item.OutputPath);
+            }
+
+            Process.Start(startInfo);
+        }
+
+        private async Task GenerateSelectedAnimationPreviewAsync(bool openAfterGenerate)
+        {
+            var model = _detailModel ?? SelectedItems().FirstOrDefault();
+            var animation = SelectedAnimationCandidate();
+            if (model == null || animation == null || _previewCache == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(model.Source) || !File.Exists(model.Source))
+            {
+                MessageBox.Show(this, "模型源文件不存在，无法重新生成动画预览。\r\n" + model.Source, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(animation.Source) || !File.Exists(animation.Source))
+            {
+                MessageBox.Show(this, "动画源文件不存在，无法重新生成动画预览。\r\n" + animation.Source, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            UpdateSelectedAnimationStatus("生成中");
+            UpdateStatus("正在生成动画预览");
+            AnimationPreviewStatus status;
+            try
+            {
+                status = await _previewCache.EnsureAsync(
+                    model,
+                    animation,
+                    CancellationToken.None,
+                    message => BeginInvoke(() => UpdateStatus(message)));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "动画预览失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                RebuildAnimationList();
+                return;
+            }
+
+            RebuildAnimationList();
+            UpdateStatus($"动画预览: {status.Status}");
+            if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this, status.Message ?? "生成动画预览失败。", "动画预览失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (openAfterGenerate && !string.IsNullOrWhiteSpace(status.GltfPath))
+            {
+                OpenPathWithF3d(status.GltfPath);
+            }
+        }
+
+        private LibraryAnimationCandidate SelectedAnimationCandidate()
+        {
+            if (_animationList.SelectedItems.Count > 0)
+            {
+                return _animationList.SelectedItems[0].Tag as LibraryAnimationCandidate;
+            }
+
+            return _detailAnimations.FirstOrDefault();
+        }
+
+        private void UpdateSelectedAnimationStatus(string status)
+        {
+            if (_animationList.SelectedItems.Count > 0)
+            {
+                _animationList.SelectedItems[0].Text = status;
+            }
+        }
+
+        private static void OpenPathWithF3d(string path)
+        {
+            var f3d = FindF3dForOpen();
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = string.IsNullOrWhiteSpace(f3d) ? path : f3d,
+                UseShellExecute = true
+            };
+            if (!string.IsNullOrWhiteSpace(f3d))
+            {
+                startInfo.ArgumentList.Add(path);
             }
 
             Process.Start(startInfo);
@@ -705,6 +1324,49 @@ namespace AnimeStudio.LibraryBrowser
             {
                 Clipboard.SetText(item.OutputPath);
             }
+        }
+
+        private void CopySelectedAnimationPaths()
+        {
+            var item = SelectedItems().FirstOrDefault();
+            if (item == null)
+            {
+                return;
+            }
+
+            var paths = _animationIndex.FindForModel(item)
+                .Select(x => x.BestPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (paths.Length > 0)
+            {
+                Clipboard.SetText(string.Join(Environment.NewLine, paths));
+            }
+        }
+
+        private void OpenFirstAnimationFolder()
+        {
+            var item = SelectedItems().FirstOrDefault();
+            if (item == null)
+            {
+                return;
+            }
+
+            var path = _animationIndex.FindForModel(item)
+                .Select(x => x.BestPath)
+                .FirstOrDefault(File.Exists);
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{path}\"",
+                UseShellExecute = true
+            });
         }
 
         private static Image CreatePlaceholderImage(string text)

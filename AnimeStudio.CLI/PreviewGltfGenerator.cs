@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 
 namespace AnimeStudio.CLI
 {
@@ -40,6 +41,53 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
+            return GenerateSelection(indexPath, gameName, selection, outputDirectory, sourceRootOverride);
+        }
+
+        public static string GenerateFromLibrary(
+            string libraryRoot,
+            string gameName,
+            string modelSelector,
+            string animationSelector,
+            string outputDirectory,
+            string sourceRootOverride = null
+        )
+        {
+            if (string.IsNullOrWhiteSpace(gameName))
+            {
+                Logger.Error("--game is required with --generate_preview_from_library.");
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                Logger.Error($"Library root not found: {libraryRoot}");
+                return null;
+            }
+
+            var dbPath = Path.Combine(libraryRoot, "library_index.db");
+            if (!File.Exists(dbPath))
+            {
+                Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
+                return null;
+            }
+
+            var selection = SelectPreviewFromLibraryDb(dbPath, modelSelector, animationSelector);
+            if (selection == null)
+            {
+                Logger.Error("No model/animation matched the SQLite preview selectors.");
+                return null;
+            }
+
+            return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride);
+        }
+
+        private static string GenerateSelection(
+            string indexPath,
+            string gameName,
+            PreviewSelection selection,
+            string outputDirectory,
+            string sourceRootOverride)
+        {
             var modelName = (string)selection.Model["model"]?["name"];
             var animationName = (string)selection.Animation["name"];
             var modelSource = ResolveSourcePath((string)selection.Model["model"]?["source"], sourceRootOverride);
@@ -64,6 +112,23 @@ namespace AnimeStudio.CLI
                     $"{SafeName(modelName)}__{SafeName(animationName)}"
                 )
                 : outputDirectory;
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+            Directory.CreateDirectory(output);
+
+            if (FastPreviewGltfBuilder.TryGenerate(selection.Model, selection.Animation, animationName, output, out var fastGltfPath, out var fastMessage))
+            {
+                Logger.Info(fastMessage);
+                var fastReport = GltfPreviewValidator.Validate(fastGltfPath, modelName, animationName, selection.Model, selection.Animation, Array.Empty<string>());
+                var fastReportPath = Path.Combine(output, "preview_validation.json");
+                File.WriteAllText(fastReportPath, JsonConvert.SerializeObject(fastReport, Formatting.Indented));
+                Logger.Info($"Fast preview glTF: {fastGltfPath}");
+                Logger.Info($"Preview validation: {fastReportPath}");
+                return fastGltfPath;
+            }
+            Logger.Info($"Fast preview skipped: {fastMessage}");
             if (Directory.Exists(output))
             {
                 Directory.Delete(output, recursive: true);
@@ -312,6 +377,92 @@ namespace AnimeStudio.CLI
                 }
             }
             return null;
+        }
+
+        private static PreviewSelection SelectPreviewFromLibraryDb(string dbPath, string modelSelector, string animationSelector)
+        {
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+            connection.Open();
+
+            var model = SelectAssetFromLibraryDb(connection, "Model", modelSelector);
+            var animation = SelectAssetFromLibraryDb(connection, "Animation", animationSelector);
+            if (model == null || animation == null)
+            {
+                return null;
+            }
+
+            var candidate = new JObject
+            {
+                ["name"] = animation["name"],
+                ["output"] = animation["output"],
+                ["animationAsset"] = animation["animationAsset"],
+                ["source"] = animation["source"],
+                ["animationType"] = animation["animationType"],
+                ["animationCapability"] = animation["animationCapability"],
+                ["relation"] = "library.sqlite.selection",
+                ["relationSource"] = "sqlite",
+                ["confidence"] = "manual_preview_selection",
+                ["score"] = 100,
+            };
+
+            return new PreviewSelection(
+                new JObject
+                {
+                    ["model"] = model,
+                    ["candidateCount"] = 1,
+                    ["candidates"] = new JArray(candidate),
+                },
+                candidate);
+        }
+
+        private static JObject SelectAssetFromLibraryDb(SqliteConnection connection, string kind, string selector)
+        {
+            var fileName = string.IsNullOrWhiteSpace(selector) ? string.Empty : Path.GetFileName(selector);
+            var stem = string.IsNullOrWhiteSpace(fileName) ? string.Empty : Path.GetFileNameWithoutExtension(fileName);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT raw_json
+FROM assets
+WHERE kind = $kind
+  AND (
+    output = $selector
+    OR name = $selector
+    OR output LIKE $fileNameSelector
+    OR name = $stem
+    OR output LIKE $likeSelector
+    OR name LIKE $likeSelector
+  )
+ORDER BY
+  CASE
+    WHEN output = $selector THEN 0
+    WHEN name = $selector THEN 1
+    WHEN name = $stem THEN 2
+    WHEN output LIKE $fileNameSelector THEN 3
+    ELSE 4
+  END,
+  name COLLATE NOCASE
+LIMIT 32;";
+            command.Parameters.AddWithValue("$kind", kind);
+            command.Parameters.AddWithValue("$selector", selector ?? string.Empty);
+            command.Parameters.AddWithValue("$fileNameSelector", "%" + fileName);
+            command.Parameters.AddWithValue("$stem", stem);
+            command.Parameters.AddWithValue("$likeSelector", "%" + (selector ?? string.Empty) + "%");
+
+            var rows = new List<JObject>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add(JObject.Parse(reader.GetString(0)));
+            }
+
+            if (rows.Count == 0)
+            {
+                return null;
+            }
+
+            return rows.FirstOrDefault(x => Matches(selector, (string)x["name"], (string)x["output"]))
+                ?? rows[0];
         }
 
         private static bool Matches(string selector, params string[] values)

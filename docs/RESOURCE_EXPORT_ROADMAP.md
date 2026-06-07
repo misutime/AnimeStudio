@@ -147,6 +147,15 @@ CAB / PPtr 依赖索引策略：
 
 后续再基于完整素材库做精品筛选：
 
+### VFX / ParticleSystem
+
+VFX 进入默认素材库，但分阶段还原：
+
+1. 已实现/当前目标：`VFX/` 元数据索引，记录 Unity `ParticleSystem`、`ParticleSystemRenderer`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象和 mesh 型特效线索。
+2. 输出形态：每个特效目录包含 `vfx.json` 和 `VFX_REPORT.md`，全局包含 `VFX/vfx_library.json` 和 `VFX/VFX_LIBRARY.md`；mesh 型特效仍以 glTF 模型导出并标注 `resourceKind=VFX`。
+3. 暂不伪装：ParticleSystem module、shader UV 动画、动画事件触发、prefab 运行时绑定没有完整还原时，只记录为 metadata/diagnostic。
+4. 后续增强：实现 ParticleSystem module 解析、特效预览器、shader/material 参数近似、动画事件到 VFX prefab 的关系索引。
+
 - `Core`：高概率游戏核心素材。
 - `Curated`：人工或规则确认过的精选素材。
 - `Playable`：模型、骨骼、材质、动画已验证可播放。

@@ -25,10 +25,11 @@ It's an up-to-date fork of Razmoth's one. After his repo was discontinued, bugs 
 
 # Project docs
 
-- [通用 Unity 资源导出规范](PROJECT_EXPORT_STANDARDS.md)
-- [CLI 通用资源导出说明](CLI_USAGE.md)
-- [开发样本工作流](DEV_SAMPLE_WORKFLOW.md)
-- [资源导出工具开发规划](RESOURCE_EXPORT_ROADMAP.md)
+- [项目文档目录](docs/README.md)
+- [通用 Unity 资源导出规范](docs/PROJECT_EXPORT_STANDARDS.md)
+- [CLI 通用资源导出说明](docs/CLI_USAGE.md)
+- [开发样本工作流](docs/DEV_SAMPLE_WORKFLOW.md)
+- [资源导出工具开发规划](docs/RESOURCE_EXPORT_ROADMAP.md)
 - `Texture2DArray` 支持按数组层拆成 `Texture2DArrayImage` 独立贴图库资源，详见 CLI 文档。
 
 ---

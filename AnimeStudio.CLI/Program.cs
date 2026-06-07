@@ -49,6 +49,19 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.GeneratePreviewFromLibrary != null)
+                {
+                    PreviewGltfGenerator.GenerateFromLibrary(
+                        o.GeneratePreviewFromLibrary.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName
+                    );
+                    return;
+                }
+
                 if (o.PackModelAnimations != null)
                 {
                     PreviewGltfGenerator.GeneratePack(

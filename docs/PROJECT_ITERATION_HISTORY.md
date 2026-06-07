@@ -4,7 +4,7 @@
 
 相关文档分工：
 
-- `AGENTS.md`：最高优先级协作规则，AI 和团队成员都应遵守。
+- `../AGENTS.md`：最高优先级协作规则，AI 和团队成员都应遵守。
 - `PROJECT_EXPORT_STANDARDS.md`：当前导出规范和验收准则。
 - `CLI_USAGE.md`：命令、参数、工作流和排查说明。
 - `RESOURCE_EXPORT_ROADMAP.md`：阶段路线图和功能规划。
