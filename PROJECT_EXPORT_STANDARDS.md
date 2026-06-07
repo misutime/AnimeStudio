@@ -115,7 +115,7 @@ SQLite 源索引规则：
 默认 `Models/` 使用“完整可浏览模型资源”策略：
 
 - prefab、Animator、完整 GameObject 组合模型是主资源。
-- 有明确 Unity container/preload 路径、来源包本身具备强静态素材语义、或能通过 Renderer/Material 关系证明可见的静态 Mesh，也是主资源，默认必须进入 Library。
+- 有明确 Unity container/preload 路径、来源包本身具备强静态素材语义、或能通过 Renderer 使用关系证明可见的静态 Mesh，也是主资源，默认必须进入 Library。Renderer 材质关系能提高还原质量，但不是保留模型的硬条件。
 - raw fbx 身体、face、附件等 source part 默认不作为可浏览模型导出。
 - raw/source part 必须进入 `asset_catalog.jsonl`，标记为 `SourcePart`、`RawModel`、`AttachmentSource` 等。
 - 没有被任何组合模型覆盖、但本身可用的 raw 模型可进入 `Models/RawUnreferenced`。
@@ -129,11 +129,11 @@ SQLite 源索引规则：
 - 具备以下任一强信号、且几何数据完整的 Mesh，可升级为 `StaticMeshPrimary`：
   - 有明确 Unity `AssetBundle.m_Container` / preload 容器路径，且路径语义指向 environment/building/prop/world/stage/terrain/levelbuild 等可浏览素材。
   - 没有独立容器路径，但来源 AssetBundle / SerializedFile 本身具有明确静态素材语义，例如 `LevelBuildElements`、`Terrain`、`Environment`、`World`、`Building` 等。此类游戏常把大量场景/地形/建筑 Mesh 作为匿名 Mesh 存在，不能因为 Mesh 名为空就丢弃。
-  - SQLite 源索引能证明该 Mesh 通过 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用，并且该 Renderer 有 `renderer.material` 关系。这个信号来自 Unity PPtr 关系链，不是名称猜测。
+  - SQLite 源索引能证明该 Mesh 通过 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用。这个信号来自 Unity PPtr 关系链，不是名称猜测；如果 Renderer 缺少或无法解析 `renderer.material`，仍应导出灰模并清楚标注缺材质绑定。
 - `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
 - 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Dummy`、`Decal`、`Shadow`、`SFX/FX/VFX`、helper 等名字不能单独作为静默丢弃理由；如果具备明确容器路径、强来源语义、Renderer 关系或可见几何，应分类或标注进入素材库。
 - StaticMeshPrimary 应优先使用 SQLite 源索引恢复材质关系：`Mesh -> MeshFilter/SkinnedMeshRenderer -> GameObject/Renderer -> Material -> Texture2D`。命中时 glTF material 必须写入 `extras.animeStudioMaterial.status=boundRendererMaterial`，贴图进入 `Textures/_ModelDependencies`，模型旁 `ASSET_README.md` 记录选中的 Renderer 和 Material。
-- 裸 Mesh 没有 Renderer 的 submesh-material 强绑定时，不要伪造材质关系。可以记录同容器 Material/Texture 候选，并在 `asset_catalog.jsonl` 与模型旁说明文件标记 `needsRendererBinding` 或 `missingRendererMaterial`。
+- 裸 Mesh 或 Renderer-used Mesh 没有 submesh-material 强绑定时，不要伪造材质关系。宁可导出默认灰模并在 `asset_catalog.jsonl`、glTF `extras` 与模型旁说明文件标记 `needsRendererBinding`、`missingRendererMaterial` 或 `rendererMaterialUnresolved`，也不要把可能是建筑、地形、道具的有效模型漏掉。
 - 对匿名静态 Mesh，应使用来源包名 + PathID 生成稳定文件名，避免 `Mesh#123` 这类不利于排查的名字，也避免文件互相覆盖。
 
 ## 5. 模型、骨骼、模块

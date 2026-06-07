@@ -105,6 +105,10 @@ namespace AnimeStudio.CLI
             @"(?:^|[\\/])(?:debug|collider|collision|physics|navmesh|occlusion|occluder|bounds?|proxy|placeholder|dummy|socket|locator|attach|joint|jnt|bone)(?:[\\/._\-\s]|$)|(?:^|[_\-\s])(col|collider|collision|navmesh|occluder|dummy|socket|locator|jnt|joint|bone)(?:$|[_\-\s0-9])",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
+        private static readonly Regex UnityDefaultPrimitivePathPattern = new Regex(
+            @"(?:^|[\\/])unity default resources(?:[\\/]|$).*(?:^|[\\/])(Cube|Sphere|Capsule|Cylinder|Plane|Quad)(?:\.[^\\/]+)?$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
 
         public static Dictionary<ulong, string> Paths { get; set; } =
             new Dictionary<ulong, string>();
@@ -1288,7 +1292,7 @@ namespace AnimeStudio.CLI
                     ["selectedCount"] = selected.Count,
                     ["sourcePartCount"] = downgraded,
                     ["rendererBoundMeshCount"] = rendererBoundMeshKeys.Count,
-                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. Signals include explicit container/preload paths, semantic source bundle paths, and SQLite-proven MeshFilter/SkinnedMeshRenderer -> Renderer -> Material relations. Anonymous, collision, helper, deprecated, and no-signal Mesh assets stay out of the default browsable Library.",
+                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. Signals include explicit container/preload paths, semantic source bundle paths, and SQLite-proven MeshFilter/SkinnedMeshRenderer -> Renderer usage. Renderer material binding improves quality, but missing materials are exported as tagged gray models instead of being dropped.",
                 });
             }
 
@@ -1332,17 +1336,22 @@ namespace AnimeStudio.CLI
                 reason = "low_value_static_mesh";
                 return false;
             }
+            if (UnityDefaultPrimitivePathPattern.IsMatch(text))
+            {
+                reason = "unity_default_primitive";
+                return false;
+            }
 
             var hasContainer = !string.IsNullOrWhiteSpace(container) && !int.TryParse(container, out _);
             var hasStaticSignal = StaticMeshLibraryPathPattern.IsMatch(text);
-            var hasRendererMaterialBinding = rendererBoundMeshKeys.Contains(GetSourceObjectKey(item));
-            if (!hasStaticSignal && !hasRendererMaterialBinding)
+            var hasRendererUsage = rendererBoundMeshKeys.Contains(GetSourceObjectKey(item));
+            if (!hasStaticSignal && !hasRendererUsage)
             {
                 reason = "no_static_library_path_signal";
                 return false;
             }
 
-            reason = hasRendererMaterialBinding
+            reason = hasRendererUsage
                 ? "renderer_bound_static_mesh"
                 : hasContainer ? "container_static_mesh" : "source_static_mesh";
             return true;
@@ -1368,7 +1377,7 @@ namespace AnimeStudio.CLI
             _rendererBoundStaticMeshKeys = QueryRendererBoundStaticMeshKeys(indexPath);
             if (_rendererBoundStaticMeshKeys.Count > 0)
             {
-                Logger.Info($"SQLite source index identified {_rendererBoundStaticMeshKeys.Count} renderer/material-bound Mesh asset(s) for StaticMeshPrimary promotion.");
+                Logger.Info($"SQLite source index identified {_rendererBoundStaticMeshKeys.Count} renderer-used Mesh asset(s) for StaticMeshPrimary promotion.");
             }
             return _rendererBoundStaticMeshKeys;
         }
@@ -1386,10 +1395,6 @@ namespace AnimeStudio.CLI
 WITH direct_meshes AS (
     SELECT mesh.to_file AS mesh_file, mesh.to_path_id AS mesh_path_id
     FROM source_relations mesh
-    JOIN source_relations material
-      ON material.relation = 'renderer.material'
-     AND material.from_file = mesh.from_file
-     AND material.from_path_id = mesh.from_path_id
     WHERE mesh.relation = 'skinnedMeshRenderer.mesh'
 ),
 mesh_filters AS (
@@ -1413,10 +1418,6 @@ static_meshes AS (
      AND renderer.to_file = mgo.go_file
      AND renderer.to_path_id = mgo.go_path_id
      AND renderer.from_type IN ('MeshRenderer', 'SkinnedMeshRenderer')
-    JOIN source_relations material
-      ON material.relation = 'renderer.material'
-     AND material.from_file = renderer.from_file
-     AND material.from_path_id = renderer.from_path_id
 )
 SELECT DISTINCT mesh_file, mesh_path_id FROM direct_meshes
 UNION
