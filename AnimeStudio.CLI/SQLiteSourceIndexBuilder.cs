@@ -73,7 +73,7 @@ namespace AnimeStudio.CLI
                     ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
                     : new[] { Path.GetFullPath(inputPath) };
                 loadableFiles = sourceFiles
-                    .Where(IsLikelyUnityLoadableFile)
+                    .Where(x => IsLikelyUnityLoadableFile(x, game))
                     .OrderBy(x => SafeFileLength(x))
                     .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
@@ -1554,8 +1554,13 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             Logger.Default.Log(LoggerEvent.Info, message);
         }
 
-        internal static bool IsLikelyUnityLoadableFile(string path)
+        internal static bool IsLikelyUnityLoadableFile(string path, Game game = null)
         {
+            if (IsLikelyMhyBlockFile(path, game))
+            {
+                return true;
+            }
+
             var extension = Path.GetExtension(path);
             if (string.IsNullOrEmpty(extension))
             {
@@ -1600,6 +1605,17 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 default:
                     return HasUnityBundleHeader(path);
             }
+        }
+
+        private static bool IsLikelyMhyBlockFile(string path, Game game)
+        {
+            if (game == null || !game.Type.IsMhyGroup())
+            {
+                return false;
+            }
+
+            var normalized = Path.GetFullPath(path).Replace('\\', '/');
+            return normalized.Contains("/AssetBundles/blocks/", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasUnityBundleHeader(string path)

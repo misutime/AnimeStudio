@@ -19,9 +19,9 @@ foreach ($tfm in 'net9.0-windows') {
     # so repeated builds do not turn bin\App.dll into bin\bin\App.dll.
     if (Test-Path $cliOut) { Remove-Item $cliOut -Recurse -Force }
     if (Test-Path $guiOut) { Remove-Item $guiOut -Recurse -Force }
-    dotnet build AnimeStudio.CLI -c $configuration -f $tfm
+    dotnet build AnimeStudio.CLI -c $configuration -f $tfm -t:Rebuild
     & $patcher $cliExe -d bin
-    dotnet build AnimeStudio.GUI -c $configuration -f $tfm
+    dotnet build AnimeStudio.GUI -c $configuration -f $tfm -t:Rebuild
     & $patcher $guiExe -d bin
 
     # prepare output dir

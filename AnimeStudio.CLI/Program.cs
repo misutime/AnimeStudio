@@ -332,7 +332,7 @@ namespace AnimeStudio.CLI
                     ? Directory.GetFiles(o.Input.FullName, "*.*", SearchOption.AllDirectories)
                     : new string[] { o.Input.FullName };
                 var files = allFiles
-                    .Where(SQLiteSourceIndexBuilder.IsLikelyUnityLoadableFile)
+                    .Where(x => SQLiteSourceIndexBuilder.IsLikelyUnityLoadableFile(x, game))
                     .OrderBy(SafeFileLength)
                     .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
