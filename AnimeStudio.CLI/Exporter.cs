@@ -100,7 +100,23 @@ namespace AnimeStudio.CLI
             var exportedLayers = new List<object>();
             var layerIndex = 0;
 
-            foreach (var layer in textureArray.TextureList)
+            if (isDataArray)
+            {
+                for (var index = 0; index < textureArray.m_Depth; index++)
+                {
+                    exportedLayers.Add(new
+                    {
+                        index,
+                        name = $"_{index + 1:000}",
+                        output = (string)null,
+                        status = "metadataOnlyDataArray",
+                        textureFormat = textureArray.m_Format.ToTextureFormat().ToString(),
+                        note = "PNG preview skipped by default for float/HDR/unknown data Texture2DArray.",
+                    });
+                }
+            }
+
+            foreach (var layer in isDataArray ? Enumerable.Empty<Texture2D>() : textureArray.TextureList)
             {
                 layerIndex++;
                 var layerName = FixFileName(layer.m_Name);
@@ -1576,6 +1592,7 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
             }
 
             var mesh = (Mesh)item.Asset;
+            var materialSummary = BuildExportedModelMaterialSummary(outputPath);
             AppendCatalogEntry(new
             {
                 kind = "Model",
@@ -1597,6 +1614,14 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                 subMeshCount = mesh.m_SubMeshes?.Count ?? 0,
                 indexCount = mesh.m_Indices?.Count ?? 0,
                 materialBindingStatus = materialBinding.Status,
+                materialStatus = materialSummary?.status ?? materialBinding.Status,
+                materialStatusCounts = materialSummary?.statusCounts,
+                materialNeedsCustomizationTint = materialSummary?.needsCustomizationTint ?? false,
+                materialMissingRendererBinding = materialSummary?.missingRendererBinding
+                    ?? !string.Equals(materialBinding.Status, "boundRendererMaterial", StringComparison.OrdinalIgnoreCase),
+                materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture ?? false,
+                materialHasNormalTexture = materialSummary?.hasNormalTexture ?? false,
+                materialImageCount = materialSummary?.imageCount ?? 0,
                 materialCount = materialBinding.Materials.Count,
                 selectedRenderer = materialBinding.SelectedRenderer,
                 rendererBindings = materialBinding.RendererBindings,
@@ -2147,6 +2172,7 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
             var avatarInfo = GetModelAvatarInfo(source);
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
             var skeletonValidation = BuildHumanoidSkeletonValidation(imported, avatarInfo);
+            var materialSummary = BuildExportedModelMaterialSummary(outputPath);
             var entry = new
             {
                 kind = "Model",
@@ -2168,6 +2194,13 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                 vertexCount = imported.MeshList?.Sum(x => x.VertexList?.Count ?? 0) ?? 0,
                 materialCount = imported.MaterialList?.Count ?? 0,
                 textureCount = imported.TextureList?.Count ?? 0,
+                materialStatus = materialSummary?.status,
+                materialStatusCounts = materialSummary?.statusCounts,
+                materialNeedsCustomizationTint = materialSummary?.needsCustomizationTint,
+                materialMissingRendererBinding = materialSummary?.missingRendererBinding,
+                materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture,
+                materialHasNormalTexture = materialSummary?.hasNormalTexture,
+                materialImageCount = materialSummary?.imageCount,
                 animationCount = imported.AnimationList?.Count ?? 0,
                 morphCount = imported.MorphList?.Count ?? 0,
                 boneCount = bonePaths.Length,
@@ -2183,6 +2216,90 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                 avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
+        }
+
+        private static ModelMaterialCatalogSummary BuildExportedModelMaterialSummary(string outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)
+                || !string.Equals(Path.GetExtension(outputPath), ".gltf", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(outputPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var gltf = JObject.Parse(File.ReadAllText(outputPath));
+                var materials = gltf["materials"] as JArray ?? new JArray();
+                var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var hasBaseColorTexture = false;
+                var hasNormalTexture = false;
+                var needsCustomizationTint = false;
+                var missingRendererBinding = false;
+
+                foreach (var materialToken in materials.OfType<JObject>())
+                {
+                    var pbr = materialToken["pbrMetallicRoughness"] as JObject;
+                    hasBaseColorTexture |= pbr?["baseColorTexture"] != null;
+                    hasNormalTexture |= materialToken["normalTexture"] != null;
+
+                    var anime = materialToken["extras"]?["animeStudioMaterial"] as JObject;
+                    var status = anime?["status"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(status))
+                    {
+                        status = pbr?["baseColorTexture"] != null || materialToken["normalTexture"] != null
+                            ? "standardGltfMaterial"
+                            : "unclassifiedMaterial";
+                    }
+
+                    statusCounts.TryGetValue(status, out var count);
+                    statusCounts[status] = count + 1;
+                    needsCustomizationTint |= string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
+                        || (bool?)anime?["needsCustomizationTint"] == true;
+                    missingRendererBinding |= string.Equals(status, "missingRendererMaterial", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(status, "needsRendererBinding", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(status, "rendererMaterialUnresolved", StringComparison.OrdinalIgnoreCase);
+                }
+
+                var statusSummary = statusCounts.Count == 0
+                    ? "noMaterial"
+                    : statusCounts.OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase).First().Key;
+                return new ModelMaterialCatalogSummary
+                {
+                    status = statusSummary,
+                    statusCounts = statusCounts
+                        .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase),
+                    needsCustomizationTint = needsCustomizationTint,
+                    missingRendererBinding = missingRendererBinding,
+                    hasBaseColorTexture = hasBaseColorTexture,
+                    hasNormalTexture = hasNormalTexture,
+                    imageCount = gltf["images"] is JArray images ? images.Count : 0,
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Verbose($"Unable to summarize glTF material state for catalog: {outputPath}. {ex.Message}");
+                return new ModelMaterialCatalogSummary
+                {
+                    status = "materialSummaryFailed",
+                    statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["materialSummaryFailed"] = 1,
+                    },
+                };
+            }
+        }
+
+        private sealed class ModelMaterialCatalogSummary
+        {
+            public string status { get; init; }
+            public Dictionary<string, int> statusCounts { get; init; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            public bool needsCustomizationTint { get; init; }
+            public bool missingRendererBinding { get; init; }
+            public bool hasBaseColorTexture { get; init; }
+            public bool hasNormalTexture { get; init; }
+            public int imageCount { get; init; }
         }
 
         private static JObject GetModelAvatarInfo(object source)
