@@ -265,6 +265,7 @@ namespace AnimeStudio.CLI
                 {
                     ConfigureSourceIndexTypes();
                 }
+                WarnForLikelyGenshinPathMismatch(o.Input.FullName, game);
                 if (o.WorkMode != WorkMode.Export)
                 {
                     classTypeFilter = Array.Empty<ClassIDType>();
@@ -609,6 +610,36 @@ namespace AnimeStudio.CLI
             var key = $"{game.Type}|{fullPath}".ToLowerInvariant();
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
             return $"auto_{game.Type}_{hash}";
+        }
+
+        private static void WarnForLikelyGenshinPathMismatch(string inputPath, Game game)
+        {
+            var fullPath = Path.GetFullPath(inputPath);
+            var normalized = fullPath.Replace('\\', '/');
+            var looksLikeGenshinInstall =
+                normalized.Contains("Genshin Impact Game", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("YuanShen_Data", StringComparison.OrdinalIgnoreCase);
+
+            if (!looksLikeGenshinInstall || game.Type.IsGIGroup())
+            {
+                return;
+            }
+
+            var yuanShenDataIndex = normalized.IndexOf("YuanShen_Data", StringComparison.OrdinalIgnoreCase);
+            var blocksPath = yuanShenDataIndex >= 0
+                ? Path.Combine(
+                    fullPath[..(yuanShenDataIndex + "YuanShen_Data".Length)],
+                    "StreamingAssets",
+                    "AssetBundles",
+                    "blocks"
+                )
+                : Path.Combine(fullPath, "YuanShen_Data", "StreamingAssets", "AssetBundles", "blocks");
+
+            Logger.Warning(
+                "Input path looks like a Genshin Impact install, but --game is not a GI profile. " +
+                "For Genshin Library export, use --game GI and the AssetBundles blocks folder, for example: " +
+                blocksPath
+            );
         }
 
         private static IEnumerable<object> BuildUnityFileInspect(AssetsManager assetsManager, IReadOnlyCollection<string> batch)

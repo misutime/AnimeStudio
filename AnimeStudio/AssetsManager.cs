@@ -812,11 +812,13 @@ namespace AnimeStudio
 
         private static bool IsRecoverableObjectParseFailure(Exception exception)
         {
-            return exception is EndOfStreamException
-                or InvalidDataException
+            return (exception is EndOfStreamException
+                    or InvalidDataException
                 or ArgumentOutOfRangeException
                 or IndexOutOfRangeException
-                or OverflowException;
+                or OverflowException)
+                || (exception is InvalidOperationException
+                    && exception.Message.Contains("Sequence contains no elements", StringComparison.Ordinal));
         }
 
         private static bool IsObjectRangeReadable(SerializedFile assetsFile, ObjectInfo objectInfo)

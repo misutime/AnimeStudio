@@ -97,6 +97,10 @@ namespace AnimeStudio.CLI
             @"(?:^|[\\/])(?:[^\\/]*PLACEHOLDER[^\\/]*|[^\\/]*(?:^|[_\-\s])Dummy(?:$|[_\-\s0-9])[^\\/]*|[^\\/]*AimPreview[^\\/]*|[^\\/]*ArenaBlock_(?:Invalid|ValidPlace|ValidRemove)[^\\/]*|[^\\/]*(?:^|[_\-\s])(Camera|Light|Audio)(?:$|[_\-\s0-9])[^\\/]*)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
+        private static readonly Regex Non3DLibraryRootPattern = new Regex(
+            @"(?:^|[\\/])(?:[^\\/]*(?:Canvas|Dialog|Popup|Toast|Panel|Button|PayPlat|WebShow|Loading(?:Fade)?|Fade|CNPayPlat|UIRoot)[^\\/]*|(?:Image|RawImage|Text|Label|Mask|Scrollbar|ScrollView|Dropdown|InputField|Toggle|Slider|Camera)(?:$|[_\-\s0-9])[^\\/]*)$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
         private static readonly Regex StaticMeshLibraryPathPattern = new Regex(
             @"(?:^|[\\/])(environment|terrain|landscape|levelbuild|levelbuildelements|building|buildings|structure|structures|prop|props|object|objects|item|items|weapon|weapons|nature|rock|rocks|tree|trees|vegetation|foliage|world|locations|rooms|pieces|map|stage|scene|scenery|decor|decoration)(?:[\\/]|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
@@ -942,7 +946,10 @@ namespace AnimeStudio.CLI
         private static bool IsLowValueBrowsableModel(AssetItem asset)
         {
             return GetLowValueFilterTexts(asset)
-                .Any(x => LowValueBrowsableModelPattern.IsMatch(x));
+                .Any(x =>
+                    LowValueBrowsableModelPattern.IsMatch(x)
+                    || Non3DLibraryRootPattern.IsMatch(x)
+                );
         }
 
         private static IEnumerable<string> GetDeprecatedFilterTexts(AssetItem asset)

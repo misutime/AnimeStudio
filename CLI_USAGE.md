@@ -1263,6 +1263,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 C:\Program Files\miHoYo Launcher\games\Genshin Impact Game\YuanShen_Data
 ```
 
+注意：不要把 `Genshin Impact Game` 游戏根目录或 `YuanShen_Data` 直接当作普通 Unity 目录用 `--game Normal` 跑默认 Library。这样通常只会读到 player/sharedassets/level/UI 资源，表现为 `CNPayPlatDialog`、`LoadingFade`、`Image` 等 UI/loading 候选，最终可能 0 个有效 3D 模型。原神应使用 GI profile，并输入实际 AssetBundle blocks 目录。
+
 主要资源包：
 
 ```text
@@ -1329,7 +1331,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```powershell
 cd D:\misutime\AnimeStudio
 
-AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+dist\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Program Files\miHoYo Launcher\games\Genshin Impact Game\YuanShen_Data\StreamingAssets\AssetBundles\blocks" `
   "D:\tmp\AnimeStudio_GI_Library" `
   --game GI `
