@@ -38,6 +38,7 @@
 
 - 本项目的核心目标是把 PC 端 Unity 打包资源还原成“可供开发者使用的素材库”。后续每一步实现都必须服务这个目标：模型、骨骼、贴图、材质、动画要尽可能准确、可浏览、可复用；特殊调试、Raw 扫描、旧式全嵌动画等行为必须用显式参数开启。
 - 默认 `Library` 是“完整可浏览素材库”，不是最终精品包。工具应优先保留可能有用的模型、贴图、材质、动画、音效等素材，只在底层导出阶段过滤非常确定的垃圾或损坏对象，例如 collider、navmesh、socket、joint、bone、明显空对象、不可解析对象。debug box、VFX mesh、helper、decal、terrain tile、building part 等不确定对象优先导出、分类、打标签和写报告，不要过早静默丢弃。`Core` / `Curated` / `Playable` / `ProductionReady` 等精品筛选应作为基于索引和验证报告的后处理能力。
+- 资源分类必须是通用且保守的。可以用跨游戏常见路径和词元把模型归为 Character、Unit、Vehicle、Animal、Buildings、Environment、Prop 等，但不能为了减少 `Unknown` 而按单个游戏私有命名硬猜；信号不足时保留 `Unknown`。
 - 导出关系必须来自 Unity 自身的通用序列化引用和结构。默认逻辑的核心目标是解析 Unity 关系和引用；如无不得已的明确理由，绝不按单个游戏、目录、角色名、资源名前缀自行推断关系。
 - Unity 关系优先级固定为：1. 显式引用，包括 `Animator`、`Animation`、`AnimatorController`、`AnimatorOverrideController`、`PPtr`；2. 结构兼容，包括 `Avatar`、`HumanDescription`、`SkinnedMeshRenderer bones`、`AnimationClip binding path/type/property`、blendshape channel；3. 实际导出验证，包括 glTF channel、skin/joint、主体骨骼覆盖、bbox。container、目录名、资源名、游戏 profile 只能作为显式标注的 fallback，不能进入默认绑定结果。
 - 精准导出时可以用 `--containers`、`--names` 过滤导出候选，但 CAB / PPtr 依赖图必须来自完整源目录。不要为了样本变快而只复制少量 bundle 当输入；Unity 游戏常把脸、附件、材质或 Mesh 拆到外部 CAB，裁掉依赖源会导致模型缺件。

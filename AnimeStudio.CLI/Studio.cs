@@ -1510,6 +1510,15 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
+            static bool HasToken(string value, string alternatives)
+            {
+                return Regex.IsMatch(
+                    value,
+                    $@"(^|[/_.\-\s])(?:{alternatives})(?:$|[/_.\-\s0-9])",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+                );
+            }
+
             if (Regex.IsMatch(text, @"(^|/)character/(pc|player)|(^|/)characters?(/|$)|(^|/)characterprefabs?(/|$)|(^|/)(pc|player)(/|$)"))
             {
                 return "Character";
@@ -1534,6 +1543,18 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 }
                 return "Unit";
             }
+            if (HasToken(text, "soldier|warrior|worker|settler|archer|slinger|skirmisher|spearman|pikeman|axeman|swordsman|maceman|legionary|hastatus|hoplite|phalangite|conscript|raider|warlord|disciple|cavalry|horseman|javelin(?:eer)?|clubthrower|peltast"))
+            {
+                return "Unit";
+            }
+            if (HasToken(text, "horse|deer|bear|camel|elephant|mammoth|boar|wolf|dog|cat|bird|fish"))
+            {
+                return "Animal";
+            }
+            if (HasToken(text, "tank|ship|boat|submarine|carrier|frigate|corvette|helicopter|fighter|aircraft|artillery|cannon|chariot|trireme|bireme|dromon|catapult|mangonel|ballista|onager|siegetower|ram"))
+            {
+                return "Vehicle";
+            }
             if (Regex.IsMatch(text, @"(^|/)(accessor|accessories|hat|hats|hair|weapon|weapons|shield|shields)(/|$)"))
             {
                 return "Accessory";
@@ -1542,19 +1563,31 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             {
                 return "Stage";
             }
+            if (Regex.IsMatch(text, @"(^|/)(building|buildings|structure|structures|wall|walls|floor|floors|roof|roofs|house|houses|castle|pieces)(/|$)|(^|/)gameelements/pieces(/|$)"))
+            {
+                return "Buildings";
+            }
+            if (HasToken(text, "building|buildings|structure|structures|wall|walls|floor|floors|roof|roofs|house|houses|castle|tower|gate|bridge|temple|shrine|stupa|church|cathedral|mosque|palace|fort|fortress|barracks|stable|market|farm|mill|lumbermill|mine|quarry|harbor|port|dock|scaffold|ruin|ruins|hovel|hut|amphitheater|ampitheater|oracle"))
+            {
+                return "Buildings";
+            }
             if (Regex.IsMatch(text, @"(^|/)(terrain|landscape|surface|ground|levelbuild|levelbuildelements|environment|world|locations|rooms|nature|vegetation|foliage|tree|trees|rock|rocks)(/|$)"))
             {
                 return "Environment";
             }
-            if (Regex.IsMatch(text, @"(^|/)(building|buildings|structure|structures|wall|walls|floor|floors|roof|roofs|house|houses|castle|pieces)(/|$)|(^|/)gameelements/pieces(/|$)"))
+            if (HasToken(text, "terrain|landscape|surface|ground|environment|world|nature|vegetation|foliage|tree|trees|rock|rocks|stone|stones|cliff|mountain|hill|water|river|lake|ocean|sea|beach|grass|bush|plant|flower|forest|wood|woods|road|path"))
             {
-                return "Buildings";
+                return "Environment";
             }
             if (Regex.IsMatch(text, @"(^|/)ball|basketball"))
             {
                 return "Ball";
             }
             if (Regex.IsMatch(text, @"(^|/)trophy|prop|props|object|item|weapon"))
+            {
+                return "Prop";
+            }
+            if (HasToken(text, "prop|props|object|item|trophy|crate|box|barrel|chair|table|bench|door|cart|chest|sign|banner|flag|lamp|lantern|torch|statue|vase|jar|pot|bottle|book|scroll|coin"))
             {
                 return "Prop";
             }

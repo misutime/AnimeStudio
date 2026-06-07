@@ -21,6 +21,7 @@ AnimeStudio 的核心目标是面向 PC 端 Unity 游戏，把已经打包过的
 - 默认 Library 是“完整可浏览素材库”，不是最终精品包。工具应优先把可能有用的素材拿出来，避免系统性漏掉成熟游戏里的建筑、植被、POI、岩石、地形块、道具或静态 Mesh。
 - 可以接受少量 debug 基础体、VFX mesh、helper、decal、terrain tile、building part 混入素材库，但必须分类、打标签、写报告，说明可信度、材质绑定状态和使用注意事项。
 - 只在底层导出阶段过滤非常确定的垃圾或损坏对象，例如 collider、navmesh、socket、joint、bone、明显空对象、不可解析对象、明确 obsolete/deprecated 资源。
+- 资源分类必须通用、保守、可解释。优先使用 Unity 路径、container、Renderer 使用关系和跨游戏常见词元识别 Character、Unit、Vehicle、Animal、Buildings、Environment、Prop 等类别；不能为了降低 `Unknown` 数量而按单个游戏私有命名硬猜。信号不足时保留 `Unknown` 是正确结果。
 - 精品筛选是后处理能力。`Core`、`Curated`、`Playable`、`ProductionReady` 等筛选层应基于 SQLite 索引、验证报告、模型尺寸、材质完整度、动画匹配度、命名语义和人工标记生成。
 
 ## 2. 非目标
