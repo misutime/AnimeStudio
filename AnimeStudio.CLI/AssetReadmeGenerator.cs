@@ -83,8 +83,11 @@ namespace AnimeStudio.CLI
             sb.AppendLine("| `model_animations.json` | 工具/诊断 | 完整模型-动画关系，信息更全但更大。 |");
             sb.AppendLine("| `animation_bindings.jsonl` | 工具/诊断 | 按动画视角记录可匹配模型。 |");
             sb.AppendLine("| `character_assemblies.json` | 工具/高级用户 | 模块化角色组装关系，比如 face/hair/accessory。 |");
-            sb.AppendLine("| `VFX/vfx_library.json` | 人/工具 | Unity 粒子、拖尾、线渲染、VisualEffect 和 mesh 型特效的元数据索引。 |");
-            sb.AppendLine("| `VFX/VFX_LIBRARY.md` | 人 | 特效素材库说明，解释哪些是可见 mesh 特效，哪些还只是 ParticleSystem/VisualEffect 元数据。 |");
+            if (Studio.IncludeVfx)
+            {
+                sb.AppendLine("| `VFX/vfx_library.json` | 人/工具 | Unity 粒子、拖尾、线渲染、VisualEffect 和 mesh 型特效的元数据索引。 |");
+                sb.AppendLine("| `VFX/VFX_LIBRARY.md` | 人 | 特效素材库说明，解释哪些是可见 mesh 特效，哪些还只是 ParticleSystem/VisualEffect 元数据。 |");
+            }
             sb.AppendLine("| `model_validation.json` | 工具/诊断 | glTF 静态结构验证结果。 |");
             sb.AppendLine("| `preview_validation.json` | 人/工具 | 单次预览 glTF 的验证结果。 |");
             sb.AppendLine("| `unity_relations.jsonl` | 工具/诊断 | Unity 原始关系图，通常很大，不建议人工直接看。 |");

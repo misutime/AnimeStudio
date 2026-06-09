@@ -24,6 +24,7 @@ namespace AnimeStudio.CLI
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
         public static AnimationPackageMode AnimationPackage { get; set; } = AnimationPackageMode.Separate;
         public static ModelSourceMode ModelSource { get; set; } = ModelSourceMode.PrefabPrimary;
+        public static bool IncludeVfx { get; set; }
         public static AnimeStudio.TextureExportMode TextureMode { get; set; } = AnimeStudio.TextureExportMode.Raw;
         public static string OutputRoot { get; set; }
 
@@ -3836,7 +3837,8 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 new[] { container, Path.GetFileNameWithoutExtension(source), name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
 
-            if (Regex.IsMatch(signalText, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
+            if (CliExportOptions.IncludeVfx
+                && Regex.IsMatch(signalText, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
             {
                 return "VFX";
             }

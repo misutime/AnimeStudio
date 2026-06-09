@@ -93,6 +93,8 @@ namespace AnimeStudio.CLI
                 optionsBinder.TextureMode,
                 optionsBinder.Profile3D,
                 optionsBinder.ModelSource,
+                optionsBinder.IncludeStaticMeshes,
+                optionsBinder.IncludeVfx,
                 optionsBinder.IncludeShaders,
                 optionsBinder.MaxExportTasks,
                 optionsBinder.BatchFiles,
@@ -179,6 +181,8 @@ namespace AnimeStudio.CLI
         public AnimeStudio.TextureExportMode TextureMode { get; set; }
         public Model3DProfile Profile3D { get; set; }
         public ModelSourceMode ModelSource { get; set; }
+        public bool IncludeStaticMeshes { get; set; }
+        public bool IncludeVfx { get; set; }
         public bool IncludeShaders { get; set; }
         public int MaxExportTasks { get; set; }
         public int BatchFiles { get; set; }
@@ -260,6 +264,8 @@ namespace AnimeStudio.CLI
         public readonly Option<AnimeStudio.TextureExportMode> TextureMode;
         public readonly Option<Model3DProfile> Profile3D;
         public readonly Option<ModelSourceMode> ModelSource;
+        public readonly Option<bool> IncludeStaticMeshes;
+        public readonly Option<bool> IncludeVfx;
         public readonly Option<bool> IncludeShaders;
         public readonly Option<int> MaxExportTasks;
         public readonly Option<int> BatchFiles;
@@ -339,6 +345,8 @@ namespace AnimeStudio.CLI
             TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
             ModelSource = new Option<ModelSourceMode>("--model_source", "Specify Library model source mode: PrefabPrimary exports prefab/Animator models by default and indexes raw fbx parts; PrefabAndParts exports both; RawPartsOnly exports only raw fbx/source parts.");
+            IncludeStaticMeshes = new Option<bool>("--include_static_meshes", "Include standalone/static Mesh assets as browsable Library models. Disabled by default so Library focuses on prefab/Animator models.");
+            IncludeVfx = new Option<bool>("--include_vfx", "Include VFX metadata, mesh-VFX classification, and VFX preview cache in Library export. Disabled by default.");
             IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Maximum parallel export tasks for StaticMeshPrimary glTF export. Use 1 for fully serial export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
@@ -507,6 +515,8 @@ namespace AnimeStudio.CLI
                 TextureMode = bindingContext.ParseResult.GetValueForOption(TextureMode),
                 Profile3D = bindingContext.ParseResult.GetValueForOption(Profile3D),
                 ModelSource = bindingContext.ParseResult.GetValueForOption(ModelSource),
+                IncludeStaticMeshes = bindingContext.ParseResult.GetValueForOption(IncludeStaticMeshes),
+                IncludeVfx = bindingContext.ParseResult.GetValueForOption(IncludeVfx),
                 IncludeShaders = bindingContext.ParseResult.GetValueForOption(IncludeShaders),
                 MaxExportTasks = bindingContext.ParseResult.GetValueForOption(MaxExportTasks),
                 BatchFiles = bindingContext.ParseResult.GetValueForOption(BatchFiles),

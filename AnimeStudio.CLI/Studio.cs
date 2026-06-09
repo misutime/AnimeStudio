@@ -42,6 +42,8 @@ namespace AnimeStudio.CLI
         public static int MaxExportTasks { get; set; } = Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2));
         public static int BatchFiles { get; set; } = 16;
         public static int ModelGcInterval { get; set; } = 0;
+        public static bool IncludeStaticMeshes { get; set; }
+        public static bool IncludeVfx { get; set; }
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
@@ -854,7 +856,9 @@ namespace AnimeStudio.CLI
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
             var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
             var sourcePartModels = new List<AssetItem>();
-            var staticMeshes = CollectLibraryStaticMeshModels(sourcePartModels);
+            var staticMeshes = IncludeStaticMeshes
+                ? CollectLibraryStaticMeshModels(sourcePartModels)
+                : new List<AssetItem>();
             var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
@@ -1568,7 +1572,7 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 );
             }
 
-            if (VfxLibrarySignalPattern.IsMatch(signalText))
+            if (IncludeVfx && VfxLibrarySignalPattern.IsMatch(signalText))
             {
                 return "VFX";
             }
@@ -3197,8 +3201,11 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
 
         public static void GenerateLibraryIndexes(string savePath)
         {
-            NormalizePathPollutedModelResourceKinds(savePath);
-            GenerateVfxLibrary(savePath);
+            if (IncludeVfx)
+            {
+                NormalizePathPollutedModelResourceKinds(savePath);
+                GenerateVfxLibrary(savePath);
+            }
 
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
             if (!File.Exists(catalogPath))
@@ -3280,8 +3287,11 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             }
 
             EnsureSourceIndexLoadedForRebuild(savePath);
-            NormalizePathPollutedModelResourceKinds(savePath);
-            GenerateVfxLibrary(savePath);
+            if (IncludeVfx)
+            {
+                NormalizePathPollutedModelResourceKinds(savePath);
+                GenerateVfxLibrary(savePath);
+            }
             var entries = LoadCatalogEntries(catalogPath);
             WriteAssetSummary(savePath, catalogPath, entries);
             ModelLibraryValidator.Generate(savePath);

@@ -23,6 +23,9 @@ namespace AnimeStudio.CLI
             {
                 Logger.Default = new ConsoleLogger();
                 Logger.Flags = o.LoggerFlags.Aggregate((e, x) => e |= x);
+                Studio.IncludeStaticMeshes = o.IncludeStaticMeshes;
+                Studio.IncludeVfx = o.IncludeVfx;
+                CliExportOptions.IncludeVfx = o.IncludeVfx;
 
                 if (o.ConvertModelTextures != null)
                 {
@@ -606,7 +609,7 @@ namespace AnimeStudio.CLI
                                     ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
                                 }
                             }
-                            if (o.WorkMode == WorkMode.Library)
+                            if (o.WorkMode == WorkMode.Library && Studio.IncludeVfx)
                             {
                                 using (ProfileLogger.Measure("vfx_texture_preview_cache_batch", new Dictionary<string, object>
                                 {
@@ -900,7 +903,7 @@ namespace AnimeStudio.CLI
             TypeFlags.SetType(ClassIDType.MeshFilter, true, false);
             TypeFlags.SetType(ClassIDType.MeshRenderer, true, false);
             TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, true, false);
-            TypeFlags.SetType(ClassIDType.Mesh, true, workMode == WorkMode.Library);
+            TypeFlags.SetType(ClassIDType.Mesh, true, workMode == WorkMode.Library && Studio.IncludeStaticMeshes);
             TypeFlags.SetType(ClassIDType.Material, true, false);
             TypeFlags.SetType(ClassIDType.Texture2D, true, workMode == WorkMode.Library);
             TypeFlags.SetType(ClassIDType.Texture2DArray, true, workMode == WorkMode.Library);

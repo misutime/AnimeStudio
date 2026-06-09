@@ -18,8 +18,8 @@ AnimeStudio 的核心目标是面向 PC 端 Unity 游戏，把已经打包过的
 
 - 面向 PC Unity 游戏。
 - 默认优先 3D 资产，同时保留材质贴图、Texture2DArray、动画、音效等可用开发素材。
-- 默认 Library 是“完整可浏览素材库”，不是最终精品包。工具应优先把可能有用的素材拿出来，避免系统性漏掉成熟游戏里的建筑、植被、POI、岩石、地形块、道具或静态 Mesh。
-- 可以接受少量 debug 基础体、VFX mesh、helper、decal、terrain tile、building part 混入素材库，但必须分类、打标签、写报告，说明可信度、材质绑定状态和使用注意事项。
+- 默认 Library 先专注 prefab/Animator 组合模型、贴图、材质、骨骼和动画，避免普通裸 Mesh、VFX metadata 和特效网格放大默认输出。
+- 普通静态 Mesh 需要显式 `--include_static_meshes`；VFX 需要显式 `--include_vfx`。开启后才把这些扩展域纳入素材库、分类、打标签和写报告。
 - 只在底层导出阶段过滤非常确定的垃圾或损坏对象，例如 collider、navmesh、socket、joint、bone、明显空对象、不可解析对象、明确 obsolete/deprecated 资源。
 - 资源分类必须通用、保守、可解释。优先使用 Unity 路径、container、Renderer 使用关系和跨游戏常见词元识别 Character、Unit、Vehicle、Animal、Buildings、Environment、Prop 等类别；不能为了降低 `Unknown` 数量而按单个游戏私有命名硬猜。信号不足时保留 `Unknown` 是正确结果。
 - 精品筛选是后处理能力。`Core`、`Curated`、`Playable`、`ProductionReady` 等筛选层应基于 SQLite 索引、验证报告、模型尺寸、材质完整度、动画匹配度、命名语义和人工标记生成。
@@ -122,24 +122,24 @@ SQLite 源索引规则：
 - 没有被任何组合模型覆盖、但本身可用的 raw 模型可进入 `Models/RawUnreferenced`。
 - 需要研究零散部件时，显式使用 `PrefabAndParts` 或 `RawPartsOnly`。
 
-静态环境/建筑/道具 Mesh 是默认 Library 的一等资源，不是次要补丁：
+静态环境/建筑/道具 Mesh 是显式扩展能力，不是默认 Library 输出：
 
-- 默认目标是完整覆盖可见几何模型。不能因为早期只偏向 prefab 而漏掉成熟游戏中大量独立 Mesh 资源。
+- 默认目标是优先导出 prefab/Animator 组合模型；需要完整覆盖可见几何模型时，显式使用 `--include_static_meshes`。
 - 可以接受少量 LOD/部件级重复和少量 debug 基础体混入，前提是输出分类清晰、报告标注充分、文件名稳定可追溯。
 - 仍然不能无脑导出全部 Mesh。非常确定的 collider、NavMesh、Occlusion、Socket、Joint、Bone、损坏对象和明确 obsolete/deprecated 资源应跳过或只进索引。
 - 具备以下任一强信号、且几何数据完整的 Mesh，可升级为 `StaticMeshPrimary`：
   - 有明确 Unity `AssetBundle.m_Container` / preload 容器路径，且路径语义指向 environment/building/prop/world/stage/terrain/levelbuild 等可浏览素材。
   - 没有独立容器路径，但来源 AssetBundle / SerializedFile 本身具有明确静态素材语义，例如 `LevelBuildElements`、`Terrain`、`Environment`、`World`、`Building` 等。此类游戏常把大量场景/地形/建筑 Mesh 作为匿名 Mesh 存在，不能因为 Mesh 名为空就丢弃。
   - SQLite 源索引能证明该 Mesh 通过 `MeshFilter.mesh` 或 `SkinnedMeshRenderer.mesh` 被 Renderer 使用。这个信号来自 Unity PPtr 关系链，不是名称猜测；如果 Renderer 缺少或无法解析 `renderer.material`，仍应导出灰模并清楚标注缺材质绑定。
-- `StaticMeshPrimary` 默认输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
+- 开启 `--include_static_meshes` 后，`StaticMeshPrimary` 输出 glTF，分类到 `Models/Environment`、`Models/Buildings`、`Models/Prop`、`Models/Stage` 等目录。
 - 匿名且没有任何静态素材语义、碰撞、NavMesh、Occlusion、Socket、Joint、Bone、obsolete/deprecated 等 Mesh 只进入索引或被跳过，不进入默认 `Models/`。`Dummy`、`Decal`、`Shadow`、`SFX/FX/VFX`、helper 等名字不能单独作为静默丢弃理由；如果具备明确容器路径、强来源语义、Renderer 关系或可见几何，应分类或标注进入素材库。
 
 ### VFX Library
 
-特效素材是默认 Library 的一等资源域，不再只作为模型目录里的偶然产物处理。
+特效素材是显式扩展资源域，默认 Library 不导出 VFX。
 
-- `ParticleSystem`、`ParticleSystemRenderer`、`ParticleSystemForceField`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象进入 `VFX/` 元数据索引。
-- 通过模型/路径/命名识别出的 slash、impact、projectile、beam、trail、explosion、aura、skill 等 mesh 型特效，模型仍可作为 glTF 进入 `Models/`，但 `resourceKind` 应标注为 `VFX`。
+- 只有显式 `--include_vfx` 时，`ParticleSystem`、`ParticleSystemRenderer`、`ParticleSystemForceField`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象才进入 `VFX/` 元数据索引。
+- 只有显式 `--include_vfx` 时，通过模型/路径/命名识别出的 slash、impact、projectile、beam、trail、explosion、aura、skill 等 mesh 型特效才作为 VFX 处理；模型可作为 glTF 进入 `Models/`，但 `resourceKind` 应标注为 `VFX`。
 - `VFX/vfx_library.json` 是全局机器索引，`VFX/VFX_LIBRARY.md` 是人工说明，每个特效目录下写 `vfx.json` 和 `VFX_REPORT.md`。
 - 当前策略是 metadata + preview hints：记录 Unity 组件、来源、分类、mesh 预览和限制，并通过 TypeTree 轻量解析 `ParticleSystem` / `ParticleSystemRenderer` 的 Main、Emission、Shape、Size、Color、Trail、renderMode 等预览参数。源索引还必须记录 `ParticleSystemRenderer -> Material -> Texture`、`ParticleSystem/Renderer -> Texture` 等轻量 PPtr 关系，输出到 `textureRefCount` / `textures`，作为 Browser 近似预览和后续真实贴图采样的视觉证据。shader 动画、Texture Sheet 图集、动画事件触发、运行时 prefab 绑定没有完整还原时必须明确标注，不能伪装成可直接播放。
 - `fx` / `vfx` / `sfx` / `effect` 不能作为底层过滤理由。若资源可见或有 Unity VFX 组件证据，优先导出或入索引；质量由分类、报告和后续筛选处理。
