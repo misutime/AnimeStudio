@@ -348,7 +348,7 @@ namespace AnimeStudio.CLI
             IncludeStaticMeshes = new Option<bool>("--include_static_meshes", "Include standalone/static Mesh assets as browsable Library models. Disabled by default so Library focuses on prefab/Animator models.");
             IncludeVfx = new Option<bool>("--include_vfx", "Include VFX metadata, mesh-VFX classification, and VFX preview cache in Library export. Disabled by default.");
             IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
-            MaxExportTasks = new Option<int>("--max_export_tasks", "Maximum parallel export tasks for StaticMeshPrimary glTF export. Use 1 for fully serial export.");
+            MaxExportTasks = new Option<int>("--max_export_tasks", "Maximum parallel export tasks for independent texture/audio/material assets and StaticMeshPrimary glTF export. Core prefab/Animator model export remains serial. Use 1 for fully serial export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
             ModelGcInterval = new Option<int>("--model_gc_interval", "Run a light non-blocking GC after this many exported model candidates in 3D modes. Default 0 disables model-level GC; batch cleanup still performs full cleanup.");
             ProfileLog = new Option<string>("--profile_log", "Write JSONL performance profile events to the specified path. Use 'off' to disable.");
@@ -435,8 +435,8 @@ namespace AnimeStudio.CLI
             TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Png);
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.All);
             ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
-            MaxExportTasks.SetDefaultValue(Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2)));
-            BatchFiles.SetDefaultValue(16);
+            MaxExportTasks.SetDefaultValue(Math.Max(1, Math.Min(8, Environment.ProcessorCount / 2)));
+            BatchFiles.SetDefaultValue(32);
             ModelGcInterval.SetDefaultValue(0);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);

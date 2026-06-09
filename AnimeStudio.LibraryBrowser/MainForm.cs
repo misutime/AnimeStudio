@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +15,11 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class MainForm : Form
     {
+        private const int LargeIconCellWidth = 240;
+        private const int LargeIconCellHeight = 204;
+        private const int LvmFirst = 0x1000;
+        private const int LvmSetIconSpacing = LvmFirst + 53;
+
         private readonly TableLayoutPanel _rootLayout = new();
         private readonly TableLayoutPanel _toolbarPanel = new();
         private readonly ToolStrip _commandStrip = new();
@@ -232,6 +239,7 @@ namespace AnimeStudio.LibraryBrowser
             _modelList.VirtualMode = true;
             _modelList.RetrieveVirtualItem += ModelList_RetrieveVirtualItem;
             _modelList.CacheVirtualItems += ModelList_CacheVirtualItems;
+            _modelList.HandleCreated += (_, _) => SetLargeIconSpacing(_modelList);
 
             _detailBox.Dock = DockStyle.Fill;
             _detailBox.Multiline = true;
@@ -346,6 +354,7 @@ namespace AnimeStudio.LibraryBrowser
             _vfxList.RetrieveVirtualItem += VfxList_RetrieveVirtualItem;
             _vfxList.CacheVirtualItems += VfxList_CacheVirtualItems;
             _vfxList.DoubleClick += (_, _) => OpenSelectedVfxFolder();
+            _vfxList.HandleCreated += (_, _) => SetLargeIconSpacing(_vfxList);
 
             _vfxDetailBox.Dock = DockStyle.Fill;
             _vfxDetailBox.Multiline = true;
@@ -868,7 +877,8 @@ namespace AnimeStudio.LibraryBrowser
                 ApplyFilter();
                 RebuildAnimationModelList();
                 UpdateToolbarForPrimaryTab();
-                UpdateStatus(_thumbnailCache.HasF3d ? "缩略图后台生成中" : "没有找到 f3d.exe");
+                var thumbnailStatus = _thumbnailCache.HasF3d ? "缩略图后台生成中" : "没有找到 f3d.exe";
+                UpdateStatus($"{thumbnailStatus}；{BuildAnimationIndexStatus()}");
                 StartThumbnailQueue(_thumbnailCts.Token);
             }
             catch (Exception ex)
@@ -876,6 +886,14 @@ namespace AnimeStudio.LibraryBrowser
                 MessageBox.Show(this, ex.Message, "加载失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _statusLabel.Text = "加载失败";
             }
+        }
+
+        private string BuildAnimationIndexStatus()
+        {
+            var source = string.IsNullOrWhiteSpace(_animationIndex.LoadSource)
+                ? "未加载"
+                : _animationIndex.LoadSource;
+            return $"动画索引: {source}，动画 {_allLibraryAnimations.Count}，预建候选 {_animationIndex.IndexedCandidateCount} / 模型 {_animationIndex.IndexedModelCount}";
         }
 
         private void RebuildRecentMenu()
@@ -1688,13 +1706,29 @@ namespace AnimeStudio.LibraryBrowser
             var name = string.IsNullOrWhiteSpace(item.Name) ? item.FileName : item.Name;
             var suffix = item.IsVfx
                 ? $" [{(string.IsNullOrWhiteSpace(item.VfxCategory) ? "VFX" : item.VfxCategory)}]"
-                : animationCount > 0 ? $" [显式 {animationCount}]" : "";
-            var sourceBadge = $" [{item.ModelSourceLabel}]";
+                : animationCount > 0 ? $" [{animationCount}]" : "";
             var favoriteBadge = favorite ? " [收藏]" : "";
-            var maxNameLength = Math.Max(8, 34 - suffix.Length - sourceBadge.Length - favoriteBadge.Length);
+            var maxNameLength = Math.Max(12, 48 - suffix.Length - favoriteBadge.Length);
             var shortName = name.Length <= maxNameLength ? name : name[..Math.Max(1, maxNameLength - 3)] + "...";
-            return shortName + sourceBadge + suffix + favoriteBadge;
+            return shortName + suffix + favoriteBadge;
         }
+
+        private static void SetLargeIconSpacing(ListView list)
+        {
+            // LargeIcon 没有公开的格子宽度属性，只能用原生消息调图标间距。
+            if (list.IsHandleCreated)
+            {
+                SendMessage(list.Handle, LvmSetIconSpacing, IntPtr.Zero, MakeLParam(LargeIconCellWidth, LargeIconCellHeight));
+            }
+        }
+
+        private static IntPtr MakeLParam(int low, int high)
+        {
+            return (IntPtr)((high << 16) | (low & 0xffff));
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         private void StartThumbnailQueue(CancellationToken cancellationToken)
         {
@@ -2432,15 +2466,10 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(model.Source) || !File.Exists(model.Source))
+            var inputError = ValidateAnimationPreviewInputs(model, animation);
+            if (!string.IsNullOrWhiteSpace(inputError))
             {
-                MessageBox.Show(this, "模型源文件不存在，无法重新生成动画预览。\r\n" + model.Source, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(animation.Source) || !File.Exists(animation.Source))
-            {
-                MessageBox.Show(this, "动画源文件不存在，无法重新生成动画预览。\r\n" + animation.Source, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, inputError, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -2500,15 +2529,10 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(model.Source) || !File.Exists(model.Source))
+            var inputError = ValidateAnimationPreviewInputs(model, animation);
+            if (!string.IsNullOrWhiteSpace(inputError))
             {
-                MessageBox.Show(this, "模型源文件不存在，无法重新生成动画预览。\r\n" + model.Source, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(animation.Source) || !File.Exists(animation.Source))
-            {
-                MessageBox.Show(this, "动画源文件不存在，无法重新生成动画预览。\r\n" + animation.Source, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, inputError, "动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -2554,6 +2578,331 @@ namespace AnimeStudio.LibraryBrowser
             {
                 OpenPathWithF3d(status.GltfPath);
             }
+        }
+
+        private static string ValidateAnimationPreviewInputs(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            if (model == null || animation == null)
+            {
+                return "没有选中模型或动画。";
+            }
+
+            if (string.IsNullOrWhiteSpace(model.OutputPath) || !File.Exists(model.OutputPath))
+            {
+                return "模型 glTF 文件不存在，无法生成动画预览。"
+                    + Environment.NewLine
+                    + $"模型文件: {model.OutputPath}"
+                    + Environment.NewLine
+                    + $"Unity 来源: {model.Source}";
+            }
+
+            if (string.IsNullOrWhiteSpace(animation.BestPath) || !File.Exists(animation.BestPath))
+            {
+                return "动画导出文件不存在，无法生成动画预览。"
+                    + Environment.NewLine
+                    + $"动画文件: {animation.BestPath}"
+                    + Environment.NewLine
+                    + $"Unity 来源: {animation.Source}";
+            }
+
+            if (IsBlendShapeOnlyAnimation(animation))
+            {
+                var blendShapeError = ValidateBlendShapeAnimationPreview(model, animation);
+                if (!string.IsNullOrWhiteSpace(blendShapeError))
+                {
+                    return blendShapeError;
+                }
+            }
+
+            return null;
+        }
+
+        private static string ValidateBlendShapeAnimationPreview(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            var morphTargets = ReadGltfMorphTargetNames(model.OutputPath);
+            if (morphTargets.Count == 0)
+            {
+                return "该动画是 BlendShape/表情动画，但当前模型 glTF 没有 morph target，不能可靠绑定预览。"
+                    + Environment.NewLine
+                    + $"模型: {model.Name}"
+                    + Environment.NewLine
+                    + $"动画: {animation.Name}"
+                    + Environment.NewLine
+                    + "请选择带表情 morph target 的同角色模型，或换用 Transform/Humanoid 身体动画。";
+            }
+
+            if (animation.IsExplicit)
+            {
+                return null;
+            }
+
+            var modelTokens = BuildIdentityTokens(model.Name, BuildLocalIdentityText(model.OutputPath), BuildLocalIdentityText(model.Source));
+            var animationTokens = BuildIdentityTokens(animation.Name, BuildLocalIdentityText(animation.OutputPath), BuildLocalIdentityText(animation.AnimationAssetPath));
+            if (modelTokens.Overlaps(animationTokens))
+            {
+                return null;
+            }
+
+            var animationBlendShapes = ReadAnimationBlendShapeNames(animation.AnimationAssetPath);
+            if (animationBlendShapes.Count > 0 && morphTargets.Overlaps(animationBlendShapes))
+            {
+                return null;
+            }
+
+            return "该动画是 BlendShape/表情动画，但和当前模型没有可靠的 Unity 显式关系、角色命名交集或 morph target 交集，不能可靠绑定预览。"
+                + Environment.NewLine
+                + $"模型: {model.Name}"
+                + Environment.NewLine
+                + $"动画: {animation.Name}"
+                + Environment.NewLine
+                + "这类动画通常是某个角色脸部/表情专用动画，例如 Ann_Angry 不应直接套到 ZFlowerModel。";
+        }
+
+        private static bool IsBlendShapeOnlyAnimation(LibraryAnimationCandidate animation)
+        {
+            if (animation == null)
+            {
+                return false;
+            }
+
+            var type = animation.AnimationType ?? "";
+            return type.IndexOf("BlendShape", StringComparison.OrdinalIgnoreCase) >= 0
+                && !type.Equals("TransformBodyAnimation", StringComparison.OrdinalIgnoreCase)
+                && (animation.BindingPaths == null || animation.BindingPaths.Length == 0);
+        }
+
+        private static bool GltfHasMorphTargets(string gltfPath)
+        {
+            return ReadGltfMorphTargetNames(gltfPath).Count > 0;
+        }
+
+        private static HashSet<string> ReadGltfMorphTargetNames(string gltfPath)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(gltfPath) || !File.Exists(gltfPath))
+            {
+                return result;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(gltfPath));
+                if (document.RootElement.TryGetProperty("meshes", out var meshes) && meshes.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var mesh in meshes.EnumerateArray())
+                    {
+                        if (mesh.TryGetProperty("extras", out var extras)
+                            && extras.TryGetProperty("targetNames", out var targetNames)
+                            && targetNames.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var targetName in targetNames.EnumerateArray())
+                            {
+                                var name = targetName.GetString();
+                                if (!string.IsNullOrWhiteSpace(name))
+                                {
+                                    result.Add(NormalizeBlendShapeName(name));
+                                }
+                            }
+                        }
+
+                        if (mesh.TryGetProperty("primitives", out var primitives) && primitives.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var primitive in primitives.EnumerateArray())
+                            {
+                                if (primitive.TryGetProperty("targets", out var targets) && targets.ValueKind == JsonValueKind.Array)
+                                {
+                                    result.Add("__has_targets");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return result;
+        }
+
+        private static HashSet<string> ReadAnimationBlendShapeNames(string animationAssetPath)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(animationAssetPath) || !File.Exists(animationAssetPath))
+            {
+                return result;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(animationAssetPath));
+                ReadAnimationBlendShapeNames(document.RootElement, result);
+            }
+            catch
+            {
+            }
+
+            return result;
+        }
+
+        private static void ReadAnimationBlendShapeNames(JsonElement element, HashSet<string> result)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    string customTypeName = null;
+                    string attributeName = null;
+                    string attribute = null;
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        if (property.NameEquals("customTypeName"))
+                        {
+                            customTypeName = property.Value.GetString();
+                        }
+                        else if (property.NameEquals("attributeName"))
+                        {
+                            attributeName = property.Value.GetString();
+                        }
+                        else if (property.NameEquals("attribute"))
+                        {
+                            attribute = property.Value.GetString();
+                        }
+
+                        ReadAnimationBlendShapeNames(property.Value, result);
+                    }
+
+                    if (string.Equals(customTypeName, "BlendShape", StringComparison.OrdinalIgnoreCase))
+                    {
+                        AddBlendShapeName(result, attributeName);
+                    }
+
+                    AddBlendShapeName(result, attribute);
+                    break;
+
+                case JsonValueKind.Array:
+                    foreach (var child in element.EnumerateArray())
+                    {
+                        ReadAnimationBlendShapeNames(child, result);
+                    }
+
+                    break;
+            }
+        }
+
+        private static void AddBlendShapeName(HashSet<string> result, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            var name = value;
+            if (name.StartsWith("blendShape.", StringComparison.OrdinalIgnoreCase))
+            {
+                name = name["blendShape.".Length..];
+            }
+            else if (name.StartsWith("blendShape_", StringComparison.OrdinalIgnoreCase))
+            {
+                name = name["blendShape_".Length..];
+            }
+
+            name = NormalizeBlendShapeName(name);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                result.Add(name);
+            }
+        }
+
+        private static HashSet<string> BuildIdentityTokens(params string[] values)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in values)
+            {
+                foreach (var token in SplitIdentityTokens(value))
+                {
+                    result.Add(token);
+                }
+            }
+
+            return result;
+        }
+
+        private static string BuildLocalIdentityText(string pathOrName)
+        {
+            if (string.IsNullOrWhiteSpace(pathOrName))
+            {
+                return "";
+            }
+
+            try
+            {
+                var parts = new List<string>();
+                var fileName = Path.GetFileNameWithoutExtension(pathOrName);
+                if (!string.IsNullOrWhiteSpace(fileName))
+                {
+                    parts.Add(fileName);
+                }
+
+                var directory = Path.GetDirectoryName(pathOrName);
+                for (var i = 0; i < 2 && !string.IsNullOrWhiteSpace(directory); i++)
+                {
+                    var name = Path.GetFileName(directory);
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        parts.Add(name);
+                    }
+
+                    directory = Path.GetDirectoryName(directory);
+                }
+
+                return string.Join(" ", parts);
+            }
+            catch
+            {
+                return pathOrName;
+            }
+        }
+
+        private static IEnumerable<string> SplitIdentityTokens(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                yield break;
+            }
+
+            var text = Regex.Replace(value, "([a-z])([A-Z])", "$1_$2");
+            foreach (var raw in Regex.Split(text, @"[^A-Za-z0-9]+"))
+            {
+                var token = raw.Trim().ToLowerInvariant();
+                if (token.Length < 3 || IsGenericIdentityToken(token))
+                {
+                    continue;
+                }
+
+                yield return token;
+                if (token.EndsWith("model", StringComparison.OrdinalIgnoreCase) && token.Length > 8)
+                {
+                    yield return token[..^5];
+                }
+            }
+        }
+
+        private static bool IsGenericIdentityToken(string token)
+        {
+            return token is "assets" or "asset" or "models" or "model" or "mesh" or "prefab"
+                or "animations" or "animation" or "anim" or "character" or "characters"
+                or "ingame" or "outgame" or "idle" or "angry" or "face" or "body"
+                or "data" or "source" or "sharedassets";
+        }
+
+        private static string NormalizeBlendShapeName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "";
+            }
+
+            return Regex.Replace(value.Trim().ToLowerInvariant(), @"[^a-z0-9]+", "");
         }
 
         private LibraryAnimationCandidate SelectedAnimationCandidate()

@@ -9,6 +9,26 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class LibraryAnimationIndex
     {
+        private const int MaxTargetedCandidateCount = 256;
+        private static readonly HashSet<string> TargetedSemanticStopWords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "anim",
+            "animation",
+            "animations",
+            "asset",
+            "assets",
+            "gltf",
+            "hyb",
+            "lod00",
+            "model",
+            "models",
+            "prefab",
+            "rig",
+            "root",
+            "root_jnt",
+            "standard",
+        };
+
         private readonly Dictionary<string, List<LibraryAnimationCandidate>> _byModelOutput;
         private readonly Dictionary<string, LibraryAnimationUsage> _byAnimationKey;
         private readonly Dictionary<string, IReadOnlyList<LibraryAnimationCandidate>> _targetedCache = new(StringComparer.OrdinalIgnoreCase);
@@ -18,14 +38,24 @@ namespace AnimeStudio.LibraryBrowser
         private LibraryAnimationIndex(
             string root,
             Dictionary<string, List<LibraryAnimationCandidate>> byModelOutput,
-            IEnumerable<LibraryAnimationCandidate> allAnimations = null)
+            IEnumerable<LibraryAnimationCandidate> allAnimations = null,
+            string loadSource = "",
+            int indexedCandidateCount = 0)
         {
             _root = root;
             _byModelOutput = byModelOutput;
             _byAnimationKey = BuildAnimationUsageMap(byModelOutput, allAnimations);
+            LoadSource = loadSource;
+            IndexedModelCount = byModelOutput.Count;
+            IndexedCandidateCount = indexedCandidateCount > 0
+                ? indexedCandidateCount
+                : byModelOutput.Values.Sum(x => x.Count);
         }
 
         public static LibraryAnimationIndex Empty { get; } = new("", new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase));
+        public string LoadSource { get; }
+        public int IndexedModelCount { get; }
+        public int IndexedCandidateCount { get; }
 
         public IReadOnlyList<LibraryAnimationCandidate> FindForModel(LibraryModelItem model)
         {
@@ -148,7 +178,12 @@ ORDER BY c.model_output, c.score DESC;";
                     result[key] = SortCandidates(result[key]);
                 }
 
-                return new LibraryAnimationIndex(root, result, LoadAllAnimationsFromSqlite(root, connection));
+                return new LibraryAnimationIndex(
+                    root,
+                    result,
+                    LoadAllAnimationsFromSqlite(root, connection),
+                    "SQLite",
+                    result.Values.Sum(x => x.Count));
             }
             catch (SqliteException)
             {
@@ -189,7 +224,9 @@ ORDER BY c.model_output, c.score DESC;";
                     return new LibraryAnimationIndex(
                         Path.GetDirectoryName(path) ?? "",
                         result,
-                        MergeAllAnimations(animations.Values.Select(x => ReadAnimation(libraryRoot, x)), LoadAllAnimationsFromBindingsJsonLines(libraryRoot)));
+                        MergeAllAnimations(animations.Values.Select(x => ReadAnimation(libraryRoot, x)), LoadAllAnimationsFromBindingsJsonLines(libraryRoot)),
+                        "compact",
+                        result.Values.Sum(x => x.Count));
             }
 
             foreach (var item in refs.EnumerateArray())
@@ -226,7 +263,9 @@ ORDER BY c.model_output, c.score DESC;";
             return new LibraryAnimationIndex(
                 libraryRoot,
                 result,
-                MergeAllAnimations(animations.Values.Select(x => ReadAnimation(libraryRoot, x)), LoadAllAnimationsFromBindingsJsonLines(libraryRoot)));
+                MergeAllAnimations(animations.Values.Select(x => ReadAnimation(libraryRoot, x)), LoadAllAnimationsFromBindingsJsonLines(libraryRoot)),
+                "compact",
+                result.Values.Sum(x => x.Count));
             }
         }
 
@@ -281,7 +320,12 @@ ORDER BY c.model_output, c.score DESC;";
                 }
             }
 
-            return new LibraryAnimationIndex(root, result, MergeAllAnimations(allAnimations.Values, LoadAllAnimationsFromBindingsJsonLines(root)));
+            return new LibraryAnimationIndex(
+                root,
+                result,
+                MergeAllAnimations(allAnimations.Values, LoadAllAnimationsFromBindingsJsonLines(root)),
+                "compact-jsonl",
+                result.Values.Sum(x => x.Count));
         }
 
         private static Dictionary<string, JsonElement> LoadAnimationMap(JsonElement root)
@@ -333,7 +377,7 @@ ORDER BY c.model_output, c.score DESC;";
 
             if (!root.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array)
             {
-                return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result);
+                return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result, loadSource: "verbose");
             }
 
             foreach (var modelEntry in models.EnumerateArray())
@@ -359,7 +403,11 @@ ORDER BY c.model_output, c.score DESC;";
                 }
             }
 
-            return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result);
+            return new LibraryAnimationIndex(
+                Path.GetDirectoryName(path) ?? "",
+                result,
+                loadSource: "verbose",
+                indexedCandidateCount: result.Values.Sum(x => x.Count));
         }
 
         private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate)
@@ -442,7 +490,7 @@ ORDER BY c.model_output, c.score DESC;";
             command.CommandText = @"
 SELECT raw_json
 FROM assets
-WHERE kind = 'Animation' OR sourceType = 'AnimationClip';";
+WHERE kind = 'Animation' OR source_type = 'AnimationClip';";
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -586,7 +634,7 @@ WHERE kind = 'Animation' OR sourceType = 'AnimationClip';";
 
                 var animationPaths = ReadStringArray(animation, "transformBindingPaths");
                 var matched = CountMatchedBindingPaths(modelPaths, animationPaths);
-                if (!IsTargetedMatch(matched, animationPaths.Length))
+                if (!IsTargetedMatch(model, animation, matched, animationPaths.Length))
                 {
                     continue;
                 }
@@ -594,7 +642,7 @@ WHERE kind = 'Animation' OR sourceType = 'AnimationClip';";
                 result.Add(BuildTargetedCandidate(_root, animation, matched));
             }
 
-            return SortCandidates(result);
+            return SortCandidates(result).Take(MaxTargetedCandidateCount).ToList();
         }
 
         private bool TryFindTargetedForModelFromSqlite(LibraryModelItem model, out IReadOnlyList<LibraryAnimationCandidate> candidates)
@@ -672,9 +720,11 @@ GROUP BY ab.id;";
                 }
 
                 candidates = SortCandidates(byKey.Values
-                    .Where(x => IsTargetedMatch(x.Matched, ReadArrayLength(x.Animation, "transformBindingPaths")))
+                    .Where(x => IsTargetedMatch(model, x.Animation, x.Matched, ReadArrayLength(x.Animation, "transformBindingPaths")))
                     .Select(x => BuildTargetedCandidate(_root, x.Animation, x.Matched))
-                    .ToList());
+                    .ToList())
+                    .Take(MaxTargetedCandidateCount)
+                    .ToList();
                 return true;
             }
             catch (SqliteException)
@@ -773,14 +823,69 @@ GROUP BY ab.id;";
             return matched.Count;
         }
 
-        private static bool IsTargetedMatch(int matchedPathCount, int animationPathCount)
+        private static bool IsTargetedMatch(LibraryModelItem model, JsonElement animation, int matchedPathCount, int animationPathCount)
         {
-            if (matchedPathCount <= 0)
+            if (model == null || matchedPathCount <= 0 || animationPathCount <= 0)
             {
                 return false;
             }
 
-            return animationPathCount <= 3 ? matchedPathCount == animationPathCount : matchedPathCount >= 3;
+            var modelBoneCount = Math.Max(model.BoneCount, model.BonePaths.Length);
+            if (animationPathCount <= 3)
+            {
+                // 少量 Transform 轨道更像机关/道具动画。骨骼很多的角色模型不靠这类弱信号兜底匹配。
+                return matchedPathCount == animationPathCount && modelBoneCount < 8;
+            }
+
+            if (modelBoneCount < 3)
+            {
+                return false;
+            }
+
+            var requiredMatched = Math.Max(6, (int)Math.Ceiling(animationPathCount * 0.45));
+            if (matchedPathCount < requiredMatched)
+            {
+                return false;
+            }
+
+            // 角色/生物骨骼相似时很容易海量命中。兜底结果必须至少有通用名称词元交集，
+            // 但这里只影响“需验证”预览列表，不写回默认模型-动画关系。
+            return HasTargetedSemanticOverlap(model, animation);
+        }
+
+        private static bool HasTargetedSemanticOverlap(LibraryModelItem model, JsonElement animation)
+        {
+            var modelTokens = ExtractTargetedSemanticTokens(model.Name)
+                .Concat(ExtractTargetedSemanticTokens(model.OutputPath))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (modelTokens.Count == 0)
+            {
+                return true;
+            }
+
+            var animationTokens = ExtractTargetedSemanticTokens(ReadString(animation, "name"))
+                .Concat(ExtractTargetedSemanticTokens(ReadString(animation, "output")))
+                .Concat(ExtractTargetedSemanticTokens(ReadString(animation, "animationAsset")))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return animationTokens.Count == 0 || modelTokens.Overlaps(animationTokens);
+        }
+
+        private static IEnumerable<string> ExtractTargetedSemanticTokens(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                yield break;
+            }
+
+            foreach (var raw in System.Text.RegularExpressions.Regex.Split(value.ToLowerInvariant(), @"[^a-z0-9]+"))
+            {
+                if (raw.Length < 3 || raw.All(char.IsDigit) || TargetedSemanticStopWords.Contains(raw))
+                {
+                    continue;
+                }
+
+                yield return raw;
+            }
         }
 
         private static List<LibraryAnimationCandidate> SortCandidates(List<LibraryAnimationCandidate> candidates)

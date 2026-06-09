@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -39,8 +40,8 @@ namespace AnimeStudio.CLI
         private static readonly HashSet<string> VfxTexturePreviewCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
         public static WorkMode WorkMode { get; set; } = WorkMode.Export;
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
-        public static int MaxExportTasks { get; set; } = Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2));
-        public static int BatchFiles { get; set; } = 16;
+        public static int MaxExportTasks { get; set; } = Math.Max(1, Math.Min(8, Environment.ProcessorCount / 2));
+        public static int BatchFiles { get; set; } = 32;
         public static int ModelGcInterval { get; set; } = 0;
         public static bool IncludeStaticMeshes { get; set; }
         public static bool IncludeVfx { get; set; }
@@ -694,6 +695,11 @@ namespace AnimeStudio.CLI
             ExportType exportType
         )
         {
+            if (TryExportIndependentAssetsParallel(savePath, toExportAssets, assetGroupOption, exportType))
+            {
+                return;
+            }
+
             int toExportCount = toExportAssets.Count;
             int exportedCount = 0;
             int processedCount = 0;
@@ -811,6 +817,181 @@ namespace AnimeStudio.CLI
             }
 
             Logger.Info(statusText);
+        }
+
+        private static bool TryExportIndependentAssetsParallel(
+            string savePath,
+            List<AssetItem> toExportAssets,
+            AssetGroupOption assetGroupOption,
+            ExportType exportType)
+        {
+            if (MaxExportTasks <= 1 || toExportAssets.Count < 64)
+            {
+                return false;
+            }
+
+            if (toExportAssets.Any(x => !CanExportAssetIndependently(x, exportType)))
+            {
+                return false;
+            }
+
+            var planned = toExportAssets
+                .Select(asset => new PlannedIndependentExport(
+                    asset,
+                    GetExportPath(savePath, assetGroupOption, asset) + Path.DirectorySeparatorChar,
+                    BuildIndependentExportCollisionKey(savePath, assetGroupOption, asset, exportType)))
+                .ToList();
+            if (planned.GroupBy(x => x.CollisionKey, StringComparer.OrdinalIgnoreCase).Any(x => x.Count() > 1))
+            {
+                return false;
+            }
+
+            Logger.Info($"Exporting {toExportAssets.Count} independent {toExportAssets[0].TypeString} asset(s) with {MaxExportTasks} task(s).");
+            var toExportCount = planned.Count;
+            var exportedCount = 0;
+            var processedCount = 0;
+            var errors = new List<string>();
+            var errorsLock = new object();
+
+            Parallel.ForEach(
+                planned,
+                new ParallelOptions { MaxDegreeOfParallelism = MaxExportTasks },
+                plan =>
+                {
+                    var exported = false;
+                    try
+                    {
+                        exported = ExportAssetByType(plan.Asset, plan.ExportPath, exportType);
+                    }
+                    catch (Exception ex)
+                    {
+                        lock (errorsLock)
+                        {
+                            errors.Add($"Export {plan.Asset.Type}:{plan.Asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}");
+                        }
+                    }
+
+                    if (exported)
+                    {
+                        Interlocked.Increment(ref exportedCount);
+                        AppendExportManifest(savePath, plan.Asset, plan.ExportPath);
+                    }
+
+                    var processed = Interlocked.Increment(ref processedCount);
+                    if (processed % 500 == 0)
+                    {
+                        Logger.Info($"Processed {processed}/{toExportCount} {plan.Asset.TypeString} asset(s); exported {Volatile.Read(ref exportedCount)}.");
+                    }
+                });
+
+            foreach (var error in errors)
+            {
+                Logger.Error(error);
+            }
+
+            var finalExported = Volatile.Read(ref exportedCount);
+            var statusText = finalExported == 0
+                ? "Nothing exported."
+                : $"Finished exporting {finalExported} assets.";
+            if (toExportCount > finalExported)
+            {
+                statusText += $" {toExportCount - finalExported} assets skipped (not extractable or files already exist)";
+            }
+
+            Logger.Info(statusText);
+            return true;
+        }
+
+        private static bool CanExportAssetIndependently(AssetItem asset, ExportType exportType)
+        {
+            if (asset == null)
+            {
+                return false;
+            }
+
+            if (exportType is ExportType.Raw or ExportType.Dump or ExportType.JSON)
+            {
+                return asset.Asset is not GameObject and not Animator and not Mesh;
+            }
+
+            return asset.Asset is Texture2D
+                or Texture2DArray
+                or AudioClip
+                or Shader
+                or TextAsset
+                or Material
+                or MiHoYoBinData
+                or Font
+                or MovieTexture
+                or VideoClip
+                or Sprite;
+        }
+
+        private static bool ExportAssetByType(AssetItem asset, string exportPath, ExportType exportType)
+        {
+            return exportType switch
+            {
+                ExportType.Raw => ExportRawFile(asset, exportPath),
+                ExportType.Dump => ExportDumpFile(asset, exportPath),
+                ExportType.Convert => ExportConvertFile(asset, exportPath),
+                ExportType.JSON => ExportJSONFile(asset, exportPath),
+                _ => false,
+            };
+        }
+
+        private static string BuildIndependentExportCollisionKey(
+            string savePath,
+            AssetGroupOption assetGroupOption,
+            AssetItem asset,
+            ExportType exportType)
+        {
+            var exportPath = GetExportPath(savePath, assetGroupOption, asset);
+            var extension = exportType switch
+            {
+                ExportType.Raw => ".dat",
+                ExportType.Dump => ".txt",
+                ExportType.JSON => ".json",
+                ExportType.Convert => GetConvertCollisionExtension(asset),
+                _ => ".dat",
+            };
+            return Path.Combine(exportPath, $"{Exporter.FixFileName(asset.Text)}{extension}");
+        }
+
+        private static string GetConvertCollisionExtension(AssetItem asset)
+        {
+            return asset.Type switch
+            {
+                ClassIDType.Texture2D => Properties.Settings.Default.convertTexture
+                    ? "." + Properties.Settings.Default.convertType.ToString().ToLowerInvariant()
+                    : ".tex",
+                ClassIDType.Texture2DArray => ".texture2darray.folder",
+                ClassIDType.AudioClip => ".audioclip",
+                ClassIDType.Shader => ".shader.raw",
+                ClassIDType.TextAsset => ".txt",
+                ClassIDType.MonoBehaviour => ".json",
+                ClassIDType.Font => ".ttf",
+                ClassIDType.MovieTexture => ".movietexture",
+                ClassIDType.VideoClip => ".ogv",
+                ClassIDType.Sprite => ".png",
+                ClassIDType.AnimationClip => ".anim",
+                ClassIDType.MiHoYoBinData => ".dat",
+                ClassIDType.Material => ".json",
+                _ => ".dat",
+            };
+        }
+
+        private sealed class PlannedIndependentExport
+        {
+            public PlannedIndependentExport(AssetItem asset, string exportPath, string collisionKey)
+            {
+                Asset = asset;
+                ExportPath = exportPath;
+                CollisionKey = collisionKey;
+            }
+
+            public AssetItem Asset { get; }
+            public string ExportPath { get; }
+            public string CollisionKey { get; }
         }
 
         private static void LogAssetExported(AssetItem asset, int batchCount)

@@ -31,21 +31,21 @@ if (-not (Test-Path -LiteralPath $runtimeConfig) -and -not (Test-Path -LiteralPa
 }
 
 $games = @(
-    @{
-        Name = "VRising"
-        Input = "D:\BaiduNetdiskDownload\unity-VRising"
-         Output = "D:\Assets\AS-Assets\VRising-Assets"
-    }
+    # @{
+    #     Name = "VRising"
+    #     Input = "D:\BaiduNetdiskDownload\unity-VRising"
+    #      Output = "D:\Assets\AS-Assets\VRising-Assets"
+    # }
     # @{
     #     Name = "Humankind"
     #     Input = "D:\BaiduNetdiskDownload\unity-Humankind"
     #     # 可选：单独指定这个游戏的导出目录。留空时继续使用 $OutputRoot\<Name>-Assets。
     #     # Output = "F:\Unity-AS-Assets\Humankind-Assets"
     # },
-    # # @{
-    # #     Name = "Valheim"
-    # #     Input = "D:\BaiduNetdiskDownload\unity-Valheim.Build.21981559"
-    # # },
+    # @{
+    #     Name = "Valheim"
+    #     Input = "D:\BaiduNetdiskDownload\unity-Valheim.Build.21981559"
+    # },
     # @{
     #     Name = "HomuraHime"
     #     Input = "D:\BaiduNetdiskDownload\unity-Homura Hime"
@@ -53,16 +53,16 @@ $games = @(
     # @{
     #     Name = "Freedunk"
     #     Input = "C:\Program Files (x86)\Freedunk\Game"
-    # },
+    # }
     # @{
     #     Name = "OldWorld"
     #     Input = "D:\BaiduNetdiskDownload\unity-Old World"
-    # },
-    # @{
-    #     Name = "YuanShen"
-    #     Input = "C:\Program Files\miHoYo Launcher\games\Genshin Impact Game\YuanShen_Data\StreamingAssets\AssetBundles\blocks"
-    #     Game = "GI"
     # }
+    @{
+        Name = "YuanShen"
+        Input = "C:\Program Files\miHoYo Launcher\games\Genshin Impact Game\YuanShen_Data\StreamingAssets\AssetBundles\blocks"
+        Game = "GI"
+    }
 )
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null

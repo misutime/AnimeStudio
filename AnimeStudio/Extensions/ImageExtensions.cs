@@ -1,5 +1,6 @@
 ﻿using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Bmp;
+using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.Formats.Tga;
 using SixLabors.ImageSharp.PixelFormats;
 using System;
@@ -18,7 +19,10 @@ namespace AnimeStudio
                     image.SaveAsJpeg(stream);
                     break;
                 case ImageFormat.Png:
-                    image.SaveAsPng(stream);
+                    image.SaveAsPng(stream, new PngEncoder
+                    {
+                        CompressionLevel = PngCompressionLevel.BestSpeed,
+                    });
                     break;
                 case ImageFormat.Bmp:
                     image.Save(stream, new BmpEncoder
