@@ -677,7 +677,10 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
         {
             return classId == (int)ClassIDType.MeshRenderer
                 || classId == (int)ClassIDType.SkinnedMeshRenderer
+                || classId == (int)ClassIDType.Material
+                || classId == (int)ClassIDType.ParticleSystem
                 || classId == (int)ClassIDType.ParticleSystemRenderer
+                || classId == (int)ClassIDType.ParticleSystemForceField
                 || classId == (int)ClassIDType.LineRenderer
                 || classId == (int)ClassIDType.TrailRenderer
                 || classId == (int)ClassIDType.VFXRenderer
@@ -1098,6 +1101,8 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             private readonly List<TypeTreeNode> nodes;
             private readonly List<LightweightPPtrRelation> relations = new();
             private readonly List<object> bones = new();
+            private readonly Dictionary<string, object> primitiveHints = new(StringComparer.OrdinalIgnoreCase);
+            private readonly Stack<string> mapKeyStack = new();
 
             private LightweightRendererRelationReader(ObjectReader reader, TypeTree typeTree)
             {
@@ -1117,7 +1122,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 reader.Reset();
                 for (var i = 1; i < nodes.Count; i++)
                 {
-                    ReadNode(nodes, reader, ref i, string.Empty);
+                    _ = ReadNode(nodes, reader, ref i, string.Empty);
                 }
 
                 if (bones.Count > 0)
@@ -1134,13 +1139,30 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         },
                     });
                 }
+
+                var vfxHints = BuildVfxPreviewHints();
+                if (vfxHints.Count > 0)
+                {
+                    relations.Add(new LightweightPPtrRelation
+                    {
+                        Relation = reader.type == ClassIDType.Material ? "material.metadata" : "vfx.metadata",
+                        TypeHint = reader.type == ClassIDType.Material ? "Material" : "VFX",
+                        Details = new
+                        {
+                            count = vfxHints.Count,
+                            hints = vfxHints,
+                            schema = 1,
+                        },
+                    });
+                }
             }
 
-            private void ReadNode(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string parentPath)
+            private object ReadNode(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string parentPath)
             {
                 var node = nodeList[index];
                 var path = string.IsNullOrEmpty(parentPath) ? node.m_Name : $"{parentPath}.{node.m_Name}";
                 var align = (node.m_MetaFlag & 0x4000) != 0;
+                object returnValue = null;
 
                 if (node.m_Type != null && node.m_Type.StartsWith("PPtr<", StringComparison.Ordinal))
                 {
@@ -1151,57 +1173,70 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                     {
                         binaryReader.AlignStream();
                     }
-                    return;
+                    return null;
                 }
 
+                object primitiveValue = null;
+                var hasPrimitiveValue = false;
                 switch (node.m_Type)
                 {
                     case "SInt8":
-                        binaryReader.ReadSByte();
+                        primitiveValue = binaryReader.ReadSByte();
+                        hasPrimitiveValue = true;
                         break;
                     case "UInt8":
-                        binaryReader.ReadByte();
+                        primitiveValue = binaryReader.ReadByte();
+                        hasPrimitiveValue = true;
                         break;
                     case "char":
                         binaryReader.ReadBytes(2);
                         break;
                     case "short":
                     case "SInt16":
-                        binaryReader.ReadInt16();
+                        primitiveValue = binaryReader.ReadInt16();
+                        hasPrimitiveValue = true;
                         break;
                     case "UInt16":
                     case "unsigned short":
-                        binaryReader.ReadUInt16();
+                        primitiveValue = binaryReader.ReadUInt16();
+                        hasPrimitiveValue = true;
                         break;
                     case "int":
                     case "SInt32":
-                        binaryReader.ReadInt32();
+                        primitiveValue = binaryReader.ReadInt32();
+                        hasPrimitiveValue = true;
                         break;
                     case "UInt32":
                     case "unsigned int":
                     case "Type*":
-                        binaryReader.ReadUInt32();
+                        primitiveValue = binaryReader.ReadUInt32();
+                        hasPrimitiveValue = true;
                         break;
                     case "long long":
                     case "SInt64":
-                        binaryReader.ReadInt64();
+                        primitiveValue = binaryReader.ReadInt64();
+                        hasPrimitiveValue = true;
                         break;
                     case "UInt64":
                     case "unsigned long long":
                     case "FileSize":
-                        binaryReader.ReadUInt64();
+                        primitiveValue = binaryReader.ReadUInt64();
+                        hasPrimitiveValue = true;
                         break;
                     case "float":
-                        binaryReader.ReadSingle();
+                        primitiveValue = binaryReader.ReadSingle();
+                        hasPrimitiveValue = true;
                         break;
                     case "double":
-                        binaryReader.ReadDouble();
+                        primitiveValue = binaryReader.ReadDouble();
+                        hasPrimitiveValue = true;
                         break;
                     case "bool":
-                        binaryReader.ReadBoolean();
+                        primitiveValue = binaryReader.ReadBoolean();
+                        hasPrimitiveValue = true;
                         break;
                     case "string":
-                        binaryReader.ReadAlignedString();
+                        returnValue = binaryReader.ReadAlignedString();
                         index = GetNodeEnd(nodeList, index) - 1;
                         break;
                     case "TypelessData":
@@ -1228,17 +1263,25 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                             var end = GetNodeEnd(nodeList, index);
                             for (var child = index + 1; child < end; child++)
                             {
-                                ReadNode(nodeList, binaryReader, ref child, path);
+                                _ = ReadNode(nodeList, binaryReader, ref child, path);
                             }
                             index = end - 1;
                         }
                         break;
                 }
 
+                if (hasPrimitiveValue)
+                {
+                    CapturePrimitiveHint(path, node.m_Name, primitiveValue);
+                    returnValue = primitiveValue;
+                }
+
                 if (align)
                 {
                     binaryReader.AlignStream();
                 }
+
+                return returnValue;
             }
 
             private void ReadArray(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string path)
@@ -1255,7 +1298,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 for (var item = 0; item < size; item++)
                 {
                     var dataIndex = 3;
-                    ReadNode(vector, binaryReader, ref dataIndex, path);
+                    _ = ReadNode(vector, binaryReader, ref dataIndex, path);
                 }
 
                 if (arrayAlign)
@@ -1280,9 +1323,30 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 for (var item = 0; item < size; item++)
                 {
                     var firstIndex = 0;
-                    ReadNode(first, binaryReader, ref firstIndex, $"{path}.key");
+                    var keyValue = ReadNode(first, binaryReader, ref firstIndex, $"{path}.key");
+                    var mapKey = keyValue switch
+                    {
+                        string s when !string.IsNullOrWhiteSpace(s) => s,
+                        null => string.Empty,
+                        _ => keyValue.ToString(),
+                    };
+
                     var secondIndex = 0;
-                    ReadNode(second, binaryReader, ref secondIndex, $"{path}.value");
+                    if (!string.IsNullOrWhiteSpace(mapKey))
+                    {
+                        mapKeyStack.Push(mapKey);
+                    }
+                    try
+                    {
+                        _ = ReadNode(second, binaryReader, ref secondIndex, $"{path}.value");
+                    }
+                    finally
+                    {
+                        if (!string.IsNullOrWhiteSpace(mapKey))
+                        {
+                            mapKeyStack.Pop();
+                        }
+                    }
                 }
             }
 
@@ -1291,6 +1355,32 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 if (pathId == 0)
                 {
                     return;
+                }
+
+                if (reader.type == ClassIDType.Material)
+                {
+                    if (EndsWithField(path, "m_Shader"))
+                    {
+                        relations.Add(new LightweightPPtrRelation { Relation = "material.shader", FileId = fileId, PathId = pathId, TypeHint = "Shader" });
+                        return;
+                    }
+
+                    if (EndsWithField(path, "m_Texture") || ContainsField(path, "m_TexEnvs"))
+                    {
+                        relations.Add(new LightweightPPtrRelation
+                        {
+                            Relation = "material.texture",
+                            FileId = fileId,
+                            PathId = pathId,
+                            TypeHint = "Texture",
+                            Details = new
+                            {
+                                path,
+                                slot = TryExtractMaterialSlot(path),
+                            },
+                        });
+                        return;
+                    }
                 }
 
                 if (EndsWithField(path, "m_GameObject"))
@@ -1317,6 +1407,23 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                     return;
                 }
 
+                if (IsVfxLightweightType(reader.type)
+                    && (EndsWithField(path, "m_Texture") || EndsWithField(path, "m_NormalMap") || EndsWithField(path, "m_MaskMap")))
+                {
+                    relations.Add(new LightweightPPtrRelation
+                    {
+                        Relation = "vfx.texture",
+                        FileId = fileId,
+                        PathId = pathId,
+                        TypeHint = "Texture",
+                        Details = new
+                        {
+                            path,
+                        },
+                    });
+                    return;
+                }
+
                 if (ContainsField(path, "m_Bones"))
                 {
                     bones.Add(new
@@ -1326,6 +1433,175 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                         typeHint = "Transform",
                     });
                 }
+            }
+
+            private void CapturePrimitiveHint(string path, string fieldName, object value)
+            {
+                if (!IsVfxLightweightType(reader.type) && reader.type != ClassIDType.Material)
+                {
+                    return;
+                }
+
+                var key = reader.type == ClassIDType.Material
+                    ? GetMaterialHintKey(path, fieldName)
+                    : GetVfxHintKey(path, fieldName);
+                if (string.IsNullOrWhiteSpace(key) || primitiveHints.ContainsKey(key))
+                {
+                    return;
+                }
+
+                primitiveHints[key] = NormalizePrimitiveHint(value);
+            }
+
+            private static object NormalizePrimitiveHint(object value)
+            {
+                return value switch
+                {
+                    float f when float.IsFinite(f) => Math.Round(f, 5),
+                    double d when double.IsFinite(d) => Math.Round(d, 5),
+                    _ => value,
+                };
+            }
+
+            private static bool IsVfxLightweightType(ClassIDType type)
+            {
+                return type == ClassIDType.ParticleSystem
+                    || type == ClassIDType.ParticleSystemRenderer
+                    || type == ClassIDType.ParticleSystemForceField
+                    || type == ClassIDType.LineRenderer
+                    || type == ClassIDType.TrailRenderer
+                    || type == ClassIDType.VFXRenderer
+                    || type == ClassIDType.GPUParticleSystemRenderer;
+            }
+
+            private static string GetVfxHintKey(string path, string fieldName)
+            {
+                var normalized = path.Replace(".data", "", StringComparison.Ordinal)
+                    .Replace(".Array", "", StringComparison.Ordinal);
+                var lower = normalized.ToLowerInvariant();
+
+                if (EndsWithAny(lower, "m_rendermode", "m_renderingmode", "m_alignment", "m_sortingmode", "m_maskinteraction"))
+                {
+                    return "renderer." + fieldName;
+                }
+                if (EndsWithAny(lower, "m_lengthscale", "m_velocityscale", "m_cameravelocityscale", "m_normalsdirection"))
+                {
+                    return "renderer." + fieldName;
+                }
+                if (EndsWithAny(lower, "m_looping", "m_loop", "m_prewarm", "m_playonawake", "m_maxparticles", "m_autorandomseed"))
+                {
+                    return "main." + fieldName;
+                }
+                if (EndsWithAny(lower, "m_lengthinsec", "m_duration", "m_simulationspeed", "m_startdelay", "m_startspeed", "m_startsize", "m_startrotation", "m_startlifetime"))
+                {
+                    return "main." + fieldName;
+                }
+                if (lower.Contains("emission", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "emission." + fieldName;
+                }
+                if (lower.Contains("shape", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "shape." + fieldName;
+                }
+                if (lower.Contains("velocity", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "velocity." + fieldName;
+                }
+                if (lower.Contains("size", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "size." + fieldName;
+                }
+                if (lower.Contains("color", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "color." + fieldName;
+                }
+                if ((lower.Contains("texturesheet", StringComparison.Ordinal) || lower.Contains("sheet", StringComparison.Ordinal))
+                    && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "textureSheet." + fieldName;
+                }
+                if (lower.Contains("trail", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "trail." + fieldName;
+                }
+
+                return string.Empty;
+            }
+
+            private Dictionary<string, object> BuildVfxPreviewHints()
+            {
+                if (primitiveHints.Count == 0)
+                {
+                    return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                var hints = primitiveHints
+                    .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .Take(160)
+                    .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+                hints["sourceClass"] = reader.type.ToString();
+                return hints;
+            }
+
+            private string TryExtractMaterialSlot(string path)
+            {
+                if (path.Contains("m_TexEnvs", StringComparison.Ordinal)
+                    && mapKeyStack.Count > 0
+                    && !string.IsNullOrWhiteSpace(mapKeyStack.Peek()))
+                {
+                    return mapKeyStack.Peek();
+                }
+
+                return path.Contains("m_TexEnvs", StringComparison.Ordinal) ? "m_TexEnvs" : string.Empty;
+            }
+
+            private static string GetMaterialHintKey(string path, string fieldName)
+            {
+                var normalized = path.Replace(".data", "", StringComparison.Ordinal)
+                    .Replace(".Array", "", StringComparison.Ordinal);
+                var lower = normalized.ToLowerInvariant();
+                if (lower.Contains("m_colors", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "material.color." + fieldName;
+                }
+                if (lower.Contains("m_floats", StringComparison.Ordinal) && IsLikelyUsefulVfxLeaf(fieldName))
+                {
+                    return "material.float." + fieldName;
+                }
+                if (lower.Contains("m_texenvs", StringComparison.Ordinal)
+                    && (EndsWithAny(lower, "m_scale.x", "m_scale.y", "m_offset.x", "m_offset.y") || IsLikelyUsefulVfxLeaf(fieldName)))
+                {
+                    return "material.texEnv." + fieldName;
+                }
+
+                return string.Empty;
+            }
+
+            private static bool IsLikelyUsefulVfxLeaf(string fieldName)
+            {
+                return fieldName is "enabled" or "m_Enabled"
+                    or "type" or "m_Type"
+                    or "radius" or "m_Radius"
+                    or "angle" or "m_Angle"
+                    or "length" or "m_Length"
+                    or "arc" or "m_Arc"
+                    or "rate" or "m_Rate"
+                    or "scalar" or "m_Scalar"
+                    or "minScalar" or "maxScalar"
+                    or "minMaxState" or "m_MinMaxState"
+                    or "x" or "y" or "z" or "w"
+                    or "r" or "g" or "b" or "a"
+                    or "tilesX" or "tilesY" or "m_TilesX" or "m_TilesY"
+                    or "animationType" or "m_AnimationType"
+                    or "rowMode" or "m_RowMode"
+                    or "speed" or "m_Speed"
+                    or "randomize" or "m_Randomize";
+            }
+
+            private static bool EndsWithAny(string value, params string[] suffixes)
+            {
+                return suffixes.Any(suffix => value.EndsWith(suffix, StringComparison.Ordinal));
             }
 
             private static bool EndsWithField(string path, string fieldName)

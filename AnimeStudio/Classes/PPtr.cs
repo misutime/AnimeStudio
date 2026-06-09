@@ -55,10 +55,13 @@ namespace AnimeStudio
                 {
                     var m_External = assetsFile.m_Externals[m_FileID - 1];
                     var name = m_External.fileName;
-                    if (!assetsFileIndexCache.TryGetValue(name, out index))
+                    lock (assetsFileIndexCache)
                     {
-                        index = assetsFileList.FindIndex(x => x.fileName.Equals(name, StringComparison.OrdinalIgnoreCase));
-                        assetsFileIndexCache.Add(name, index);
+                        if (!assetsFileIndexCache.TryGetValue(name, out index))
+                        {
+                            index = assetsFileList.FindIndex(x => x.fileName.Equals(name, StringComparison.OrdinalIgnoreCase));
+                            assetsFileIndexCache[name] = index;
+                        }
                     }
                 }
 

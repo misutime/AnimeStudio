@@ -40,10 +40,15 @@ namespace AnimeStudio.CLI
 
     internal static class Exporter
     {
+        private static readonly object CatalogWriteLock = new object();
+        private static readonly object StaticMeshTextureWriteLock = new object();
+        private static readonly object StaticMeshMaterialBindingCacheLock = new object();
         private static readonly Dictionary<Material, ImportedMaterial> SharedMaterialCache = new Dictionary<Material, ImportedMaterial>();
         private static readonly Dictionary<Texture2D, ImportedTexture> SharedTextureCache = new Dictionary<Texture2D, ImportedTexture>();
         private static readonly Dictionary<string, List<ImportedVertex>> SharedMeshVertexCache = new Dictionary<string, List<ImportedVertex>>();
         private static readonly Queue<string> SharedMeshVertexCacheOrder = new Queue<string>();
+        private static string StaticMeshMaterialBindingCacheIndexPath;
+        private static Dictionary<string, List<StaticMeshMaterialReference>> StaticMeshMaterialBindingCache;
 
         public static bool ExportTexture2D(AssetItem item, string exportPath)
         {
@@ -701,7 +706,8 @@ namespace AnimeStudio.CLI
                 return false;
             }
 
-            using (ProfileLogger.Measure("static_mesh_gltf_export", GetModelProfileData(item, gltfPath)))
+            var profileData = GetModelProfileData(item, gltfPath);
+            using (ProfileLogger.Measure("static_mesh_gltf_export", profileData))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(gltfPath));
                 var binName = BuildSafeGltfBufferFileName(item.Text, item.m_PathID);
@@ -709,151 +715,173 @@ namespace AnimeStudio.CLI
                 var bufferViews = new JArray();
                 var accessors = new JArray();
                 var primitives = new JArray();
-                var materialBinding = ResolveStaticMeshMaterialBinding(item, gltfPath);
-                using var stream = File.Create(binPath);
-
-                var positionAccessor = WriteFloatAccessor(
-                    stream,
-                    bufferViews,
-                    accessors,
-                    BuildStaticMeshPositions(mesh),
-                    "VEC3",
-                    34962,
-                    CalculateVec3Min(mesh.m_Vertices, mesh.m_VertexCount, true),
-                    CalculateVec3Max(mesh.m_Vertices, mesh.m_VertexCount, true)
-                );
-
-                int? normalAccessor = null;
-                if (mesh.m_Normals != null && mesh.m_Normals.Length >= mesh.m_VertexCount * 3)
+                StaticMeshMaterialBinding materialBinding;
+                using (ProfileLogger.Measure("static_mesh_material_binding", profileData))
                 {
-                    normalAccessor = WriteFloatAccessor(
+                    materialBinding = ResolveStaticMeshMaterialBinding(item, gltfPath);
+                }
+
+                long bufferLength;
+                using (ProfileLogger.Measure("static_mesh_bin_write", profileData))
+                using (var stream = File.Create(binPath))
+                {
+                    var positionAccessor = WriteFloatAccessor(
                         stream,
                         bufferViews,
                         accessors,
-                        BuildStaticMeshNormals(mesh),
+                        BuildStaticMeshPositions(mesh),
                         "VEC3",
-                        34962
+                        34962,
+                        CalculateVec3Min(mesh.m_Vertices, mesh.m_VertexCount, true),
+                        CalculateVec3Max(mesh.m_Vertices, mesh.m_VertexCount, true)
                     );
-                }
 
-                int? uvAccessor = null;
-                var uv0 = mesh.GetUV(0);
-                if (uv0 != null && uv0.Length >= mesh.m_VertexCount * 2)
-                {
-                    uvAccessor = WriteFloatAccessor(
-                        stream,
-                        bufferViews,
-                        accessors,
-                        BuildStaticMeshUv(uv0, mesh.m_VertexCount),
-                        "VEC2",
-                        34962
-                    );
-                }
-
-                var cursor = 0;
-                for (var subMeshIndex = 0; subMeshIndex < mesh.m_SubMeshes.Count; subMeshIndex++)
-                {
-                    var subMesh = mesh.m_SubMeshes[subMeshIndex];
-                    var indexCount = (int)Math.Min(subMesh.indexCount, Math.Max(0, mesh.m_Indices.Count - cursor));
-                    if (indexCount < 3)
+                    int? normalAccessor = null;
+                    if (mesh.m_Normals != null && mesh.m_Normals.Length >= mesh.m_VertexCount * 3)
                     {
+                        normalAccessor = WriteFloatAccessor(
+                            stream,
+                            bufferViews,
+                            accessors,
+                            BuildStaticMeshNormals(mesh),
+                            "VEC3",
+                            34962
+                        );
+                    }
+
+                    int? uvAccessor = null;
+                    var uv0 = mesh.GetUV(0);
+                    if (uv0 != null && uv0.Length >= mesh.m_VertexCount * 2)
+                    {
+                        uvAccessor = WriteFloatAccessor(
+                            stream,
+                            bufferViews,
+                            accessors,
+                            BuildStaticMeshUv(uv0, mesh.m_VertexCount),
+                            "VEC2",
+                            34962
+                        );
+                    }
+
+                    var cursor = 0;
+                    for (var subMeshIndex = 0; subMeshIndex < mesh.m_SubMeshes.Count; subMeshIndex++)
+                    {
+                        var subMesh = mesh.m_SubMeshes[subMeshIndex];
+                        var indexCount = (int)Math.Min(subMesh.indexCount, Math.Max(0, mesh.m_Indices.Count - cursor));
+                        if (indexCount < 3)
+                        {
+                            cursor += indexCount;
+                            continue;
+                        }
+
+                        var indices = BuildStaticMeshIndices(mesh.m_Indices, cursor, indexCount);
                         cursor += indexCount;
-                        continue;
+                        if (indices.Length < 3)
+                        {
+                            continue;
+                        }
+
+                        var indexAccessor = WriteUIntAccessor(stream, bufferViews, accessors, indices, 34963);
+                        var attributes = new JObject
+                        {
+                            ["POSITION"] = positionAccessor,
+                        };
+                        if (normalAccessor.HasValue)
+                        {
+                            attributes["NORMAL"] = normalAccessor.Value;
+                        }
+                        if (uvAccessor.HasValue)
+                        {
+                            attributes["TEXCOORD_0"] = uvAccessor.Value;
+                        }
+
+                        primitives.Add(new JObject
+                        {
+                            ["attributes"] = attributes,
+                            ["indices"] = indexAccessor,
+                            ["mode"] = 4,
+                            ["material"] = materialBinding.GetMaterialIndexForSubMesh(subMeshIndex),
+                            ["extras"] = new JObject
+                            {
+                                ["unitySubMesh"] = subMeshIndex,
+                                ["sourceIndexCount"] = indexCount,
+                            },
+                        });
                     }
 
-                    var indices = BuildStaticMeshIndices(mesh.m_Indices, cursor, indexCount);
-                    cursor += indexCount;
-                    if (indices.Length < 3)
+                    if (primitives.Count == 0)
                     {
-                        continue;
+                        return false;
                     }
 
-                    var indexAccessor = WriteUIntAccessor(stream, bufferViews, accessors, indices, 34963);
-                    var attributes = new JObject
+                    AlignStream4(stream);
+                    bufferLength = stream.Length;
+                }
+
+                using (ProfileLogger.Measure("static_mesh_json_write", profileData))
+                {
+                    var images = new JArray();
+                    var textures = new JArray();
+                    var materials = BuildStaticMeshGltfMaterials(item, gltfPath, materialBinding, images, textures);
+
+                    var gltf = new JObject
                     {
-                        ["POSITION"] = positionAccessor,
+                        ["asset"] = new JObject
+                        {
+                            ["version"] = "2.0",
+                            ["generator"] = "AnimeStudio StaticMesh Library",
+                        },
+                        ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(0) }),
+                        ["scene"] = 0,
+                        ["nodes"] = new JArray(new JObject
+                        {
+                            ["name"] = FixFileName(item.Text),
+                            ["mesh"] = 0,
+                            ["extras"] = new JObject
+                            {
+                                ["unityContainer"] = item.Container,
+                                ["source"] = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                                ["pathId"] = item.m_PathID,
+                                ["libraryRole"] = item.LibraryRole,
+                            },
+                        }),
+                        ["meshes"] = new JArray(new JObject
+                        {
+                            ["name"] = mesh.m_Name,
+                            ["primitives"] = primitives,
+                        }),
+                        ["materials"] = materials,
+                        ["buffers"] = new JArray(new JObject
+                        {
+                            ["uri"] = binName,
+                            ["byteLength"] = bufferLength,
+                        }),
+                        ["bufferViews"] = bufferViews,
+                        ["accessors"] = accessors,
                     };
-                    if (normalAccessor.HasValue)
+                    if (images.Count > 0)
                     {
-                        attributes["NORMAL"] = normalAccessor.Value;
+                        gltf["images"] = images;
                     }
-                    if (uvAccessor.HasValue)
+                    if (textures.Count > 0)
                     {
-                        attributes["TEXCOORD_0"] = uvAccessor.Value;
+                        gltf["textures"] = textures;
                     }
 
-                    primitives.Add(new JObject
-                    {
-                        ["attributes"] = attributes,
-                        ["indices"] = indexAccessor,
-                        ["mode"] = 4,
-                        ["material"] = materialBinding.GetMaterialIndexForSubMesh(subMeshIndex),
-                        ["extras"] = new JObject
-                        {
-                            ["unitySubMesh"] = subMeshIndex,
-                            ["sourceIndexCount"] = indexCount,
-                        },
-                    });
+                    File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
                 }
-
-                if (primitives.Count == 0)
+                using (ProfileLogger.Measure("static_mesh_normalize", profileData))
                 {
-                    return false;
+                    NormalizeGltfForViewerCompatibility(gltfPath);
                 }
-
-                AlignStream4(stream);
-                var images = new JArray();
-                var textures = new JArray();
-                var materials = BuildStaticMeshGltfMaterials(item, gltfPath, materialBinding, images, textures);
-
-                var gltf = new JObject
+                using (ProfileLogger.Measure("static_mesh_readme", profileData))
                 {
-                    ["asset"] = new JObject
-                    {
-                        ["version"] = "2.0",
-                        ["generator"] = "AnimeStudio StaticMesh Library",
-                    },
-                    ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(0) }),
-                    ["scene"] = 0,
-                    ["nodes"] = new JArray(new JObject
-                    {
-                        ["name"] = FixFileName(item.Text),
-                        ["mesh"] = 0,
-                        ["extras"] = new JObject
-                        {
-                            ["unityContainer"] = item.Container,
-                            ["source"] = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
-                            ["pathId"] = item.m_PathID,
-                            ["libraryRole"] = item.LibraryRole,
-                        },
-                    }),
-                    ["meshes"] = new JArray(new JObject
-                    {
-                        ["name"] = mesh.m_Name,
-                        ["primitives"] = primitives,
-                    }),
-                    ["materials"] = materials,
-                    ["buffers"] = new JArray(new JObject
-                    {
-                        ["uri"] = binName,
-                        ["byteLength"] = stream.Length,
-                    }),
-                    ["bufferViews"] = bufferViews,
-                    ["accessors"] = accessors,
-                };
-                if (images.Count > 0)
-                {
-                    gltf["images"] = images;
+                    WriteStaticMeshReadme(gltfPath, item, mesh, materialBinding);
                 }
-                if (textures.Count > 0)
+                using (ProfileLogger.Measure("static_mesh_catalog_append", profileData))
                 {
-                    gltf["textures"] = textures;
+                    AppendStaticMeshAssetCatalog(item, gltfPath, materialBinding);
                 }
-
-                File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
-                NormalizeGltfForViewerCompatibility(gltfPath);
-                WriteStaticMeshReadme(gltfPath, item, mesh, materialBinding);
-                AppendStaticMeshAssetCatalog(item, gltfPath, materialBinding);
             }
 
             return true;
@@ -1063,7 +1091,7 @@ namespace AnimeStudio.CLI
 
             var meshObject = (AnimeStudio.Object)item.Asset;
             var meshFile = meshObject.assetsFile?.fileName ?? item.SourceFile?.fileName ?? string.Empty;
-            var refs = QueryStaticMeshMaterialReferences(indexPath, meshFile, item.m_PathID);
+            var refs = GetStaticMeshMaterialReferences(indexPath, meshFile, item.m_PathID);
             binding.RendererBindings = refs
                 .GroupBy(x => $"{x.RendererFile}:{x.RendererPathId}", StringComparer.OrdinalIgnoreCase)
                 .Select(x => new StaticMeshRendererBindingInfo
@@ -1150,6 +1178,64 @@ namespace AnimeStudio.CLI
             return binding;
         }
 
+        internal static void PreloadStaticMeshMaterialBindingCache()
+        {
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                return;
+            }
+
+            EnsureStaticMeshMaterialBindingCache(indexPath);
+        }
+
+        private static List<StaticMeshMaterialReference> GetStaticMeshMaterialReferences(string indexPath, string meshFile, long meshPathId)
+        {
+            var cache = EnsureStaticMeshMaterialBindingCache(indexPath);
+            if (cache != null && cache.TryGetValue(BuildStaticMeshMaterialCacheKey(meshFile, meshPathId), out var refs))
+            {
+                return refs;
+            }
+
+            return QueryStaticMeshMaterialReferences(indexPath, meshFile, meshPathId);
+        }
+
+        private static Dictionary<string, List<StaticMeshMaterialReference>> EnsureStaticMeshMaterialBindingCache(string indexPath)
+        {
+            lock (StaticMeshMaterialBindingCacheLock)
+            {
+                if (StaticMeshMaterialBindingCache != null
+                    && string.Equals(StaticMeshMaterialBindingCacheIndexPath, indexPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return StaticMeshMaterialBindingCache;
+                }
+
+                using (ProfileLogger.Measure("static_mesh_material_binding_cache_build", new Dictionary<string, object>
+                {
+                    ["sourceIndex"] = indexPath,
+                }))
+                {
+                    StaticMeshMaterialBindingCache = QueryAllStaticMeshMaterialReferences(indexPath)
+                        .GroupBy(x => BuildStaticMeshMaterialCacheKey(x.MeshFile, x.MeshPathId), StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            x => x.Key,
+                            x => x.OrderBy(y => y.RendererFile, StringComparer.OrdinalIgnoreCase)
+                                .ThenBy(y => y.RendererPathId)
+                                .ThenBy(y => y.RelationId)
+                                .ToList(),
+                            StringComparer.OrdinalIgnoreCase);
+                    StaticMeshMaterialBindingCacheIndexPath = indexPath;
+                    Logger.Info($"Cached StaticMesh Renderer->Material bindings for {StaticMeshMaterialBindingCache.Count} Mesh asset(s).");
+                    return StaticMeshMaterialBindingCache;
+                }
+            }
+        }
+
+        private static string BuildStaticMeshMaterialCacheKey(string meshFile, long meshPathId)
+        {
+            return $"{meshFile ?? string.Empty}#{meshPathId}";
+        }
+
         private static List<StaticMeshMaterialReference> QueryStaticMeshMaterialReferences(string indexPath, string meshFile, long meshPathId)
         {
             var refs = new List<StaticMeshMaterialReference>();
@@ -1212,6 +1298,8 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                     refs.Add(new StaticMeshMaterialReference
                     {
                         RelationId = reader.GetInt64(0),
+                        MeshFile = meshFile ?? string.Empty,
+                        MeshPathId = meshPathId,
                         RendererFile = reader.GetString(1),
                         RendererPathId = reader.GetInt64(2),
                         RendererType = reader.GetString(3),
@@ -1224,6 +1312,97 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
             catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
             {
                 Logger.Warning($"Unable to query StaticMesh material bindings from SQLite source index: {e.Message}");
+            }
+
+            return refs;
+        }
+
+        private static List<StaticMeshMaterialReference> QueryAllStaticMeshMaterialReferences(string indexPath)
+        {
+            var refs = new List<StaticMeshMaterialReference>();
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+WITH direct_renderers AS (
+    SELECT r.to_file AS mesh_file,
+           r.to_path_id AS mesh_path_id,
+           r.from_file,
+           r.from_path_id,
+           r.from_type
+    FROM source_relations r
+    WHERE r.relation = 'skinnedMeshRenderer.mesh'
+),
+mesh_filters AS (
+    SELECT mf.to_file AS mesh_file,
+           mf.to_path_id AS mesh_path_id,
+           mf.from_file AS mesh_filter_file,
+           mf.from_path_id AS mesh_filter_path_id
+    FROM source_relations mf
+    WHERE mf.relation = 'meshFilter.mesh'
+),
+game_objects AS (
+    SELECT mf.mesh_file,
+           mf.mesh_path_id,
+           go.to_file AS go_file,
+           go.to_path_id AS go_path_id
+    FROM mesh_filters mf
+    JOIN source_relations go ON go.from_file = mf.mesh_filter_file AND go.from_path_id = mf.mesh_filter_path_id
+    WHERE go.relation = 'component.gameObject'
+),
+static_renderers AS (
+    SELECT go.mesh_file,
+           go.mesh_path_id,
+           r.from_file,
+           r.from_path_id,
+           r.from_type
+    FROM source_relations r
+    JOIN game_objects go ON r.to_file = go.go_file AND r.to_path_id = go.go_path_id
+    WHERE r.relation = 'component.gameObject'
+      AND r.from_type IN ('MeshRenderer', 'SkinnedMeshRenderer')
+),
+renderers AS (
+    SELECT * FROM direct_renderers
+    UNION
+    SELECT * FROM static_renderers
+)
+SELECT mat.id,
+       r.mesh_file,
+       r.mesh_path_id,
+       r.from_file,
+       r.from_path_id,
+       r.from_type,
+       mat.to_file,
+       mat.to_path_id,
+       COALESCE(mo.name, '') AS material_name
+FROM renderers r
+JOIN source_relations mat ON mat.from_file = r.from_file AND mat.from_path_id = r.from_path_id
+LEFT JOIN source_objects mo ON mo.serialized_file = mat.to_file AND mo.path_id = mat.to_path_id
+WHERE mat.relation = 'renderer.material'
+ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    refs.Add(new StaticMeshMaterialReference
+                    {
+                        RelationId = reader.GetInt64(0),
+                        MeshFile = reader.GetString(1),
+                        MeshPathId = reader.GetInt64(2),
+                        RendererFile = reader.GetString(3),
+                        RendererPathId = reader.GetInt64(4),
+                        RendererType = reader.GetString(5),
+                        MaterialFile = reader.GetString(6),
+                        MaterialPathId = reader.GetInt64(7),
+                        MaterialName = reader.GetString(8),
+                    });
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to pre-cache StaticMesh material bindings from SQLite source index: {e.Message}");
             }
 
             return refs;
@@ -1408,30 +1587,33 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
             var extension = "." + Properties.Settings.Default.convertType.ToString().ToLowerInvariant();
             exportName = GetStaticMeshTextureExportName(texture, extension);
             var texturePath = Path.Combine(textureDirectory, exportName);
-            if (!File.Exists(texturePath))
+            lock (StaticMeshTextureWriteLock)
             {
-                var profileData = new Dictionary<string, object>
+                if (!File.Exists(texturePath))
                 {
-                    ["texture"] = texture.m_Name,
-                    ["source"] = texture.assetsFile?.fullName,
-                    ["pathId"] = texture.m_PathID,
-                    ["exportName"] = exportName,
-                    ["textureMode"] = CliExportOptions.TextureMode.ToString(),
-                    ["textureFormat"] = texture.m_TextureFormat.ToString(),
-                    ["width"] = texture.m_Width,
-                    ["height"] = texture.m_Height,
-                    ["imageFormat"] = Properties.Settings.Default.convertType.ToString(),
-                    ["usage"] = "static_mesh_renderer_material",
-                };
-                using (ProfileLogger.Measure("static_mesh_texture", profileData))
-                using (var stream = texture.ConvertToStream(Properties.Settings.Default.convertType, true, ProfileLogger.Measure, profileData))
-                {
-                    if (stream == null)
+                    var profileData = new Dictionary<string, object>
                     {
-                        return false;
+                        ["texture"] = texture.m_Name,
+                        ["source"] = texture.assetsFile?.fullName,
+                        ["pathId"] = texture.m_PathID,
+                        ["exportName"] = exportName,
+                        ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                        ["textureFormat"] = texture.m_TextureFormat.ToString(),
+                        ["width"] = texture.m_Width,
+                        ["height"] = texture.m_Height,
+                        ["imageFormat"] = Properties.Settings.Default.convertType.ToString(),
+                        ["usage"] = "static_mesh_renderer_material",
+                    };
+                    using (ProfileLogger.Measure("static_mesh_texture", profileData))
+                    using (var stream = texture.ConvertToStream(Properties.Settings.Default.convertType, true, ProfileLogger.Measure, profileData))
+                    {
+                        if (stream == null)
+                        {
+                            return false;
+                        }
+                        using var file = File.OpenWrite(texturePath);
+                        stream.WriteTo(file);
                     }
-                    using var file = File.OpenWrite(texturePath);
-                    stream.WriteTo(file);
                 }
             }
 
@@ -1821,6 +2003,8 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
         private sealed class StaticMeshMaterialReference
         {
             public long RelationId { get; init; }
+            public string MeshFile { get; init; }
+            public long MeshPathId { get; init; }
             public string RendererFile { get; init; }
             public long RendererPathId { get; init; }
             public string RendererType { get; init; }
@@ -3613,7 +3797,10 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
         {
             var catalogPath = Path.Combine(CliExportOptions.OutputRoot, "asset_catalog.jsonl");
             Directory.CreateDirectory(Path.GetDirectoryName(catalogPath));
-            File.AppendAllText(catalogPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
+            lock (CatalogWriteLock)
+            {
+                File.AppendAllText(catalogPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
+            }
         }
 
         private static (string type, string name, string container, string source, long pathId) GetSourceInfo(object source)
@@ -3644,8 +3831,12 @@ ORDER BY r.from_file, r.from_path_id, mat.id;";
                 "/",
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
+            var signalText = string.Join(
+                "/",
+                new[] { container, Path.GetFileNameWithoutExtension(source), name }.Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
 
-            if (Regex.IsMatch(text, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
+            if (Regex.IsMatch(signalText, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
             {
                 return "VFX";
             }

@@ -116,6 +116,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.PackOutput,
                 optionsBinder.PackLimit,
                 optionsBinder.GenerateUnityBakeRequest,
+                optionsBinder.GenerateUnityBakeRequestFromLibrary,
                 optionsBinder.UnityProject,
                 optionsBinder.UnityEditor,
                 optionsBinder.UnityBakeModelPrefab,
@@ -123,12 +124,14 @@ namespace AnimeStudio.CLI
                 optionsBinder.UnityBakeOutput,
                 optionsBinder.UnityBakeFps,
                 optionsBinder.RunUnityBake,
+                optionsBinder.UnityBakeWorkerQueue,
                 optionsBinder.ApplyUnityBakeResult,
                 optionsBinder.BakedGltfOutput,
                 optionsBinder.BakedFbxOutput,
                 optionsBinder.GenerateSkeletonGuide,
                 optionsBinder.SkeletonGuideCatalog,
                 optionsBinder.RebuildLibraryIndexes,
+                optionsBinder.MigrateLibraryRelativePaths,
                 optionsBinder.BuildSqliteIndex,
                 optionsBinder.BuildSourceSqliteIndex,
                 optionsBinder.SourceIndex,
@@ -199,6 +202,7 @@ namespace AnimeStudio.CLI
         public DirectoryInfo PackOutput { get; set; }
         public int PackLimit { get; set; }
         public FileInfo GenerateUnityBakeRequest { get; set; }
+        public DirectoryInfo GenerateUnityBakeRequestFromLibrary { get; set; }
         public DirectoryInfo UnityProject { get; set; }
         public FileInfo UnityEditor { get; set; }
         public string UnityBakeModelPrefab { get; set; }
@@ -206,12 +210,14 @@ namespace AnimeStudio.CLI
         public FileInfo UnityBakeOutput { get; set; }
         public int UnityBakeFps { get; set; }
         public bool RunUnityBake { get; set; }
+        public DirectoryInfo UnityBakeWorkerQueue { get; set; }
         public FileInfo ApplyUnityBakeResult { get; set; }
         public FileInfo BakedGltfOutput { get; set; }
         public FileInfo BakedFbxOutput { get; set; }
         public FileInfo GenerateSkeletonGuide { get; set; }
         public FileInfo SkeletonGuideCatalog { get; set; }
         public DirectoryInfo RebuildLibraryIndexes { get; set; }
+        public DirectoryInfo MigrateLibraryRelativePaths { get; set; }
         public DirectoryInfo BuildSqliteIndex { get; set; }
         public bool BuildSourceSqliteIndex { get; set; }
         public FileInfo SourceIndex { get; set; }
@@ -277,6 +283,7 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> PackOutput;
         public readonly Option<int> PackLimit;
         public readonly Option<FileInfo> GenerateUnityBakeRequest;
+        public readonly Option<DirectoryInfo> GenerateUnityBakeRequestFromLibrary;
         public readonly Option<DirectoryInfo> UnityProject;
         public readonly Option<FileInfo> UnityEditor;
         public readonly Option<string> UnityBakeModelPrefab;
@@ -284,12 +291,14 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> UnityBakeOutput;
         public readonly Option<int> UnityBakeFps;
         public readonly Option<bool> RunUnityBake;
+        public readonly Option<DirectoryInfo> UnityBakeWorkerQueue;
         public readonly Option<FileInfo> ApplyUnityBakeResult;
         public readonly Option<FileInfo> BakedGltfOutput;
         public readonly Option<FileInfo> BakedFbxOutput;
         public readonly Option<FileInfo> GenerateSkeletonGuide;
         public readonly Option<FileInfo> SkeletonGuideCatalog;
         public readonly Option<DirectoryInfo> RebuildLibraryIndexes;
+        public readonly Option<DirectoryInfo> MigrateLibraryRelativePaths;
         public readonly Option<DirectoryInfo> BuildSqliteIndex;
         public readonly Option<bool> BuildSourceSqliteIndex;
         public readonly Option<FileInfo> SourceIndex;
@@ -331,7 +340,7 @@ namespace AnimeStudio.CLI
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
             ModelSource = new Option<ModelSourceMode>("--model_source", "Specify Library model source mode: PrefabPrimary exports prefab/Animator models by default and indexes raw fbx parts; PrefabAndParts exports both; RawPartsOnly exports only raw fbx/source parts.");
             IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
-            MaxExportTasks = new Option<int>("--max_export_tasks", "Reserved maximum parallel export tasks for future batch export.");
+            MaxExportTasks = new Option<int>("--max_export_tasks", "Maximum parallel export tasks for StaticMeshPrimary glTF export. Use 1 for fully serial export.");
             BatchFiles = new Option<int>("--batch_files", "Number of source files to load per export batch. Higher values reduce repeated dependency loads but use more memory.");
             ModelGcInterval = new Option<int>("--model_gc_interval", "Run a light non-blocking GC after this many exported model candidates in 3D modes. Default 0 disables model-level GC; batch cleanup still performs full cleanup.");
             ProfileLog = new Option<string>("--profile_log", "Write JSONL performance profile events to the specified path. Use 'off' to disable.");
@@ -353,6 +362,7 @@ namespace AnimeStudio.CLI
             PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for --pack_model_animations.");
             PackLimit = new Option<int>("--pack_limit", "Maximum number of animations to pack when --pack_animations is omitted.");
             GenerateUnityBakeRequest = new Option<FileInfo>("--generate_unity_bake_request", "Generate a Unity Editor bake request from model_animations.json. Unity then samples Animator/Avatar through PlayableGraph and writes baked skeleton TRS.").LegalFilePathsOnly();
+            GenerateUnityBakeRequestFromLibrary = new Option<DirectoryInfo>("--generate_unity_bake_request_from_library", "Generate and optionally run a Unity Editor bake request by selecting model and animation from library_index.db in a Library root.").LegalFilePathsOnly();
             UnityProject = new Option<DirectoryInfo>("--unity_project", "Unity project that contains the AnimeStudio.UnityBake helper scripts. Required when --run_unity_bake is used.").LegalFilePathsOnly();
             UnityEditor = new Option<FileInfo>("--unity_editor", "Unity.exe path used with --run_unity_bake. If omitted, only the request JSON is written.").LegalFilePathsOnly();
             UnityBakeModelPrefab = new Option<string>("--unity_model_prefab", "Unity project asset path for the prepared model prefab, for example Assets/AnimeStudioBake/Input/Bill.prefab.");
@@ -360,12 +370,14 @@ namespace AnimeStudio.CLI
             UnityBakeOutput = new Option<FileInfo>("--unity_bake_output", "Output JSON path for Unity baked TRS animation. Defaults to unity_bake_result.json next to the request.");
             UnityBakeFps = new Option<int>("--unity_bake_fps", "Frame rate used by the Unity bake helper.");
             RunUnityBake = new Option<bool>("--run_unity_bake", "Run Unity Editor batchmode immediately after writing the bake request.");
+            UnityBakeWorkerQueue = new Option<DirectoryInfo>("--unity_bake_worker_queue", "Queue directory for a persistent Unity bake worker. When set with --run_unity_bake, CLI reuses a warm Unity worker instead of launching Unity for each request.").LegalFilePathsOnly();
             ApplyUnityBakeResult = new Option<FileInfo>("--apply_unity_bake_result", "Apply unity_bake_result.json or unity_bake_request.json to the source glTF and write a baked playable preview glTF.").LegalFilePathsOnly();
             BakedGltfOutput = new Option<FileInfo>("--baked_gltf_output", "Output glTF path for --apply_unity_bake_result. Defaults to BakedPreview/<model>__<clip>.gltf next to the bake request/result.");
             BakedFbxOutput = new Option<FileInfo>("--baked_fbx_output", "Optional compatibility FBX output path. AnimeStudio first writes the baked glTF, then asks Blender to export FBX for DCC comparison.");
             GenerateSkeletonGuide = new Option<FileInfo>("--generate_skeleton_guide", "Generate a non-destructive Blender CoreHumanoid skeleton guide from an exported FBX/glTF/GLB. Uses asset_catalog.jsonl Unity Avatar relations when available.").LegalFilePathsOnly();
             SkeletonGuideCatalog = new Option<FileInfo>("--skeleton_guide_catalog", "Optional asset_catalog.jsonl used by --generate_skeleton_guide. If omitted, AnimeStudio walks up from the FBX path.").LegalFilePathsOnly();
             RebuildLibraryIndexes = new Option<DirectoryInfo>("--rebuild_library_indexes", "Rebuild summary, validation, skeleton, model-animation, and compact indexes from a previous Library export without loading the original Unity game files. Explicit Animator relations require a fresh export; catalog structural links are rebuilt.").LegalFilePathsOnly();
+            MigrateLibraryRelativePaths = new Option<DirectoryInfo>("--migrate_library_relative_paths", "Convert an existing exported Library index to portable root-relative internal asset paths and rebuild library_index.db. Unity source paths are preserved.").LegalFilePathsOnly();
             BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Rebuild the reusable SQLite index from a previous Library or AudioLibrary export. Default Library export already writes library_index.db.").LegalFilePathsOnly();
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
             SourceIndex = new Option<FileInfo>("--source_index", "SQLite Unity source index used by Library export for dependency resolution. Prefer unity_source_index.db over legacy CAB maps for full exports.").LegalFilePathsOnly();
@@ -415,7 +427,7 @@ namespace AnimeStudio.CLI
             TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Png);
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.All);
             ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
-            MaxExportTasks.SetDefaultValue(1);
+            MaxExportTasks.SetDefaultValue(Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2)));
             BatchFiles.SetDefaultValue(16);
             ModelGcInterval.SetDefaultValue(0);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
@@ -518,6 +530,7 @@ namespace AnimeStudio.CLI
                 PackOutput = bindingContext.ParseResult.GetValueForOption(PackOutput),
                 PackLimit = bindingContext.ParseResult.GetValueForOption(PackLimit),
                 GenerateUnityBakeRequest = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequest),
+                GenerateUnityBakeRequestFromLibrary = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequestFromLibrary),
                 UnityProject = bindingContext.ParseResult.GetValueForOption(UnityProject),
                 UnityEditor = bindingContext.ParseResult.GetValueForOption(UnityEditor),
                 UnityBakeModelPrefab = bindingContext.ParseResult.GetValueForOption(UnityBakeModelPrefab),
@@ -525,12 +538,14 @@ namespace AnimeStudio.CLI
                 UnityBakeOutput = bindingContext.ParseResult.GetValueForOption(UnityBakeOutput),
                 UnityBakeFps = bindingContext.ParseResult.GetValueForOption(UnityBakeFps),
                 RunUnityBake = bindingContext.ParseResult.GetValueForOption(RunUnityBake),
+                UnityBakeWorkerQueue = bindingContext.ParseResult.GetValueForOption(UnityBakeWorkerQueue),
                 ApplyUnityBakeResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeResult),
                 BakedGltfOutput = bindingContext.ParseResult.GetValueForOption(BakedGltfOutput),
                 BakedFbxOutput = bindingContext.ParseResult.GetValueForOption(BakedFbxOutput),
                 GenerateSkeletonGuide = bindingContext.ParseResult.GetValueForOption(GenerateSkeletonGuide),
                 SkeletonGuideCatalog = bindingContext.ParseResult.GetValueForOption(SkeletonGuideCatalog),
                 RebuildLibraryIndexes = bindingContext.ParseResult.GetValueForOption(RebuildLibraryIndexes),
+                MigrateLibraryRelativePaths = bindingContext.ParseResult.GetValueForOption(MigrateLibraryRelativePaths),
                 BuildSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSqliteIndex),
                 BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
                 SourceIndex = bindingContext.ParseResult.GetValueForOption(SourceIndex),

@@ -10,14 +10,19 @@ namespace AnimeStudio.LibraryBrowser
     internal sealed class LibraryAnimationIndex
     {
         private readonly Dictionary<string, List<LibraryAnimationCandidate>> _byModelOutput;
+        private readonly Dictionary<string, LibraryAnimationUsage> _byAnimationKey;
         private readonly Dictionary<string, IReadOnlyList<LibraryAnimationCandidate>> _targetedCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly string _root;
         private readonly object _cacheLock = new();
 
-        private LibraryAnimationIndex(string root, Dictionary<string, List<LibraryAnimationCandidate>> byModelOutput)
+        private LibraryAnimationIndex(
+            string root,
+            Dictionary<string, List<LibraryAnimationCandidate>> byModelOutput,
+            IEnumerable<LibraryAnimationCandidate> allAnimations = null)
         {
             _root = root;
             _byModelOutput = byModelOutput;
+            _byAnimationKey = BuildAnimationUsageMap(byModelOutput, allAnimations);
         }
 
         public static LibraryAnimationIndex Empty { get; } = new("", new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase));
@@ -42,6 +47,14 @@ namespace AnimeStudio.LibraryBrowser
         public int CountExplicitForModel(LibraryModelItem model)
         {
             return FindForModel(model).Count(x => x.IsExplicit);
+        }
+
+        public IReadOnlyList<LibraryAnimationUsage> FindAllAnimations()
+        {
+            return _byAnimationKey.Values
+                .OrderBy(x => x.Animation.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Animation.BestPath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         public IReadOnlyList<LibraryAnimationCandidate> FindTargetedForModel(LibraryModelItem model)
@@ -70,7 +83,7 @@ namespace AnimeStudio.LibraryBrowser
         public static LibraryAnimationIndex Load(string root)
         {
             var sqlite = LoadSqlite(root);
-            if (sqlite != null)
+            if (sqlite != null && sqlite.FindAllAnimations().Count > 0)
             {
                 return sqlite;
             }
@@ -103,33 +116,31 @@ namespace AnimeStudio.LibraryBrowser
                 SQLitePCL.Batteries_V2.Init();
                 using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
                 connection.Open();
-                if (!HasTable(connection, "model_animation_candidates"))
-                {
-                    return null;
-                }
-
                 var result = new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase);
-                using var command = connection.CreateCommand();
-                command.CommandText = @"
+                if (HasTable(connection, "model_animation_candidates"))
+                {
+                    using var command = connection.CreateCommand();
+                    command.CommandText = @"
 SELECT c.model_output, c.raw_json, a.raw_json
 FROM model_animation_candidates c
 JOIN assets a ON a.kind = 'Animation' AND a.output = c.animation_output
 ORDER BY c.model_output, c.score DESC;";
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
-                {
-                    var modelOutput = reader.GetString(0);
-                    using var candidateDocument = JsonDocument.Parse(reader.GetString(1));
-                    using var animationDocument = JsonDocument.Parse(reader.GetString(2));
-                    var candidate = candidateDocument.RootElement;
-                    var animation = animationDocument.RootElement;
-                    if (!result.TryGetValue(NormalizePath(modelOutput), out var list))
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
                     {
-                        list = new List<LibraryAnimationCandidate>();
-                        result[NormalizePath(modelOutput)] = list;
-                    }
+                        var modelOutput = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
+                        using var candidateDocument = JsonDocument.Parse(reader.GetString(1));
+                        using var animationDocument = JsonDocument.Parse(reader.GetString(2));
+                        var candidate = candidateDocument.RootElement;
+                        var animation = animationDocument.RootElement;
+                        if (!result.TryGetValue(NormalizePath(modelOutput), out var list))
+                        {
+                            list = new List<LibraryAnimationCandidate>();
+                            result[NormalizePath(modelOutput)] = list;
+                        }
 
-                    list.Add(MergeCandidate(animation, candidate));
+                        list.Add(MergeCandidate(root, animation, candidate));
+                    }
                 }
 
                 foreach (var key in result.Keys.ToArray())
@@ -137,7 +148,7 @@ ORDER BY c.model_output, c.score DESC;";
                     result[key] = SortCandidates(result[key]);
                 }
 
-                return new LibraryAnimationIndex(root, result);
+                return new LibraryAnimationIndex(root, result, LoadAllAnimationsFromSqlite(root, connection));
             }
             catch (SqliteException)
             {
@@ -147,19 +158,38 @@ ORDER BY c.model_output, c.score DESC;";
             {
                 return null;
             }
+            catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
+            {
+                return null;
+            }
         }
 
         private static LibraryAnimationIndex LoadCompact(string path)
         {
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            JsonDocument document;
+            try
+            {
+                document = JsonDocument.Parse(File.ReadAllText(path));
+            }
+            catch (JsonException)
+            {
+                return LoadCompactJsonLines(path);
+            }
+
+            using (document)
+            {
             var root = document.RootElement;
+            var libraryRoot = Path.GetDirectoryName(path) ?? "";
             var animations = LoadAnimationMap(root);
-            var modelOutputs = LoadModelOutputMap(root);
+            var modelOutputs = LoadModelOutputMap(libraryRoot, root);
             var result = new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase);
 
             if (!root.TryGetProperty("modelAnimationRefs", out var refs) || refs.ValueKind != JsonValueKind.Array)
             {
-                    return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result);
+                    return new LibraryAnimationIndex(
+                        Path.GetDirectoryName(path) ?? "",
+                        result,
+                        MergeAllAnimations(animations.Values.Select(x => ReadAnimation(libraryRoot, x)), LoadAllAnimationsFromBindingsJsonLines(libraryRoot)));
             }
 
             foreach (var item in refs.EnumerateArray())
@@ -184,7 +214,7 @@ ORDER BY c.model_output, c.score DESC;";
                         continue;
                     }
 
-                    list.Add(MergeCandidate(animation, candidate));
+                    list.Add(MergeCandidate(libraryRoot, animation, candidate));
                 }
 
                 if (list.Count > 0)
@@ -193,7 +223,65 @@ ORDER BY c.model_output, c.score DESC;";
                 }
             }
 
-            return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result);
+            return new LibraryAnimationIndex(
+                libraryRoot,
+                result,
+                MergeAllAnimations(animations.Values.Select(x => ReadAnimation(libraryRoot, x)), LoadAllAnimationsFromBindingsJsonLines(libraryRoot)));
+            }
+        }
+
+        private static LibraryAnimationIndex LoadCompactJsonLines(string path)
+        {
+            var result = new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase);
+            var allAnimations = new Dictionary<string, LibraryAnimationCandidate>(StringComparer.OrdinalIgnoreCase);
+            var root = Path.GetDirectoryName(path) ?? "";
+
+            foreach (var line in File.ReadLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    var entry = document.RootElement;
+                    if (!entry.TryGetProperty("animation", out var animationElement)
+                        || animationElement.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    var animation = animationElement.Clone();
+                    AddAllAnimation(allAnimations, ReadAnimation(root, animation));
+
+                    var modelOutput = LibraryPathResolver.ResolveExistingFile(root, ReadString(entry, "modelOutput"));
+                    if (string.IsNullOrWhiteSpace(modelOutput)
+                        || !entry.TryGetProperty("candidates", out var candidates)
+                        || candidates.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    var list = new List<LibraryAnimationCandidate>();
+                    foreach (var candidate in candidates.EnumerateArray())
+                    {
+                        list.Add(MergeCandidate(root, animation, candidate));
+                    }
+
+                    if (list.Count > 0)
+                    {
+                        result[NormalizePath(modelOutput)] = SortCandidates(list);
+                    }
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+            }
+
+            return new LibraryAnimationIndex(root, result, MergeAllAnimations(allAnimations.Values, LoadAllAnimationsFromBindingsJsonLines(root)));
         }
 
         private static Dictionary<string, JsonElement> LoadAnimationMap(JsonElement root)
@@ -216,7 +304,7 @@ ORDER BY c.model_output, c.score DESC;";
             return result;
         }
 
-        private static Dictionary<string, string> LoadModelOutputMap(JsonElement root)
+        private static Dictionary<string, string> LoadModelOutputMap(string libraryRoot, JsonElement root)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (!root.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array)
@@ -227,7 +315,7 @@ ORDER BY c.model_output, c.score DESC;";
             foreach (var model in models.EnumerateArray())
             {
                 var id = ReadString(model, "id");
-                var output = ReadString(model, "output");
+                var output = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(model, "output"));
                 if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(output))
                 {
                     result[id] = output;
@@ -251,7 +339,7 @@ ORDER BY c.model_output, c.score DESC;";
             foreach (var modelEntry in models.EnumerateArray())
             {
                 var model = modelEntry.TryGetProperty("model", out var modelInfo) ? modelInfo : modelEntry;
-                var output = ReadString(model, "output");
+                var output = LibraryPathResolver.ResolveExistingFile(Path.GetDirectoryName(path) ?? "", ReadString(model, "output"));
                 if (string.IsNullOrWhiteSpace(output)
                     || !modelEntry.TryGetProperty("candidates", out var candidates)
                     || candidates.ValueKind != JsonValueKind.Array)
@@ -262,7 +350,7 @@ ORDER BY c.model_output, c.score DESC;";
                 var list = new List<LibraryAnimationCandidate>();
                 foreach (var candidate in candidates.EnumerateArray())
                 {
-                    list.Add(ReadCandidate(candidate));
+                    list.Add(ReadCandidate(Path.GetDirectoryName(path) ?? "", candidate));
                 }
 
                 if (list.Count > 0)
@@ -274,13 +362,13 @@ ORDER BY c.model_output, c.score DESC;";
             return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result);
         }
 
-        private static LibraryAnimationCandidate MergeCandidate(JsonElement animation, JsonElement candidate)
+        private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate)
         {
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(animation, "name") ?? ReadString(candidate, "name") ?? "",
-                OutputPath = ReadString(animation, "output") ?? ReadString(candidate, "output") ?? "",
-                AnimationAssetPath = ReadString(animation, "animationAsset") ?? "",
+                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ReadString(candidate, "output") ?? ""),
+                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? ""),
                 Source = ReadString(animation, "source") ?? "",
                 AnimationType = ReadString(animation, "animationType") ?? "",
                 Capability = ReadString(animation, "animationCapability") ?? "",
@@ -292,17 +380,18 @@ ORDER BY c.model_output, c.score DESC;";
                 SampleRate = ReadDouble(animation, "sampleRate"),
                 CurveCount = ReadInt32(animation, "curveCount"),
                 MatchedPathCount = ReadArrayLength(candidate, "matchedBindingPaths"),
-                RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake")
+                RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
+                BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
         }
 
-        private static LibraryAnimationCandidate ReadCandidate(JsonElement candidate)
+        private static LibraryAnimationCandidate ReadCandidate(string libraryRoot, JsonElement candidate)
         {
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(candidate, "name") ?? "",
-                OutputPath = ReadString(candidate, "output") ?? "",
-                AnimationAssetPath = ReadString(candidate, "animationAsset") ?? "",
+                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(candidate, "output") ?? ""),
+                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(candidate, "animationAsset") ?? ""),
                 Source = ReadString(candidate, "source") ?? "",
                 AnimationType = ReadString(candidate, "animationType") ?? "",
                 Capability = ReadString(candidate, "animationCapability") ?? "",
@@ -314,8 +403,131 @@ ORDER BY c.model_output, c.score DESC;";
                 SampleRate = ReadDouble(candidate, "sampleRate"),
                 CurveCount = ReadInt32(candidate, "curveCount"),
                 MatchedPathCount = ReadArrayLength(candidate, "matchedBindingPaths"),
-                RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake")
+                RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
+                BindingPaths = ReadStringArray(candidate, "transformBindingPaths")
             };
+        }
+
+        private static LibraryAnimationCandidate ReadAnimation(string libraryRoot, JsonElement animation)
+        {
+            return new LibraryAnimationCandidate
+            {
+                Name = ReadString(animation, "name") ?? "",
+                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ""),
+                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? ""),
+                Source = ReadString(animation, "source") ?? "",
+                AnimationType = ReadString(animation, "animationType") ?? "",
+                Capability = ReadString(animation, "animationCapability") ?? "",
+                Relation = "",
+                RelationSource = "",
+                Confidence = "",
+                Score = 0,
+                Duration = ReadDouble(animation, "duration"),
+                SampleRate = ReadDouble(animation, "sampleRate"),
+                CurveCount = ReadInt32(animation, "curveCount"),
+                RequiresHumanoidBake = ReadBool(animation, "hasMuscleClip"),
+                BindingPaths = ReadStringArray(animation, "transformBindingPaths")
+            };
+        }
+
+        private static List<LibraryAnimationCandidate> LoadAllAnimationsFromSqlite(string libraryRoot, SqliteConnection connection)
+        {
+            var result = new Dictionary<string, LibraryAnimationCandidate>(StringComparer.OrdinalIgnoreCase);
+            if (!HasTable(connection, "assets"))
+            {
+                return new List<LibraryAnimationCandidate>();
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT raw_json
+FROM assets
+WHERE kind = 'Animation' OR sourceType = 'AnimationClip';";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(reader.GetString(0));
+                    var root = document.RootElement;
+                    var animation = root.TryGetProperty("animation", out var animationElement)
+                        ? animationElement
+                        : root;
+                    AddAllAnimation(result, ReadAnimation(libraryRoot, animation));
+                }
+                catch (JsonException)
+                {
+                }
+            }
+
+            return result.Values.ToList();
+        }
+
+        private static List<LibraryAnimationCandidate> LoadAllAnimationsFromBindingsJsonLines(string root)
+        {
+            var result = new Dictionary<string, LibraryAnimationCandidate>(StringComparer.OrdinalIgnoreCase);
+            var bindingsPath = Path.Combine(root, "animation_bindings.jsonl");
+            if (!File.Exists(bindingsPath))
+            {
+                return new List<LibraryAnimationCandidate>();
+            }
+
+            foreach (var line in File.ReadLines(bindingsPath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    var rootElement = document.RootElement;
+                    var animation = rootElement.TryGetProperty("animation", out var animationElement)
+                        ? animationElement
+                        : rootElement;
+                    AddAllAnimation(result, ReadAnimation(root, animation));
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+            }
+
+            return result.Values.ToList();
+        }
+
+        private static List<LibraryAnimationCandidate> MergeAllAnimations(
+            IEnumerable<LibraryAnimationCandidate> primary,
+            IEnumerable<LibraryAnimationCandidate> secondary)
+        {
+            var result = new Dictionary<string, LibraryAnimationCandidate>(StringComparer.OrdinalIgnoreCase);
+            foreach (var animation in primary ?? Array.Empty<LibraryAnimationCandidate>())
+            {
+                AddAllAnimation(result, animation);
+            }
+
+            foreach (var animation in secondary ?? Array.Empty<LibraryAnimationCandidate>())
+            {
+                AddAllAnimation(result, animation);
+            }
+
+            return result.Values.ToList();
+        }
+
+        private static void AddAllAnimation(Dictionary<string, LibraryAnimationCandidate> result, LibraryAnimationCandidate animation)
+        {
+            var key = BuildAnimationKey(animation);
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            if (!result.TryGetValue(key, out var existing)
+                || (existing.BindingPaths.Length == 0 && animation.BindingPaths.Length > 0))
+            {
+                result[key] = animation;
+            }
         }
 
         private IReadOnlyList<LibraryAnimationCandidate> FindTargetedForModelCore(LibraryModelItem model)
@@ -366,7 +578,7 @@ ORDER BY c.model_output, c.score DESC;";
                     continue;
                 }
 
-                var bestPath = ReadString(animation, "output") ?? ReadString(animation, "animationAsset") ?? "";
+                var bestPath = LibraryPathResolver.ResolveExistingFile(_root, ReadString(animation, "output") ?? ReadString(animation, "animationAsset") ?? "");
                 if (!string.IsNullOrWhiteSpace(bestPath) && existing.Contains(bestPath))
                 {
                     continue;
@@ -379,7 +591,7 @@ ORDER BY c.model_output, c.score DESC;";
                     continue;
                 }
 
-                result.Add(BuildTargetedCandidate(animation, matched));
+                result.Add(BuildTargetedCandidate(_root, animation, matched));
             }
 
             return SortCandidates(result);
@@ -444,7 +656,7 @@ GROUP BY ab.id;";
                         var animation = root.TryGetProperty("animation", out var animationElement)
                             ? animationElement.Clone()
                             : root.Clone();
-                        var bestPath = ReadString(animation, "output") ?? ReadString(animation, "animationAsset") ?? "";
+                        var bestPath = LibraryPathResolver.ResolveExistingFile(_root, ReadString(animation, "output") ?? ReadString(animation, "animationAsset") ?? "");
                         if (!string.IsNullOrWhiteSpace(bestPath) && existing.Contains(bestPath))
                         {
                             continue;
@@ -461,7 +673,7 @@ GROUP BY ab.id;";
 
                 candidates = SortCandidates(byKey.Values
                     .Where(x => IsTargetedMatch(x.Matched, ReadArrayLength(x.Animation, "transformBindingPaths")))
-                    .Select(x => BuildTargetedCandidate(x.Animation, x.Matched))
+                    .Select(x => BuildTargetedCandidate(_root, x.Animation, x.Matched))
                     .ToList());
                 return true;
             }
@@ -479,13 +691,13 @@ GROUP BY ab.id;";
             return command.ExecuteScalar() != null;
         }
 
-        private static LibraryAnimationCandidate BuildTargetedCandidate(JsonElement animation, int matched)
+        private static LibraryAnimationCandidate BuildTargetedCandidate(string libraryRoot, JsonElement animation, int matched)
         {
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(animation, "name") ?? "",
-                OutputPath = ReadString(animation, "output") ?? "",
-                AnimationAssetPath = ReadString(animation, "animationAsset") ?? "",
+                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ""),
+                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? ""),
                 Source = ReadString(animation, "source") ?? "",
                 AnimationType = ReadString(animation, "animationType") ?? "",
                 Capability = ReadString(animation, "animationCapability") ?? "",
@@ -498,7 +710,8 @@ GROUP BY ab.id;";
                 CurveCount = ReadInt32(animation, "curveCount"),
                 MatchedPathCount = matched,
                 RequiresHumanoidBake = ReadBool(animation, "hasMuscleClip"),
-                NeedsValidation = true
+                NeedsValidation = true,
+                BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
         }
 
@@ -577,6 +790,106 @@ GROUP BY ab.id;";
                 .ThenByDescending(x => x.MatchedPathCount)
                 .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+        }
+
+        private static Dictionary<string, LibraryAnimationUsage> BuildAnimationUsageMap(
+            Dictionary<string, List<LibraryAnimationCandidate>> byModelOutput,
+            IEnumerable<LibraryAnimationCandidate> allAnimations)
+        {
+            var builders = new Dictionary<string, AnimationUsageBuilder>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in byModelOutput)
+            {
+                foreach (var animation in pair.Value)
+                {
+                    var key = BuildAnimationKey(animation);
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        continue;
+                    }
+
+                    if (!builders.TryGetValue(key, out var builder))
+                    {
+                        builder = new AnimationUsageBuilder(key, animation);
+                        builders[key] = builder;
+                    }
+                    else if (IsBetterRepresentative(animation, builder.Animation))
+                    {
+                        builder.Animation = animation;
+                    }
+
+                    builder.ModelOutputs.Add(NormalizePath(pair.Key));
+                }
+            }
+
+            if (allAnimations != null)
+            {
+                foreach (var animation in allAnimations)
+                {
+                    var key = BuildAnimationKey(animation);
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        continue;
+                    }
+
+                    if (!builders.ContainsKey(key))
+                    {
+                        builders[key] = new AnimationUsageBuilder(key, animation);
+                    }
+                }
+            }
+
+            return builders.ToDictionary(
+                x => x.Key,
+                x => new LibraryAnimationUsage
+                {
+                    Key = x.Key,
+                    Animation = x.Value.Animation,
+                    ModelOutputs = x.Value.ModelOutputs
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(y => y, StringComparer.OrdinalIgnoreCase)
+                        .ToArray()
+                },
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string BuildAnimationKey(LibraryAnimationCandidate animation)
+        {
+            if (animation == null)
+            {
+                return "";
+            }
+
+            return !string.IsNullOrWhiteSpace(animation.BestPath)
+                ? NormalizePath(animation.BestPath)
+                : animation.Name ?? "";
+        }
+
+        private static bool IsBetterRepresentative(LibraryAnimationCandidate candidate, LibraryAnimationCandidate current)
+        {
+            if (current == null)
+            {
+                return true;
+            }
+
+            if (candidate.IsExplicit != current.IsExplicit)
+            {
+                return candidate.IsExplicit;
+            }
+
+            return candidate.Score > current.Score;
+        }
+
+        private sealed class AnimationUsageBuilder
+        {
+            public AnimationUsageBuilder(string key, LibraryAnimationCandidate animation)
+            {
+                Key = key;
+                Animation = animation;
+            }
+
+            public string Key { get; }
+            public LibraryAnimationCandidate Animation { get; set; }
+            public HashSet<string> ModelOutputs { get; } = new(StringComparer.OrdinalIgnoreCase);
         }
 
         private static string NormalizePath(string path)

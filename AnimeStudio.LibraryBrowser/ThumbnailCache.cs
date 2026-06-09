@@ -10,6 +10,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class ThumbnailCache : IDisposable
     {
+        private const string ThumbnailCacheVersion = "v2_textured";
         private readonly string _thumbnailDir;
         private readonly string _failedDir;
         private readonly string _f3dPath;
@@ -21,8 +22,8 @@ namespace AnimeStudio.LibraryBrowser
         public ThumbnailCache(string root, int maxConcurrency)
         {
             var browserDir = Path.Combine(root, ".animestudio_browser");
-            _thumbnailDir = Path.Combine(browserDir, "thumbnails");
-            _failedDir = Path.Combine(browserDir, "thumbnail_failed");
+            _thumbnailDir = Path.Combine(browserDir, "thumbnails", ThumbnailCacheVersion);
+            _failedDir = Path.Combine(browserDir, "thumbnail_failed", ThumbnailCacheVersion);
             Directory.CreateDirectory(_thumbnailDir);
             Directory.CreateDirectory(_failedDir);
             _f3dPath = FindF3d();
@@ -75,6 +76,22 @@ namespace AnimeStudio.LibraryBrowser
                 return output;
             }
 
+            if (item.IsVfx && string.IsNullOrWhiteSpace(item.ThumbnailSourcePath))
+            {
+                try
+                {
+                    VfxThumbnailRenderer.RenderToFile(item, output);
+                    _runningTasks.TryRemove(item.StableKey, out _);
+                    return File.Exists(output) ? output : null;
+                }
+                catch (Exception ex)
+                {
+                    WriteFailure(item, "vfx procedural thumbnail failed: " + ex.Message);
+                    _runningTasks.TryRemove(item.StableKey, out _);
+                    return null;
+                }
+            }
+
             var result = await _renderPool.RenderAsync(item, output, cancellationToken).ConfigureAwait(false);
             if (result.Success && File.Exists(output))
             {
@@ -82,7 +99,23 @@ namespace AnimeStudio.LibraryBrowser
                 return output;
             }
 
-            if (!HasF3d)
+            if (item.IsVfx)
+            {
+                try
+                {
+                    VfxThumbnailRenderer.RenderToFile(item, output);
+                    _runningTasks.TryRemove(item.StableKey, out _);
+                    return File.Exists(output) ? output : null;
+                }
+                catch (Exception ex)
+                {
+                    WriteFailure(item, "vfx fallback thumbnail failed: " + ex.Message);
+                    _runningTasks.TryRemove(item.StableKey, out _);
+                    return null;
+                }
+            }
+
+            if (!HasF3d || string.IsNullOrWhiteSpace(item.ThumbnailSourcePath))
             {
                 WriteFailure(item, "persistent renderer failed: " + result.Error);
                 _runningTasks.TryRemove(item.StableKey, out _);
@@ -133,7 +166,7 @@ namespace AnimeStudio.LibraryBrowser
                 startInfo.ArgumentList.Add("--output");
                 startInfo.ArgumentList.Add(temp);
                 startInfo.ArgumentList.Add("--input");
-                startInfo.ArgumentList.Add(item.OutputPath);
+                startInfo.ArgumentList.Add(item.ThumbnailSourcePath);
 
                 using var process = Process.Start(startInfo);
                 if (process == null)

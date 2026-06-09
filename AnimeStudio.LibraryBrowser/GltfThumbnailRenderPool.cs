@@ -47,7 +47,13 @@ namespace AnimeStudio.LibraryBrowser
 
             try
             {
-                _jobs.Add(new RenderJob(item.OutputPath, outputPath, completion), cancellationToken);
+                if (string.IsNullOrWhiteSpace(item.ThumbnailSourcePath))
+                {
+                    completion.TrySetResult(RenderResult.Fail("没有可渲染的 glTF 预览源。"));
+                    return completion.Task;
+                }
+
+                _jobs.Add(new RenderJob(item.ThumbnailSourcePath, outputPath, completion), cancellationToken);
             }
             catch (OperationCanceledException)
             {

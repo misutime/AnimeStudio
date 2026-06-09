@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Xml;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
@@ -35,15 +36,17 @@ namespace AnimeStudio.CLI
         };
         public static AssemblyLoader assemblyLoader = new AssemblyLoader();
         public static List<AssetItem> exportableAssets = new List<AssetItem>();
+        private static readonly HashSet<string> VfxTexturePreviewCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
         public static WorkMode WorkMode { get; set; } = WorkMode.Export;
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
-        public static int MaxExportTasks { get; set; } = 1;
+        public static int MaxExportTasks { get; set; } = Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2));
         public static int BatchFiles { get; set; } = 16;
         public static int ModelGcInterval { get; set; } = 0;
         public static bool IncludeShaders { get; set; }
         public static bool ModelRootsOnly { get; set; }
         private static int _exportsSinceCollect;
         private static ExportRunStats _exportRunStats = new ExportRunStats();
+        private static readonly object ExportManifestWriteLock = new object();
         private static string _rendererBoundStaticMeshIndexPath;
         private static HashSet<string> _rendererBoundStaticMeshKeys;
         private static readonly HashSet<string> WeaponSemanticTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -1551,6 +1554,10 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 "/",
                 new[] { container, source, name }.Where(x => !string.IsNullOrWhiteSpace(x))
             ).Replace('\\', '/').ToLowerInvariant();
+            var signalText = string.Join(
+                "/",
+                new[] { container, Path.GetFileNameWithoutExtension(source), name }.Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
 
             static bool HasToken(string value, string alternatives)
             {
@@ -1561,7 +1568,7 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 );
             }
 
-            if (VfxLibrarySignalPattern.IsMatch(text))
+            if (VfxLibrarySignalPattern.IsMatch(signalText))
             {
                 return "VFX";
             }
@@ -1749,12 +1756,19 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             public string Category { get; init; }
             public string Confidence { get; init; }
             public string OutputDirectory { get; set; }
-            public string ModelPreview { get; init; }
+            public string ModelPreview { get; set; }
+            public int OccurrenceCount { get; set; } = 1;
+            public List<object> SourceSamples { get; init; } = new();
             public List<string> Signals { get; init; } = new();
             public List<string> ComponentKeys { get; init; } = new();
             public List<object> Components { get; init; } = new();
             public List<object> MaterialRefs { get; init; } = new();
+            public List<object> TextureRefs { get; init; } = new();
+            public List<object> TexturePreviews { get; init; } = new();
+            public int TexturePreviewResolveMisses { get; set; }
+            public int TexturePreviewWriteFailures { get; set; }
             public List<object> MeshRefs { get; init; } = new();
+            public JObject PreviewHints { get; set; } = new();
             public List<string> Notes { get; init; } = new();
         }
 
@@ -1774,37 +1788,37 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             var entries = new List<VfxLibraryEntry>();
             entries.AddRange(QuerySourceIndexVfxEntries());
             entries.AddRange(CollectCatalogBackedVfxEntries(savePath, entries));
+            AttachVfxModelPreviews(savePath, entries);
             entries = entries
-                .GroupBy(GetVfxEntryKey, StringComparer.OrdinalIgnoreCase)
-                .Select(x => x.First())
+                .GroupBy(GetVfxLogicalKey, StringComparer.OrdinalIgnoreCase)
+                .Select(MergeVfxEntries)
                 .OrderBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            RewriteCatalogWithoutKind(catalogPath, "VFX");
             if (entries.Count == 0)
             {
                 return;
             }
 
-            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
-            var existingCatalogKeys = LoadExistingCatalogKeys(catalogPath, "VFX");
             var vfxRoot = Path.Combine(savePath, "VFX");
             Directory.CreateDirectory(vfxRoot);
 
             var exported = 0;
             var categoryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var exportedTextureCatalog = LoadExportedTextureCatalog(catalogPath);
             foreach (var entry in entries)
             {
                 entry.OutputDirectory = GetVfxOutputDirectory(savePath, entry);
                 Directory.CreateDirectory(entry.OutputDirectory);
+                AttachVfxTexturePreviewFiles(entry, exportedTextureCatalog);
                 WriteVfxEntryFiles(entry);
 
                 IncrementCount(categoryCounts, entry.Category);
-                if (existingCatalogKeys.Add(GetVfxEntryKey(entry)))
-                {
-                    File.AppendAllText(catalogPath, JsonConvert.SerializeObject(BuildVfxCatalogEntry(entry)) + Environment.NewLine);
-                    exported++;
-                }
+                File.AppendAllText(catalogPath, JsonConvert.SerializeObject(BuildVfxCatalogEntry(entry)) + Environment.NewLine);
+                exported++;
             }
 
             WriteVfxLibrarySummary(vfxRoot, entries, categoryCounts);
@@ -1920,6 +1934,9 @@ WHERE r.relation = 'gameObject.component'
 SELECT serialized_file, source_path, path_id, type, class_id, name
 FROM source_objects
 WHERE class_id IN ({componentClassIdList});";
+                var ownedComponentKeys = entries.Values
+                    .SelectMany(x => x.ComponentKeys)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -1929,7 +1946,7 @@ WHERE class_id IN ({componentClassIdList});";
                     var type = ReadString(reader, 3);
                     var name = FirstNonEmpty(ReadString(reader, 5), type, $"VFX_{GetShortPathId(pathId)}");
                     var key = GetSourceObjectKey(serializedFile, pathId);
-                    if (entries.ContainsKey(key))
+                    if (entries.ContainsKey(key) || ownedComponentKeys.Contains(key))
                     {
                         continue;
                     }
@@ -1965,6 +1982,8 @@ WHERE class_id IN ({componentClassIdList});";
             }
 
             AttachVfxRendererRelations(connection, entries);
+            AttachVfxTextureRelations(connection, entries);
+            AttachVfxMetadata(connection, entries);
             return entries.Values.ToList();
         }
 
@@ -2054,6 +2073,221 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
             }
         }
 
+        private static void AttachVfxTextureRelations(SqliteConnection connection, Dictionary<string, VfxLibraryEntry> entries)
+        {
+            if (entries.Count == 0)
+            {
+                return;
+            }
+
+            var componentOwners = new Dictionary<string, List<VfxLibraryEntry>>(StringComparer.OrdinalIgnoreCase);
+            var materialOwners = new Dictionary<string, List<VfxLibraryEntry>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries.Values)
+            {
+                foreach (var componentKey in entry.ComponentKeys.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    AddOwner(componentOwners, componentKey, entry);
+                }
+
+                foreach (var materialRef in entry.MaterialRefs)
+                {
+                    var material = JObject.FromObject(materialRef);
+                    var materialKey = GetSourceObjectKey((string)material["file"] ?? string.Empty, (long?)material["pathId"] ?? 0);
+                    AddOwner(materialOwners, materialKey, entry);
+                }
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT
+    r.from_file,
+    r.from_path_id,
+    r.relation,
+    r.to_file,
+    r.to_path_id,
+    r.to_type_hint,
+    target.type,
+    target.name,
+    target.source_path,
+    r.raw_json
+FROM source_relations r
+LEFT JOIN source_objects target
+  ON target.serialized_file = r.to_file
+ AND target.path_id = r.to_path_id
+WHERE r.relation IN ('material.texture', 'vfx.texture');";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var fromKey = GetSourceObjectKey(ReadString(reader, 0), ReadInt64(reader, 1));
+                var relation = ReadString(reader, 2);
+                var owners = string.Equals(relation, "material.texture", StringComparison.OrdinalIgnoreCase)
+                    ? materialOwners.TryGetValue(fromKey, out var materialEntryOwners) ? materialEntryOwners : null
+                    : componentOwners.TryGetValue(fromKey, out var componentEntryOwners) ? componentEntryOwners : null;
+                if (owners == null || owners.Count == 0)
+                {
+                    continue;
+                }
+
+                var raw = TryParseJObject(ReadString(reader, 9));
+                var reference = new
+                {
+                    relation,
+                    file = ReadString(reader, 3),
+                    pathId = ReadInt64(reader, 4),
+                    typeHint = ReadString(reader, 5),
+                    type = ReadString(reader, 6),
+                    name = ReadString(reader, 7),
+                    source = ReadString(reader, 8),
+                    slot = (string)raw?["details"]?["slot"],
+                    path = (string)raw?["details"]?["path"],
+                };
+
+                foreach (var owner in owners)
+                {
+                    AddDistinctObjects(owner.TextureRefs, new[] { reference }, GetReferenceLogicalKey);
+                    owner.Signals.Add(relation);
+                }
+            }
+
+            foreach (var entry in entries.Values)
+            {
+                if (entry.TextureRefs.Count > 0)
+                {
+                    entry.Notes.Add("Texture references were resolved from VFX renderer materials or direct VFX texture PPtrs. Browser previews may use them as visual evidence; full shader/atlas sampling is still approximate.");
+                }
+            }
+
+            static void AddOwner(Dictionary<string, List<VfxLibraryEntry>> map, string key, VfxLibraryEntry entry)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    return;
+                }
+                if (!map.TryGetValue(key, out var owners))
+                {
+                    owners = new List<VfxLibraryEntry>();
+                    map[key] = owners;
+                }
+                owners.Add(entry);
+            }
+
+            static JObject TryParseJObject(string rawJson)
+            {
+                if (string.IsNullOrWhiteSpace(rawJson))
+                {
+                    return null;
+                }
+                try
+                {
+                    return JObject.Parse(rawJson);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        private static void AttachVfxMetadata(SqliteConnection connection, Dictionary<string, VfxLibraryEntry> entries)
+        {
+            if (entries.Count == 0)
+            {
+                return;
+            }
+
+            var componentOwners = new Dictionary<string, List<VfxLibraryEntry>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries.Values)
+            {
+                foreach (var componentKey in entry.ComponentKeys.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!componentOwners.TryGetValue(componentKey, out var owners))
+                    {
+                        owners = new List<VfxLibraryEntry>();
+                        componentOwners[componentKey] = owners;
+                    }
+                    owners.Add(entry);
+                }
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT from_file, from_path_id, raw_json
+FROM source_relations
+WHERE relation = 'vfx.metadata';";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var componentKey = GetSourceObjectKey(ReadString(reader, 0), ReadInt64(reader, 1));
+                if (!componentOwners.TryGetValue(componentKey, out var owners))
+                {
+                    continue;
+                }
+
+                var rawJson = ReadString(reader, 2);
+                if (string.IsNullOrWhiteSpace(rawJson))
+                {
+                    continue;
+                }
+
+                JObject raw;
+                try
+                {
+                    raw = JObject.Parse(rawJson);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                var hints = raw["details"]?["hints"] as JObject;
+                if (hints == null || !hints.Properties().Any())
+                {
+                    continue;
+                }
+
+                foreach (var owner in owners)
+                {
+                    MergeVfxPreviewHints(owner.PreviewHints, hints);
+                    owner.Signals.Add("vfx.metadata");
+                }
+            }
+
+            foreach (var entry in entries.Values)
+            {
+                if (entry.PreviewHints.Properties().Any())
+                {
+                    entry.Notes.Add("ParticleSystem/Renderer preview hints were decoded from Unity TypeTree. They are used for approximate non-Unity-runtime preview and may be partial across Unity versions.");
+                }
+            }
+        }
+
+        private static void MergeVfxPreviewHints(JObject target, JObject source)
+        {
+            foreach (var property in source.Properties())
+            {
+                if (!target.ContainsKey(property.Name))
+                {
+                    target[property.Name] = property.Value.DeepClone();
+                    continue;
+                }
+
+                if (!JToken.DeepEquals(target[property.Name], property.Value))
+                {
+                    var arrayName = property.Name + "#variants";
+                    var array = target[arrayName] as JArray;
+                    if (array == null)
+                    {
+                        array = new JArray(target[property.Name]?.DeepClone());
+                        target[arrayName] = array;
+                    }
+                    if (!array.Any(x => JToken.DeepEquals(x, property.Value)))
+                    {
+                        array.Add(property.Value.DeepClone());
+                    }
+                }
+            }
+        }
+
         private static IEnumerable<VfxLibraryEntry> CollectCatalogBackedVfxEntries(string savePath, IEnumerable<VfxLibraryEntry> existingEntries)
         {
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
@@ -2099,6 +2333,567 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
             }
         }
 
+        private static void AttachVfxModelPreviews(string savePath, IEnumerable<VfxLibraryEntry> entries)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                return;
+            }
+
+            var modelOutputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var obj in LoadCatalogEntries(catalogPath))
+            {
+                if (!string.Equals((string)obj["kind"], "Model", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var output = (string)obj["output"];
+                if (string.IsNullOrWhiteSpace(output) || !File.Exists(output))
+                {
+                    continue;
+                }
+
+                var key = GetSourceObjectKey((string)obj["sourceFile"] ?? string.Empty, (long?)obj["pathId"] ?? 0);
+                if (!string.IsNullOrWhiteSpace(key) && !modelOutputs.ContainsKey(key))
+                {
+                    modelOutputs[key] = output;
+                }
+            }
+
+            if (modelOutputs.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var entry in entries)
+            {
+                if (!string.IsNullOrWhiteSpace(entry.ModelPreview))
+                {
+                    continue;
+                }
+
+                foreach (var meshRef in entry.MeshRefs)
+                {
+                    var refObj = JObject.FromObject(meshRef);
+                    var key = GetSourceObjectKey((string)refObj["file"] ?? string.Empty, (long?)refObj["pathId"] ?? 0);
+                    if (modelOutputs.TryGetValue(key, out var output))
+                    {
+                        entry.ModelPreview = output;
+                        entry.Signals.Add("mesh.preview");
+                        break;
+                    }
+                }
+            }
+        }
+
+        private static Dictionary<string, JObject> LoadExportedTextureCatalog(string catalogPath)
+        {
+            var result = new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            if (!File.Exists(catalogPath))
+            {
+                return result;
+            }
+
+            foreach (var obj in LoadCatalogEntries(catalogPath))
+            {
+                var kind = (string)obj["kind"] ?? string.Empty;
+                var sourceType = (string)obj["sourceType"] ?? string.Empty;
+                if (!kind.Contains("Texture", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(sourceType, nameof(Texture2D), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var output = (string)obj["output"];
+                if (string.IsNullOrWhiteSpace(output) || !File.Exists(output))
+                {
+                    continue;
+                }
+
+                var pathId = (long?)obj["pathId"] ?? 0;
+                foreach (var key in GetPossibleSourceObjectKeys((string)obj["source"], pathId))
+                {
+                    result.TryAdd(key, obj);
+                }
+            }
+
+            return result;
+        }
+
+        private static void AttachVfxTexturePreviewFiles(VfxLibraryEntry entry, Dictionary<string, JObject> exportedTextureCatalog)
+        {
+            if (entry.TextureRefs.Count == 0)
+            {
+                return;
+            }
+
+            var textureDirectory = Path.Combine(entry.OutputDirectory, "Textures");
+            var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var textureRef in entry.TextureRefs)
+            {
+                var refObj = JObject.FromObject(textureRef);
+                var file = (string)refObj["file"] ?? string.Empty;
+                var pathId = (long?)refObj["pathId"] ?? 0;
+                if (pathId == 0)
+                {
+                    continue;
+                }
+
+                string texturePath = null;
+                JObject catalog = null;
+                foreach (var key in GetPossibleSourceObjectKeys(file, pathId))
+                {
+                    if (exportedTextureCatalog.TryGetValue(key, out catalog))
+                    {
+                        texturePath = (string)catalog["output"];
+                        break;
+                    }
+                }
+
+                var source = "asset_catalog";
+                if (string.IsNullOrWhiteSpace(texturePath) || !File.Exists(texturePath))
+                {
+                    var texture = FindLoadedTexture2D(file, pathId);
+                    if (texture == null)
+                    {
+                        entry.TexturePreviewResolveMisses++;
+                        continue;
+                    }
+
+                    Directory.CreateDirectory(textureDirectory);
+                    texturePath = Path.Combine(textureDirectory, BuildVfxTexturePreviewFileName(texture, pathId));
+                    source = "loaded_texture2d";
+                    if (!File.Exists(texturePath) && !TryWriteVfxTexturePreview(texture, texturePath, entry, refObj))
+                    {
+                        entry.TexturePreviewWriteFailures++;
+                        continue;
+                    }
+                }
+
+                if (!File.Exists(texturePath) || !written.Add(texturePath))
+                {
+                    continue;
+                }
+
+                entry.TexturePreviews.Add(new
+                {
+                    file,
+                    pathId,
+                    name = (string)refObj["name"] ?? (string)catalog?["name"] ?? Path.GetFileNameWithoutExtension(texturePath),
+                    slot = (string)refObj["slot"],
+                    relation = (string)refObj["relation"],
+                    source,
+                    output = texturePath,
+                    relativePath = Path.GetRelativePath(entry.OutputDirectory, texturePath).Replace('\\', '/'),
+                });
+            }
+
+            if (entry.TexturePreviews.Count > 0)
+            {
+                entry.Signals.Add("texture.preview");
+                entry.Notes.Add("Texture preview PNGs were attached for Browser billboard/mesh-particle approximation. This improves browsing, but does not fully reproduce Unity shader flipbook, tint, UV scroll, or VFX Graph behavior.");
+            }
+            else
+            {
+                entry.Notes.Add("Texture references exist, but no preview PNG could be resolved in the current export. Re-export with complete dependency input/source_index if Browser needs texture-backed VFX thumbnails.");
+            }
+        }
+
+        public static void ExportVfxTexturePreviewCache(string savePath)
+        {
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(savePath)
+                || string.IsNullOrWhiteSpace(indexPath)
+                || !File.Exists(indexPath)
+                || exportableAssets.Count == 0)
+            {
+                return;
+            }
+
+            var textureRefs = new List<(string File, long PathId, string Type, string Name, string Source)>();
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT DISTINCT
+    r.to_file,
+    r.to_path_id,
+    COALESCE(target.type, r.to_type_hint, ''),
+    COALESCE(target.name, ''),
+    COALESCE(target.source_path, '')
+FROM source_relations r
+LEFT JOIN source_objects target
+  ON target.serialized_file = r.to_file
+ AND target.path_id = r.to_path_id
+WHERE r.relation IN ('material.texture', 'vfx.texture')
+  AND (target.type = 'Texture2D' OR r.to_type_hint LIKE '%Texture%');";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var file = ReadString(reader, 0);
+                    var pathId = ReadInt64(reader, 1);
+                    if (!string.IsNullOrWhiteSpace(file) && pathId != 0)
+                    {
+                        textureRefs.Add((
+                            file,
+                            pathId,
+                            ReadString(reader, 2),
+                            ReadString(reader, 3),
+                            ReadString(reader, 4)));
+                    }
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Debug($"Unable to query VFX texture preview cache refs: {e.Message}");
+                return;
+            }
+
+            if (textureRefs.Count == 0)
+            {
+                return;
+            }
+
+            var exported = 0;
+            var previewRoot = Path.Combine(savePath, "VFX", "_TexturePreviews");
+            foreach (var textureRef in textureRefs)
+            {
+                var texture = FindLoadedTexture2D(textureRef.File, textureRef.PathId);
+                if (texture == null)
+                {
+                    continue;
+                }
+
+                var sourceKey = SanitizeRelativePath(Path.GetFileName(textureRef.File));
+                if (string.IsNullOrWhiteSpace(sourceKey))
+                {
+                    sourceKey = "UnknownSource";
+                }
+
+                var textureDirectory = Path.Combine(previewRoot, sourceKey);
+                Directory.CreateDirectory(textureDirectory);
+                var texturePath = Path.Combine(textureDirectory, BuildVfxTexturePreviewFileName(texture, textureRef.PathId));
+                var catalogKey = GetSourceObjectKey(textureRef.File, textureRef.PathId);
+                if (!File.Exists(texturePath))
+                {
+                    var tempEntry = new VfxLibraryEntry
+                    {
+                        Name = "VFX texture preview cache",
+                        Source = textureRef.Source,
+                        SerializedFile = textureRef.File,
+                        PathId = textureRef.PathId,
+                    };
+                    var refObj = new JObject
+                    {
+                        ["relation"] = "vfx.texture.cache",
+                    };
+                    if (!TryWriteVfxTexturePreview(texture, texturePath, tempEntry, refObj))
+                    {
+                        continue;
+                    }
+                }
+
+                if (VfxTexturePreviewCatalogKeys.Add(catalogKey))
+                {
+                    var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+                    var entry = new
+                    {
+                        kind = "VfxTexturePreviewTexture",
+                        resourceKind = "VFX",
+                        exportedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                        name = FirstNonEmpty(texture.m_Name, textureRef.Name, $"Texture2D_{GetShortPathId(textureRef.PathId)}"),
+                        sourceType = nameof(Texture2D),
+                        source = textureRef.File,
+                        actualSource = texture.assetsFile?.originalPath ?? texture.assetsFile?.fullName ?? texture.assetsFile?.fileName,
+                        pathId = textureRef.PathId,
+                        output = texturePath,
+                        usage = "vfx_texture_preview_cache",
+                    };
+                    File.AppendAllText(catalogPath, JsonConvert.SerializeObject(entry) + Environment.NewLine, Encoding.UTF8);
+                    exported++;
+                }
+            }
+
+            if (exported > 0)
+            {
+                Logger.Info($"Cached {exported} VFX texture preview image(s) for Browser approximation.");
+            }
+        }
+
+        private static IEnumerable<string> GetPossibleSourceObjectKeys(string source, long pathId)
+        {
+            if (pathId == 0)
+            {
+                yield break;
+            }
+
+            source ??= string.Empty;
+            yield return GetSourceObjectKey(source, pathId);
+
+            var fileName = Path.GetFileName(source);
+            if (!string.IsNullOrWhiteSpace(fileName) && !string.Equals(fileName, source, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return GetSourceObjectKey(fileName, pathId);
+            }
+        }
+
+        private static Texture2D FindLoadedTexture2D(string sourceFile, long pathId)
+        {
+            var pathOnlyMatches = new HashSet<Texture2D>();
+
+            foreach (var item in exportableAssets)
+            {
+                if (item.Asset is not Texture2D texture || item.m_PathID != pathId)
+                {
+                    continue;
+                }
+
+                if (SourceFileMatches(sourceFile, texture.assetsFile?.fileName, texture.assetsFile?.fullName, texture.assetsFile?.originalPath, item.SourceFile?.fileName, item.SourceFile?.fullName, item.SourceFile?.originalPath))
+                {
+                    return texture;
+                }
+
+                pathOnlyMatches.Add(texture);
+            }
+
+            foreach (var assetsFile in assetsManager.assetsFileList)
+            {
+                if (assetsFile.ObjectsDic.TryGetValue(pathId, out var obj) && obj is Texture2D texture)
+                {
+                    if (SourceFileMatches(sourceFile, assetsFile.fileName, assetsFile.fullName, assetsFile.originalPath))
+                    {
+                        return texture;
+                    }
+
+                    pathOnlyMatches.Add(texture);
+                }
+            }
+
+            // AssetBundle outer file names and inner serialized names are not always identical.
+            // PathIDs are normally unique enough within the currently loaded dependency closure;
+            // use them as a conservative fallback only when there is exactly one candidate.
+            return pathOnlyMatches.Count == 1 ? pathOnlyMatches.First() : null;
+        }
+
+        private static bool SourceFileMatches(string sourceFile, params string[] candidates)
+        {
+            sourceFile ??= string.Empty;
+            var sourceFileName = Path.GetFileName(sourceFile);
+            foreach (var candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    continue;
+                }
+
+                var candidateFileName = Path.GetFileName(candidate);
+                if (string.Equals(candidate, sourceFile, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(candidateFileName) && string.Equals(candidateFileName, sourceFile, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrWhiteSpace(sourceFileName) && string.Equals(candidateFileName, sourceFileName, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrWhiteSpace(sourceFileName) && candidate.Contains(sourceFileName, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrWhiteSpace(candidateFileName) && sourceFile.Contains(candidateFileName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string BuildVfxTexturePreviewFileName(Texture2D texture, long pathId)
+        {
+            var name = SanitizeRelativePath(texture.m_Name ?? "Texture");
+            if (name.Length > 72)
+            {
+                name = name.Substring(0, 72);
+            }
+            return $"{name}_{GetShortPathId(pathId)}.png";
+        }
+
+        private static bool TryWriteVfxTexturePreview(Texture2D texture, string texturePath, VfxLibraryEntry entry, JObject textureRef)
+        {
+            try
+            {
+                var profileData = new Dictionary<string, object>
+                {
+                    ["vfx"] = entry.Name,
+                    ["texture"] = texture.m_Name,
+                    ["source"] = texture.assetsFile?.originalPath ?? texture.assetsFile?.fileName,
+                    ["pathId"] = texture.m_PathID,
+                    ["output"] = texturePath,
+                    ["usage"] = "vfx_texture_preview",
+                    ["relation"] = (string)textureRef["relation"],
+                };
+                using (ProfileLogger.Measure("vfx_texture_preview", profileData))
+                using (var stream = texture.ConvertToStream(Properties.Settings.Default.convertType, true, ProfileLogger.Measure, profileData))
+                {
+                    if (stream == null)
+                    {
+                        return false;
+                    }
+                    using var file = File.OpenWrite(texturePath);
+                    stream.WriteTo(file);
+                    return true;
+                }
+            }
+            catch (Exception e) when (e is IOException || e is InvalidDataException || e is NotSupportedException)
+            {
+                entry.Notes.Add($"Unable to export VFX texture preview `{texture.m_Name}` ({texture.m_PathID}): {e.GetType().Name}: {e.Message}");
+                return false;
+            }
+        }
+
+        private static VfxLibraryEntry MergeVfxEntries(IGrouping<string, VfxLibraryEntry> group)
+        {
+            var entries = group.ToList();
+            var first = entries.First();
+            first.OccurrenceCount = entries.Sum(x => Math.Max(1, x.OccurrenceCount));
+            foreach (var entry in entries.Skip(1))
+            {
+                AddDistinct(first.Signals, entry.Signals);
+                AddDistinct(first.ComponentKeys, entry.ComponentKeys);
+                AddDistinctObjects(first.Components, entry.Components, GetObjectLogicalKey);
+                AddDistinctObjects(first.MaterialRefs, entry.MaterialRefs, GetReferenceLogicalKey);
+                AddDistinctObjects(first.TextureRefs, entry.TextureRefs, GetReferenceLogicalKey);
+                AddDistinctObjects(first.TexturePreviews, entry.TexturePreviews, GetReferenceLogicalKey);
+                AddDistinctObjects(first.MeshRefs, entry.MeshRefs, GetReferenceLogicalKey);
+                first.TexturePreviewResolveMisses += entry.TexturePreviewResolveMisses;
+                first.TexturePreviewWriteFailures += entry.TexturePreviewWriteFailures;
+                MergeVfxPreviewHints(first.PreviewHints, entry.PreviewHints);
+                AddDistinct(first.Notes, entry.Notes);
+                if (string.IsNullOrWhiteSpace(first.ModelPreview) && !string.IsNullOrWhiteSpace(entry.ModelPreview))
+                {
+                    first.ModelPreview = entry.ModelPreview;
+                }
+            }
+
+            foreach (var sample in entries
+                .Select(x => new
+                {
+                    x.SourceType,
+                    x.Source,
+                    x.SerializedFile,
+                    x.PathId,
+                })
+                .GroupBy(x => $"{x.SerializedFile}|{x.PathId}", StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .Take(16))
+            {
+                first.SourceSamples.Add(sample);
+            }
+
+            if (entries.Count > 1)
+            {
+                first.Signals.Add("deduplicated.logical_vfx");
+                first.Notes.Add($"Merged {entries.Count} Unity VFX instance/component entries into one logical VFX asset. occurrenceCount keeps the original instance count.");
+            }
+
+            return first;
+        }
+
+        private static string GetVfxLogicalKey(VfxLibraryEntry entry)
+        {
+            var componentTypes = entry.Components
+                .Select(GetObjectLogicalKey)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+            var materials = entry.MaterialRefs
+                .Select(GetReferenceLogicalKey)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+            var textures = entry.TextureRefs
+                .Select(GetReferenceLogicalKey)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+            var meshes = entry.MeshRefs
+                .Select(GetReferenceLogicalKey)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+
+            var name = NormalizeVfxName(entry.Name);
+            return string.Join("|", new[]
+            {
+                name,
+                entry.Category ?? string.Empty,
+                string.Join(",", componentTypes),
+                string.Join(",", materials),
+                string.Join(",", textures),
+                string.Join(",", meshes),
+                entry.ModelPreview ?? string.Empty,
+            });
+        }
+
+        private static string NormalizeVfxName(string value)
+        {
+            value = string.IsNullOrWhiteSpace(value) ? "vfx" : value.Trim();
+            value = Regex.Replace(value, @"\s*\(\d+\)$", "", RegexOptions.CultureInvariant);
+            value = Regex.Replace(value, @"[_\-\s]*(?:instance|clone)\d*$", "", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            return value.ToLowerInvariant();
+        }
+
+        private static string GetObjectLogicalKey(object value)
+        {
+            if (value == null)
+            {
+                return string.Empty;
+            }
+
+            var obj = JObject.FromObject(value);
+            return string.Join(":", new[]
+            {
+                ((string)obj["type"] ?? string.Empty).ToLowerInvariant(),
+                ((string)obj["name"] ?? string.Empty).ToLowerInvariant(),
+            });
+        }
+
+        private static string GetReferenceLogicalKey(object value)
+        {
+            if (value == null)
+            {
+                return string.Empty;
+            }
+
+            var obj = JObject.FromObject(value);
+            var name = ((string)obj["name"] ?? string.Empty).Trim().ToLowerInvariant();
+            var type = ((string)obj["type"] ?? (string)obj["typeHint"] ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return $"{type}:{name}";
+            }
+
+            return GetSourceObjectKey((string)obj["file"] ?? string.Empty, (long?)obj["pathId"] ?? 0);
+        }
+
+        private static void AddDistinct(List<string> target, IEnumerable<string> values)
+        {
+            var known = target.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in values.Where(x => !string.IsNullOrWhiteSpace(x)))
+            {
+                if (known.Add(value))
+                {
+                    target.Add(value);
+                }
+            }
+        }
+
+        private static void AddDistinctObjects(List<object> target, IEnumerable<object> values, Func<object, string> keySelector)
+        {
+            var known = target.Select(keySelector).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in values)
+            {
+                var key = keySelector(value);
+                if (known.Add(key))
+                {
+                    target.Add(value);
+                }
+            }
+        }
+
         private static HashSet<string> LoadExistingCatalogKeys(string catalogPath, string kind)
         {
             if (!File.Exists(catalogPath))
@@ -2111,6 +2906,44 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 .Select(x => GetSourceObjectKey((string)x["sourceFile"] ?? string.Empty, (long?)x["pathId"] ?? 0))
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static void RewriteCatalogWithoutKind(string catalogPath, string kind)
+        {
+            if (!File.Exists(catalogPath))
+            {
+                return;
+            }
+
+            var tempPath = catalogPath + ".tmp";
+            using (var writer = new StreamWriter(tempPath, false, Encoding.UTF8))
+            {
+                foreach (var line in File.ReadLines(catalogPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var obj = JObject.Parse(line);
+                        if (string.Equals((string)obj["kind"], kind, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+                    }
+                    catch
+                    {
+                        // Preserve malformed catalog lines; other readers already skip them defensively.
+                    }
+
+                    writer.WriteLine(line);
+                }
+            }
+
+            File.Copy(tempPath, catalogPath, true);
+            File.Delete(tempPath);
         }
 
         private static JObject BuildVfxCatalogEntry(VfxLibraryEntry entry)
@@ -2131,9 +2964,18 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 ["confidence"] = entry.Confidence,
                 ["componentCount"] = entry.Components.Count,
                 ["materialRefCount"] = entry.MaterialRefs.Count,
+                ["textureRefCount"] = entry.TextureRefs.Count,
+                ["texturePreviewCount"] = entry.TexturePreviews.Count,
+                ["texturePreviewResolveMisses"] = entry.TexturePreviewResolveMisses,
+                ["texturePreviewWriteFailures"] = entry.TexturePreviewWriteFailures,
+                ["texturePreviews"] = JArray.FromObject(entry.TexturePreviews),
                 ["meshRefCount"] = entry.MeshRefs.Count,
+                ["occurrenceCount"] = entry.OccurrenceCount,
                 ["signals"] = JArray.FromObject(entry.Signals.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()),
-                ["status"] = "metadata_only_particle_runtime_not_baked",
+                ["previewHints"] = entry.PreviewHints,
+                ["status"] = entry.TexturePreviews.Count > 0
+                    ? "texture_backed_approx_particle_preview"
+                    : "metadata_only_particle_runtime_not_baked",
             };
         }
 
@@ -2155,9 +2997,18 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 ["signals"] = JArray.FromObject(entry.Signals.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()),
                 ["components"] = JArray.FromObject(entry.Components),
                 ["materials"] = JArray.FromObject(entry.MaterialRefs),
+                ["textures"] = JArray.FromObject(entry.TextureRefs),
+                ["texturePreviews"] = JArray.FromObject(entry.TexturePreviews),
+                ["texturePreviewResolveMisses"] = entry.TexturePreviewResolveMisses,
+                ["texturePreviewWriteFailures"] = entry.TexturePreviewWriteFailures,
                 ["meshes"] = JArray.FromObject(entry.MeshRefs),
+                ["previewHints"] = entry.PreviewHints,
+                ["occurrenceCount"] = entry.OccurrenceCount,
+                ["sourceSamples"] = JArray.FromObject(entry.SourceSamples),
                 ["notes"] = JArray.FromObject(entry.Notes),
-                ["particleSystemStatus"] = "Unity component metadata is indexed. Full ParticleSystem module simulation/export is not decoded in this version.",
+                ["particleSystemStatus"] = entry.PreviewHints.Properties().Any()
+                    ? "Unity ParticleSystem/Renderer preview hints are decoded for approximate non-runtime preview. Shader/VFX Graph/event binding is still not fully baked."
+                    : "Unity component metadata is indexed. Full ParticleSystem module simulation/export is not decoded in this version.",
                 ["libraryRule"] = "Default Library keeps likely useful VFX assets and reports incomplete runtime behavior instead of dropping them.",
             };
             File.WriteAllText(Path.Combine(entry.OutputDirectory, "vfx.json"), json.ToString(Newtonsoft.Json.Formatting.Indented), Encoding.UTF8);
@@ -2176,7 +3027,16 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 sb.AppendLine($"- Mesh preview: `{entry.ModelPreview}`");
             }
             sb.AppendLine($"- Material refs: `{entry.MaterialRefs.Count}`");
+            sb.AppendLine($"- Texture refs: `{entry.TextureRefs.Count}`");
+            sb.AppendLine($"- Texture preview files: `{entry.TexturePreviews.Count}`");
+            sb.AppendLine($"- Texture preview resolve misses: `{entry.TexturePreviewResolveMisses}`");
+            sb.AppendLine($"- Texture preview write failures: `{entry.TexturePreviewWriteFailures}`");
             sb.AppendLine($"- Mesh refs: `{entry.MeshRefs.Count}`");
+            sb.AppendLine($"- Occurrences: `{entry.OccurrenceCount}`");
+            if (entry.TexturePreviews.Count > 0)
+            {
+                sb.AppendLine("- Preview status: `texture_backed_approx_particle_preview`");
+            }
             sb.AppendLine();
             sb.AppendLine("## Components / Signals");
             foreach (var signal in entry.Signals.Distinct(StringComparer.OrdinalIgnoreCase).Take(64))
@@ -2213,7 +3073,10 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                     x.ModelPreview,
                     componentCount = x.Components.Count,
                     materialRefCount = x.MaterialRefs.Count,
+                    textureRefCount = x.TextureRefs.Count,
+                    texturePreviewCount = x.TexturePreviews.Count,
                     meshRefCount = x.MeshRefs.Count,
+                    occurrenceCount = x.OccurrenceCount,
                     signals = x.Signals.Distinct(StringComparer.OrdinalIgnoreCase).Take(16).ToArray(),
                 })),
             };
@@ -2237,6 +3100,8 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
             sb.AppendLine("- `vfx.json`：机器可读的 Unity 特效元数据。");
             sb.AppendLine("- `VFX_REPORT.md`：人工查看时的说明。");
             sb.AppendLine("- `modelPreview`：如果该特效同时有 mesh/glTF 预览，会指向已导出的模型。");
+            sb.AppendLine("- `texturePreviews`：从已导出贴图或当前加载 Texture2D 解码出的近似预览贴图，Browser 会优先使用它画 billboard/mesh 粒子。");
+            sb.AppendLine("- 看到 `texture_backed_approx_particle_preview` 表示它已经有贴图辅助预览，但仍不是完整 Unity 粒子运行时。");
             sb.AppendLine("- 看到 `metadata_only_particle_runtime_not_baked` 表示它是 Unity 粒子/特效组件，但还不是独立可播放粒子文件。");
             File.WriteAllText(Path.Combine(vfxRoot, "VFX_LIBRARY.md"), sb.ToString(), Encoding.UTF8);
         }
@@ -2332,6 +3197,7 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
 
         public static void GenerateLibraryIndexes(string savePath)
         {
+            NormalizePathPollutedModelResourceKinds(savePath);
             GenerateVfxLibrary(savePath);
 
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
@@ -2393,6 +3259,13 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 {
                     WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
                 }
+                using (ProfileLogger.Measure("library_index_normalize_relative_paths", new Dictionary<string, object>
+                {
+                    ["savePath"] = savePath,
+                }))
+                {
+                    LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
+                }
                 BuildDefaultLibrarySqliteIndex(savePath);
                 Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
             }
@@ -2406,6 +3279,9 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 throw new FileNotFoundException("asset_catalog.jsonl was not found. Rebuild requires a previous Library export.", catalogPath);
             }
 
+            EnsureSourceIndexLoadedForRebuild(savePath);
+            NormalizePathPollutedModelResourceKinds(savePath);
+            GenerateVfxLibrary(savePath);
             var entries = LoadCatalogEntries(catalogPath);
             WriteAssetSummary(savePath, catalogPath, entries);
             ModelLibraryValidator.Generate(savePath);
@@ -2414,8 +3290,108 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
             var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
             WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+            LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
             BuildDefaultLibrarySqliteIndex(savePath);
             Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). Explicit Animator/Animation relations require a fresh export; structural Unity binding links were rebuilt.");
+        }
+
+        private static void NormalizePathPollutedModelResourceKinds(string savePath)
+        {
+            var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                return;
+            }
+
+            var changed = 0;
+            var checkedModels = 0;
+            var tempPath = catalogPath + ".resourcekind.tmp";
+            using (var writer = new StreamWriter(tempPath, false, Encoding.UTF8))
+            {
+                foreach (var line in File.ReadLines(catalogPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        writer.WriteLine(line);
+                        continue;
+                    }
+
+                    JObject obj;
+                    try
+                    {
+                        obj = JObject.Parse(line);
+                    }
+                    catch
+                    {
+                        writer.WriteLine(line);
+                        continue;
+                    }
+
+                    if (string.Equals((string)obj["kind"], "Model", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals((string)obj["resourceKind"], "VFX", StringComparison.OrdinalIgnoreCase))
+                    {
+                        checkedModels++;
+                        var corrected = InferLibraryResourceKind(
+                            (string)obj["name"],
+                            (string)obj["container"],
+                            (string)obj["source"]);
+                        if (!string.Equals(corrected, "VFX", StringComparison.OrdinalIgnoreCase))
+                        {
+                            obj["resourceKind"] = corrected;
+                            obj["resourceKindRepair"] = JObject.FromObject(new
+                            {
+                                reason = "recomputedAfterVfxPathSignalFix",
+                                oldResourceKind = "VFX",
+                                newResourceKind = corrected,
+                                rule = "模型分类重新计算时，VFX 关键词只使用 container、资源名和源文件名，不使用完整绝对安装路径，避免 Genshin Impact Game 这类路径污染。",
+                            });
+                            changed++;
+                        }
+                    }
+
+                    writer.WriteLine(JsonConvert.SerializeObject(obj, Newtonsoft.Json.Formatting.None));
+                }
+            }
+
+            if (changed == 0)
+            {
+                File.Delete(tempPath);
+                return;
+            }
+
+            File.Replace(tempPath, catalogPath, null);
+            Logger.Info($"Normalized {changed}/{checkedModels} path-polluted model resourceKind value(s) in asset_catalog.jsonl before rebuilding Library indexes.");
+            ProfileLogger.Event("library_catalog_resource_kind_normalized", new Dictionary<string, object>
+            {
+                ["checkedModelVfxCount"] = checkedModels,
+                ["changedCount"] = changed,
+                ["rule"] = "Only kind=Model entries previously marked resourceKind=VFX are recomputed. Real mesh VFX names still remain VFX.",
+            });
+        }
+
+        private static void EnsureSourceIndexLoadedForRebuild(string savePath)
+        {
+            if (SQLiteSourceIndexRuntime.CurrentLoadResult != null || string.IsNullOrWhiteSpace(savePath))
+            {
+                return;
+            }
+
+            var sourceIndexPath = Path.Combine(savePath, "unity_source_index.db");
+            if (!File.Exists(sourceIndexPath))
+            {
+                Logger.Warning("No unity_source_index.db was found beside the Library. Rebuild will keep catalog-backed metadata only; Unity component VFX and dependency relations may be incomplete.");
+                return;
+            }
+
+            try
+            {
+                SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(sourceIndexPath, null, null);
+                SQLiteSourceIndexRuntime.WriteUsageReport(savePath, SQLiteSourceIndexRuntime.CurrentLoadResult);
+            }
+            catch (Exception e) when (e is IOException || e is InvalidDataException || e is SqliteException)
+            {
+                Logger.Warning($"Unable to load unity_source_index.db for rebuild. Rebuild will keep catalog-backed metadata only. {e.GetType().Name}: {e.Message}");
+            }
         }
 
         private static void BuildDefaultLibrarySqliteIndex(string savePath)
@@ -2443,13 +3419,16 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
 
         private static List<JObject> LoadCatalogEntries(string catalogPath)
         {
+            var libraryRoot = Path.GetDirectoryName(Path.GetFullPath(catalogPath)) ?? "";
             return File.ReadLines(catalogPath)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Select(x =>
                 {
                     try
                     {
-                        return JObject.Parse(x);
+                        var obj = JObject.Parse(x);
+                        ResolveCatalogInternalPaths(obj, libraryRoot);
+                        return obj;
                     }
                     catch
                     {
@@ -2458,6 +3437,18 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 })
                 .Where(x => x != null)
                 .ToList();
+        }
+
+        private static void ResolveCatalogInternalPaths(JObject obj, string libraryRoot)
+        {
+            foreach (var propertyName in new[] { "output", "modelPreview", "animationAsset" })
+            {
+                var value = (string)obj[propertyName];
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    obj[propertyName] = LibraryRelativePathMigrator.ResolveLibraryPath(libraryRoot, value);
+                }
+            }
         }
 
         private static void WriteAssetSummary(string savePath, string catalogPath, List<JObject> entries)
@@ -4416,66 +5407,161 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
             var skippedCount = 0;
             var toExportCount = models.Count;
             Logger.Info($"Export mode {WorkMode} using max export tasks {MaxExportTasks}.");
-
-            foreach (var asset in models)
+            if (models.Any(IsParallelStaticMeshAsset))
             {
-                var exportPath = GetExportPath(savePath, assetGroupOption, asset);
-                processedCount++;
-                Logger.Verbose(
-                    $"[{processedCount}/{toExportCount}] Exporting {asset.TypeString}: {asset.Text}"
-                );
-                try
-                {
-                    var exported = asset.Asset switch
-                    {
-                        GameObject => ExportGameObject(asset, exportPath, animations),
-                        Animator => ExportAnimator(asset, exportPath, animations),
-                        Mesh when asset.LibraryRole == "StaticMeshPrimary" => ExportStaticMeshGltf(asset, exportPath),
-                        _ => false,
-                    };
-
-                    if (exported)
-                    {
-                        exportedCount++;
-                        _exportRunStats.ExportedModels++;
-                        var exportMessage = $"[{processedCount}/{toExportCount}] Exported {asset.TypeString}: {asset.Text}";
-                        if (processedCount <= 20 || processedCount % 100 == 0 || processedCount == toExportCount)
-                        {
-                            Logger.Info(exportMessage);
-                        }
-                        else
-                        {
-                            Logger.Verbose(exportMessage);
-                        }
-                        AppendExportManifest(savePath, asset, exportPath);
-                    }
-                    else
-                    {
-                        skippedCount++;
-                        _exportRunStats.RecordSkippedModel("export_returned_false", asset);
-                    }
-                    CollectAfterModelExport();
-                }
-                catch (Exception ex)
-                {
-                    _exportRunStats.RecordFailedModel("export_exception", asset, ex);
-                    Logger.Error(
-                        $"Export {asset.Type}:{asset.Text} error\r\n{ex.Message}\r\n{ex.StackTrace}"
-                    );
-                    CollectAfterModelExport();
-                }
-
-                if (processedCount % 100 == 0)
-                {
-                    Logger.Info(
-                        $"Processed {processedCount}/{toExportCount} model candidate(s); exported {exportedCount}, skipped {skippedCount}."
-                    );
-                }
+                PreloadStaticMeshMaterialBindingCache();
             }
+
+            for (var modelIndex = 0; modelIndex < models.Count;)
+            {
+                if (MaxExportTasks > 1 && IsParallelStaticMeshAsset(models[modelIndex]))
+                {
+                    var start = modelIndex;
+                    while (modelIndex < models.Count && IsParallelStaticMeshAsset(models[modelIndex]))
+                    {
+                        modelIndex++;
+                    }
+
+                    var count = modelIndex - start;
+                    Logger.Info($"Exporting {count} StaticMeshPrimary candidate(s) with {MaxExportTasks} task(s).");
+                    var results = new ModelExportResult[count];
+                    Parallel.For(0, count, new ParallelOptions { MaxDegreeOfParallelism = MaxExportTasks }, offset =>
+                    {
+                        var asset = models[start + offset];
+                        var exportPath = GetExportPath(savePath, assetGroupOption, asset);
+                        results[offset] = ExportSingleModelAsset(asset, exportPath, animations);
+                    });
+
+                    for (var offset = 0; offset < results.Length; offset++)
+                    {
+                        processedCount++;
+                        ApplyModelExportResult(
+                            savePath,
+                            results[offset],
+                            processedCount,
+                            toExportCount,
+                            ref exportedCount,
+                            ref skippedCount);
+                    }
+                    continue;
+                }
+
+                var asset = models[modelIndex];
+                var exportPath = GetExportPath(savePath, assetGroupOption, asset);
+                var result = ExportSingleModelAsset(asset, exportPath, animations);
+                modelIndex++;
+                processedCount++;
+                ApplyModelExportResult(
+                    savePath,
+                    result,
+                    processedCount,
+                    toExportCount,
+                    ref exportedCount,
+                    ref skippedCount);
+            }
+
 
             _exportRunStats.FinishedAtUtc = DateTime.UtcNow;
             Logger.Info($"Finished exporting {exportedCount}/{toExportCount} model asset(s); skipped {skippedCount} candidate(s).");
             WriteExportRunSummary(savePath);
+        }
+
+        private static bool IsParallelStaticMeshAsset(AssetItem asset)
+        {
+            return asset?.Asset is Mesh && asset.LibraryRole == "StaticMeshPrimary";
+        }
+
+        private static ModelExportResult ExportSingleModelAsset(
+            AssetItem asset,
+            string exportPath,
+            List<AssetItem> animations)
+        {
+            Logger.Verbose($"Exporting {asset.TypeString}: {asset.Text}");
+            try
+            {
+                var exported = asset.Asset switch
+                {
+                    GameObject => ExportGameObject(asset, exportPath, animations),
+                    Animator => ExportAnimator(asset, exportPath, animations),
+                    Mesh when asset.LibraryRole == "StaticMeshPrimary" => ExportStaticMeshGltf(asset, exportPath),
+                    _ => false,
+                };
+                return new ModelExportResult(asset, exportPath, exported, null);
+            }
+            catch (Exception ex)
+            {
+                return new ModelExportResult(asset, exportPath, false, ex);
+            }
+        }
+
+        private static void ApplyModelExportResult(
+            string savePath,
+            ModelExportResult result,
+            int processedCount,
+            int toExportCount,
+            ref int exportedCount,
+            ref int skippedCount)
+        {
+            if (result.Exception != null)
+            {
+                _exportRunStats.RecordFailedModel("export_exception", result.Asset, result.Exception);
+                Logger.Error(
+                    $"Export {result.Asset.Type}:{result.Asset.Text} error\r\n{result.Exception.Message}\r\n{result.Exception.StackTrace}"
+                );
+                skippedCount++;
+                CollectAfterModelExport();
+                LogModelExportProgress(processedCount, toExportCount, exportedCount, skippedCount);
+                return;
+            }
+
+            if (result.Exported)
+            {
+                exportedCount++;
+                _exportRunStats.ExportedModels++;
+                var exportMessage = $"[{processedCount}/{toExportCount}] Exported {result.Asset.TypeString}: {result.Asset.Text}";
+                if (processedCount <= 20 || processedCount % 100 == 0 || processedCount == toExportCount)
+                {
+                    Logger.Info(exportMessage);
+                }
+                else
+                {
+                    Logger.Verbose(exportMessage);
+                }
+                AppendExportManifest(savePath, result.Asset, result.ExportPath);
+            }
+            else
+            {
+                skippedCount++;
+                _exportRunStats.RecordSkippedModel("export_returned_false", result.Asset);
+            }
+            CollectAfterModelExport();
+            LogModelExportProgress(processedCount, toExportCount, exportedCount, skippedCount);
+        }
+
+        private static void LogModelExportProgress(int processedCount, int toExportCount, int exportedCount, int skippedCount)
+        {
+            if (processedCount % 100 == 0)
+            {
+                Logger.Info(
+                    $"Processed {processedCount}/{toExportCount} model candidate(s); exported {exportedCount}, skipped {skippedCount}."
+                );
+            }
+        }
+
+        private sealed class ModelExportResult
+        {
+            public ModelExportResult(AssetItem asset, string exportPath, bool exported, Exception exception)
+            {
+                Asset = asset;
+                ExportPath = exportPath;
+                Exported = exported;
+                Exception = exception;
+            }
+
+            public AssetItem Asset { get; }
+            public string ExportPath { get; }
+            public bool Exported { get; }
+            public Exception Exception { get; }
         }
 
         private static void CollectAfterModelExport()
@@ -4515,7 +5601,10 @@ WHERE r.relation IN ('renderer.material', 'skinnedMeshRenderer.mesh', 'meshFilte
                 pathId = asset.m_PathID,
                 output = exportPath,
             };
-            File.AppendAllText(manifestPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
+            lock (ExportManifestWriteLock)
+            {
+                File.AppendAllText(manifestPath, JsonConvert.SerializeObject(entry) + Environment.NewLine);
+            }
         }
 
         private static string GetExportPath(

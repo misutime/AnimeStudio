@@ -141,8 +141,11 @@ SQLite 源索引规则：
 - `ParticleSystem`、`ParticleSystemRenderer`、`ParticleSystemForceField`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象进入 `VFX/` 元数据索引。
 - 通过模型/路径/命名识别出的 slash、impact、projectile、beam、trail、explosion、aura、skill 等 mesh 型特效，模型仍可作为 glTF 进入 `Models/`，但 `resourceKind` 应标注为 `VFX`。
 - `VFX/vfx_library.json` 是全局机器索引，`VFX/VFX_LIBRARY.md` 是人工说明，每个特效目录下写 `vfx.json` 和 `VFX_REPORT.md`。
-- 当前策略是 metadata-first：记录 Unity 组件、来源、分类、mesh 预览和限制；ParticleSystem module、shader 动画、动画事件触发、运行时 prefab 绑定没有完整还原时必须明确标注，不能伪装成可直接播放。
+- 当前策略是 metadata + preview hints：记录 Unity 组件、来源、分类、mesh 预览和限制，并通过 TypeTree 轻量解析 `ParticleSystem` / `ParticleSystemRenderer` 的 Main、Emission、Shape、Size、Color、Trail、renderMode 等预览参数。源索引还必须记录 `ParticleSystemRenderer -> Material -> Texture`、`ParticleSystem/Renderer -> Texture` 等轻量 PPtr 关系，输出到 `textureRefCount` / `textures`，作为 Browser 近似预览和后续真实贴图采样的视觉证据。shader 动画、Texture Sheet 图集、动画事件触发、运行时 prefab 绑定没有完整还原时必须明确标注，不能伪装成可直接播放。
 - `fx` / `vfx` / `sfx` / `effect` 不能作为底层过滤理由。若资源可见或有 Unity VFX 组件证据，优先导出或入索引；质量由分类、报告和后续筛选处理。
+- `AnimeStudio.LibraryBrowser` 必须把 VFX 当作可浏览资产显示，而不是只把 `vfx.json` 当成数据文件。浏览器至少应提供 VFX 类型筛选、缩略图、组件/材质/贴图/Mesh 引用摘要、限制说明和近似动态预览；mesh 型特效优先使用真实 glTF 缩略图。
+- `ParticleSystem` / `VisualEffect` 不能用同一个程序化小圆点模板伪装成所有特效。完整 shader UV 动画、VFX Graph、动画事件和 prefab 运行时绑定未解析前，Browser 可以基于 `previewHints`、Unity 元数据、名称、分类、组件、材质、贴图和 Mesh 引用生成 approximate 预览，但必须明显标注“非 Unity runtime 100% 还原”，并尽量区分 trail、shockwave、aura、smoke、projectile、beam、distortion、mesh particle、ground plane、stretch billboard、textured billboard 等形态。
+- VFX 字段扩展后，旧素材库不会自动拥有新的 `textureRefCount` / `textures` / 更完整 `previewHints`。要判断 VFX 质量，至少需要重建 `unity_source_index.db` 并重新生成 VFX catalog；完整批量重导不是绝对必要，但推荐在验证 VFX 功能时重新导出一次素材库，避免旧索引字段缺失导致预览退化。
 - StaticMeshPrimary 应优先使用 SQLite 源索引恢复材质关系：`Mesh -> MeshFilter/SkinnedMeshRenderer -> GameObject/Renderer -> Material -> Texture2D`。命中时 glTF material 必须写入 `extras.animeStudioMaterial.status=boundRendererMaterial`，贴图进入 `Textures/_ModelDependencies`，模型旁 `ASSET_README.md` 记录选中的 Renderer 和 Material。
 - 裸 Mesh 或 Renderer-used Mesh 没有 submesh-material 强绑定时，不要伪造材质关系。宁可导出默认灰模并在 `asset_catalog.jsonl`、glTF `extras` 与模型旁说明文件标记 `needsRendererBinding`、`missingRendererMaterial` 或 `rendererMaterialUnresolved`，也不要把可能是建筑、地形、道具的有效模型漏掉。
 - 对匿名静态 Mesh，应使用来源包名 + PathID 生成稳定文件名，避免 `Mesh#123` 这类不利于排查的名字，也避免文件互相覆盖。

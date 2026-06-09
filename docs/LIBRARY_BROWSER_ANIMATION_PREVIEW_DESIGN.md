@@ -76,6 +76,47 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 
 运行前需要关闭正在打开该素材库的 Library Browser，避免 `library_index.db` 被占用。
 
+## Unity Bake 配置
+
+Library Browser 不要求用户通过环境变量配置 Unity 路径。动画 bake 使用下面的配置优先级：
+
+1. 素材库本地配置：`<LibraryRoot>\.as_browser_cache\unity_bake_settings.json`。
+2. Library Browser 全局配置：`%APPDATA%\AnimeStudio\LibraryBrowser\settings.json`。
+3. Unity Hub 默认安装目录自动检测，例如 `C:\Program Files\Unity\Hub\Editor\<version>\Editor\Unity.exe`。
+4. 环境变量兜底：`ANIMESTUDIO_UNITY_BAKE_PROJECT`、`ANIMESTUDIO_UNITY_EDITOR`。
+
+素材库本地配置只用于某个 Library 需要特殊 Unity 工程或 Editor 版本时覆盖全局设置。正常情况下团队成员应优先使用 Library Browser 的全局配置，避免把个人机器路径写进素材库目录。
+
+全局配置示例：
+
+```json
+{
+  "unityProject": "D:\\Assets\\AnimeStudioUnityBakeProject",
+  "unityEditor": "C:\\Program Files\\Unity\\Hub\\Editor\\6000.4.5f1"
+}
+```
+
+`unityEditor` 可以写 Unity 版本目录，也可以直接写 `Unity.exe`；Browser 会自动规范成 `...\Editor\Unity.exe`。顶部工具栏的 `Unity设置` 按钮会同时修改全局 `unityEditor` 和 `unityProject`，不会改环境变量，也不会改素材库本地配置。
+
+注意：`Unity Editor` 和 `UnityBakeProject` 是两件事。前者是 `Unity.exe`，后者是用于运行 AnimeStudio.UnityBake helper 的 Unity 工程目录。只配置 `Unity.exe` 仍然无法执行烘焙。
+
+### Unity Bake Worker
+
+Humanoid/Muscle 动画需要 Unity `Animator`/`Avatar` 采样，冷启动 Unity 会非常慢。LibraryBrowser 默认使用常驻 Unity Bake Worker：
+
+- CLI 参数：`--unity_bake_worker_queue <queue-dir>`
+- Browser 默认队列：`<LibraryRoot>\.as_browser_cache\unity_bake_worker`
+- 第一次烘焙会启动 Unity worker，后续同一素材库的 Humanoid 烘焙会复用已启动的 Unity 进程。
+- Worker 通过 `worker_heartbeat.json` 表示存活，通过 `*.request.json` / `*.done.json` / `*.error.json` 文件队列处理任务。
+- 采样结果仍然写 `unity_bake_result.json`，再由 AnimeStudio CLI 合成 baked glTF；模型、贴图、骨骼、动画数据路径不变。
+- 顶部工具栏提供 `Unity Worker` 下拉菜单：
+  - `状态`：读取当前素材库队列的 `worker_heartbeat.json`，显示运行、未启动、未响应等状态。
+  - `启动`：按当前有效 Unity 配置启动该素材库的常驻 worker。
+  - `重启`：先停止当前队列 worker，再重新启动。
+  - `停止`：优先写入 `worker_stop.request` 让 worker 自己退出；如果旧版 worker 不认识停止信号，会兜底关闭命令行同时包含 `AnimeStudioBakeWorker.Run` 和当前队列路径的 Unity batchmode 进程。
+
+这个 worker 只优化调度速度，不改变动画还原算法。若需要完全关闭 worker，可结束对应的 Unity batchmode 进程；下次预览会自动重新启动。
+
 ## 动画预览流程
 
 预览采用按需生成，并优先走快速路径：

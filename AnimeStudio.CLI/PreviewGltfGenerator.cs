@@ -41,6 +41,7 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
+            ResolveSelectionLibraryPaths(selection, Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? "");
             return GenerateSelection(indexPath, gameName, selection, outputDirectory, sourceRootOverride);
         }
 
@@ -78,6 +79,7 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
+            ResolveSelectionLibraryPaths(selection, libraryRoot);
             return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride);
         }
 
@@ -414,6 +416,32 @@ namespace AnimeStudio.CLI
                     ["candidates"] = new JArray(candidate),
                 },
                 candidate);
+        }
+
+        private static void ResolveSelectionLibraryPaths(PreviewSelection selection, string libraryRoot)
+        {
+            if (selection?.Model?["model"] is JObject model)
+            {
+                ResolvePathProperty(model, libraryRoot, "output");
+                ResolvePathProperty(model, libraryRoot, "modelPreview");
+            }
+
+            if (selection?.Animation is JObject animation)
+            {
+                ResolvePathProperty(animation, libraryRoot, "output");
+                ResolvePathProperty(animation, libraryRoot, "animationAsset");
+            }
+        }
+
+        private static void ResolvePathProperty(JObject obj, string libraryRoot, string propertyName)
+        {
+            var value = (string)obj[propertyName];
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            obj[propertyName] = LibraryRelativePathMigrator.ResolveLibraryPath(libraryRoot, value);
         }
 
         private static JObject SelectAssetFromLibraryDb(SqliteConnection connection, string kind, string selector)

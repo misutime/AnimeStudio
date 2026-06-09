@@ -20,6 +20,19 @@ namespace AnimeStudio.LibraryBrowser
             "library_index.db"
         };
 
+        private static readonly HashSet<string> TextureExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".bmp",
+            ".tga",
+            ".dds",
+            ".ktx",
+            ".ktx2",
+            ".webp"
+        };
+
         public static void ValidateLibraryRoot(string root)
         {
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
@@ -58,37 +71,141 @@ namespace AnimeStudio.LibraryBrowser
 
                 using var document = JsonDocument.Parse(line);
                 var obj = document.RootElement;
-                if (!StringEquals(obj, "kind", "Model"))
+                var kind = ReadString(obj, "kind") ?? "";
+                var sourceType = ReadString(obj, "sourceType") ?? "";
+                var resourceKind = ReadString(obj, "resourceKind") ?? "Unknown";
+                var isTexture = IsTextureCatalogEntry(kind, sourceType, resourceKind, obj);
+                if (!string.Equals(kind, "Model", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase)
+                    && !isTexture)
                 {
                     continue;
                 }
 
                 var output = ReadString(obj, "output");
-                if (string.IsNullOrWhiteSpace(output) || !File.Exists(output))
+                if (string.IsNullOrWhiteSpace(output))
                 {
                     continue;
                 }
 
+                var isVfx = string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase);
+                if (isVfx)
+                {
+                    output = LibraryPathResolver.ResolveExistingDirectory(root, output);
+                    if (!Directory.Exists(output))
+                    {
+                        continue;
+                    }
+                }
+                else if (!File.Exists(output))
+                {
+                    output = LibraryPathResolver.ResolveExistingFile(root, output);
+                    if (!File.Exists(output))
+                    {
+                        continue;
+                    }
+                }
+
+                var modelPreview = LibraryPathResolver.ResolveExistingFile(root, ReadString(obj, "modelPreview") ?? "");
+
                 models.Add(new LibraryModelItem
                 {
+                    AssetKind = kind,
                     Name = ReadString(obj, "name") ?? Path.GetFileNameWithoutExtension(output) ?? "",
-                    ResourceKind = ReadString(obj, "resourceKind") ?? "Unknown",
+                    ResourceKind = resourceKind,
+                    VfxCategory = ReadString(obj, "vfxCategory") ?? "",
+                    Confidence = ReadString(obj, "confidence") ?? "",
+                    Status = ReadString(obj, "status") ?? "",
                     LibraryRole = ReadString(obj, "libraryRole") ?? "",
-                    SourceType = ReadString(obj, "sourceType") ?? "",
+                    SourceType = sourceType,
                     Source = ReadString(obj, "source") ?? "",
                     PathId = ReadInt64(obj, "pathId"),
                     OutputPath = output,
+                    ModelPreviewPath = modelPreview ?? "",
                     MeshCount = ReadInt32(obj, "meshCount"),
                     VertexCount = ReadInt32(obj, "vertexCount"),
                     MaterialCount = ReadInt32(obj, "materialCount"),
                     TextureCount = ReadInt32(obj, "textureCount"),
+                    ComponentCount = ReadInt32(obj, "componentCount"),
+                    MaterialRefCount = ReadInt32(obj, "materialRefCount"),
+                    TextureRefCount = ReadInt32(obj, "textureRefCount"),
+                    TexturePreviewCount = ReadInt32(obj, "texturePreviewCount"),
+                    MeshRefCount = ReadInt32(obj, "meshRefCount"),
+                    OccurrenceCount = Math.Max(1, ReadInt32(obj, "occurrenceCount")),
                     BoneCount = ReadInt32(obj, "boneCount"),
                     BonePaths = ReadStringArray(obj, "bonePaths"),
-                    NodePaths = ReadStringArray(obj, "nodePaths")
+                    NodePaths = ReadStringArray(obj, "nodePaths"),
+                    Signals = ReadStringArray(obj, "signals"),
+                    VfxTexturePreviewPaths = ReadTexturePreviewPaths(root, obj, output),
+                    VfxPreviewHintsJson = ReadRawJson(obj, "previewHints")
                 });
             }
 
+            AddTextureFiles(root, models);
             return models;
+        }
+
+        private static void AddTextureFiles(string root, List<LibraryModelItem> models)
+        {
+            var textureRoot = Path.Combine(root, "Textures");
+            if (!Directory.Exists(textureRoot))
+            {
+                return;
+            }
+
+            var existing = models
+                .Where(x => !string.IsNullOrWhiteSpace(x.OutputPath))
+                .Select(x => NormalizePath(x.OutputPath))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var file in Directory.EnumerateFiles(textureRoot, "*.*", SearchOption.AllDirectories))
+            {
+                if (!TextureExtensions.Contains(Path.GetExtension(file)) || !existing.Add(NormalizePath(file)))
+                {
+                    continue;
+                }
+
+                var relative = Path.GetRelativePath(textureRoot, file);
+                var parts = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var bucket = parts.Length > 1 ? parts[0] : "Textures";
+                models.Add(new LibraryModelItem
+                {
+                    AssetKind = "Texture",
+                    Name = Path.GetFileNameWithoutExtension(file) ?? "",
+                    ResourceKind = bucket,
+                    SourceType = "TextureFile",
+                    Source = file,
+                    OutputPath = file,
+                    ModelPreviewPath = file,
+                    TextureCount = 1,
+                    OccurrenceCount = 1,
+                    Status = "file_scan_fallback"
+                });
+            }
+        }
+
+        private static bool IsTextureCatalogEntry(string kind, string sourceType, string resourceKind, JsonElement obj)
+        {
+            if (string.Equals(kind, "VfxTexturePreviewTexture", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (string.Equals(kind, "Texture", StringComparison.OrdinalIgnoreCase)
+                || Contains(kind, "Texture2DArray")
+                || Contains(kind, "MaterialTexture"))
+            {
+                return true;
+            }
+
+            return string.Equals(sourceType, "Texture2D", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sourceType, "Texture2DArray", StringComparison.OrdinalIgnoreCase)
+                || Contains(resourceKind, "Texture");
+        }
+
+        private static bool Contains(string value, string text)
+        {
+            return value?.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool StringEquals(JsonElement obj, string name, string value)
@@ -113,6 +230,13 @@ namespace AnimeStudio.LibraryBrowser
             return obj.TryGetProperty(name, out var property) && property.TryGetInt32(out var value) ? value : 0;
         }
 
+        private static string ReadRawJson(JsonElement obj, string name)
+        {
+            return obj.TryGetProperty(name, out var property) && property.ValueKind != JsonValueKind.Null
+                ? property.GetRawText()
+                : "";
+        }
+
         private static long ReadInt64(JsonElement obj, string name)
         {
             return obj.TryGetProperty(name, out var property) && property.TryGetInt64(out var value) ? value : 0;
@@ -130,6 +254,105 @@ namespace AnimeStudio.LibraryBrowser
                 .Select(x => x.GetString())
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToArray();
+        }
+
+        private static string[] ReadTexturePreviewPaths(string libraryRoot, JsonElement obj, string outputDirectory)
+        {
+            if (!obj.TryGetProperty("texturePreviews", out var property) || property.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            var candidates = property.EnumerateArray()
+                .Select(x =>
+                {
+                    if (x.ValueKind != JsonValueKind.Object)
+                    {
+                        return null;
+                    }
+
+                    var output = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(x, "output"));
+                    if (!string.IsNullOrWhiteSpace(output) && File.Exists(output))
+                    {
+                        return new VfxTexturePreviewCandidate(output, ReadString(x, "slot"));
+                    }
+
+                    var relative = ReadString(x, "relativePath");
+                    if (!string.IsNullOrWhiteSpace(relative) && Directory.Exists(outputDirectory))
+                    {
+                        var path = Path.Combine(outputDirectory, relative.Replace('/', Path.DirectorySeparatorChar));
+                        return File.Exists(path) ? new VfxTexturePreviewCandidate(path, ReadString(x, "slot")) : null;
+                    }
+
+                    return null;
+                })
+                .Where(x => x != null && !string.IsNullOrWhiteSpace(x.Path))
+                .GroupBy(x => x.Path, StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .OrderByDescending(ScoreVfxTexturePreview)
+                .ThenBy(x => Path.GetFileName(x.Path), StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (candidates.Length == 0 || ScoreVfxTexturePreview(candidates[0]) < 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            return candidates
+                .Where(x => ScoreVfxTexturePreview(x) >= 0)
+                .Select(x => x.Path)
+                .ToArray();
+        }
+
+        private sealed class VfxTexturePreviewCandidate
+        {
+            public VfxTexturePreviewCandidate(string path, string slot)
+            {
+                Path = path;
+                Slot = slot ?? "";
+            }
+
+            public string Path { get; }
+            public string Slot { get; }
+        }
+
+        private static int ScoreVfxTexturePreview(VfxTexturePreviewCandidate candidate)
+        {
+            var score = ScoreVfxTexturePreviewPath(candidate.Path);
+            var slot = candidate.Slot?.ToLowerInvariant() ?? "";
+
+            score += ContainsAny(slot, "maintex", "basemap", "basecolor", "basecolormap", "albedo", "diffuse", "color", "colour", "txbase", "_base") ? 50 : 0;
+            score += ContainsAny(slot, "alpha", "dissolve", "edge", "gradient", "ramp", "mask") ? 16 : 0;
+            score += ContainsAny(slot, "normal", "cheaplitnormal") ? -80 : 0;
+            score += ContainsAny(slot, "distort", "disnoise", "noise", "flow", "motion", "vector") ? -45 : 0;
+
+            return score;
+        }
+
+        private static int ScoreVfxTexturePreviewPath(string path)
+        {
+            var name = Path.GetFileNameWithoutExtension(path)?.ToLowerInvariant() ?? "";
+            var score = 0;
+
+            score += ContainsAny(name, "particle", "vfx", "fx", "decal", "sprite") ? 24 : 0;
+            score += ContainsAny(name, "glow", "slash", "smoke", "fire", "spark", "trail", "beam", "ring", "circle", "wave", "shock", "impact", "orb", "flare", "blood", "dust", "cloud", "ripple", "swirl", "aura", "light", "line", "streak") ? 18 : 0;
+            score += ContainsAny(name, "albedo", "base", "basecolor", "diffuse", "color", "colour", "_bc", "_d", "_c", "_a", "alpha") ? 12 : 0;
+
+            score -= ContainsAny(name, "normal", "_n", "mask", "_m", "metal", "rough", "smooth", "ao", "height", "data", "lut", "flow", "motion", "vector") ? 28 : 0;
+            score -= ContainsAny(name, "noise", "distort", "distortion", "dissolve", "disnoise", "voronoi", "gradient", "ramp") ? 12 : 0;
+            score -= ContainsAny(name, "terrain", "ground", "surface", "tile", "palette") ? 8 : 0;
+
+            return score;
+        }
+
+        private static bool ContainsAny(string value, params string[] needles)
+        {
+            return needles.Any(value.Contains);
+        }
+
+        private static string NormalizePath(string path)
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
     }
 }

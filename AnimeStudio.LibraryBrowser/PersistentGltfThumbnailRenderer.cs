@@ -12,6 +12,8 @@ using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
 using SharpGLTF.Schema2;
 using DrawingPixelFormat = System.Drawing.Imaging.PixelFormat;
+using GltfImage = SharpGLTF.Schema2.Image;
+using GltfTextureWrapMode = SharpGLTF.Schema2.TextureWrapMode;
 using Matrix4 = OpenTK.Mathematics.Matrix4;
 using Vector3 = System.Numerics.Vector3;
 using Vector4 = System.Numerics.Vector4;
@@ -307,10 +309,21 @@ void main()
                 var vertices = new List<ThumbnailVertex>();
                 var min = new Vector3(float.PositiveInfinity);
                 var max = new Vector3(float.NegativeInfinity);
+                var materialCache = new Dictionary<Material, MaterialPreview>();
 
-                foreach (var node in scene.VisualChildren)
+                try
                 {
-                    AddNode(node, vertices, ref min, ref max);
+                    foreach (var node in scene.VisualChildren)
+                    {
+                        AddNode(node, vertices, ref min, ref max, materialCache);
+                    }
+                }
+                finally
+                {
+                    foreach (var preview in materialCache.Values)
+                    {
+                        preview.Texture?.Dispose();
+                    }
                 }
 
                 if (vertices.Count == 0)
@@ -366,20 +379,20 @@ void main()
                 }
             }
 
-            private static void AddNode(Node node, List<ThumbnailVertex> vertices, ref Vector3 min, ref Vector3 max)
+            private static void AddNode(Node node, List<ThumbnailVertex> vertices, ref Vector3 min, ref Vector3 max, Dictionary<Material, MaterialPreview> materialCache)
             {
                 if (node.Mesh != null)
                 {
-                    AddMesh(node.Mesh, node.WorldMatrix, vertices, ref min, ref max);
+                    AddMesh(node.Mesh, node.WorldMatrix, vertices, ref min, ref max, materialCache);
                 }
 
                 foreach (var child in node.VisualChildren)
                 {
-                    AddNode(child, vertices, ref min, ref max);
+                    AddNode(child, vertices, ref min, ref max, materialCache);
                 }
             }
 
-            private static void AddMesh(Mesh mesh, System.Numerics.Matrix4x4 world, List<ThumbnailVertex> vertices, ref Vector3 min, ref Vector3 max)
+            private static void AddMesh(Mesh mesh, System.Numerics.Matrix4x4 world, List<ThumbnailVertex> vertices, ref Vector3 min, ref Vector3 max, Dictionary<Material, MaterialPreview> materialCache)
             {
                 foreach (var primitive in mesh.Primitives)
                 {
@@ -396,7 +409,11 @@ void main()
 
                     var positions = positionAccessor.AsVector3Array();
                     var normals = primitive.GetVertexAccessor("NORMAL")?.AsVector3Array();
-                    var color = GetBaseColor(primitive.Material);
+                    var material = GetMaterialPreview(primitive.Material, materialCache);
+                    var texCoordName = $"TEXCOORD_{material.TextureCoordinate}";
+                    var texCoords = material.Texture != null
+                        ? primitive.GetVertexAccessor(texCoordName)?.AsVector2Array()
+                        : null;
 
                     foreach (var (a, b, c) in primitive.GetTriangleIndices())
                     {
@@ -406,9 +423,9 @@ void main()
                         var n0 = ReadNormal(normals, a, p0, p1, p2, world);
                         var n1 = ReadNormal(normals, b, p0, p1, p2, world);
                         var n2 = ReadNormal(normals, c, p0, p1, p2, world);
-                        vertices.Add(new ThumbnailVertex(p0, n0, color));
-                        vertices.Add(new ThumbnailVertex(p1, n1, color));
-                        vertices.Add(new ThumbnailVertex(p2, n2, color));
+                        vertices.Add(new ThumbnailVertex(p0, n0, ReadColor(material, texCoords, a)));
+                        vertices.Add(new ThumbnailVertex(p1, n1, ReadColor(material, texCoords, b)));
+                        vertices.Add(new ThumbnailVertex(p2, n2, ReadColor(material, texCoords, c)));
                         min = Vector3.Min(min, Vector3.Min(p0, Vector3.Min(p1, p2)));
                         max = Vector3.Max(max, Vector3.Max(p0, Vector3.Max(p1, p2)));
                     }
@@ -422,6 +439,25 @@ void main()
                     : Vector3.Cross(p1 - p0, p2 - p0);
 
                 return normal.LengthSquared() > 0.000001f ? Vector3.Normalize(normal) : Vector3.UnitY;
+            }
+
+            private static MaterialPreview GetMaterialPreview(Material material, Dictionary<Material, MaterialPreview> cache)
+            {
+                if (material == null)
+                {
+                    return MaterialPreview.Default;
+                }
+
+                if (cache.TryGetValue(material, out var cached))
+                {
+                    return cached;
+                }
+
+                var baseColor = GetBaseColor(material);
+                var texture = TryLoadBaseColorTexture(material, out var textureCoordinate, out var textureTransform);
+                var preview = new MaterialPreview(baseColor, texture, textureCoordinate, textureTransform);
+                cache[material] = preview;
+                return preview;
             }
 
             private static Vector4 GetBaseColor(Material material)
@@ -445,6 +481,52 @@ void main()
                 return new Vector4(0.72f, 0.72f, 0.72f, 1.0f);
             }
 
+            private static ThumbnailTexture TryLoadBaseColorTexture(Material material, out int textureCoordinate, out System.Numerics.Matrix3x2 textureTransform)
+            {
+                textureCoordinate = 0;
+                textureTransform = System.Numerics.Matrix3x2.Identity;
+
+                var channel = material?.FindChannel("BaseColor");
+                if (!channel.HasValue || channel.Value.Texture?.PrimaryImage == null)
+                {
+                    return null;
+                }
+
+                textureCoordinate = Math.Max(0, channel.Value.TextureCoordinate);
+                if (channel.Value.TextureTransform != null)
+                {
+                    textureCoordinate = channel.Value.TextureTransform.TextureCoordinateOverride ?? textureCoordinate;
+                    textureTransform = channel.Value.TextureTransform.Matrix;
+                }
+
+                try
+                {
+                    return ThumbnailTexture.Load(channel.Value.Texture.PrimaryImage, channel.Value.TextureSampler);
+                }
+                catch
+                {
+                    // 缩略图不能因为单张贴图解码失败阻塞模型浏览；失败时退回材质色。
+                    return null;
+                }
+            }
+
+            private static Vector4 ReadColor(MaterialPreview material, IReadOnlyList<System.Numerics.Vector2> texCoords, int index)
+            {
+                var color = material.BaseColor;
+                if (material.Texture == null || texCoords == null || index < 0 || index >= texCoords.Count)
+                {
+                    return color;
+                }
+
+                var uv = System.Numerics.Vector2.Transform(texCoords[index], material.TextureTransform);
+                var sampled = material.Texture.Sample(uv);
+                return new Vector4(
+                    ClampColor(color.X * sampled.X),
+                    ClampColor(color.Y * sampled.Y),
+                    ClampColor(color.Z * sampled.Z),
+                    MathF.Max(ClampColor(color.W * sampled.W), 0.35f));
+            }
+
             private static float ClampColor(float value)
             {
                 if (float.IsNaN(value) || float.IsInfinity(value))
@@ -453,6 +535,127 @@ void main()
                 }
 
                 return Math.Clamp(value, 0.02f, 1.0f);
+            }
+
+            private sealed record MaterialPreview(
+                Vector4 BaseColor,
+                ThumbnailTexture Texture,
+                int TextureCoordinate,
+                System.Numerics.Matrix3x2 TextureTransform)
+            {
+                public static readonly MaterialPreview Default = new(
+                    new Vector4(0.72f, 0.72f, 0.72f, 1.0f),
+                    null,
+                    0,
+                    System.Numerics.Matrix3x2.Identity);
+            }
+
+            private sealed class ThumbnailTexture : IDisposable
+            {
+                private readonly byte[] _bgra;
+                private readonly GltfTextureWrapMode _wrapS;
+                private readonly GltfTextureWrapMode _wrapT;
+                private bool _disposed;
+
+                private ThumbnailTexture(byte[] bgra, int width, int height, GltfTextureWrapMode wrapS, GltfTextureWrapMode wrapT)
+                {
+                    _bgra = bgra;
+                    Width = width;
+                    Height = height;
+                    _wrapS = wrapS;
+                    _wrapT = wrapT;
+                }
+
+                public int Width { get; }
+                public int Height { get; }
+
+                public static ThumbnailTexture Load(GltfImage image, TextureSampler sampler)
+                {
+                    using var stream = image.Content.Open();
+                    using var loaded = new Bitmap(stream);
+                    using var bitmap = new Bitmap(loaded.Width, loaded.Height, DrawingPixelFormat.Format32bppArgb);
+                    using (var graphics = Graphics.FromImage(bitmap))
+                    {
+                        graphics.DrawImage(loaded, 0, 0, loaded.Width, loaded.Height);
+                    }
+
+                    var data = bitmap.LockBits(
+                        new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                        ImageLockMode.ReadOnly,
+                        DrawingPixelFormat.Format32bppArgb);
+                    try
+                    {
+                        var bytes = new byte[Math.Abs(data.Stride) * bitmap.Height];
+                        System.Runtime.InteropServices.Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
+                        return new ThumbnailTexture(
+                            bytes,
+                            bitmap.Width,
+                            bitmap.Height,
+                            sampler?.WrapS ?? GltfTextureWrapMode.REPEAT,
+                            sampler?.WrapT ?? GltfTextureWrapMode.REPEAT);
+                    }
+                    finally
+                    {
+                        bitmap.UnlockBits(data);
+                    }
+                }
+
+                public Vector4 Sample(System.Numerics.Vector2 uv)
+                {
+                    if (_disposed || Width <= 0 || Height <= 0 || _bgra.Length == 0)
+                    {
+                        return Vector4.One;
+                    }
+
+                    var u = Wrap(uv.X, _wrapS);
+                    var v = Wrap(uv.Y, _wrapT);
+                    var x = Math.Clamp((int)MathF.Round(u * (Width - 1)), 0, Width - 1);
+                    var y = Math.Clamp((int)MathF.Round(v * (Height - 1)), 0, Height - 1);
+                    var offset = (y * Width + x) * 4;
+                    if (offset < 0 || offset + 3 >= _bgra.Length)
+                    {
+                        return Vector4.One;
+                    }
+
+                    return new Vector4(
+                        _bgra[offset + 2] / 255.0f,
+                        _bgra[offset + 1] / 255.0f,
+                        _bgra[offset] / 255.0f,
+                        _bgra[offset + 3] / 255.0f);
+                }
+
+                private static float Wrap(float value, GltfTextureWrapMode mode)
+                {
+                    if (float.IsNaN(value) || float.IsInfinity(value))
+                    {
+                        return 0;
+                    }
+
+                    return mode switch
+                    {
+                        GltfTextureWrapMode.CLAMP_TO_EDGE => Math.Clamp(value, 0, 1),
+                        GltfTextureWrapMode.MIRRORED_REPEAT => MirrorRepeat(value),
+                        _ => Repeat(value)
+                    };
+                }
+
+                private static float Repeat(float value)
+                {
+                    value -= MathF.Floor(value);
+                    return value < 0 ? value + 1 : value;
+                }
+
+                private static float MirrorRepeat(float value)
+                {
+                    var repeated = Repeat(value);
+                    var tile = (int)MathF.Floor(value);
+                    return Math.Abs(tile) % 2 == 0 ? repeated : 1.0f - repeated;
+                }
+
+                public void Dispose()
+                {
+                    _disposed = true;
+                }
             }
         }
     }

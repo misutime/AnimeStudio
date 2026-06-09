@@ -75,5 +75,50 @@ namespace AnimeStudio.UnityBake
             Debug.LogError(message);
             EditorApplication.Exit(1);
         }
+
+        internal static string GetArgumentValue(string name)
+        {
+            return GetArgument(name);
+        }
+
+        internal static AnimeStudioBakeResult RunRequest(string requestPath)
+        {
+            if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
+            {
+                return new AnimeStudioBakeResult
+                {
+                    status = "error",
+                    message = "Missing -animeStudioBakeRequest or request file does not exist.",
+                };
+            }
+
+            try
+            {
+                var request = JsonUtility.FromJson<AnimeStudioBakeRequest>(File.ReadAllText(requestPath));
+                if (request == null)
+                {
+                    return new AnimeStudioBakeResult
+                    {
+                        status = "error",
+                        message = "Unable to parse AnimeStudio bake request.",
+                    };
+                }
+
+                var result = AnimeStudioPlayableBaker.Bake(request);
+                WriteResult(request, result);
+                return result;
+            }
+            catch (Exception e)
+            {
+                var request = new AnimeStudioBakeRequest { outputJson = Path.Combine(Path.GetDirectoryName(requestPath) ?? ".", "unity_bake_result.json") };
+                var result = new AnimeStudioBakeResult
+                {
+                    status = "error",
+                    message = e.ToString(),
+                };
+                WriteResult(request, result);
+                return result;
+            }
+        }
     }
 }

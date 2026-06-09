@@ -36,11 +36,23 @@ namespace AnimeStudio.LibraryBrowser
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(statePath));
                 var root = document.RootElement;
+                var status = ReadString(root, "status") ?? "未知";
+                var gltf = ReadString(root, "gltf");
+                var validation = ReadString(root, "validation");
+                var message = ReadString(root, "message");
+                if (NeedsUnityBake(animation)
+                    && string.Equals(status, "可播放", StringComparison.OrdinalIgnoreCase)
+                    && !IsUnityBakedGltf(gltf))
+                {
+                    status = "局部预览";
+                    message ??= "这是旧的快速预览结果，只包含普通 Transform 曲线；Humanoid/Muscle 身体动作仍需 Unity 烘焙。";
+                }
+
                 return new AnimationPreviewStatus(
-                    ReadString(root, "status") ?? "未知",
-                    ReadString(root, "gltf"),
-                    ReadString(root, "validation"),
-                    ReadString(root, "message"));
+                    status,
+                    gltf,
+                    validation,
+                    message);
             }
             catch
             {
@@ -158,6 +170,150 @@ namespace AnimeStudio.LibraryBrowser
             return new AnimationPreviewStatus(finalStatus, gltf, File.Exists(validation) ? validation : null, message);
         }
 
+        public async Task<AnimationPreviewStatus> EnsureUnityBakeAsync(
+            LibraryModelItem model,
+            LibraryAnimationCandidate animation,
+            CancellationToken cancellationToken,
+            Action<string> progress = null)
+        {
+            var directory = GetPreviewDirectory(model, animation);
+            var current = GetStatus(model, animation);
+            if (string.Equals(current.Status, "可播放", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(current.GltfPath)
+                && File.Exists(current.GltfPath)
+                && IsUnityBakedGltf(current.GltfPath))
+            {
+                return current;
+            }
+
+            var config = LibraryBrowserSettings.LoadEffective(_root);
+            var configError = config.ValidateUnityBake();
+            if (!string.IsNullOrWhiteSpace(configError))
+            {
+                var status = new AnimationPreviewStatus("需配置 Unity", null, null, configError);
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var modelAnimations = Path.Combine(_root, "model_animations.json");
+            if (!File.Exists(modelAnimations))
+            {
+                var status = new AnimationPreviewStatus("烘焙失败", null, null, "没有找到 model_animations.json，无法生成 Unity 烘焙请求。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            Directory.CreateDirectory(directory);
+            WriteState(directory, "Unity 烘焙中", null, null, null);
+
+            var cli = ResolveCliLauncher();
+            if (cli == null)
+            {
+                var status = new AnimationPreviewStatus("烘焙失败", null, null, "没有找到 AnimeStudio.CLI，无法生成 Unity 烘焙。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var output = Path.Combine(directory, "unity_bake");
+            Directory.CreateDirectory(output);
+            var bakedGltf = Path.Combine(
+                output,
+                "BakedPreview",
+                $"{SafeFileName(model.Name)}__{SafeFileName(animation.Name)}.gltf");
+            var args = cli.BuildUnityBakeArguments(
+                modelAnimations,
+                model.OutputPath,
+                animation.BestPath,
+                output,
+                config.UnityProject,
+                config.UnityEditor,
+                bakedGltf);
+
+            var startedAt = DateTime.UtcNow;
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = cli.FileName,
+                WorkingDirectory = FindWorkspaceRoot(),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var arg in args)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            progress?.Invoke("启动 Unity Humanoid 烘焙");
+            using var process = Process.Start(startInfo);
+            if (process == null)
+            {
+                var status = new AnimationPreviewStatus("烘焙失败", null, null, "启动 AnimeStudio.CLI 失败。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data == null)
+                {
+                    return;
+                }
+
+                lock (stdout)
+                {
+                    stdout.AppendLine(e.Data);
+                }
+
+                progress?.Invoke(BuildProgressMessage(startedAt, e.Data));
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data == null)
+                {
+                    return;
+                }
+
+                lock (stderr)
+                {
+                    stderr.AppendLine(e.Data);
+                }
+
+                progress?.Invoke(BuildProgressMessage(startedAt, e.Data));
+            };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKill(process);
+                var status = new AnimationPreviewStatus("已取消", null, null, "用户取消了 Unity 烘焙。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var report = Path.Combine(Path.GetDirectoryName(bakedGltf) ?? output, "unity_bake_apply_report.json");
+            var baked = process.ExitCode == 0
+                && File.Exists(bakedGltf)
+                && HasTrustedUnityBakeReport(report)
+                && IsUnityBakedGltf(bakedGltf);
+            var finalStatus = baked ? "可播放" : "烘焙失败";
+            var message = baked ? null : BuildUnityBakeFailureMessage(process.ExitCode, report, stdout.ToString(), stderr.ToString());
+            WriteState(directory, finalStatus, baked ? bakedGltf : null, File.Exists(report) ? report : null, message);
+            return new AnimationPreviewStatus(finalStatus, baked ? bakedGltf : null, File.Exists(report) ? report : null, message);
+        }
+
+        private static bool NeedsUnityBake(LibraryAnimationCandidate animation)
+        {
+            return animation?.RequiresHumanoidBake == true
+                || string.Equals(animation?.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string BuildProgressMessage(DateTime startedAt, string line)
         {
             var elapsed = DateTime.UtcNow - startedAt;
@@ -168,6 +324,64 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return $"动画预览生成中 {elapsed:mm\\:ss} | {line}";
+        }
+
+        private static string SafeFileName(string value)
+        {
+            var text = string.IsNullOrWhiteSpace(value) ? "animation_preview" : value.Trim();
+            foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                text = text.Replace(c, '_');
+            }
+
+            return text.Length > 120 ? text[..120] : text;
+        }
+
+        private static bool HasTrustedUnityBakeReport(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || !File.Exists(reportPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                var status = ReadString(document.RootElement, "status");
+                return string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "warning", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsUnityBakedGltf(string gltfPath)
+        {
+            if (string.IsNullOrWhiteSpace(gltfPath) || !File.Exists(gltfPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(gltfPath));
+                foreach (var animation in document.RootElement.GetProperty("animations").EnumerateArray())
+                {
+                    if (animation.TryGetProperty("extras", out var extras)
+                        && extras.TryGetProperty("animeStudioUnityBake", out _))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            return false;
         }
 
         private static void TryKill(Process process)
@@ -220,6 +434,38 @@ namespace AnimeStudio.LibraryBrowser
             return $"CLI exit code {exitCode}{Environment.NewLine}{text}";
         }
 
+        private static string BuildUnityBakeFailureMessage(int exitCode, string reportPath, string stdout, string stderr)
+        {
+            var report = "";
+            if (!string.IsNullOrWhiteSpace(reportPath) && File.Exists(reportPath))
+            {
+                try
+                {
+                    report = File.ReadAllText(reportPath);
+                    if (report.Length > 2000)
+                    {
+                        report = report[..2000];
+                    }
+                }
+                catch
+                {
+                    report = "";
+                }
+            }
+
+            var text = string.Join(Environment.NewLine, new[] { report, stdout, stderr }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            if (text.Length > 4000)
+            {
+                text = text[..4000];
+            }
+
+            return "Unity 烘焙没有生成可信的 baked glTF。需要同时看到 unity_bake_apply_report.json 和 glTF extras.animeStudioUnityBake。"
+                + Environment.NewLine
+                + $"CLI exit code {exitCode}"
+                + Environment.NewLine
+                + text;
+        }
+
         private static CliLauncher ResolveCliLauncher()
         {
             var workspace = FindWorkspaceRoot();
@@ -240,14 +486,28 @@ namespace AnimeStudio.LibraryBrowser
 
         private static CliLauncher BuildExeLauncher(string exe)
         {
-            return new CliLauncher(exe, (index, model, animation, output) => new[]
-            {
-                "--generate_preview_from_library", index,
-                "--game", "Normal",
-                "--preview_model", model,
-                "--preview_animation", animation,
-                "--preview_output", output,
-            });
+            return new CliLauncher(
+                exe,
+                (index, model, animation, output) => new[]
+                {
+                    "--generate_preview_from_library", index,
+                    "--game", "Normal",
+                    "--preview_model", model,
+                    "--preview_animation", animation,
+                    "--preview_output", output,
+                },
+                (modelAnimations, model, animation, output, unityProject, unityEditor, bakedGltf) => new[]
+                {
+                    "--generate_unity_bake_request_from_library", Path.GetDirectoryName(modelAnimations) ?? Directory.GetCurrentDirectory(),
+                    "--preview_model", model,
+                    "--preview_animation", animation,
+                    "--preview_output", output,
+                    "--unity_project", unityProject,
+                    "--unity_editor", unityEditor,
+                    "--unity_bake_worker_queue", Path.Combine(Path.GetDirectoryName(modelAnimations) ?? Directory.GetCurrentDirectory(), ".as_browser_cache", "unity_bake_worker"),
+                    "--baked_gltf_output", bakedGltf,
+                    "--run_unity_bake",
+                });
         }
 
         private static string FindWorkspaceRoot()
@@ -277,7 +537,11 @@ namespace AnimeStudio.LibraryBrowser
             return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
         }
 
-        private sealed record CliLauncher(string FileName, Func<string, string, string, string, string[]> BuildArguments);
+        private sealed record CliLauncher(
+            string FileName,
+            Func<string, string, string, string, string[]> BuildArguments,
+            Func<string, string, string, string, string, string, string, string[]> BuildUnityBakeArguments);
+
     }
 
     internal sealed record AnimationPreviewStatus(string Status, string GltfPath, string ValidationPath, string Message);

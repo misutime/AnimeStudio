@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -51,6 +52,7 @@ namespace AnimeStudio
         private readonly Dictionary<string, int> _materialMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _textureMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<int, string> _textureImagePathMap = new Dictionary<int, string>();
+        private readonly Dictionary<int, int> _opaquePreviewTextureMap = new Dictionary<int, int>();
         private readonly Dictionary<string, int> _skinMap = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, Dictionary<string, int>> _morphTargetMap = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _morphTargetCountMap = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -204,9 +206,13 @@ namespace AnimeStudio
                 attributes["TANGENT"] = WriteVec4Accessor(mesh.VertexList.Select(x => x.Tangent));
             }
 
+            var protectVertexColorAlpha = false;
             if (mesh.hasColor)
             {
-                attributes["COLOR_0"] = WriteColorAccessor(mesh.VertexList.Select(x => x.Color));
+                // 有些 Unity 自定义 shader 会把顶点色 alpha 当业务遮罩，不是真透明。
+                // glTF 查看器会直接乘 alpha；仅当所有子材质都确认是不透明预览时，保护可见性。
+                protectVertexColorAlpha = ShouldProtectVertexColorAlpha(mesh);
+                attributes["COLOR_0"] = WriteColorAccessor(mesh.VertexList.Select(x => x.Color), protectVertexColorAlpha);
             }
 
             if (mesh.BoneList?.Count > 0 && mesh.VertexList.Any(x => x.BoneIndices != null && x.Weights != null))
@@ -256,6 +262,17 @@ namespace AnimeStudio
                 ["name"] = Path.GetFileName(mesh.Path),
                 ["primitives"] = primitives,
             };
+            if (protectVertexColorAlpha)
+            {
+                gltfMesh["extras"] = new Dictionary<string, object>
+                {
+                    ["animeStudio"] = new Dictionary<string, object>
+                    {
+                        ["previewVertexColorAlphaProtected"] = true,
+                        ["previewVertexColorAlphaReason"] = "Unity 不透明材质的顶点色 alpha 可能是 shader 遮罩；glTF 预览写为 1 以避免通用查看器误判透明。",
+                    },
+                };
+            }
             AddMorphTargetNames(mesh, gltfMesh);
             var meshIndex = _meshes.Count;
             _meshes.Add(gltfMesh);
@@ -346,15 +363,18 @@ namespace AnimeStudio
                 .Select(x => x.Key)
                 .ToArray();
             gltfMesh["weights"] = names.Select(_ => 0.0f).ToArray();
-            gltfMesh["extras"] = new Dictionary<string, object>
+            if (!gltfMesh.TryGetValue("extras", out var extrasValue)
+                || extrasValue is not Dictionary<string, object> extras)
             {
-                ["targetNames"] = names,
-                ["unityMorph"] = new Dictionary<string, object>
-                {
-                    ["path"] = morph.Path,
-                    ["channelCount"] = names.Length,
-                    ["note"] = "glTF morph targets store one shape target per Unity BlendShape channel; multi-frame Unity blend shape channels currently use the last shape frame as the target.",
-                },
+                extras = new Dictionary<string, object>();
+                gltfMesh["extras"] = extras;
+            }
+            extras["targetNames"] = names;
+            extras["unityMorph"] = new Dictionary<string, object>
+            {
+                ["path"] = morph.Path,
+                ["channelCount"] = names.Length,
+                ["note"] = "glTF morph targets store one shape target per Unity BlendShape channel; multi-frame Unity blend shape channels currently use the last shape frame as the target.",
             };
         }
 
@@ -739,11 +759,37 @@ namespace AnimeStudio
                 baseColorTextureIndex,
                 colorMaskTextureIndex,
                 maskTextureIndex);
+            ProtectOpaquePreviewBaseColorTextureAlpha(material, pbr, gltfMaterial);
 
             var index = _materials.Count;
             _materials.Add(gltfMaterial);
             _materialMap[name] = index;
             return index;
+        }
+
+        private bool ShouldProtectVertexColorAlpha(ImportedMesh mesh)
+        {
+            if (mesh?.SubmeshList == null || mesh.SubmeshList.Count == 0)
+            {
+                return false;
+            }
+
+            var hasMaterial = false;
+            foreach (var submesh in mesh.SubmeshList)
+            {
+                var material = ImportedHelpers.FindMaterial(submesh.Material, _imported.MaterialList);
+                if (material == null)
+                {
+                    return false;
+                }
+                hasMaterial = true;
+                if (!IsOpaquePreviewMaterial(material))
+                {
+                    return false;
+                }
+            }
+
+            return hasMaterial;
         }
 
         private void ApplyColorMaskTintPipeline(
@@ -976,6 +1022,142 @@ namespace AnimeStudio
             pbr["baseColorFactor"] = color;
         }
 
+        private void ProtectOpaquePreviewBaseColorTextureAlpha(
+            ImportedMaterial material,
+            Dictionary<string, object> pbr,
+            Dictionary<string, object> gltfMaterial)
+        {
+            if (!IsOpaquePreviewMaterial(material, gltfMaterial))
+            {
+                return;
+            }
+
+            if (!TryGetTextureIndex(pbr, "baseColorTexture", out var baseColorTextureIndex))
+            {
+                return;
+            }
+
+            var protectedTextureIndex = GetOpaquePreviewTextureIndex(baseColorTextureIndex);
+            if (protectedTextureIndex < 0 || protectedTextureIndex == baseColorTextureIndex)
+            {
+                return;
+            }
+
+            pbr["baseColorTexture"] = new Dictionary<string, object> { ["index"] = protectedTextureIndex };
+            AddAnimeStudioMaterialNote(
+                gltfMaterial,
+                "previewTextureAlphaProtected",
+                "Unity 材质未声明透明/裁剪，基础贴图 alpha 按预览保护为不透明；原始贴图和 Unity 槽位仍保存在 extras.unityMaterial。");
+        }
+
+        private int GetOpaquePreviewTextureIndex(int sourceTextureIndex)
+        {
+            if (_opaquePreviewTextureMap.TryGetValue(sourceTextureIndex, out var existing))
+            {
+                return existing;
+            }
+
+            var protectedIndex = CreateOpaquePreviewTexture(sourceTextureIndex);
+            _opaquePreviewTextureMap[sourceTextureIndex] = protectedIndex;
+            return protectedIndex;
+        }
+
+        private int CreateOpaquePreviewTexture(int sourceTextureIndex)
+        {
+            if (!_textureImagePathMap.TryGetValue(sourceTextureIndex, out var sourcePath)
+                || !File.Exists(sourcePath)
+                || !Path.GetExtension(sourcePath).Equals(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                return sourceTextureIndex;
+            }
+
+            try
+            {
+                using var image = Image.Load<Rgba32>(sourcePath);
+                var changed = false;
+                for (var y = 0; y < image.Height; y++)
+                {
+                    var row = image.DangerousGetPixelRowMemory(y).Span;
+                    for (var x = 0; x < row.Length; x++)
+                    {
+                        if (row[x].A == byte.MaxValue)
+                        {
+                            continue;
+                        }
+                        row[x].A = byte.MaxValue;
+                        changed = true;
+                    }
+                }
+
+                if (!changed)
+                {
+                    return sourceTextureIndex;
+                }
+
+                var fileName = Path.GetFileNameWithoutExtension(sourcePath) + "_opaque_preview.png";
+                var previewPath = Path.Combine(Path.GetDirectoryName(sourcePath) ?? _directory, GetSafeTextureFileName(fileName));
+                image.SaveAsPng(previewPath);
+                return AddImageTexture(previewPath);
+            }
+            catch
+            {
+                return sourceTextureIndex;
+            }
+        }
+
+        private static bool TryGetTextureIndex(Dictionary<string, object> pbr, string textureName, out int textureIndex)
+        {
+            textureIndex = -1;
+            if (!pbr.TryGetValue(textureName, out var value)
+                || value is not Dictionary<string, object> textureInfo
+                || !textureInfo.TryGetValue("index", out var indexValue))
+            {
+                return false;
+            }
+
+            if (indexValue is int intIndex)
+            {
+                textureIndex = intIndex;
+                return true;
+            }
+
+            if (indexValue is long longIndex && longIndex >= 0 && longIndex <= int.MaxValue)
+            {
+                textureIndex = (int)longIndex;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void AddAnimeStudioMaterialNote(
+            Dictionary<string, object> gltfMaterial,
+            string flagName,
+            string note)
+        {
+            var extras = EnsureMaterialExtras(gltfMaterial);
+            if (!extras.TryGetValue("animeStudioMaterial", out var animeValue)
+                || animeValue is not Dictionary<string, object> anime)
+            {
+                anime = new Dictionary<string, object>();
+                extras["animeStudioMaterial"] = anime;
+            }
+
+            anime[flagName] = true;
+            if (anime.TryGetValue("notes", out var notesValue) && notesValue is List<string> notes)
+            {
+                notes.Add(note);
+            }
+            else if (notesValue is string[] noteArray)
+            {
+                anime["notes"] = noteArray.Concat(new[] { note }).ToArray();
+            }
+            else
+            {
+                anime["notes"] = new[] { note };
+            }
+        }
+
         private static bool IsUnityTransparentMaterial(ImportedMaterial material, Dictionary<string, object> gltfMaterial)
         {
             if (gltfMaterial.TryGetValue("alphaMode", out var alphaMode)
@@ -988,6 +1170,40 @@ namespace AnimeStudio
                 || GetUnityFloat(material, "_BlendMode") > 0.5f
                 || (TryGetUnityFloat(material, "_SrcBlend", out var srcBlend) && srcBlend != 1.0f)
                 || (TryGetUnityFloat(material, "_DstBlend", out var dstBlend) && dstBlend != 0.0f);
+        }
+
+        private static bool IsOpaquePreviewMaterial(ImportedMaterial material, Dictionary<string, object> gltfMaterial = null)
+        {
+            if (material == null)
+            {
+                return false;
+            }
+            if (gltfMaterial != null
+                && gltfMaterial.TryGetValue("alphaMode", out var alphaMode)
+                && alphaMode is string alphaModeText
+                && !string.IsNullOrWhiteSpace(alphaModeText))
+            {
+                return false;
+            }
+            if (material.Diffuse.A < 0.999f || material.Transparency > 0.0f)
+            {
+                return false;
+            }
+            if (IsUnityTransparentMaterial(material, gltfMaterial ?? new Dictionary<string, object>()))
+            {
+                return false;
+            }
+
+            return !HasUnityAlphaClip(material);
+        }
+
+        private static bool HasUnityAlphaClip(ImportedMaterial material)
+        {
+            return GetUnityFloat(material, "_AlphaCutoffEnable") > 0.5f
+                || GetUnityFloat(material, "_AlphaToMask") > 0.5f
+                || GetUnityFloat(material, "_UseOpacityMap") > 0.5f
+                || GetUnityFloat(material, "_TransparentDepthPrepassEnable") > 0.5f
+                || GetUnityFloat(material, "_TransparentDepthPostpassEnable") > 0.5f;
         }
 
         private static Dictionary<string, object> BuildUnityTextureExtra(ImportedMaterialTexture textureRef, ImportedTexture texture)
@@ -1050,12 +1266,7 @@ namespace AnimeStudio
                 return;
             }
 
-            if (
-                GetUnityFloat(material, "_AlphaCutoffEnable") > 0.5f
-                || GetUnityFloat(material, "_AlphaToMask") > 0.5f
-                || GetUnityFloat(material, "_UseOpacityMap") > 0.5f
-                || GetUnityFloat(material, "_TransparentDepthPrepassEnable") > 0.5f
-                || GetUnityFloat(material, "_TransparentDepthPostpassEnable") > 0.5f)
+            if (HasUnityAlphaClip(material))
             {
                 gltfMaterial["alphaMode"] = "MASK";
                 var cutoff = GetUnityFloat(material, "_Cutoff");
@@ -1335,7 +1546,7 @@ namespace AnimeStudio
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
         }
 
-        private int WriteColorAccessor(IEnumerable<Color> values)
+        private int WriteColorAccessor(IEnumerable<Color> values, bool forceOpaqueAlpha = false)
         {
             var list = values.ToList();
             var offset = BeginWrite();
@@ -1344,7 +1555,7 @@ namespace AnimeStudio
                 WriteFinite(value.R);
                 WriteFinite(value.G);
                 WriteFinite(value.B);
-                WriteFinite(value.A);
+                WriteFinite(forceOpaqueAlpha ? 1.0f : value.A);
             }
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
         }
@@ -1624,6 +1835,11 @@ namespace AnimeStudio
                     sb.AppendLine("- 说明: 找到了 tint 参数，但没有成功生成预览贴图。");
                 }
             }
+            if (TryGetBool(animeStudioMaterial, "previewTextureAlphaProtected", out var previewTextureAlphaProtected)
+                && previewTextureAlphaProtected)
+            {
+                sb.AppendLine("- 预览保护: 不透明 Unity 材质的基础贴图 alpha 已保护为可见，原始贴图信息保留在 glTF extras。");
+            }
 
             if (TryGetEnumerable(animeStudioMaterial, "maskTextures", out var masks))
             {
@@ -1803,9 +2019,30 @@ namespace AnimeStudio
                     return double.IsNaN(d) || double.IsInfinity(d) ? 0.0d : d;
                 case Dictionary<string, object> dictionary:
                     return dictionary.ToDictionary(kv => kv.Key, kv => SanitizeJsonValue(kv.Value));
+                case IDictionary dictionary:
+                    // Unity 原始材质/诊断数据可能带 Dictionary<string, float>。
+                    // glTF JSON 不允许 NaN/Infinity，这里统一清洗所有字典值，避免单个素材写出失败。
+                    var result = new Dictionary<string, object>();
+                    foreach (var item in dictionary)
+                    {
+                        if (item is DictionaryEntry entry)
+                        {
+                            result[Convert.ToString(entry.Key) ?? string.Empty] = SanitizeJsonValue(entry.Value);
+                            continue;
+                        }
+
+                        var type = item.GetType();
+                        var keyProperty = type.GetProperty("Key");
+                        var valueProperty = type.GetProperty("Value");
+                        if (keyProperty != null && valueProperty != null)
+                        {
+                            result[Convert.ToString(keyProperty.GetValue(item)) ?? string.Empty] = SanitizeJsonValue(valueProperty.GetValue(item));
+                        }
+                    }
+                    return result;
                 case IEnumerable<object> objects:
                     return objects.Select(SanitizeJsonValue).ToArray();
-                case System.Collections.IEnumerable enumerable:
+                case IEnumerable enumerable:
                     return enumerable.Cast<object>().Select(SanitizeJsonValue).ToArray();
                 default:
                     return value;

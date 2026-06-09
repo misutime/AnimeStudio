@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -91,6 +91,30 @@ namespace AnimeStudio.CLI
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
                         o.RunUnityBake,
+                        o.UnityBakeWorkerQueue?.FullName,
+                        o.BakedGltfOutput?.FullName,
+                        o.BakedFbxOutput?.FullName,
+                        o.Blender?.FullName
+                    );
+                    return;
+                }
+
+                if (o.GenerateUnityBakeRequestFromLibrary != null)
+                {
+                    UnityBakeRequestGenerator.GenerateFromLibrary(
+                        o.GenerateUnityBakeRequestFromLibrary.FullName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName,
+                        o.UnityProject?.FullName,
+                        o.UnityEditor?.FullName,
+                        o.UnityBakeModelPrefab,
+                        o.UnityBakeAnimationClip,
+                        o.UnityBakeOutput?.FullName,
+                        o.UnityBakeFps,
+                        o.RunUnityBake,
+                        o.UnityBakeWorkerQueue?.FullName,
                         o.BakedGltfOutput?.FullName,
                         o.BakedFbxOutput?.FullName,
                         o.Blender?.FullName
@@ -142,6 +166,12 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.MigrateLibraryRelativePaths != null)
+                {
+                    LibraryRelativePathMigrator.Migrate(o.MigrateLibraryRelativePaths.FullName, rebuildSqlite: true);
+                    return;
+                }
+
                 if (o.BuildSqliteIndex != null)
                 {
                     SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName);
@@ -150,7 +180,7 @@ namespace AnimeStudio.CLI
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --build_sqlite_index, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -574,6 +604,17 @@ namespace AnimeStudio.CLI
                                 }))
                                 {
                                     ExportCurrentAssets(o.Output.FullName, o.GroupAssetsType, o.AssetExportType);
+                                }
+                            }
+                            if (o.WorkMode == WorkMode.Library)
+                            {
+                                using (ProfileLogger.Measure("vfx_texture_preview_cache_batch", new Dictionary<string, object>
+                                {
+                                    ["exportableCount"] = exportableAssets.Count,
+                                    ["firstFile"] = batch.FirstOrDefault(),
+                                }))
+                                {
+                                    Studio.ExportVfxTexturePreviewCache(o.Output.FullName);
                                 }
                             }
                         }

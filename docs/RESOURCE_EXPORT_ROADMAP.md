@@ -151,10 +151,13 @@ CAB / PPtr 依赖索引策略：
 
 VFX 进入默认素材库，但分阶段还原：
 
-1. 已实现/当前目标：`VFX/` 元数据索引，记录 Unity `ParticleSystem`、`ParticleSystemRenderer`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象和 mesh 型特效线索。
+1. 已实现/当前目标：`VFX/` 元数据索引，记录 Unity `ParticleSystem`、`ParticleSystemRenderer`、`LineRenderer`、`TrailRenderer`、`VisualEffect`、GPU Particle/VFX 对象和 mesh 型特效线索，并从 TypeTree 轻量提取 ParticleSystem/Renderer 的 `previewHints`。源索引同时记录 `ParticleSystemRenderer -> Material -> Texture` 和直接 VFX texture PPtr，输出为 `textureRefCount` / `textures`，用于区分材质贴图驱动的 billboard、trail、mesh particle 和 ground-plane 特效。
 2. 输出形态：每个特效目录包含 `vfx.json` 和 `VFX_REPORT.md`，全局包含 `VFX/vfx_library.json` 和 `VFX/VFX_LIBRARY.md`；mesh 型特效仍以 glTF 模型导出并标注 `resourceKind=VFX`。
-3. 暂不伪装：ParticleSystem module、shader UV 动画、动画事件触发、prefab 运行时绑定没有完整还原时，只记录为 metadata/diagnostic。
-4. 后续增强：实现 ParticleSystem module 解析、特效预览器、shader/material 参数近似、动画事件到 VFX prefab 的关系索引。
+3. 暂不伪装：shader UV 动画、Texture Sheet 图集切帧、VFX Graph、动画事件触发、prefab 运行时绑定没有完整还原时，只记录为 metadata/diagnostic。
+4. Browser 预览：`AnimeStudio.LibraryBrowser` 应提供 VFX 类型筛选、缩略图、限制说明和近似动态预览。mesh 型特效优先使用真实 glTF 缩略图；纯 ParticleSystem/VisualEffect 在 runtime 数据未烘焙前，应优先基于 `previewHints`，再结合 Unity 元数据、名称、分类、组件、材质、贴图和 Mesh 引用生成 approximate 预览，至少区分 trail、shockwave、aura、smoke、projectile、beam、distortion、mesh particle、ground plane、stretch billboard、textured billboard 等形态，不能所有 VFX 共用一个小圆点占位模板。
+5. 后续增强：实现材质贴图/Texture Sheet atlas 采样、shader/material 参数近似、动画事件到 VFX prefab 的关系索引，并逐步从 approximate 预览升级为更接近 Unity 行为的 runtime 预览。
+
+VFX 索引字段扩展时，旧素材库可继续浏览，但预览质量会受限。验证 VFX 功能时建议重建 `unity_source_index.db` 并重新生成 `VFX/` catalog；如果要让 `asset_catalog.jsonl`、`vfx.json`、缩略图缓存和报告完全一致，推荐重新执行一次 Library 导出。
 
 - `Core`：高概率游戏核心素材。
 - `Curated`：人工或规则确认过的精选素材。

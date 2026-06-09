@@ -18,6 +18,7 @@ namespace AnimeStudio.LibraryBrowser
         public int MatchedPathCount { get; init; }
         public bool RequiresHumanoidBake { get; init; }
         public bool NeedsValidation { get; init; }
+        public string[] BindingPaths { get; init; } = System.Array.Empty<string>();
 
         public string BestPath => !string.IsNullOrWhiteSpace(OutputPath) ? OutputPath : AnimationAssetPath;
         public bool IsExplicit => string.Equals(RelationSource, "explicit", System.StringComparison.OrdinalIgnoreCase)
