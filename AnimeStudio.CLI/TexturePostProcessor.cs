@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace AnimeStudio.CLI
 {
@@ -369,6 +370,11 @@ namespace AnimeStudio.CLI
         private static string GetSafeTextureFileName(string name)
         {
             foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c, '_');
+            }
+            name = Regex.Replace(name, @"\s+", "_");
+            foreach (var c in new[] { '#', '?', '%', '[', ']' })
             {
                 name = name.Replace(c, '_');
             }

@@ -4110,8 +4110,21 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 return "_";
             if (str.Length >= 260)
                 return Path.GetRandomFileName();
-            return Path.GetInvalidFileNameChars()
+            // Windows 允许空格、#、?、[] 这类字符出现在文件名里，但 glTF 查看器常会把本地路径转成 URI。
+            // # 会被当成 fragment，空格也可能在命令行/URI 转换中踩坑；素材库文件名保守替换，原名保留在元数据里。
+            str = Path.GetInvalidFileNameChars()
                 .Aggregate(str, (current, c) => current.Replace(c, '_'));
+            str = Regex.Replace(str, @"\s+", "_");
+            foreach (var c in GetUriSensitiveFileNameChars())
+            {
+                str = str.Replace(c, '_');
+            }
+            return str;
+        }
+
+        private static char[] GetUriSensitiveFileNameChars()
+        {
+            return new[] { '#', '?', '%', '[', ']' };
         }
     }
 }

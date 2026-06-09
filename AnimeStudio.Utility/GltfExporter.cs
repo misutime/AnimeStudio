@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Advanced;
 using SixLabors.ImageSharp.PixelFormats;
@@ -324,7 +325,9 @@ namespace AnimeStudio
 
                 var target = new Dictionary<string, object>
                 {
-                    ["POSITION"] = WriteVec3Accessor(positions, false),
+                    // morph target 的 POSITION 也是 glTF 规范里的 position accessor，需要 min/max。
+                    // F3D 这类严格查看器会因为缺少 bounds 直接拒绝加载场景。
+                    ["POSITION"] = WriteVec3Accessor(positions, true),
                 };
                 if (normals != null)
                 {
@@ -1703,7 +1706,7 @@ namespace AnimeStudio
 
         private Dictionary<string, object> BuildDocument()
         {
-            return new Dictionary<string, object>
+            var document = new Dictionary<string, object>
             {
                 ["asset"] = new Dictionary<string, object>
                 {
@@ -1724,7 +1727,6 @@ namespace AnimeStudio
                 ["images"] = _images,
                 ["textures"] = _textures,
                 ["skins"] = _skins,
-                ["animations"] = _animations,
                 ["buffers"] = new[]
                 {
                     new Dictionary<string, object>
@@ -1736,6 +1738,15 @@ namespace AnimeStudio
                 ["bufferViews"] = _bufferViews,
                 ["accessors"] = _accessors,
             };
+
+            // glTF 不要求没有动画时写 animations: []。
+            // 部分严格查看器/validator 会把空实体当错误，直接导致场景加载失败。
+            if (_animations.Count > 0)
+            {
+                document["animations"] = _animations;
+            }
+
+            return document;
         }
 
         private void WriteJson(string path, Dictionary<string, object> gltf)
@@ -2057,6 +2068,13 @@ namespace AnimeStudio
         private static string GetSafeTextureFileName(string name)
         {
             foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c, '_');
+            }
+            // 文件系统允许空格和这些字符，但 glTF image.uri 会按 URI 语义解析。
+            // 尤其 # 会被当成 fragment；空格也可能在查看器路径转换中踩坑。
+            name = Regex.Replace(name, @"\s+", "_");
+            foreach (var c in new[] { '#', '?', '%', '[', ']' })
             {
                 name = name.Replace(c, '_');
             }
