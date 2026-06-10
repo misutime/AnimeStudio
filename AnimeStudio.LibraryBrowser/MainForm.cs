@@ -2547,8 +2547,9 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            if (HandleUnrealAnimationPreviewRequest(model, animation))
+            if (animation.IsUnreal)
             {
+                await GenerateUnrealAnimationPreviewAsync(model, animation, openAfterGenerate, RebuildAnimationList);
                 return;
             }
 
@@ -2615,8 +2616,9 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            if (HandleUnrealAnimationPreviewRequest(model, animation))
+            if (animation.IsUnreal)
             {
+                await GenerateUnrealAnimationPreviewAsync(model, animation, openAfterGenerate, RebuildAnimationModelList);
                 return;
             }
 
@@ -2671,35 +2673,92 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private bool HandleUnrealAnimationPreviewRequest(LibraryModelItem model, LibraryAnimationCandidate animation)
+        private async Task GenerateUnrealAnimationPreviewAsync(
+            LibraryModelItem model,
+            LibraryAnimationCandidate animation,
+            bool openAfterGenerate,
+            Action rebuild)
         {
-            if (!animation.IsUnreal)
+            var inputError = ValidateUnrealAnimationPreviewInputs(model, animation);
+            if (!string.IsNullOrWhiteSpace(inputError))
             {
-                return false;
+                MessageBox.Show(this, inputError, "UE 动画预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
 
-            var message =
-                "当前 UE 动画已经进入索引和模型关系，但还不是可直接播放的 glTF 预览。"
-                + Environment.NewLine
-                + "不会再调用 Unity Bake，因为 UE .ueanim 需要单独的 UE 动画采样/GLTF 预览管线。"
-                + Environment.NewLine
-                + Environment.NewLine
-                + $"模型: {model.Name}"
-                + Environment.NewLine
-                + $"动画: {animation.Name}"
-                + Environment.NewLine
-                + $"验证: {FormatAnimationValidation(animation).Trim()}"
-                + Environment.NewLine
-                + $"帧/轨道/片段: {FormatAnimationCounts(animation)}"
-                + Environment.NewLine
-                + $"文件: {animation.BestPath}";
-            MessageBox.Show(this, message, "UE 动画预览尚未生成", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            if (!string.IsNullOrWhiteSpace(animation.BestPath) && File.Exists(animation.BestPath))
+            UpdateSelectedAnimationStatus("UE预览生成中");
+            UpdateStatus("正在生成 UE 动画预览");
+            AnimationPreviewStatus status;
+            try
             {
-                OpenSelectedAnimationFolder();
+                status = await _previewCache.EnsureUnrealAsync(
+                    model,
+                    animation,
+                    CancellationToken.None,
+                    message => BeginInvoke(() => UpdateStatus(message)));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "UE 动画预览失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                rebuild();
+                return;
             }
 
-            return true;
+            rebuild();
+            UpdateStatus($"UE 动画预览: {status.Status}");
+            if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(
+                    this,
+                    status.Message ?? "生成 UE 动画预览失败。",
+                    "UE 动画预览失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (openAfterGenerate && !string.IsNullOrWhiteSpace(status.GltfPath))
+            {
+                OpenPathWithF3d(status.GltfPath);
+            }
+        }
+
+        private static string ValidateUnrealAnimationPreviewInputs(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            if (model == null || animation == null)
+            {
+                return "没有选中模型或动画。";
+            }
+
+            if (string.IsNullOrWhiteSpace(model.OutputPath) || !File.Exists(model.OutputPath))
+            {
+                return "模型 GLB 文件不存在，无法生成 UE 动画预览。"
+                    + Environment.NewLine
+                    + $"模型文件: {model.OutputPath}";
+            }
+
+            if (string.IsNullOrWhiteSpace(animation.BestPath) || !File.Exists(animation.BestPath))
+            {
+                return "UE 动画文件不存在，无法生成预览。"
+                    + Environment.NewLine
+                    + $"动画文件: {animation.BestPath}";
+            }
+
+            if (!animation.BestPath.EndsWith(".ueanim", StringComparison.OrdinalIgnoreCase))
+            {
+                return "当前 UE 动画不是 .ueanim 轨道文件，暂时只能作为关系元数据查看。"
+                    + Environment.NewLine
+                    + $"动画文件: {animation.BestPath}";
+            }
+
+            if (!animation.IsUsableCandidate)
+            {
+                return "当前 UE 动画不是可用候选，不能生成默认预览。"
+                    + Environment.NewLine
+                    + $"验证: {FormatAnimationValidation(animation).Trim()}";
+            }
+
+            return null;
         }
 
         private static string ValidateAnimationPreviewInputs(LibraryModelItem model, LibraryAnimationCandidate animation)

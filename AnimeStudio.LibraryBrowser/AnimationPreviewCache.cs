@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -12,7 +13,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class AnimationPreviewCache
     {
-        private const string PreviewCacheVersion = "fast-preview-v2-unity-to-gltf";
+        private const string PreviewCacheVersion = "fast-preview-v3-unity-ue-to-gltf";
         private readonly string _root;
         private readonly string _cacheRoot;
 
@@ -308,6 +309,109 @@ namespace AnimeStudio.LibraryBrowser
             return new AnimationPreviewStatus(finalStatus, baked ? bakedGltf : null, File.Exists(report) ? report : null, message);
         }
 
+        public async Task<AnimationPreviewStatus> EnsureUnrealAsync(
+            LibraryModelItem model,
+            LibraryAnimationCandidate animation,
+            CancellationToken cancellationToken,
+            Action<string> progress = null)
+        {
+            var current = GetStatus(model, animation);
+            if (string.Equals(current.Status, "可播放", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(current.GltfPath)
+                && File.Exists(current.GltfPath))
+            {
+                return current;
+            }
+
+            var directory = GetPreviewDirectory(model, animation);
+            Directory.CreateDirectory(directory);
+            WriteState(directory, "UE预览生成中", null, null, null);
+
+            var launcher = ResolveUnrealExporterLauncher();
+            if (launcher == null)
+            {
+                var status = new AnimationPreviewStatus("失败", null, null, "没有找到 UnrealExporter，无法生成 UE 动画预览。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var output = Path.Combine(directory, "preview.glb");
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = launcher.FileName,
+                WorkingDirectory = launcher.WorkingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var arg in launcher.BuildArguments(model.OutputPath, animation.BestPath, output))
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            var startedAt = DateTime.UtcNow;
+            progress?.Invoke("启动 UE 动画预览导出");
+            using var process = Process.Start(startInfo);
+            if (process == null)
+            {
+                var status = new AnimationPreviewStatus("失败", null, null, "启动 UnrealExporter 失败。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data == null)
+                {
+                    return;
+                }
+
+                lock (stdout)
+                {
+                    stdout.AppendLine(e.Data);
+                }
+
+                progress?.Invoke(BuildProgressMessage(startedAt, e.Data));
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data == null)
+                {
+                    return;
+                }
+
+                lock (stderr)
+                {
+                    stderr.AppendLine(e.Data);
+                }
+
+                progress?.Invoke(BuildProgressMessage(startedAt, e.Data));
+            };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKill(process);
+                var status = new AnimationPreviewStatus("已取消", null, null, "用户取消了 UE 动画预览生成。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
+            var validation = Path.Combine(directory, "preview_validation.json");
+            var playable = process.ExitCode == 0 && File.Exists(output) && HasTrustedPreviewReport(validation);
+            var finalStatus = playable ? "可播放" : "失败";
+            var message = playable ? null : BuildFailureMessage(process.ExitCode, stdout.ToString(), stderr.ToString());
+            WriteState(directory, finalStatus, playable ? output : null, File.Exists(validation) ? validation : null, message);
+            return new AnimationPreviewStatus(finalStatus, playable ? output : null, File.Exists(validation) ? validation : null, message);
+        }
+
         private static bool NeedsUnityBake(LibraryAnimationCandidate animation)
         {
             return animation?.RequiresHumanoidBake == true
@@ -350,6 +454,29 @@ namespace AnimeStudio.LibraryBrowser
                 var status = ReadString(document.RootElement, "status");
                 return string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(status, "warning", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasTrustedPreviewReport(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || !File.Exists(reportPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                var status = ReadString(document.RootElement, "status");
+                var gltf = ReadString(document.RootElement, "gltf");
+                return (string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(status, "warning", StringComparison.OrdinalIgnoreCase))
+                    && !string.IsNullOrWhiteSpace(gltf)
+                    && File.Exists(gltf);
             }
             catch
             {
@@ -484,6 +611,68 @@ namespace AnimeStudio.LibraryBrowser
             return null;
         }
 
+        private static ExternalLauncher ResolveUnrealExporterLauncher()
+        {
+            var roots = CandidateUnrealExporterRoots();
+            foreach (var root in roots)
+            {
+                var exe = Path.Combine(root, "UnrealExporter", "bin", "Debug", "net8.0", "UnrealExporter.exe");
+                if (File.Exists(exe))
+                {
+                    return new ExternalLauncher(
+                        exe,
+                        root,
+                        (model, animation, output) => new[]
+                        {
+                            "--preview-ue-animation",
+                            "--model", model,
+                            "--animation", animation,
+                            "--output", output,
+                        });
+                }
+
+                var project = Path.Combine(root, "UnrealExporter", "UnrealExporter.csproj");
+                if (File.Exists(project))
+                {
+                    return new ExternalLauncher(
+                        "dotnet",
+                        root,
+                        (model, animation, output) => new[]
+                        {
+                            "run",
+                            "--project", project,
+                            "--no-build",
+                            "--",
+                            "--preview-ue-animation",
+                            "--model", model,
+                            "--animation", animation,
+                            "--output", output,
+                        });
+                }
+            }
+
+            return null;
+        }
+
+        private static string[] CandidateUnrealExporterRoots()
+        {
+            var result = new List<string>();
+            var workspace = FindWorkspaceRoot();
+            var parent = Directory.GetParent(workspace)?.FullName;
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                result.Add(Path.Combine(parent, "UnrealExporter"));
+            }
+
+            result.Add(Path.Combine(workspace, "UnrealExporter"));
+            result.Add(@"D:\misutime\UnrealExporter");
+            return result
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         private static CliLauncher BuildExeLauncher(string exe)
         {
             return new CliLauncher(
@@ -541,6 +730,11 @@ namespace AnimeStudio.LibraryBrowser
             string FileName,
             Func<string, string, string, string, string[]> BuildArguments,
             Func<string, string, string, string, string, string, string, string[]> BuildUnityBakeArguments);
+
+        private sealed record ExternalLauncher(
+            string FileName,
+            string WorkingDirectory,
+            Func<string, string, string, string[]> BuildArguments);
 
     }
 
