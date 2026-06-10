@@ -407,7 +407,7 @@ namespace AnimeStudio.LibraryBrowser
 
             var playable = process.ExitCode == 0 && File.Exists(output) && HasTrustedPreviewReport(validation);
             var finalStatus = playable ? "可播放" : "失败";
-            var message = playable ? null : BuildFailureMessage(process.ExitCode, stdout.ToString(), stderr.ToString());
+            var message = playable ? null : BuildPreviewFailureMessage(validation, process.ExitCode, stdout.ToString(), stderr.ToString());
             WriteState(directory, finalStatus, playable ? output : null, File.Exists(validation) ? validation : null, message);
             return new AnimationPreviewStatus(finalStatus, playable ? output : null, File.Exists(validation) ? validation : null, message);
         }
@@ -559,6 +559,54 @@ namespace AnimeStudio.LibraryBrowser
                 text = text[..4000];
             }
             return $"CLI exit code {exitCode}{Environment.NewLine}{text}";
+        }
+
+        private static string BuildPreviewFailureMessage(string reportPath, int exitCode, string stdout, string stderr)
+        {
+            var reportSummary = "";
+            if (!string.IsNullOrWhiteSpace(reportPath) && File.Exists(reportPath))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                    var status = ReadString(document.RootElement, "status") ?? "";
+                    var error = ReadString(document.RootElement, "error") ?? "";
+                    var gltf = ReadString(document.RootElement, "gltf") ?? "";
+                    reportSummary =
+                        $"preview_validation.json: status={EmptyAsUnknown(status)}, gltf={EmptyAsNone(gltf)}" +
+                        (string.IsNullOrWhiteSpace(error) ? "" : $"{Environment.NewLine}error={error}");
+                }
+                catch
+                {
+                    reportSummary = "preview_validation.json 存在，但读取失败。";
+                }
+            }
+            else
+            {
+                reportSummary = "没有生成 preview_validation.json。";
+            }
+
+            var text = string.Join(Environment.NewLine, new[] { reportSummary, stdout, stderr }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            if (text.Length > 4000)
+            {
+                text = text[..4000];
+            }
+
+            return "UE 动画预览没有生成可信的 glTF。"
+                + Environment.NewLine
+                + $"CLI exit code {exitCode}"
+                + Environment.NewLine
+                + text;
+        }
+
+        private static string EmptyAsUnknown(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "Unknown" : value;
+        }
+
+        private static string EmptyAsNone(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "(none)" : value;
         }
 
         private static string BuildUnityBakeFailureMessage(int exitCode, string reportPath, string stdout, string stderr)

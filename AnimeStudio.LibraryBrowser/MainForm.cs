@@ -1392,19 +1392,23 @@ namespace AnimeStudio.LibraryBrowser
             var animationCount = _animationIndex.CountForModel(item);
             var allAnimationCount = _animationIndex.CountAllForModel(item);
             var explicitCount = _animationIndex.CountExplicitForModel(item);
-            e.Item = new ListViewItem(ShortLabel(item, animationCount, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, animationCount, item.AnimationCandidateCount, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = imageIndex,
-                ToolTipText = allAnimationCount > 0
-                    ? $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}{Environment.NewLine}可用动画: {animationCount}{Environment.NewLine}全部关系动画: {allAnimationCount}{Environment.NewLine}显式动画: {explicitCount}"
-                    : $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}"
+                ToolTipText =
+                    $"{item.OutputPath}{Environment.NewLine}" +
+                    $"类型: {item.ModelSourceLabel}{Environment.NewLine}" +
+                    $"可用动画: {animationCount}{Environment.NewLine}" +
+                    $"全部关系动画: {allAnimationCount}{Environment.NewLine}" +
+                    $"覆盖报告候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
+                    $"显式动画: {explicitCount}"
             };
         }
 
         private void VfxList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleVfx[e.ItemIndex];
-            e.Item = new ListViewItem(ShortLabel(item, 0, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = GetImageIndex(item),
                 ToolTipText = $"{item.OutputPath}{Environment.NewLine}类型: VFX/{item.VfxCategory}{Environment.NewLine}组件: {item.ComponentCount} | 材质: {item.MaterialRefCount} | 贴图: {item.TextureRefCount} | Mesh: {item.MeshRefCount} | 出现: {item.OccurrenceCount}"
@@ -1414,7 +1418,7 @@ namespace AnimeStudio.LibraryBrowser
         private void TextureList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleTextures[e.ItemIndex];
-            e.Item = new ListViewItem(ShortLabel(item, 0, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = GetTextureImageIndex(item),
                 ToolTipText = $"{item.OutputPath}{Environment.NewLine}类型: {item.ResourceKind}/{item.SourceType}"
@@ -1703,16 +1707,32 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private static string ShortLabel(LibraryModelItem item, int animationCount, bool favorite)
+        private static string ShortLabel(LibraryModelItem item, int usableAnimationCount, int reportedAnimationCount, bool favorite)
         {
             var name = string.IsNullOrWhiteSpace(item.Name) ? item.FileName : item.Name;
+            var animationBadge = BuildAnimationBadge(usableAnimationCount, reportedAnimationCount);
             var suffix = item.IsVfx
                 ? $" [{(string.IsNullOrWhiteSpace(item.VfxCategory) ? "VFX" : item.VfxCategory)}]"
-                : animationCount > 0 ? $" [{animationCount}]" : "";
+                : string.IsNullOrWhiteSpace(animationBadge) ? "" : $" [{animationBadge}]";
             var favoriteBadge = favorite ? " [收藏]" : "";
             var maxNameLength = Math.Max(12, 48 - suffix.Length - favoriteBadge.Length);
             var shortName = name.Length <= maxNameLength ? name : name[..Math.Max(1, maxNameLength - 3)] + "...";
             return shortName + suffix + favoriteBadge;
+        }
+
+        private static string BuildAnimationBadge(int usableAnimationCount, int reportedAnimationCount)
+        {
+            if (usableAnimationCount <= 0 && reportedAnimationCount <= 0)
+            {
+                return "";
+            }
+
+            if (reportedAnimationCount > 0 && reportedAnimationCount != usableAnimationCount)
+            {
+                return $"{usableAnimationCount}/{reportedAnimationCount}";
+            }
+
+            return usableAnimationCount.ToString();
         }
 
         private static void SetLargeIconSpacing(ListView list)
@@ -1946,7 +1966,10 @@ namespace AnimeStudio.LibraryBrowser
             _detailModel = item;
             _detailAnimations = animations.ToList();
             RebuildAnimationList();
+            var usableCount = animations.Count(x => x.IsUsableCandidate);
+            var allAnimationCount = animations.Count;
             var explicitCount = animations.Count(x => x.IsExplicit);
+            var animationIndexNote = BuildModelAnimationIndexNote(item, usableCount, allAnimationCount, explicitCount);
             _detailBox.Text =
                 $"名称: {item.Name}{Environment.NewLine}" +
                 $"模型来源: {item.ModelSourceLabel}{Environment.NewLine}" +
@@ -1964,7 +1987,12 @@ namespace AnimeStudio.LibraryBrowser
                 $"UE骨骼模型: {(item.HasSkin ? "是" : "否")}{Environment.NewLine}" +
                 $"UE Skeleton路径: {(item.HasSkeletonPath ? "有" : "无")}{Environment.NewLine}" +
                 $"UE组件引用: {item.ComponentReferenceCount}{Environment.NewLine}" +
-                $"UE动画候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
+                $"动画索引来源: {EmptyAsUnknown(_animationIndex.LoadSource)}{Environment.NewLine}" +
+                $"可用动画: {usableCount}{Environment.NewLine}" +
+                $"全部关系动画: {allAnimationCount}{Environment.NewLine}" +
+                $"显式动画: {explicitCount}{Environment.NewLine}" +
+                $"覆盖报告动画候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
+                animationIndexNote +
                 $"任务/交互信号: {FormatSignalList(item.TaskSignals)}{Environment.NewLine}" +
                 $"已忽略: {_curationStore?.IsIgnored(item)}{Environment.NewLine}" +
                 $"已收藏: {_curationStore?.IsFavoriteModel(item)}{Environment.NewLine}" +
@@ -2100,6 +2128,22 @@ namespace AnimeStudio.LibraryBrowser
         private static string EmptyAsNone(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? "(none)" : value;
+        }
+
+        private static string BuildModelAnimationIndexNote(
+            LibraryModelItem item,
+            int usableCount,
+            int allAnimationCount,
+            int explicitCount)
+        {
+            if (item == null || item.AnimationCandidateCount <= 0 || allAnimationCount > 0)
+            {
+                return "";
+            }
+
+            // UE 覆盖报告和动画索引来源不同；这里把不一致明示出来，避免误以为模型完全没有动画。
+            return $"动画索引提示: 覆盖报告记录了 {item.AnimationCandidateCount} 个候选，但当前索引没有命中可预览关系。" +
+                $"可用 {usableCount}，显式 {explicitCount}。{Environment.NewLine}";
         }
 
         private async Task LoadTargetedAnimationDetailsAsync(LibraryModelItem item, int requestId)

@@ -77,6 +77,10 @@ namespace AnimeStudio.LibraryBrowser
             var realModels = models.Count - textures - vfx;
             var skinned = models.Count(x => x.HasSkin || x.BoneCount > 0);
             var withAnimations = models.Count(x => animationIndex.CountForModel(x) > 0);
+            var withReportedAnimationCandidates = models.Count(x => !x.IsTexture && !x.IsVfx && x.AnimationCandidateCount > 0);
+            var reportedAnimationCandidates = models
+                .Where(x => !x.IsTexture && !x.IsVfx)
+                .Sum(x => x.AnimationCandidateCount);
             var payload = new
             {
                 root = Path.GetFullPath(root),
@@ -86,8 +90,10 @@ namespace AnimeStudio.LibraryBrowser
                 vfx,
                 animations = animationIndex.FindAllAnimations().Count,
                 modelsWithAnimationCandidates = withAnimations,
+                modelsWithReportedAnimationCandidates = withReportedAnimationCandidates,
                 animationIndexSource = animationIndex.LoadSource,
-                animationCandidates = animationIndex.IndexedCandidateCount
+                animationCandidates = animationIndex.IndexedCandidateCount,
+                reportedAnimationCandidates
             };
             Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
