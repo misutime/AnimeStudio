@@ -77,6 +77,8 @@ namespace AnimeStudio.LibraryBrowser
             var realModels = models.Count - textures - vfx;
             var skinned = models.Count(x => x.HasSkin || x.BoneCount > 0);
             var withAnimations = models.Count(x => animationIndex.CountForModel(x) > 0);
+            var allAnimationUsages = animationIndex.FindAllAnimations();
+            var unrealAnimations = allAnimationUsages.Count(x => x.Animation.IsUnreal);
             var withReportedAnimationCandidates = models.Count(x => !x.IsTexture && !x.IsVfx && x.AnimationCandidateCount > 0);
             var reportedAnimationCandidates = models
                 .Where(x => !x.IsTexture && !x.IsVfx)
@@ -90,7 +92,8 @@ namespace AnimeStudio.LibraryBrowser
                 skinnedModels = skinned,
                 textures,
                 vfx,
-                animations = animationIndex.FindAllAnimations().Count,
+                animations = allAnimationUsages.Count,
+                unrealAnimations,
                 modelsWithAnimationCandidates = withAnimations,
                 modelsWithReportedAnimationCandidates = withReportedAnimationCandidates,
                 animationIndexSource = animationIndex.LoadSource,

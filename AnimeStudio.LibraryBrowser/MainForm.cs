@@ -1771,10 +1771,10 @@ namespace AnimeStudio.LibraryBrowser
             var explicitText = explicitAnimationCount > 0 ? $" 显{explicitAnimationCount}" : "";
             if (reportedAnimationCount > 0 && reportedAnimationCount != usableAnimationCount)
             {
-                return $"动{usableAnimationCount}/{reportedAnimationCount}{explicitText}";
+                return $"动画{usableAnimationCount}/{reportedAnimationCount}{explicitText}";
             }
 
-            return $"动{usableAnimationCount}{explicitText}";
+            return $"动画{usableAnimationCount}{explicitText}";
         }
 
         private static void SetLargeIconSpacing(ListView list)

@@ -561,6 +561,11 @@ ORDER BY mar.model, ra.name;";
                 }
 
                 if (value.EndsWith(".ueanim", StringComparison.OrdinalIgnoreCase)
+                    || value.Equals("ueanim", StringComparison.OrdinalIgnoreCase)
+                    || value.StartsWith("UAnim", StringComparison.OrdinalIgnoreCase)
+                    || value.Equals("AnimSequence", StringComparison.OrdinalIgnoreCase)
+                    || value.Equals("AnimMontage", StringComparison.OrdinalIgnoreCase)
+                    || value.Equals("AnimComposite", StringComparison.OrdinalIgnoreCase)
                     || value.Contains("unreal", StringComparison.OrdinalIgnoreCase)
                     || value.Contains("modelAnimationRelation", StringComparison.OrdinalIgnoreCase))
                 {
@@ -605,13 +610,27 @@ ORDER BY mar.model, ra.name;";
 
         private static LibraryAnimationCandidate ReadAnimation(string libraryRoot, JsonElement animation)
         {
+            var output = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? "");
+            var animationAsset = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? "");
+            var animationType = ReadString(animation, "animationType") ?? "";
+            if (IsUnrealAnimationRecord(
+                output,
+                animationAsset,
+                animationType,
+                ReadString(animation, "sourceType"),
+                ReadString(animation, "format"),
+                ReadString(animation, "source")))
+            {
+                animationType = "Unreal";
+            }
+
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(animation, "name") ?? "",
-                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ""),
-                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? ""),
+                OutputPath = output,
+                AnimationAssetPath = animationAsset,
                 Source = ReadString(animation, "source") ?? "",
-                AnimationType = ReadString(animation, "animationType") ?? "",
+                AnimationType = animationType,
                 Capability = ReadString(animation, "animationCapability") ?? "",
                 Relation = "",
                 RelationSource = "",
@@ -983,13 +1002,27 @@ GROUP BY ab.id;";
 
         private static LibraryAnimationCandidate BuildTargetedCandidate(string libraryRoot, JsonElement animation, int matched)
         {
+            var output = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? "");
+            var animationAsset = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? "");
+            var animationType = ReadString(animation, "animationType") ?? "";
+            if (IsUnrealAnimationRecord(
+                output,
+                animationAsset,
+                animationType,
+                ReadString(animation, "sourceType"),
+                ReadString(animation, "format"),
+                ReadString(animation, "source")))
+            {
+                animationType = "Unreal";
+            }
+
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(animation, "name") ?? "",
-                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ""),
-                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? ""),
+                OutputPath = output,
+                AnimationAssetPath = animationAsset,
                 Source = ReadString(animation, "source") ?? "",
-                AnimationType = ReadString(animation, "animationType") ?? "",
+                AnimationType = animationType,
                 Capability = ReadString(animation, "animationCapability") ?? "",
                 Relation = "animationClip.bindingPath.targetedModelMatch",
                 RelationSource = "targeted",
