@@ -45,8 +45,15 @@ namespace AnimeStudio.LibraryBrowser
                 && AnimationAssetPath.EndsWith(".ueanim", System.StringComparison.OrdinalIgnoreCase));
         public bool IsExplicit => string.Equals(RelationSource, "explicit", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Confidence, "explicit_unity_reference", System.StringComparison.OrdinalIgnoreCase);
+        public bool IsMetadataOnly => string.Equals(ExportStatus, "metadata", System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Format, "json", System.StringComparison.OrdinalIgnoreCase)
+            || BestPath.EndsWith(".metadata.json", System.StringComparison.OrdinalIgnoreCase);
         public bool IsUsableCandidate => !IsUnreal ||
             ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&
+             !IsMetadataOnly &&
+             TrackCount > 0 &&
+             BestPath.EndsWith(".ueanim", System.StringComparison.OrdinalIgnoreCase) &&
+             System.IO.File.Exists(BestPath) &&
              !string.Equals(ValidationStatus, "error", System.StringComparison.OrdinalIgnoreCase));
     }
 }

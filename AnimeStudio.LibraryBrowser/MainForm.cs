@@ -2257,7 +2257,7 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     var preview = _previewCache?.GetStatus(_detailModel, animation);
                     var status = animation.IsUnreal
-                        ? animation.IsUsableCandidate ? "UE已索引" : "UE导出失败"
+                        ? animation.IsUsableCandidate ? "UE可预览" : animation.IsMetadataOnly ? "UE元数据" : "UE诊断"
                         : preview?.Status ?? "未生成";
                     if (!animation.IsUnreal
                         && animation.RequiresHumanoidBake
@@ -2267,7 +2267,7 @@ namespace AnimeStudio.LibraryBrowser
                     }
 
                     var source = animation.IsUnreal
-                        ? animation.IsUsableCandidate ? "UE关系" : "UE诊断"
+                        ? animation.IsUsableCandidate ? "UE关系" : animation.IsMetadataOnly ? "UE元数据" : "UE诊断"
                         : animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
                     var animationName = _curationStore?.IsFavoriteAnimation(animation) == true
                         ? animation.Name + " [收藏]"
@@ -2445,6 +2445,11 @@ namespace AnimeStudio.LibraryBrowser
             {
                 if (!animation.IsUsableCandidate)
                 {
+                    if (animation.IsMetadataOnly)
+                    {
+                        return "UE元数据";
+                    }
+
                     return string.IsNullOrWhiteSpace(animation.ExportStatus)
                         ? "UE诊断关系"
                         : "UE导出" + animation.ExportStatus;

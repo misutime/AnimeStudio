@@ -13,7 +13,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class AnimationPreviewCache
     {
-        private const string PreviewCacheVersion = "fast-preview-v3-unity-ue-to-gltf";
+        private const string PreviewCacheVersion = "fast-preview-v4-unity-ue-to-gltf";
         private readonly string _root;
         private readonly string _cacheRoot;
 
@@ -590,6 +590,19 @@ namespace AnimeStudio.LibraryBrowser
             if (text.Length > 4000)
             {
                 text = text[..4000];
+            }
+
+            if (text.Contains("Selected preview entry source files no longer exist", StringComparison.OrdinalIgnoreCase))
+            {
+                return "UE 动画预览没有生成可信的 glTF。"
+                    + Environment.NewLine
+                    + "当前失败来自旧版预览命令或旧缓存：它尝试重新读取原始 .uasset 源文件。"
+                    + Environment.NewLine
+                    + "请使用已刷新后的 Browser/UnrealExporter 重新生成预览；新版路径应只依赖素材库里的模型 GLB 和 .ueanim。"
+                    + Environment.NewLine
+                    + $"CLI exit code {exitCode}"
+                    + Environment.NewLine
+                    + text;
             }
 
             return "UE 动画预览没有生成可信的 glTF。"
