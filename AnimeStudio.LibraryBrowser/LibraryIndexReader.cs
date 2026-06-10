@@ -216,12 +216,18 @@ namespace AnimeStudio.LibraryBrowser
 
             foreach (var file in Directory.EnumerateFiles(textureRoot, "*.*", SearchOption.AllDirectories))
             {
+                var relative = Path.GetRelativePath(textureRoot, file);
+                if (relative.StartsWith("_Shared" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    || relative.StartsWith("_Shared" + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 if (!TextureExtensions.Contains(Path.GetExtension(file)) || !existing.Add(NormalizePath(file)))
                 {
                     continue;
                 }
 
-                var relative = Path.GetRelativePath(textureRoot, file);
                 var parts = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 var bucket = parts.Length > 1 ? parts[0] : "Textures";
                 models.Add(new LibraryModelItem

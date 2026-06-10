@@ -1389,12 +1389,13 @@ namespace AnimeStudio.LibraryBrowser
         {
             var item = _visibleModels[e.ItemIndex];
             var imageIndex = GetImageIndex(item);
-            var animationCount = _animationIndex.CountExplicitForModel(item);
+            var animationCount = _animationIndex.CountForModel(item);
+            var explicitCount = _animationIndex.CountExplicitForModel(item);
             e.Item = new ListViewItem(ShortLabel(item, animationCount, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = imageIndex,
                 ToolTipText = animationCount > 0
-                    ? $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}{Environment.NewLine}显式动画: {animationCount}"
+                    ? $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}{Environment.NewLine}动画候选: {animationCount}{Environment.NewLine}显式动画: {explicitCount}"
                     : $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}"
             };
         }
@@ -2163,13 +2164,15 @@ namespace AnimeStudio.LibraryBrowser
                 foreach (var animation in animations.Take(512))
                 {
                     var preview = _previewCache?.GetStatus(_detailModel, animation);
-                    var status = preview?.Status ?? "未生成";
-                    if (animation.RequiresHumanoidBake && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
+                    var status = animation.IsUnreal ? "UE已索引" : preview?.Status ?? "未生成";
+                    if (!animation.IsUnreal
+                        && animation.RequiresHumanoidBake
+                        && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
                     {
                         status = "需 Unity 烘焙";
                     }
 
-                    var source = animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
+                    var source = animation.IsUnreal ? "UE关系" : animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
                     var animationName = _curationStore?.IsFavoriteAnimation(animation) == true
                         ? animation.Name + " [收藏]"
                         : animation.Name;
@@ -2340,6 +2343,21 @@ namespace AnimeStudio.LibraryBrowser
             if (animation == null)
             {
                 return "";
+            }
+
+            if (animation.IsUnreal)
+            {
+                if (animation.IsContainerAnimation)
+                {
+                    return "UE容器动画";
+                }
+
+                if (!string.IsNullOrWhiteSpace(animation.ValidationCategory))
+                {
+                    return "UE " + animation.ValidationCategory;
+                }
+
+                return "UE动画索引";
             }
 
             if (!string.IsNullOrWhiteSpace(animation.Capability))
@@ -2517,6 +2535,11 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
+            if (HandleUnrealAnimationPreviewRequest(model, animation))
+            {
+                return;
+            }
+
             var inputError = ValidateAnimationPreviewInputs(model, animation);
             if (!string.IsNullOrWhiteSpace(inputError))
             {
@@ -2580,6 +2603,11 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
+            if (HandleUnrealAnimationPreviewRequest(model, animation))
+            {
+                return;
+            }
+
             var inputError = ValidateAnimationPreviewInputs(model, animation);
             if (!string.IsNullOrWhiteSpace(inputError))
             {
@@ -2629,6 +2657,37 @@ namespace AnimeStudio.LibraryBrowser
             {
                 OpenPathWithF3d(status.GltfPath);
             }
+        }
+
+        private bool HandleUnrealAnimationPreviewRequest(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            if (!animation.IsUnreal)
+            {
+                return false;
+            }
+
+            var message =
+                "当前 UE 动画已经进入索引和模型关系，但还不是可直接播放的 glTF 预览。"
+                + Environment.NewLine
+                + "不会再调用 Unity Bake，因为 UE .ueanim 需要单独的 UE 动画采样/GLTF 预览管线。"
+                + Environment.NewLine
+                + Environment.NewLine
+                + $"模型: {model.Name}"
+                + Environment.NewLine
+                + $"动画: {animation.Name}"
+                + Environment.NewLine
+                + $"验证: {FormatAnimationValidation(animation).Trim()}"
+                + Environment.NewLine
+                + $"帧/轨道/片段: {FormatAnimationCounts(animation)}"
+                + Environment.NewLine
+                + $"文件: {animation.BestPath}";
+            MessageBox.Show(this, message, "UE 动画预览尚未生成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!string.IsNullOrWhiteSpace(animation.BestPath) && File.Exists(animation.BestPath))
+            {
+                OpenSelectedAnimationFolder();
+            }
+
+            return true;
         }
 
         private static string ValidateAnimationPreviewInputs(LibraryModelItem model, LibraryAnimationCandidate animation)

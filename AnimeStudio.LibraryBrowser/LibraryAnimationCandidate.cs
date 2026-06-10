@@ -29,6 +29,10 @@ namespace AnimeStudio.LibraryBrowser
         public string[] BindingPaths { get; init; } = System.Array.Empty<string>();
 
         public string BestPath => !string.IsNullOrWhiteSpace(OutputPath) ? OutputPath : AnimationAssetPath;
+        public bool IsUnreal => string.Equals(AnimationType, "Unreal", System.StringComparison.OrdinalIgnoreCase)
+            || Relation?.StartsWith("unreal.", System.StringComparison.OrdinalIgnoreCase) == true
+            || (!string.IsNullOrWhiteSpace(OutputPath)
+                && OutputPath.EndsWith(".ueanim", System.StringComparison.OrdinalIgnoreCase));
         public bool IsExplicit => string.Equals(RelationSource, "explicit", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Confidence, "explicit_unity_reference", System.StringComparison.OrdinalIgnoreCase);
     }
