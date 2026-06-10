@@ -105,6 +105,8 @@ namespace AnimeStudio.LibraryBrowser
                 taskOrPropQualityIssues = taskOrPropItems.Count(HasTaskModelQualityIssue),
                 pathOnlyTaskOrPropModels = taskOrPropItems.Count(x => x.IsPathOnlyTask),
                 taskOrPropWithComponentReferences = taskOrPropItems.Count(x => x.ComponentReferenceCount > 0),
+                taskOrPropWithSourceIndexObjects = taskOrPropItems.Count(x => x.SourceIndexObjectCount > 0),
+                taskOrPropSourceIndexedWithoutComponentReferences = taskOrPropItems.Count(x => x.ComponentReferenceCount == 0 && x.SourceIndexObjectCount > 0),
                 taskOrPropWithAnimations = taskOrPropItems.Count(x => animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
                 taskOrPropMissingMaterials = taskOrPropItems.Count(x => x.MissingMaterials),
                 taskOrPropNoExternalTextureSlots = taskOrPropItems.Count(x => x.NoExternalTextureSlots),

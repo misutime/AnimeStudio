@@ -38,6 +38,7 @@ namespace AnimeStudio.LibraryBrowser
         public bool HasSkeletonPath { get; init; }
         public bool IsStaticModel { get; init; }
         public int ComponentReferenceCount { get; init; }
+        public int SourceIndexObjectCount { get; init; }
         public int AnimationCandidateCount { get; init; }
         public bool IsTaskOrProp { get; init; }
         public bool IsPathOnlyTask { get; init; }

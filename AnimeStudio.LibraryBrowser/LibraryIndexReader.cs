@@ -142,6 +142,7 @@ namespace AnimeStudio.LibraryBrowser
                     HasSkeletonPath = coverage?.HasSkeletonPath ?? false,
                     IsStaticModel = coverage?.IsStatic ?? false,
                     ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
+                    SourceIndexObjectCount = coverage?.SourceIndexObjectCount ?? 0,
                     AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
                     IsTaskOrProp = coverage?.IsTaskOrProp ?? false,
                     IsPathOnlyTask = coverage?.IsPathOnlyTask ?? false,
@@ -196,6 +197,7 @@ namespace AnimeStudio.LibraryBrowser
                     var materialCount = ReadInt32(model, "MaterialCount");
                     var textureCount = ReadInt32(model, "TextureCount");
                     var componentReferenceCount = ReadInt32(model, "ComponentReferenceCount");
+                    var sourceIndexObjectCount = ReadInt32(model, "SourceIndexObjectCount");
                     var animationCandidateCount = ReadInt32(model, "AnimationCandidateCount");
                     var resourceKind = ReadString(model, "ResourceKind") ?? "";
                     var validationStatus = ReadString(model, "ValidationStatus") ?? "";
@@ -211,10 +213,11 @@ namespace AnimeStudio.LibraryBrowser
                         MaterialCount = materialCount,
                         TextureCount = textureCount,
                         ComponentReferenceCount = componentReferenceCount,
+                        SourceIndexObjectCount = sourceIndexObjectCount,
                         AnimationCandidateCount = animationCandidateCount,
                         ValidationStatus = validationStatus,
                         IsTaskOrProp = isTaskOrProp,
-                        IsPathOnlyTask = isTaskOrProp && componentReferenceCount == 0,
+                        IsPathOnlyTask = isTaskOrProp && componentReferenceCount == 0 && sourceIndexObjectCount == 0,
                         MissingMaterials = isTaskOrProp && materialCount == 0,
                         NoExternalTextureSlots = isTaskOrProp && textureCount == 0,
                         NeedsReview = isTaskOrProp && (
@@ -255,11 +258,19 @@ namespace AnimeStudio.LibraryBrowser
                     return null;
                 }
 
+                var hasSourceIndexObjectCount = HasColumn(connection, "model_coverage", "source_index_object_count");
                 var result = new Dictionary<string, UnrealModelCoverage>(StringComparer.OrdinalIgnoreCase);
                 using var command = connection.CreateCommand();
-                command.CommandText = @"
+                command.CommandText = hasSourceIndexObjectCount
+                    ? @"
 SELECT output, object_path, is_static, has_skin, has_skeleton_path,
-       material_count, texture_count, component_reference_count, animation_candidate_count, validation_status,
+       material_count, texture_count, component_reference_count, source_index_object_count, animation_candidate_count, validation_status,
+       is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
+       task_signals_json
+FROM model_coverage;"
+                    : @"
+SELECT output, object_path, is_static, has_skin, has_skeleton_path,
+       material_count, texture_count, component_reference_count, 0 AS source_index_object_count, animation_candidate_count, validation_status,
        is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
        task_signals_json
 FROM model_coverage;";
@@ -281,14 +292,15 @@ FROM model_coverage;";
                         MaterialCount = reader.GetInt32(5),
                         TextureCount = reader.GetInt32(6),
                         ComponentReferenceCount = reader.GetInt32(7),
-                        AnimationCandidateCount = reader.GetInt32(8),
-                        ValidationStatus = reader.IsDBNull(9) ? "" : reader.GetString(9),
-                        IsTaskOrProp = ReadSqliteBool(reader, 10),
-                        IsPathOnlyTask = ReadSqliteBool(reader, 11),
-                        MissingMaterials = ReadSqliteBool(reader, 12),
-                        NoExternalTextureSlots = ReadSqliteBool(reader, 13),
-                        NeedsReview = ReadSqliteBool(reader, 14),
-                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(15) ? "" : reader.GetString(15))
+                        SourceIndexObjectCount = reader.GetInt32(8),
+                        AnimationCandidateCount = reader.GetInt32(9),
+                        ValidationStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
+                        IsTaskOrProp = ReadSqliteBool(reader, 11),
+                        IsPathOnlyTask = ReadSqliteBool(reader, 12) && reader.GetInt32(8) == 0,
+                        MissingMaterials = ReadSqliteBool(reader, 13),
+                        NoExternalTextureSlots = ReadSqliteBool(reader, 14),
+                        NeedsReview = ReadSqliteBool(reader, 15),
+                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(16) ? "" : reader.GetString(16))
                     };
                 }
 
@@ -595,6 +607,7 @@ FROM model_coverage;";
             public int MaterialCount { get; init; }
             public int TextureCount { get; init; }
             public int ComponentReferenceCount { get; init; }
+            public int SourceIndexObjectCount { get; init; }
             public int AnimationCandidateCount { get; init; }
             public string ValidationStatus { get; init; } = "";
             public bool IsTaskOrProp { get; init; }
