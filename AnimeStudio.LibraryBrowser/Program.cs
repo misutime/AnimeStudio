@@ -81,6 +81,7 @@ namespace AnimeStudio.LibraryBrowser
             var reportedAnimationCandidates = models
                 .Where(x => !x.IsTexture && !x.IsVfx)
                 .Sum(x => x.AnimationCandidateCount);
+            var realModelItems = models.Where(x => !x.IsTexture && !x.IsVfx).ToList();
             var payload = new
             {
                 root = Path.GetFullPath(root),
@@ -93,7 +94,12 @@ namespace AnimeStudio.LibraryBrowser
                 modelsWithReportedAnimationCandidates = withReportedAnimationCandidates,
                 animationIndexSource = animationIndex.LoadSource,
                 animationCandidates = animationIndex.IndexedCandidateCount,
-                reportedAnimationCandidates
+                reportedAnimationCandidates,
+                taskOrPropModels = realModelItems.Count(x => x.IsTaskOrProp),
+                taskOrPropNeedsReview = realModelItems.Count(x => x.IsTaskOrProp && x.NeedsReview),
+                pathOnlyTaskOrPropModels = realModelItems.Count(x => x.IsPathOnlyTask),
+                taskOrPropMissingMaterials = realModelItems.Count(x => x.IsTaskOrProp && x.MissingMaterials),
+                taskOrPropNoExternalTextureSlots = realModelItems.Count(x => x.IsTaskOrProp && x.NoExternalTextureSlots)
             };
             Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }

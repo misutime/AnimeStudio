@@ -38,6 +38,11 @@ namespace AnimeStudio.LibraryBrowser
         public bool IsStaticModel { get; init; }
         public int ComponentReferenceCount { get; init; }
         public int AnimationCandidateCount { get; init; }
+        public bool IsTaskOrProp { get; init; }
+        public bool IsPathOnlyTask { get; init; }
+        public bool MissingMaterials { get; init; }
+        public bool NoExternalTextureSlots { get; init; }
+        public bool NeedsReview { get; init; }
         public string[] BonePaths { get; init; } = Array.Empty<string>();
         public string[] NodePaths { get; init; } = Array.Empty<string>();
         public string[] Signals { get; init; } = Array.Empty<string>();

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace AnimeStudio.LibraryBrowser
 {
@@ -141,6 +142,11 @@ namespace AnimeStudio.LibraryBrowser
                     IsStaticModel = coverage?.IsStatic ?? false,
                     ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
                     AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
+                    IsTaskOrProp = coverage?.IsTaskOrProp ?? false,
+                    IsPathOnlyTask = coverage?.IsPathOnlyTask ?? false,
+                    MissingMaterials = coverage?.MissingMaterials ?? false,
+                    NoExternalTextureSlots = coverage?.NoExternalTextureSlots ?? false,
+                    NeedsReview = coverage?.NeedsReview ?? false,
                     BonePaths = ReadStringArray(obj, "bonePaths"),
                     NodePaths = ReadStringArray(obj, "nodePaths"),
                     Signals = ReadStringArray(obj, "signals"),
@@ -156,6 +162,12 @@ namespace AnimeStudio.LibraryBrowser
 
         private static Dictionary<string, UnrealModelCoverage> LoadUnrealModelCoverage(string root)
         {
+            var sqliteCoverage = LoadUnrealModelCoverageFromSqlite(root);
+            if (sqliteCoverage != null && sqliteCoverage.Count > 0)
+            {
+                return sqliteCoverage;
+            }
+
             var path = Path.Combine(root, "model_coverage.json");
             if (!File.Exists(path))
             {
@@ -180,17 +192,36 @@ namespace AnimeStudio.LibraryBrowser
                         continue;
                     }
 
+                    var materialCount = ReadInt32(model, "MaterialCount");
+                    var textureCount = ReadInt32(model, "TextureCount");
+                    var componentReferenceCount = ReadInt32(model, "ComponentReferenceCount");
+                    var animationCandidateCount = ReadInt32(model, "AnimationCandidateCount");
+                    var resourceKind = ReadString(model, "ResourceKind") ?? "";
+                    var validationStatus = ReadString(model, "ValidationStatus") ?? "";
+                    var taskSignals = ReadStringArray(model, "TaskSignals");
+                    var isTaskOrProp = taskSignals.Length > 0 || string.Equals(resourceKind, "Prop", StringComparison.OrdinalIgnoreCase);
+
                     result[NormalizePath(output)] = new UnrealModelCoverage
                     {
                         ObjectPath = ReadString(model, "ObjectPath") ?? "",
                         IsStatic = ReadBool(model, "IsStatic"),
                         HasSkin = ReadBool(model, "HasSkin"),
                         HasSkeletonPath = ReadBool(model, "HasSkeletonPath"),
-                        MaterialCount = ReadInt32(model, "MaterialCount"),
-                        TextureCount = ReadInt32(model, "TextureCount"),
-                        ComponentReferenceCount = ReadInt32(model, "ComponentReferenceCount"),
-                        AnimationCandidateCount = ReadInt32(model, "AnimationCandidateCount"),
-                        TaskSignals = ReadStringArray(model, "TaskSignals")
+                        MaterialCount = materialCount,
+                        TextureCount = textureCount,
+                        ComponentReferenceCount = componentReferenceCount,
+                        AnimationCandidateCount = animationCandidateCount,
+                        IsTaskOrProp = isTaskOrProp,
+                        IsPathOnlyTask = isTaskOrProp && componentReferenceCount == 0,
+                        MissingMaterials = isTaskOrProp && materialCount == 0,
+                        NoExternalTextureSlots = isTaskOrProp && textureCount == 0,
+                        NeedsReview = isTaskOrProp && (
+                            componentReferenceCount == 0 ||
+                            materialCount == 0 ||
+                            textureCount == 0 ||
+                            string.Equals(validationStatus, "warning", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(validationStatus, "error", StringComparison.OrdinalIgnoreCase)),
+                        TaskSignals = taskSignals
                     };
                 }
             }
@@ -199,6 +230,78 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return result;
+        }
+
+        private static Dictionary<string, UnrealModelCoverage> LoadUnrealModelCoverageFromSqlite(string root)
+        {
+            var dbPath = Path.Combine(root, "library_index.db");
+            if (!File.Exists(dbPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+                connection.Open();
+                if (!HasTable(connection, "model_coverage")
+                    || !HasColumn(connection, "model_coverage", "is_task_or_prop")
+                    || !HasColumn(connection, "model_coverage", "needs_review"))
+                {
+                    return null;
+                }
+
+                var result = new Dictionary<string, UnrealModelCoverage>(StringComparer.OrdinalIgnoreCase);
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT output, object_path, is_static, has_skin, has_skeleton_path,
+       material_count, texture_count, component_reference_count, animation_candidate_count,
+       is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
+       task_signals_json
+FROM model_coverage;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var output = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
+                    if (string.IsNullOrWhiteSpace(output))
+                    {
+                        continue;
+                    }
+
+                    result[NormalizePath(output)] = new UnrealModelCoverage
+                    {
+                        ObjectPath = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                        IsStatic = ReadSqliteBool(reader, 2),
+                        HasSkin = ReadSqliteBool(reader, 3),
+                        HasSkeletonPath = ReadSqliteBool(reader, 4),
+                        MaterialCount = reader.GetInt32(5),
+                        TextureCount = reader.GetInt32(6),
+                        ComponentReferenceCount = reader.GetInt32(7),
+                        AnimationCandidateCount = reader.GetInt32(8),
+                        IsTaskOrProp = ReadSqliteBool(reader, 9),
+                        IsPathOnlyTask = ReadSqliteBool(reader, 10),
+                        MissingMaterials = ReadSqliteBool(reader, 11),
+                        NoExternalTextureSlots = ReadSqliteBool(reader, 12),
+                        NeedsReview = ReadSqliteBool(reader, 13),
+                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(14) ? "" : reader.GetString(14))
+                    };
+                }
+
+                return result;
+            }
+            catch (SqliteException)
+            {
+                return null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+            catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
+            {
+                return null;
+            }
         }
 
         private static void AddTextureFiles(string root, List<LibraryModelItem> models)
@@ -331,6 +434,55 @@ namespace AnimeStudio.LibraryBrowser
                 .ToArray();
         }
 
+        private static string[] ReadJsonStringArray(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return Array.Empty<string>();
+            }
+
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            return document.RootElement.EnumerateArray()
+                .Where(x => x.ValueKind == JsonValueKind.String)
+                .Select(x => x.GetString())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+        }
+
+        private static bool ReadSqliteBool(SqliteDataReader reader, int index)
+        {
+            return !reader.IsDBNull(index) && reader.GetInt32(index) != 0;
+        }
+
+        private static bool HasTable(SqliteConnection connection, string name)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $name;";
+            command.Parameters.AddWithValue("$name", name);
+            return Convert.ToInt32(command.ExecuteScalar()) > 0;
+        }
+
+        private static bool HasColumn(SqliteConnection connection, string table, string name)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA table_info({table});";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(1) && string.Equals(reader.GetString(1), name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private static string[] ReadTexturePreviewPaths(string libraryRoot, JsonElement obj, string outputDirectory)
         {
             if (!obj.TryGetProperty("texturePreviews", out var property) || property.ValueKind != JsonValueKind.Array)
@@ -440,6 +592,11 @@ namespace AnimeStudio.LibraryBrowser
             public int TextureCount { get; init; }
             public int ComponentReferenceCount { get; init; }
             public int AnimationCandidateCount { get; init; }
+            public bool IsTaskOrProp { get; init; }
+            public bool IsPathOnlyTask { get; init; }
+            public bool MissingMaterials { get; init; }
+            public bool NoExternalTextureSlots { get; init; }
+            public bool NeedsReview { get; init; }
             public string[] TaskSignals { get; init; } = Array.Empty<string>();
         }
     }

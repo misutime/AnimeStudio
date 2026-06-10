@@ -1987,6 +1987,11 @@ namespace AnimeStudio.LibraryBrowser
                 $"UE骨骼模型: {(item.HasSkin ? "是" : "否")}{Environment.NewLine}" +
                 $"UE Skeleton路径: {(item.HasSkeletonPath ? "有" : "无")}{Environment.NewLine}" +
                 $"UE组件引用: {item.ComponentReferenceCount}{Environment.NewLine}" +
+                $"UE任务/道具: {(item.IsTaskOrProp ? "是" : "否")}{Environment.NewLine}" +
+                $"UE需要复查: {(item.NeedsReview ? "是" : "否")}{Environment.NewLine}" +
+                $"UE路径推断任务: {(item.IsPathOnlyTask ? "是" : "否")}{Environment.NewLine}" +
+                $"UE缺材质: {(item.MissingMaterials ? "是" : "否")}{Environment.NewLine}" +
+                $"UE缺外部贴图槽: {(item.NoExternalTextureSlots ? "是" : "否")}{Environment.NewLine}" +
                 $"动画索引来源: {EmptyAsUnknown(_animationIndex.LoadSource)}{Environment.NewLine}" +
                 $"可用动画: {usableCount}{Environment.NewLine}" +
                 $"全部关系动画: {allAnimationCount}{Environment.NewLine}" +
