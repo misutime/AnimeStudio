@@ -172,6 +172,23 @@ ORDER BY c.model_output, c.score DESC;";
                         list.Add(MergeCandidate(root, animation, candidate));
                     }
                 }
+                else if (HasTable(connection, "model_animation_relations") && HasTable(connection, "relation_animations"))
+                {
+                    using var command = connection.CreateCommand();
+                    command.CommandText = @"
+SELECT mar.model, mar.raw_json, ra.raw_json
+FROM model_animation_relations mar
+JOIN relation_animations ra ON ra.relation_id = mar.id
+ORDER BY mar.model, ra.name;";
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var modelOutput = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
+                        using var relationDocument = JsonDocument.Parse(reader.GetString(1));
+                        using var animationDocument = JsonDocument.Parse(reader.GetString(2));
+                        AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(root, relationDocument.RootElement, animationDocument.RootElement));
+                    }
+                }
 
                 foreach (var key in result.Keys.ToArray())
                 {
@@ -375,6 +392,11 @@ ORDER BY c.model_output, c.score DESC;";
             var root = document.RootElement;
             var result = new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase);
 
+            if (root.TryGetProperty("relations", out var unrealRelations) && unrealRelations.ValueKind == JsonValueKind.Array)
+            {
+                return LoadUnrealVerbose(path, unrealRelations);
+            }
+
             if (!root.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array)
             {
                 return new LibraryAnimationIndex(Path.GetDirectoryName(path) ?? "", result, loadSource: "verbose");
@@ -410,6 +432,62 @@ ORDER BY c.model_output, c.score DESC;";
                 indexedCandidateCount: result.Values.Sum(x => x.Count));
         }
 
+        private static LibraryAnimationIndex LoadUnrealVerbose(string path, JsonElement relations)
+        {
+            var libraryRoot = Path.GetDirectoryName(path) ?? "";
+            var result = new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var relation in relations.EnumerateArray())
+            {
+                var modelOutput = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(relation, "model"));
+                if (string.IsNullOrWhiteSpace(modelOutput)
+                    || !relation.TryGetProperty("animations", out var animations)
+                    || animations.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var animation in animations.EnumerateArray())
+                {
+                    AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(libraryRoot, relation, animation));
+                }
+            }
+
+            foreach (var key in result.Keys.ToArray())
+            {
+                result[key] = SortCandidates(result[key]);
+            }
+
+            return new LibraryAnimationIndex(
+                libraryRoot,
+                result,
+                MergeAllAnimations(
+                    result.Values.SelectMany(x => x),
+                    LoadAllAnimationsFromBindingsJsonLines(libraryRoot)),
+                "unreal-json",
+                result.Values.Sum(x => x.Count));
+        }
+
+        private static void AddCandidate(
+            Dictionary<string, List<LibraryAnimationCandidate>> result,
+            string modelOutput,
+            LibraryAnimationCandidate candidate)
+        {
+            if (string.IsNullOrWhiteSpace(modelOutput))
+            {
+                return;
+            }
+
+            var key = NormalizePath(modelOutput);
+            if (!result.TryGetValue(key, out var list))
+            {
+                list = new List<LibraryAnimationCandidate>();
+                result[key] = list;
+            }
+
+            list.Add(candidate);
+        }
+
         private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate)
         {
             return new LibraryAnimationCandidate
@@ -427,8 +505,16 @@ ORDER BY c.model_output, c.score DESC;";
                 Duration = ReadDouble(animation, "duration"),
                 SampleRate = ReadDouble(animation, "sampleRate"),
                 CurveCount = ReadInt32(animation, "curveCount"),
+                FrameCount = ReadInt32(animation, "frameCount"),
+                TrackCount = ReadInt32(animation, "trackCount"),
+                SegmentCount = ReadInt32(animation, "segmentCount"),
                 MatchedPathCount = ReadArrayLength(candidate, "matchedBindingPaths"),
+                TrackCoverage = ReadDouble(animation, "trackCoverage"),
+                ValidationStatus = ReadString(animation, "validationStatus") ?? "",
+                ValidationCategory = ReadString(animation, "validationCategory") ?? "",
+                ValidationReason = ReadString(animation, "validationReason") ?? "",
                 RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
+                IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
         }
@@ -450,8 +536,16 @@ ORDER BY c.model_output, c.score DESC;";
                 Duration = ReadDouble(candidate, "duration"),
                 SampleRate = ReadDouble(candidate, "sampleRate"),
                 CurveCount = ReadInt32(candidate, "curveCount"),
+                FrameCount = ReadInt32(candidate, "frameCount"),
+                TrackCount = ReadInt32(candidate, "trackCount"),
+                SegmentCount = ReadInt32(candidate, "segmentCount"),
                 MatchedPathCount = ReadArrayLength(candidate, "matchedBindingPaths"),
+                TrackCoverage = ReadDouble(candidate, "trackCoverage"),
+                ValidationStatus = ReadString(candidate, "validationStatus") ?? "",
+                ValidationCategory = ReadString(candidate, "validationCategory") ?? "",
+                ValidationReason = ReadString(candidate, "validationReason") ?? "",
                 RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
+                IsContainerAnimation = ReadBool(candidate, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(candidate, "transformBindingPaths")
             };
         }
@@ -473,9 +567,89 @@ ORDER BY c.model_output, c.score DESC;";
                 Duration = ReadDouble(animation, "duration"),
                 SampleRate = ReadDouble(animation, "sampleRate"),
                 CurveCount = ReadInt32(animation, "curveCount"),
+                FrameCount = ReadInt32(animation, "frameCount"),
+                TrackCount = ReadInt32(animation, "trackCount"),
+                SegmentCount = ReadInt32(animation, "segmentCount"),
+                TrackCoverage = ReadDouble(animation, "trackCoverage"),
+                ValidationStatus = ReadString(animation, "validationStatus") ?? "",
+                ValidationCategory = ReadString(animation, "validationCategory") ?? "",
+                ValidationReason = ReadString(animation, "validationReason") ?? "",
                 RequiresHumanoidBake = ReadBool(animation, "hasMuscleClip"),
+                IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
+        }
+
+        private static LibraryAnimationCandidate ReadUnrealRelationAnimation(string libraryRoot, JsonElement relation, JsonElement animation)
+        {
+            var validationStatus = ReadString(animation, "validationStatus") ?? ReadString(animation, "status") ?? "";
+            var validationCategory = ReadString(animation, "validationCategory") ?? "";
+            var confidence = ReadString(relation, "confidence") ?? "";
+            var trackCoverage = ReadDouble(animation, "trackCoverage");
+            var trackCount = ReadInt32(animation, "trackCount");
+            var relationSource = confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase)
+                    ? "explicit"
+                    : "unreal";
+
+            return new LibraryAnimationCandidate
+            {
+                Name = ReadString(animation, "name") ?? "",
+                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ""),
+                Source = ReadString(animation, "source") ?? "",
+                AnimationType = "Unreal",
+                Capability = string.IsNullOrWhiteSpace(validationCategory) ? validationStatus : validationCategory,
+                Relation = "unreal.modelAnimationRelation",
+                RelationSource = relationSource,
+                Confidence = confidence,
+                Score = ScoreUnrealRelationAnimation(confidence, validationStatus, validationCategory, trackCoverage, trackCount),
+                Duration = ReadDouble(animation, "duration"),
+                FrameCount = ReadInt32(animation, "frameCount"),
+                TrackCount = trackCount,
+                SegmentCount = ReadInt32(animation, "segmentCount"),
+                MatchedPathCount = ReadInt32(animation, "matchedTrackBones"),
+                TrackCoverage = trackCoverage,
+                ValidationStatus = validationStatus,
+                ValidationCategory = validationCategory,
+                ValidationReason = ReadString(animation, "validationReason") ?? ReadString(animation, "reason") ?? "",
+                NeedsValidation = !string.Equals(validationStatus, "ok", StringComparison.OrdinalIgnoreCase),
+                IsContainerAnimation = ReadBool(animation, "isContainerAnimation")
+                    || ReadInt32(animation, "referencedAnimationCount") > 0
+                    || ReadInt32(animation, "segmentCount") > 0
+            };
+        }
+
+        private static double ScoreUnrealRelationAnimation(
+            string confidence,
+            string validationStatus,
+            string validationCategory,
+            double trackCoverage,
+            int trackCount)
+        {
+            var score = 50d;
+            if (confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 30;
+            }
+
+            if (string.Equals(validationStatus, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 15;
+            }
+            else if (string.Equals(validationStatus, "warning", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 5;
+            }
+
+            if (string.Equals(validationCategory, "validated", StringComparison.OrdinalIgnoreCase))
+            {
+                score += 10;
+            }
+
+            score += Math.Min(10, trackCoverage * 10);
+            score += Math.Min(5, trackCount / 20d);
+            return score;
         }
 
         private static List<LibraryAnimationCandidate> LoadAllAnimationsFromSqlite(string libraryRoot, SqliteConnection connection)
@@ -1033,12 +1207,20 @@ GROUP BY ab.id;";
 
         private static int ReadInt32(JsonElement obj, string name)
         {
-            return obj.TryGetProperty(name, out var property) && property.TryGetInt32(out var value) ? value : 0;
+            return obj.TryGetProperty(name, out var property)
+                && property.ValueKind == JsonValueKind.Number
+                && property.TryGetInt32(out var value)
+                    ? value
+                    : 0;
         }
 
         private static double ReadDouble(JsonElement obj, string name)
         {
-            return obj.TryGetProperty(name, out var property) && property.TryGetDouble(out var value) ? value : 0;
+            return obj.TryGetProperty(name, out var property)
+                && property.ValueKind == JsonValueKind.Number
+                && property.TryGetDouble(out var value)
+                    ? value
+                    : 0;
         }
 
         private static bool ReadBool(JsonElement obj, string name)

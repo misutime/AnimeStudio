@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Windows.Forms;
 
@@ -20,6 +21,12 @@ namespace AnimeStudio.LibraryBrowser
             if (args.Length == 1 && string.Equals(args[0], "--thumbnail-worker", StringComparison.OrdinalIgnoreCase))
             {
                 RunThumbnailWorker();
+                return;
+            }
+
+            if (args.Length == 2 && string.Equals(args[0], "--validate-library", StringComparison.OrdinalIgnoreCase))
+            {
+                ValidateLibrary(args[1]);
                 return;
             }
 
@@ -59,6 +66,30 @@ namespace AnimeStudio.LibraryBrowser
         {
             Console.WriteLine(JsonSerializer.Serialize(response));
             Console.Out.Flush();
+        }
+
+        private static void ValidateLibrary(string root)
+        {
+            var models = LibraryIndexReader.LoadModels(root);
+            var animationIndex = LibraryAnimationIndex.Load(root);
+            var textures = models.Count(x => x.IsTexture);
+            var vfx = models.Count(x => x.IsVfx);
+            var realModels = models.Count - textures - vfx;
+            var skinned = models.Count(x => x.HasSkin || x.BoneCount > 0);
+            var withAnimations = models.Count(x => animationIndex.CountForModel(x) > 0);
+            var payload = new
+            {
+                root = Path.GetFullPath(root),
+                models = realModels,
+                skinnedModels = skinned,
+                textures,
+                vfx,
+                animations = animationIndex.FindAllAnimations().Count,
+                modelsWithAnimationCandidates = withAnimations,
+                animationIndexSource = animationIndex.LoadSource,
+                animationCandidates = animationIndex.IndexedCandidateCount
+            };
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
 
         private sealed class ThumbnailWorkerRequest

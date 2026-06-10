@@ -61,6 +61,7 @@ namespace AnimeStudio.LibraryBrowser
             ValidateLibraryRoot(root);
 
             var catalogPath = Path.Combine(root, "asset_catalog.jsonl");
+            var coverageByOutput = LoadUnrealModelCoverage(root);
             var models = new List<LibraryModelItem>();
             foreach (var line in File.ReadLines(catalogPath))
             {
@@ -107,6 +108,7 @@ namespace AnimeStudio.LibraryBrowser
                 }
 
                 var modelPreview = LibraryPathResolver.ResolveExistingFile(root, ReadString(obj, "modelPreview") ?? "");
+                coverageByOutput.TryGetValue(NormalizePath(output), out var coverage);
 
                 models.Add(new LibraryModelItem
                 {
@@ -119,13 +121,14 @@ namespace AnimeStudio.LibraryBrowser
                     LibraryRole = ReadString(obj, "libraryRole") ?? "",
                     SourceType = sourceType,
                     Source = ReadString(obj, "source") ?? "",
+                    ObjectPath = ReadString(obj, "objectPath") ?? coverage?.ObjectPath ?? "",
                     PathId = ReadInt64(obj, "pathId"),
                     OutputPath = output,
                     ModelPreviewPath = modelPreview ?? "",
                     MeshCount = ReadInt32(obj, "meshCount"),
                     VertexCount = ReadInt32(obj, "vertexCount"),
-                    MaterialCount = ReadInt32(obj, "materialCount"),
-                    TextureCount = ReadInt32(obj, "textureCount"),
+                    MaterialCount = ReadInt32(obj, "materialCount", coverage?.MaterialCount ?? 0),
+                    TextureCount = ReadInt32(obj, "textureCount", coverage?.TextureCount ?? 0),
                     ComponentCount = ReadInt32(obj, "componentCount"),
                     MaterialRefCount = ReadInt32(obj, "materialRefCount"),
                     TextureRefCount = ReadInt32(obj, "textureRefCount"),
@@ -133,9 +136,15 @@ namespace AnimeStudio.LibraryBrowser
                     MeshRefCount = ReadInt32(obj, "meshRefCount"),
                     OccurrenceCount = Math.Max(1, ReadInt32(obj, "occurrenceCount")),
                     BoneCount = ReadInt32(obj, "boneCount"),
+                    HasSkin = coverage?.HasSkin ?? false,
+                    HasSkeletonPath = coverage?.HasSkeletonPath ?? false,
+                    IsStaticModel = coverage?.IsStatic ?? false,
+                    ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
+                    AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
                     BonePaths = ReadStringArray(obj, "bonePaths"),
                     NodePaths = ReadStringArray(obj, "nodePaths"),
                     Signals = ReadStringArray(obj, "signals"),
+                    TaskSignals = coverage?.TaskSignals ?? Array.Empty<string>(),
                     VfxTexturePreviewPaths = ReadTexturePreviewPaths(root, obj, output),
                     VfxPreviewHintsJson = ReadRawJson(obj, "previewHints")
                 });
@@ -143,6 +152,53 @@ namespace AnimeStudio.LibraryBrowser
 
             AddTextureFiles(root, models);
             return models;
+        }
+
+        private static Dictionary<string, UnrealModelCoverage> LoadUnrealModelCoverage(string root)
+        {
+            var path = Path.Combine(root, "model_coverage.json");
+            if (!File.Exists(path))
+            {
+                return new Dictionary<string, UnrealModelCoverage>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var result = new Dictionary<string, UnrealModelCoverage>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(path));
+                if (!document.RootElement.TryGetProperty("models", out var models)
+                    || models.ValueKind != JsonValueKind.Array)
+                {
+                    return result;
+                }
+
+                foreach (var model in models.EnumerateArray())
+                {
+                    var output = LibraryPathResolver.ResolveExistingFile(root, ReadString(model, "Output") ?? "");
+                    if (string.IsNullOrWhiteSpace(output))
+                    {
+                        continue;
+                    }
+
+                    result[NormalizePath(output)] = new UnrealModelCoverage
+                    {
+                        ObjectPath = ReadString(model, "ObjectPath") ?? "",
+                        IsStatic = ReadBool(model, "IsStatic"),
+                        HasSkin = ReadBool(model, "HasSkin"),
+                        HasSkeletonPath = ReadBool(model, "HasSkeletonPath"),
+                        MaterialCount = ReadInt32(model, "MaterialCount"),
+                        TextureCount = ReadInt32(model, "TextureCount"),
+                        ComponentReferenceCount = ReadInt32(model, "ComponentReferenceCount"),
+                        AnimationCandidateCount = ReadInt32(model, "AnimationCandidateCount"),
+                        TaskSignals = ReadStringArray(model, "TaskSignals")
+                    };
+                }
+            }
+            catch (JsonException)
+            {
+            }
+
+            return result;
         }
 
         private static void AddTextureFiles(string root, List<LibraryModelItem> models)
@@ -225,9 +281,18 @@ namespace AnimeStudio.LibraryBrowser
             return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
         }
 
-        private static int ReadInt32(JsonElement obj, string name)
+        private static int ReadInt32(JsonElement obj, string name, int fallback = 0)
         {
-            return obj.TryGetProperty(name, out var property) && property.TryGetInt32(out var value) ? value : 0;
+            return obj.TryGetProperty(name, out var property)
+                && property.ValueKind == JsonValueKind.Number
+                && property.TryGetInt32(out var value)
+                    ? value
+                    : fallback;
+        }
+
+        private static bool ReadBool(JsonElement obj, string name)
+        {
+            return obj.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.True;
         }
 
         private static string ReadRawJson(JsonElement obj, string name)
@@ -239,7 +304,11 @@ namespace AnimeStudio.LibraryBrowser
 
         private static long ReadInt64(JsonElement obj, string name)
         {
-            return obj.TryGetProperty(name, out var property) && property.TryGetInt64(out var value) ? value : 0;
+            return obj.TryGetProperty(name, out var property)
+                && property.ValueKind == JsonValueKind.Number
+                && property.TryGetInt64(out var value)
+                    ? value
+                    : 0;
         }
 
         private static string[] ReadStringArray(JsonElement obj, string name)
@@ -353,6 +422,19 @@ namespace AnimeStudio.LibraryBrowser
         private static string NormalizePath(string path)
         {
             return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private sealed class UnrealModelCoverage
+        {
+            public string ObjectPath { get; init; } = "";
+            public bool IsStatic { get; init; }
+            public bool HasSkin { get; init; }
+            public bool HasSkeletonPath { get; init; }
+            public int MaterialCount { get; init; }
+            public int TextureCount { get; init; }
+            public int ComponentReferenceCount { get; init; }
+            public int AnimationCandidateCount { get; init; }
+            public string[] TaskSignals { get; init; } = Array.Empty<string>();
         }
     }
 }

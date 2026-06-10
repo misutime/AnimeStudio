@@ -1952,12 +1952,18 @@ namespace AnimeStudio.LibraryBrowser
                 $"角色: {item.LibraryRole}{Environment.NewLine}" +
                 $"来源类型: {item.SourceType}{Environment.NewLine}" +
                 $"来源文件: {item.Source}{Environment.NewLine}" +
+                $"对象路径: {EmptyAsNone(item.ObjectPath)}{Environment.NewLine}" +
                 $"PathID: {item.PathId}{Environment.NewLine}" +
                 $"Mesh: {item.MeshCount}{Environment.NewLine}" +
                 $"顶点: {item.VertexCount}{Environment.NewLine}" +
                 $"材质: {item.MaterialCount}{Environment.NewLine}" +
                 $"贴图: {item.TextureCount}{Environment.NewLine}" +
                 $"骨骼: {item.BoneCount}{Environment.NewLine}" +
+                $"UE骨骼模型: {(item.HasSkin ? "是" : "否")}{Environment.NewLine}" +
+                $"UE Skeleton路径: {(item.HasSkeletonPath ? "有" : "无")}{Environment.NewLine}" +
+                $"UE组件引用: {item.ComponentReferenceCount}{Environment.NewLine}" +
+                $"UE动画候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
+                $"任务/交互信号: {FormatSignalList(item.TaskSignals)}{Environment.NewLine}" +
                 $"已忽略: {_curationStore?.IsIgnored(item)}{Environment.NewLine}" +
                 $"已收藏: {_curationStore?.IsFavoriteModel(item)}{Environment.NewLine}" +
                 $"文件:{Environment.NewLine}{item.OutputPath}{Environment.NewLine}{Environment.NewLine}" +
@@ -1991,8 +1997,9 @@ namespace AnimeStudio.LibraryBrowser
                 var confidence = string.IsNullOrWhiteSpace(animation.Confidence) ? "" : $" {animation.Confidence}";
                 var capability = string.IsNullOrWhiteSpace(animation.Capability) ? "" : $" {animation.Capability}";
                 var bake = animation.RequiresHumanoidBake ? " 需要Humanoid烘焙" : "";
+                var validation = FormatAnimationValidation(animation);
                 var source = animation.IsExplicit ? "显式" : "结构";
-                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{bake}");
+                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}");
                 if (!string.IsNullOrWhiteSpace(animation.BestPath))
                 {
                     lines.Add($"  {animation.BestPath}");
@@ -2320,6 +2327,8 @@ namespace AnimeStudio.LibraryBrowser
                 $"动画: {animation.Name}{Environment.NewLine}" +
                 $"时长: {(animation.Duration > 0 ? $"{animation.Duration:0.##}s" : "Unknown")}{Environment.NewLine}" +
                 $"能力: {DescribeAnimationCapability(animation)}{Environment.NewLine}" +
+                $"验证: {FormatAnimationValidation(animation)}{Environment.NewLine}" +
+                $"帧/轨道/片段: {FormatAnimationCounts(animation)}{Environment.NewLine}" +
                 $"关联模型: {_visibleAnimationModels.Count}{Environment.NewLine}" +
                 $"来源: {animation.Source}{Environment.NewLine}" +
                 $"路径: {animation.BestPath}{Environment.NewLine}{Environment.NewLine}" +
@@ -2345,6 +2354,11 @@ namespace AnimeStudio.LibraryBrowser
                 };
             }
 
+            if (!string.IsNullOrWhiteSpace(animation.ValidationCategory))
+            {
+                return animation.ValidationCategory;
+            }
+
             if (animation.RequiresHumanoidBake)
             {
                 return "需 Unity 烘焙";
@@ -2356,6 +2370,43 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return "未知";
+        }
+
+        private static string FormatAnimationValidation(LibraryAnimationCandidate animation)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(animation.ValidationStatus))
+            {
+                parts.Add(animation.ValidationStatus);
+            }
+            if (!string.IsNullOrWhiteSpace(animation.ValidationCategory)
+                && !string.Equals(animation.ValidationCategory, animation.ValidationStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                parts.Add(animation.ValidationCategory);
+            }
+            if (animation.TrackCoverage > 0)
+            {
+                parts.Add($"coverage={animation.TrackCoverage:0.##}");
+            }
+            if (animation.IsContainerAnimation)
+            {
+                parts.Add("容器动画");
+            }
+
+            return parts.Count == 0 ? "" : " " + string.Join(" ", parts);
+        }
+
+        private static string FormatAnimationCounts(LibraryAnimationCandidate animation)
+        {
+            var frame = animation.FrameCount > 0 ? animation.FrameCount.ToString() : "-";
+            var track = animation.TrackCount > 0 ? animation.TrackCount.ToString() : "-";
+            var segment = animation.SegmentCount > 0 ? animation.SegmentCount.ToString() : "-";
+            return $"{frame}/{track}/{segment}";
+        }
+
+        private static string FormatSignalList(string[] signals)
+        {
+            return signals == null || signals.Length == 0 ? "(none)" : string.Join(", ", signals.Take(8));
         }
 
         private static string BuildTargetedAnimationDetails(IReadOnlyList<LibraryAnimationCandidate> animations)

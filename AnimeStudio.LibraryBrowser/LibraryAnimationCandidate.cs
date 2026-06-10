@@ -15,9 +15,17 @@ namespace AnimeStudio.LibraryBrowser
         public double Duration { get; init; }
         public double SampleRate { get; init; }
         public int CurveCount { get; init; }
+        public int FrameCount { get; init; }
+        public int TrackCount { get; init; }
+        public int SegmentCount { get; init; }
         public int MatchedPathCount { get; init; }
+        public double TrackCoverage { get; init; }
+        public string ValidationStatus { get; init; } = "";
+        public string ValidationCategory { get; init; } = "";
+        public string ValidationReason { get; init; } = "";
         public bool RequiresHumanoidBake { get; init; }
         public bool NeedsValidation { get; init; }
+        public bool IsContainerAnimation { get; init; }
         public string[] BindingPaths { get; init; } = System.Array.Empty<string>();
 
         public string BestPath => !string.IsNullOrWhiteSpace(OutputPath) ? OutputPath : AnimationAssetPath;

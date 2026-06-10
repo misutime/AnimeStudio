@@ -18,6 +18,7 @@ namespace AnimeStudio.LibraryBrowser
         public string LibraryRole { get; init; } = "";
         public string SourceType { get; init; } = "";
         public string Source { get; init; } = "";
+        public string ObjectPath { get; init; } = "";
         public long PathId { get; init; }
         public string OutputPath { get; init; } = "";
         public string ModelPreviewPath { get; init; } = "";
@@ -32,9 +33,15 @@ namespace AnimeStudio.LibraryBrowser
         public int MeshRefCount { get; init; }
         public int OccurrenceCount { get; init; } = 1;
         public int BoneCount { get; init; }
+        public bool HasSkin { get; init; }
+        public bool HasSkeletonPath { get; init; }
+        public bool IsStaticModel { get; init; }
+        public int ComponentReferenceCount { get; init; }
+        public int AnimationCandidateCount { get; init; }
         public string[] BonePaths { get; init; } = Array.Empty<string>();
         public string[] NodePaths { get; init; } = Array.Empty<string>();
         public string[] Signals { get; init; } = Array.Empty<string>();
+        public string[] TaskSignals { get; init; } = Array.Empty<string>();
         public string[] VfxTexturePreviewPaths { get; init; } = Array.Empty<string>();
         public string VfxPreviewHintsJson { get; init; } = "";
 
