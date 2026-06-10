@@ -336,6 +336,7 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var output = Path.Combine(directory, "preview.glb");
+            var validation = Path.Combine(directory, "preview_validation.json");
             var startInfo = new ProcessStartInfo
             {
                 FileName = launcher.FileName,
@@ -344,7 +345,7 @@ namespace AnimeStudio.LibraryBrowser
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
-            foreach (var arg in launcher.BuildArguments(model.OutputPath, animation.BestPath, output))
+            foreach (var arg in launcher.BuildArguments(model.OutputPath, animation.BestPath, output, validation))
             {
                 startInfo.ArgumentList.Add(arg);
             }
@@ -404,7 +405,6 @@ namespace AnimeStudio.LibraryBrowser
                 return status;
             }
 
-            var validation = Path.Combine(directory, "preview_validation.json");
             var playable = process.ExitCode == 0 && File.Exists(output) && HasTrustedPreviewReport(validation);
             var finalStatus = playable ? "可播放" : "失败";
             var message = playable ? null : BuildFailureMessage(process.ExitCode, stdout.ToString(), stderr.ToString());
@@ -622,12 +622,13 @@ namespace AnimeStudio.LibraryBrowser
                     return new ExternalLauncher(
                         exe,
                         root,
-                        (model, animation, output) => new[]
+                        (model, animation, output, report) => new[]
                         {
                             "--preview-ue-animation",
                             "--model", model,
                             "--animation", animation,
                             "--output", output,
+                            "--report", report,
                         });
                 }
 
@@ -637,7 +638,7 @@ namespace AnimeStudio.LibraryBrowser
                     return new ExternalLauncher(
                         "dotnet",
                         root,
-                        (model, animation, output) => new[]
+                        (model, animation, output, report) => new[]
                         {
                             "run",
                             "--project", project,
@@ -647,6 +648,7 @@ namespace AnimeStudio.LibraryBrowser
                             "--model", model,
                             "--animation", animation,
                             "--output", output,
+                            "--report", report,
                         });
                 }
             }
@@ -734,7 +736,7 @@ namespace AnimeStudio.LibraryBrowser
         private sealed record ExternalLauncher(
             string FileName,
             string WorkingDirectory,
-            Func<string, string, string, string[]> BuildArguments);
+            Func<string, string, string, string, string[]> BuildArguments);
 
     }
 
