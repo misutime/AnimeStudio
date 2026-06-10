@@ -119,6 +119,7 @@ namespace AnimeStudio.LibraryBrowser
                     VfxCategory = ReadString(obj, "vfxCategory") ?? "",
                     Confidence = ReadString(obj, "confidence") ?? "",
                     Status = ReadString(obj, "status") ?? "",
+                    ValidationStatus = coverage?.ValidationStatus ?? "",
                     LibraryRole = ReadString(obj, "libraryRole") ?? "",
                     SourceType = sourceType,
                     Source = ReadString(obj, "source") ?? "",
@@ -211,6 +212,7 @@ namespace AnimeStudio.LibraryBrowser
                         TextureCount = textureCount,
                         ComponentReferenceCount = componentReferenceCount,
                         AnimationCandidateCount = animationCandidateCount,
+                        ValidationStatus = validationStatus,
                         IsTaskOrProp = isTaskOrProp,
                         IsPathOnlyTask = isTaskOrProp && componentReferenceCount == 0,
                         MissingMaterials = isTaskOrProp && materialCount == 0,
@@ -247,6 +249,7 @@ namespace AnimeStudio.LibraryBrowser
                 connection.Open();
                 if (!HasTable(connection, "model_coverage")
                     || !HasColumn(connection, "model_coverage", "is_task_or_prop")
+                    || !HasColumn(connection, "model_coverage", "validation_status")
                     || !HasColumn(connection, "model_coverage", "needs_review"))
                 {
                     return null;
@@ -256,7 +259,7 @@ namespace AnimeStudio.LibraryBrowser
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
 SELECT output, object_path, is_static, has_skin, has_skeleton_path,
-       material_count, texture_count, component_reference_count, animation_candidate_count,
+       material_count, texture_count, component_reference_count, animation_candidate_count, validation_status,
        is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
        task_signals_json
 FROM model_coverage;";
@@ -279,12 +282,13 @@ FROM model_coverage;";
                         TextureCount = reader.GetInt32(6),
                         ComponentReferenceCount = reader.GetInt32(7),
                         AnimationCandidateCount = reader.GetInt32(8),
-                        IsTaskOrProp = ReadSqliteBool(reader, 9),
-                        IsPathOnlyTask = ReadSqliteBool(reader, 10),
-                        MissingMaterials = ReadSqliteBool(reader, 11),
-                        NoExternalTextureSlots = ReadSqliteBool(reader, 12),
-                        NeedsReview = ReadSqliteBool(reader, 13),
-                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(14) ? "" : reader.GetString(14))
+                        ValidationStatus = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                        IsTaskOrProp = ReadSqliteBool(reader, 10),
+                        IsPathOnlyTask = ReadSqliteBool(reader, 11),
+                        MissingMaterials = ReadSqliteBool(reader, 12),
+                        NoExternalTextureSlots = ReadSqliteBool(reader, 13),
+                        NeedsReview = ReadSqliteBool(reader, 14),
+                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(15) ? "" : reader.GetString(15))
                     };
                 }
 
@@ -592,6 +596,7 @@ FROM model_coverage;";
             public int TextureCount { get; init; }
             public int ComponentReferenceCount { get; init; }
             public int AnimationCandidateCount { get; init; }
+            public string ValidationStatus { get; init; } = "";
             public bool IsTaskOrProp { get; init; }
             public bool IsPathOnlyTask { get; init; }
             public bool MissingMaterials { get; init; }

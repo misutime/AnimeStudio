@@ -38,7 +38,9 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripTextBox _searchBox = new();
         private readonly ToolStripButton _clearSearchButton = new("清除");
         private readonly ToolStripLabel _typeLabel = new("类型");
+        private readonly ToolStripLabel _qualityLabel = new("质量");
         private readonly ToolStripComboBox _kindBox = new();
+        private readonly ToolStripComboBox _qualityBox = new();
         private readonly ToolStripComboBox _thumbnailStateBox = new();
         private readonly ToolStripComboBox _concurrencyBox = new();
         private readonly ToolStripButton _showFavoriteModelsButton = new("收藏模型");
@@ -160,6 +162,10 @@ namespace AnimeStudio.LibraryBrowser
             _clearSearchButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _kindBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _kindBox.Width = 160;
+            _qualityBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _qualityBox.Width = 140;
+            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画" });
+            _qualityBox.SelectedIndex = 0;
             _thumbnailStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _thumbnailStateBox.Width = 120;
             _thumbnailStateBox.Items.AddRange(new object[] { "全部缩略图", "已有缩略图", "未生成", "生成失败" });
@@ -209,6 +215,9 @@ namespace AnimeStudio.LibraryBrowser
             {
                 new ToolStripLabel("分类"),
                 _kindBox,
+                new ToolStripSeparator(),
+                _qualityLabel,
+                _qualityBox,
                 new ToolStripSeparator(),
                 new ToolStripLabel("缩略图"),
                 _thumbnailStateBox,
@@ -505,6 +514,7 @@ namespace AnimeStudio.LibraryBrowser
             _modelAnimationFilterBox.TextChanged += (_, _) => RebuildAnimationList();
             _clearModelAnimationFilterButton.Click += (_, _) => _modelAnimationFilterBox.Clear();
             _kindBox.SelectedIndexChanged += (_, _) => ApplyFilter();
+            _qualityBox.SelectedIndexChanged += (_, _) => ApplyFilter();
             _thumbnailStateBox.SelectedIndexChanged += (_, _) => ApplyFilter();
             _concurrencyBox.SelectedIndexChanged += (_, _) => RestartThumbnailQueue();
             _showFavoriteModelsButton.CheckedChanged += (_, _) => ApplyFilter();
@@ -995,6 +1005,11 @@ namespace AnimeStudio.LibraryBrowser
                 query = query.Where(x => string.Equals(x.ResourceKind, kind, StringComparison.OrdinalIgnoreCase));
             }
 
+            if (_mainTabs.SelectedTab == _modelsPage)
+            {
+                query = ApplyQualityFilter(query);
+            }
+
             if (!string.IsNullOrWhiteSpace(text))
             {
                 query = query.Where(x => MatchesSearch(x, searchTerms));
@@ -1132,6 +1147,8 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             _thumbnailStateBox.Visible = !isAnimations && !isTextures;
+            _qualityLabel.Visible = isModels;
+            _qualityBox.Visible = isModels;
             _showFavoriteModelsButton.Text = isTextures ? "收藏贴图" : isModels ? "收藏模型" : "收藏";
             _searchBox.TextBox.PlaceholderText = isAnimations
                 ? "搜索动画，例如 run、attack 或 idle"
@@ -1231,6 +1248,21 @@ namespace AnimeStudio.LibraryBrowser
                 "未生成" => query.Where(x => !_thumbnailCache.IsCached(x) && !_thumbnailCache.IsFailed(x)),
                 "生成失败" => query.Where(x => _thumbnailCache.IsFailed(x)),
                 _ => query
+            };
+        }
+
+        private IEnumerable<LibraryModelItem> ApplyQualityFilter(IEnumerable<LibraryModelItem> query)
+        {
+            return (_qualityBox.SelectedItem as string) switch
+            {
+                "任务/道具" => query.Where(x => x.IsTaskOrProp),
+                "任务需复查" => query.Where(x => x.IsTaskOrProp && x.NeedsReview),
+                "路径关系待补" => query.Where(x => x.IsPathOnlyTask),
+                "缺材质" => query.Where(x => x.MissingMaterials),
+                "无外部贴图" => query.Where(x => x.NoExternalTextureSlots),
+                "验证警告" => query.Where(x => string.Equals(x.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)),
+                "有动画" => query.Where(x => _animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
+                _ => query,
             };
         }
 

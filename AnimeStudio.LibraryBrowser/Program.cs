@@ -82,6 +82,7 @@ namespace AnimeStudio.LibraryBrowser
                 .Where(x => !x.IsTexture && !x.IsVfx)
                 .Sum(x => x.AnimationCandidateCount);
             var realModelItems = models.Where(x => !x.IsTexture && !x.IsVfx).ToList();
+            var taskOrPropItems = realModelItems.Where(x => x.IsTaskOrProp).ToList();
             var payload = new
             {
                 root = Path.GetFullPath(root),
@@ -95,11 +96,16 @@ namespace AnimeStudio.LibraryBrowser
                 animationIndexSource = animationIndex.LoadSource,
                 animationCandidates = animationIndex.IndexedCandidateCount,
                 reportedAnimationCandidates,
-                taskOrPropModels = realModelItems.Count(x => x.IsTaskOrProp),
-                taskOrPropNeedsReview = realModelItems.Count(x => x.IsTaskOrProp && x.NeedsReview),
-                pathOnlyTaskOrPropModels = realModelItems.Count(x => x.IsPathOnlyTask),
-                taskOrPropMissingMaterials = realModelItems.Count(x => x.IsTaskOrProp && x.MissingMaterials),
-                taskOrPropNoExternalTextureSlots = realModelItems.Count(x => x.IsTaskOrProp && x.NoExternalTextureSlots)
+                taskOrPropModels = taskOrPropItems.Count,
+                taskOrPropReady = taskOrPropItems.Count(x => !x.NeedsReview),
+                taskOrPropNeedsReview = taskOrPropItems.Count(x => x.NeedsReview),
+                pathOnlyTaskOrPropModels = taskOrPropItems.Count(x => x.IsPathOnlyTask),
+                taskOrPropWithComponentReferences = taskOrPropItems.Count(x => x.ComponentReferenceCount > 0),
+                taskOrPropWithAnimations = taskOrPropItems.Count(x => animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
+                taskOrPropMissingMaterials = taskOrPropItems.Count(x => x.MissingMaterials),
+                taskOrPropNoExternalTextureSlots = taskOrPropItems.Count(x => x.NoExternalTextureSlots),
+                taskOrPropWarnings = taskOrPropItems.Count(x => string.Equals(x.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)),
+                taskOrPropErrors = taskOrPropItems.Count(x => string.Equals(x.ValidationStatus, "error", StringComparison.OrdinalIgnoreCase))
             };
             Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }

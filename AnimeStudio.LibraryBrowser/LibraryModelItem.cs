@@ -15,6 +15,7 @@ namespace AnimeStudio.LibraryBrowser
         public string VfxCategory { get; init; } = "";
         public string Confidence { get; init; } = "";
         public string Status { get; init; } = "";
+        public string ValidationStatus { get; init; } = "";
         public string LibraryRole { get; init; } = "";
         public string SourceType { get; init; } = "";
         public string Source { get; init; } = "";
