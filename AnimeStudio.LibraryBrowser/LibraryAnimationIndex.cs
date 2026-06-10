@@ -670,8 +670,11 @@ ORDER BY mar.model, ra.name;";
             var isUsableCandidate = ReadBool(animation, "isUsableCandidate")
                 || ((string.IsNullOrWhiteSpace(exportStatus) || string.Equals(exportStatus, "ok", StringComparison.OrdinalIgnoreCase))
                     && !string.Equals(validationStatus, "error", StringComparison.OrdinalIgnoreCase));
-            var relationSource = confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase)
+            var rawRelationSource = ReadString(animation, "relationSource") ?? "";
+            var relationSource = !string.IsNullOrWhiteSpace(rawRelationSource)
+                ? rawRelationSource
+                : confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase)
                     ? "explicit"
                     : "unreal";
 

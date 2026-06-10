@@ -2444,6 +2444,7 @@ namespace AnimeStudio.LibraryBrowser
 
             if (animation.IsUnreal)
             {
+                var relationLabel = DescribeUnrealRelationSource(animation.RelationSource);
                 if (!animation.IsUsableCandidate)
                 {
                     if (animation.IsMetadataOnly)
@@ -2458,15 +2459,15 @@ namespace AnimeStudio.LibraryBrowser
 
                 if (animation.IsContainerAnimation)
                 {
-                    return "UE容器动画";
+                    return relationLabel + " 容器动画";
                 }
 
                 if (!string.IsNullOrWhiteSpace(animation.ValidationCategory))
                 {
-                    return "UE " + animation.ValidationCategory;
+                    return relationLabel + " " + animation.ValidationCategory;
                 }
 
-                return "UE动画索引";
+                return relationLabel + " 动画索引";
             }
 
             if (!string.IsNullOrWhiteSpace(animation.Capability))
@@ -2497,6 +2498,18 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return "未知";
+        }
+
+        private static string DescribeUnrealRelationSource(string relationSource)
+        {
+            return relationSource switch
+            {
+                "componentOwner" => "UE组件",
+                "uniqueSkeleton" => "UE唯一骨骼",
+                "sharedSkeleton" => "UE共享骨骼",
+                "diagnostic" => "UE诊断",
+                _ => "UE",
+            };
         }
 
         private static string FormatAnimationValidation(LibraryAnimationCandidate animation)
