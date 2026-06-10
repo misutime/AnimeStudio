@@ -164,7 +164,7 @@ namespace AnimeStudio.LibraryBrowser
             _kindBox.Width = 160;
             _qualityBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _qualityBox.Width = 140;
-            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画" });
+            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "质量问题", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画" });
             _qualityBox.SelectedIndex = 0;
             _thumbnailStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _thumbnailStateBox.Width = 120;
@@ -1257,6 +1257,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 "任务/道具" => query.Where(x => x.IsTaskOrProp),
                 "任务需复查" => query.Where(x => x.IsTaskOrProp && x.NeedsReview),
+                "质量问题" => query.Where(x => x.IsTaskOrProp && HasTaskModelQualityIssue(x)),
                 "路径关系待补" => query.Where(x => x.IsPathOnlyTask),
                 "缺材质" => query.Where(x => x.MissingMaterials),
                 "无外部贴图" => query.Where(x => x.NoExternalTextureSlots),
@@ -1264,6 +1265,14 @@ namespace AnimeStudio.LibraryBrowser
                 "有动画" => query.Where(x => _animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
                 _ => query,
             };
+        }
+
+        private static bool HasTaskModelQualityIssue(LibraryModelItem item)
+        {
+            return item.MissingMaterials
+                || item.NoExternalTextureSlots
+                || string.Equals(item.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.ValidationStatus, "error", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool Contains(string value, string text)

@@ -99,6 +99,7 @@ namespace AnimeStudio.LibraryBrowser
                 taskOrPropModels = taskOrPropItems.Count,
                 taskOrPropReady = taskOrPropItems.Count(x => !x.NeedsReview),
                 taskOrPropNeedsReview = taskOrPropItems.Count(x => x.NeedsReview),
+                taskOrPropQualityIssues = taskOrPropItems.Count(HasTaskModelQualityIssue),
                 pathOnlyTaskOrPropModels = taskOrPropItems.Count(x => x.IsPathOnlyTask),
                 taskOrPropWithComponentReferences = taskOrPropItems.Count(x => x.ComponentReferenceCount > 0),
                 taskOrPropWithAnimations = taskOrPropItems.Count(x => animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
@@ -108,6 +109,14 @@ namespace AnimeStudio.LibraryBrowser
                 taskOrPropErrors = taskOrPropItems.Count(x => string.Equals(x.ValidationStatus, "error", StringComparison.OrdinalIgnoreCase))
             };
             Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        }
+
+        private static bool HasTaskModelQualityIssue(LibraryModelItem item)
+        {
+            return item.MissingMaterials
+                || item.NoExternalTextureSlots
+                || string.Equals(item.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.ValidationStatus, "error", StringComparison.OrdinalIgnoreCase);
         }
 
         private sealed class ThumbnailWorkerRequest
