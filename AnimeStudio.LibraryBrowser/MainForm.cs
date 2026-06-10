@@ -1392,7 +1392,7 @@ namespace AnimeStudio.LibraryBrowser
             var animationCount = _animationIndex.CountForModel(item);
             var allAnimationCount = _animationIndex.CountAllForModel(item);
             var explicitCount = _animationIndex.CountExplicitForModel(item);
-            e.Item = new ListViewItem(ShortLabel(item, animationCount, item.AnimationCandidateCount, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, animationCount, item.AnimationCandidateCount, explicitCount, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = imageIndex,
                 ToolTipText =
@@ -1408,7 +1408,7 @@ namespace AnimeStudio.LibraryBrowser
         private void VfxList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleVfx[e.ItemIndex];
-            e.Item = new ListViewItem(ShortLabel(item, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, 0, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = GetImageIndex(item),
                 ToolTipText = $"{item.OutputPath}{Environment.NewLine}类型: VFX/{item.VfxCategory}{Environment.NewLine}组件: {item.ComponentCount} | 材质: {item.MaterialRefCount} | 贴图: {item.TextureRefCount} | Mesh: {item.MeshRefCount} | 出现: {item.OccurrenceCount}"
@@ -1418,7 +1418,7 @@ namespace AnimeStudio.LibraryBrowser
         private void TextureList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleTextures[e.ItemIndex];
-            e.Item = new ListViewItem(ShortLabel(item, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, 0, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = GetTextureImageIndex(item),
                 ToolTipText = $"{item.OutputPath}{Environment.NewLine}类型: {item.ResourceKind}/{item.SourceType}"
@@ -1707,10 +1707,10 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private static string ShortLabel(LibraryModelItem item, int usableAnimationCount, int reportedAnimationCount, bool favorite)
+        private static string ShortLabel(LibraryModelItem item, int usableAnimationCount, int reportedAnimationCount, int explicitAnimationCount, bool favorite)
         {
             var name = string.IsNullOrWhiteSpace(item.Name) ? item.FileName : item.Name;
-            var animationBadge = BuildAnimationBadge(usableAnimationCount, reportedAnimationCount);
+            var animationBadge = BuildAnimationBadge(usableAnimationCount, reportedAnimationCount, explicitAnimationCount);
             var suffix = item.IsVfx
                 ? $" [{(string.IsNullOrWhiteSpace(item.VfxCategory) ? "VFX" : item.VfxCategory)}]"
                 : string.IsNullOrWhiteSpace(animationBadge) ? "" : $" [{animationBadge}]";
@@ -1720,19 +1720,20 @@ namespace AnimeStudio.LibraryBrowser
             return shortName + suffix + favoriteBadge;
         }
 
-        private static string BuildAnimationBadge(int usableAnimationCount, int reportedAnimationCount)
+        private static string BuildAnimationBadge(int usableAnimationCount, int reportedAnimationCount, int explicitAnimationCount)
         {
             if (usableAnimationCount <= 0 && reportedAnimationCount <= 0)
             {
                 return "";
             }
 
+            var explicitText = explicitAnimationCount > 0 ? $" 显{explicitAnimationCount}" : "";
             if (reportedAnimationCount > 0 && reportedAnimationCount != usableAnimationCount)
             {
-                return $"{usableAnimationCount}/{reportedAnimationCount}";
+                return $"动{usableAnimationCount}/{reportedAnimationCount}{explicitText}";
             }
 
-            return usableAnimationCount.ToString();
+            return $"动{usableAnimationCount}{explicitText}";
         }
 
         private static void SetLargeIconSpacing(ListView list)

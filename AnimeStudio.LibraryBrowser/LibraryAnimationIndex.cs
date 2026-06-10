@@ -500,17 +500,28 @@ ORDER BY mar.model, ra.name;";
 
         private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate)
         {
+            var output = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "output") ?? ReadString(candidate, "output") ?? "");
+            var animationAsset = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "animationAsset") ?? "");
+            var relation = ReadString(candidate, "relation") ?? ReadString(candidate, "relationSource") ?? "";
+            var relationSource = ReadString(candidate, "relationSource") ?? "";
+            var animationType = ReadString(animation, "animationType") ?? ReadString(candidate, "animationType") ?? "";
+            if (IsUnrealAnimationRecord(output, animationAsset, relation, relationSource, animationType, ReadString(animation, "source")))
+            {
+                animationType = "Unreal";
+            }
+
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(animation, "name") ?? ReadString(candidate, "name") ?? "",
-                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ReadString(candidate, "output") ?? ""),
-                AnimationAssetPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "animationAsset") ?? ""),
+                OutputPath = output,
+                AnimationAssetPath = animationAsset,
                 Source = ReadString(animation, "source") ?? "",
-                AnimationType = ReadString(animation, "animationType") ?? "",
+                AnimationType = animationType,
                 Capability = ReadString(animation, "animationCapability") ?? "",
-                Relation = ReadString(candidate, "relation") ?? ReadString(candidate, "relationSource") ?? "",
-                RelationSource = ReadString(candidate, "relationSource") ?? "",
+                Relation = relation,
+                RelationSource = relationSource,
                 Confidence = ReadString(candidate, "confidence") ?? "",
+                ExportStatus = ReadString(animation, "status") ?? ReadString(candidate, "status") ?? "",
                 Score = ReadDouble(candidate, "score"),
                 Duration = ReadDouble(animation, "duration"),
                 SampleRate = ReadDouble(animation, "sampleRate"),
@@ -518,7 +529,7 @@ ORDER BY mar.model, ra.name;";
                 FrameCount = ReadInt32(animation, "frameCount"),
                 TrackCount = ReadInt32(animation, "trackCount"),
                 SegmentCount = ReadInt32(animation, "segmentCount"),
-                MatchedPathCount = ReadArrayLength(candidate, "matchedBindingPaths"),
+                MatchedPathCount = Math.Max(ReadArrayLength(candidate, "matchedBindingPaths"), ReadInt32(animation, "matchedTrackBones")),
                 TrackCoverage = ReadDouble(animation, "trackCoverage"),
                 ValidationStatus = ReadString(animation, "validationStatus") ?? "",
                 ValidationCategory = ReadString(animation, "validationCategory") ?? "",
@@ -527,6 +538,37 @@ ORDER BY mar.model, ra.name;";
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
+        }
+
+        private static string ResolveAnimationOutputPath(string libraryRoot, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "";
+            }
+
+            var resolved = LibraryPathResolver.ResolveExistingFile(libraryRoot, value);
+            return string.IsNullOrWhiteSpace(resolved) ? value : resolved;
+        }
+
+        private static bool IsUnrealAnimationRecord(params string[] values)
+        {
+            foreach (var value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (value.EndsWith(".ueanim", StringComparison.OrdinalIgnoreCase)
+                    || value.Contains("unreal", StringComparison.OrdinalIgnoreCase)
+                    || value.Contains("modelAnimationRelation", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static LibraryAnimationCandidate ReadCandidate(string libraryRoot, JsonElement candidate)
