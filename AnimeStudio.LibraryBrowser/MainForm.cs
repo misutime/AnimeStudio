@@ -1390,12 +1390,13 @@ namespace AnimeStudio.LibraryBrowser
             var item = _visibleModels[e.ItemIndex];
             var imageIndex = GetImageIndex(item);
             var animationCount = _animationIndex.CountForModel(item);
+            var allAnimationCount = _animationIndex.CountAllForModel(item);
             var explicitCount = _animationIndex.CountExplicitForModel(item);
             e.Item = new ListViewItem(ShortLabel(item, animationCount, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = imageIndex,
-                ToolTipText = animationCount > 0
-                    ? $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}{Environment.NewLine}动画候选: {animationCount}{Environment.NewLine}显式动画: {explicitCount}"
+                ToolTipText = allAnimationCount > 0
+                    ? $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}{Environment.NewLine}可用动画: {animationCount}{Environment.NewLine}全部关系动画: {allAnimationCount}{Environment.NewLine}显式动画: {explicitCount}"
                     : $"{item.OutputPath}{Environment.NewLine}类型: {item.ModelSourceLabel}"
             };
         }
@@ -2164,7 +2165,9 @@ namespace AnimeStudio.LibraryBrowser
                 foreach (var animation in animations.Take(512))
                 {
                     var preview = _previewCache?.GetStatus(_detailModel, animation);
-                    var status = animation.IsUnreal ? "UE已索引" : preview?.Status ?? "未生成";
+                    var status = animation.IsUnreal
+                        ? animation.IsUsableCandidate ? "UE已索引" : "UE导出失败"
+                        : preview?.Status ?? "未生成";
                     if (!animation.IsUnreal
                         && animation.RequiresHumanoidBake
                         && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
@@ -2172,7 +2175,9 @@ namespace AnimeStudio.LibraryBrowser
                         status = "需 Unity 烘焙";
                     }
 
-                    var source = animation.IsUnreal ? "UE关系" : animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
+                    var source = animation.IsUnreal
+                        ? animation.IsUsableCandidate ? "UE关系" : "UE诊断"
+                        : animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
                     var animationName = _curationStore?.IsFavoriteAnimation(animation) == true
                         ? animation.Name + " [收藏]"
                         : animation.Name;
@@ -2347,6 +2352,13 @@ namespace AnimeStudio.LibraryBrowser
 
             if (animation.IsUnreal)
             {
+                if (!animation.IsUsableCandidate)
+                {
+                    return string.IsNullOrWhiteSpace(animation.ExportStatus)
+                        ? "UE诊断关系"
+                        : "UE导出" + animation.ExportStatus;
+                }
+
                 if (animation.IsContainerAnimation)
                 {
                     return "UE容器动画";

@@ -11,6 +11,7 @@ namespace AnimeStudio.LibraryBrowser
         public string Relation { get; init; } = "";
         public string RelationSource { get; init; } = "";
         public string Confidence { get; init; } = "";
+        public string ExportStatus { get; init; } = "";
         public double Score { get; init; }
         public double Duration { get; init; }
         public double SampleRate { get; init; }
@@ -35,5 +36,8 @@ namespace AnimeStudio.LibraryBrowser
                 && OutputPath.EndsWith(".ueanim", System.StringComparison.OrdinalIgnoreCase));
         public bool IsExplicit => string.Equals(RelationSource, "explicit", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Confidence, "explicit_unity_reference", System.StringComparison.OrdinalIgnoreCase);
+        public bool IsUsableCandidate => !IsUnreal ||
+            ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&
+             !string.Equals(ValidationStatus, "error", System.StringComparison.OrdinalIgnoreCase));
     }
 }

@@ -48,8 +48,8 @@ namespace AnimeStudio.LibraryBrowser
             LoadSource = loadSource;
             IndexedModelCount = byModelOutput.Count;
             IndexedCandidateCount = indexedCandidateCount > 0
-                ? indexedCandidateCount
-                : byModelOutput.Values.Sum(x => x.Count);
+                ? Math.Min(indexedCandidateCount, byModelOutput.Values.Sum(x => x.Count(y => y.IsUsableCandidate)))
+                : byModelOutput.Values.Sum(x => x.Count(y => y.IsUsableCandidate));
         }
 
         public static LibraryAnimationIndex Empty { get; } = new("", new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase));
@@ -71,7 +71,17 @@ namespace AnimeStudio.LibraryBrowser
 
         public int CountForModel(LibraryModelItem model)
         {
+            return CountUsableForModel(model);
+        }
+
+        public int CountAllForModel(LibraryModelItem model)
+        {
             return FindForModel(model).Count;
+        }
+
+        public int CountUsableForModel(LibraryModelItem model)
+        {
+            return FindForModel(model).Count(x => x.IsUsableCandidate);
         }
 
         public int CountExplicitForModel(LibraryModelItem model)
@@ -532,6 +542,7 @@ ORDER BY mar.model, ra.name;";
                 Relation = ReadString(candidate, "relation") ?? ReadString(candidate, "relationSource") ?? "",
                 RelationSource = ReadString(candidate, "relationSource") ?? "",
                 Confidence = ReadString(candidate, "confidence") ?? "",
+                ExportStatus = ReadString(candidate, "status") ?? "",
                 Score = ReadDouble(candidate, "score"),
                 Duration = ReadDouble(candidate, "duration"),
                 SampleRate = ReadDouble(candidate, "sampleRate"),
@@ -563,6 +574,7 @@ ORDER BY mar.model, ra.name;";
                 Relation = "",
                 RelationSource = "",
                 Confidence = "",
+                ExportStatus = ReadString(animation, "status") ?? "",
                 Score = 0,
                 Duration = ReadDouble(animation, "duration"),
                 SampleRate = ReadDouble(animation, "sampleRate"),
@@ -582,11 +594,15 @@ ORDER BY mar.model, ra.name;";
 
         private static LibraryAnimationCandidate ReadUnrealRelationAnimation(string libraryRoot, JsonElement relation, JsonElement animation)
         {
-            var validationStatus = ReadString(animation, "validationStatus") ?? ReadString(animation, "status") ?? "";
+            var exportStatus = ReadString(animation, "status") ?? "";
+            var validationStatus = ReadString(animation, "validationStatus") ?? exportStatus;
             var validationCategory = ReadString(animation, "validationCategory") ?? "";
             var confidence = ReadString(relation, "confidence") ?? "";
             var trackCoverage = ReadDouble(animation, "trackCoverage");
             var trackCount = ReadInt32(animation, "trackCount");
+            var isUsableCandidate = ReadBool(animation, "isUsableCandidate")
+                || ((string.IsNullOrWhiteSpace(exportStatus) || string.Equals(exportStatus, "ok", StringComparison.OrdinalIgnoreCase))
+                    && !string.Equals(validationStatus, "error", StringComparison.OrdinalIgnoreCase));
             var relationSource = confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase)
                     ? "explicit"
@@ -600,9 +616,10 @@ ORDER BY mar.model, ra.name;";
                 AnimationType = "Unreal",
                 Capability = string.IsNullOrWhiteSpace(validationCategory) ? validationStatus : validationCategory,
                 Relation = "unreal.modelAnimationRelation",
-                RelationSource = relationSource,
+                RelationSource = isUsableCandidate ? relationSource : "diagnostic",
                 Confidence = confidence,
-                Score = ScoreUnrealRelationAnimation(confidence, validationStatus, validationCategory, trackCoverage, trackCount),
+                ExportStatus = exportStatus,
+                Score = ScoreUnrealRelationAnimation(confidence, exportStatus, validationStatus, validationCategory, trackCoverage, trackCount),
                 Duration = ReadDouble(animation, "duration"),
                 FrameCount = ReadInt32(animation, "frameCount"),
                 TrackCount = trackCount,
@@ -612,7 +629,7 @@ ORDER BY mar.model, ra.name;";
                 ValidationStatus = validationStatus,
                 ValidationCategory = validationCategory,
                 ValidationReason = ReadString(animation, "validationReason") ?? ReadString(animation, "reason") ?? "",
-                NeedsValidation = !string.Equals(validationStatus, "ok", StringComparison.OrdinalIgnoreCase),
+                NeedsValidation = !isUsableCandidate || !string.Equals(validationStatus, "ok", StringComparison.OrdinalIgnoreCase),
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation")
                     || ReadInt32(animation, "referencedAnimationCount") > 0
                     || ReadInt32(animation, "segmentCount") > 0
@@ -621,12 +638,19 @@ ORDER BY mar.model, ra.name;";
 
         private static double ScoreUnrealRelationAnimation(
             string confidence,
+            string exportStatus,
             string validationStatus,
             string validationCategory,
             double trackCoverage,
             int trackCount)
         {
             var score = 50d;
+            if (!string.IsNullOrWhiteSpace(exportStatus) &&
+                !string.Equals(exportStatus, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                score -= 1000;
+            }
+
             if (confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase))
             {
