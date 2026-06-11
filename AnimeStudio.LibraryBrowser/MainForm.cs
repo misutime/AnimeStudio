@@ -1439,10 +1439,10 @@ namespace AnimeStudio.LibraryBrowser
                 ToolTipText =
                     $"{item.OutputPath}{Environment.NewLine}" +
                     $"类型: {item.ModelSourceLabel}{Environment.NewLine}" +
-                    $"可用动画: {animationCount}{Environment.NewLine}" +
-                    $"全部关系动画: {allAnimationCount}{Environment.NewLine}" +
+                    $"可播放动画: {animationCount}{Environment.NewLine}" +
+                    $"关系动画总数: {allAnimationCount}{Environment.NewLine}" +
                     $"覆盖报告候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
-                    $"显式动画: {explicitCount}{Environment.NewLine}" +
+                    $"显式关系动画: {explicitCount}{Environment.NewLine}" +
                     $"质量复查: {(item.NeedsReview ? FormatReasonList(item.ReviewReasons) : "否")}{Environment.NewLine}" +
                     $"关系待补: {(item.RelationNeedsReview ? FormatReasonList(item.RelationReviewReasons) : "否")}"
             };
@@ -1770,13 +1770,13 @@ namespace AnimeStudio.LibraryBrowser
                 return "";
             }
 
-            var explicitText = explicitAnimationCount > 0 ? $" 显{explicitAnimationCount}" : "";
+            var explicitText = explicitAnimationCount > 0 ? $" 显式{explicitAnimationCount}" : "";
             if (reportedAnimationCount > 0 && reportedAnimationCount != usableAnimationCount)
             {
-                return $"动画{usableAnimationCount}/{reportedAnimationCount}{explicitText}";
+                return $"可播{usableAnimationCount}/候选{reportedAnimationCount}{explicitText}";
             }
 
-            return $"动画{usableAnimationCount}{explicitText}";
+            return $"可播{usableAnimationCount}{explicitText}";
         }
 
         private static void SetLargeIconSpacing(ListView list)
@@ -2039,9 +2039,9 @@ namespace AnimeStudio.LibraryBrowser
                 $"UE缺材质: {(item.MissingMaterials ? "是" : "否")}{Environment.NewLine}" +
                 $"UE缺外部贴图槽: {(item.NoExternalTextureSlots ? "是" : "否")}{Environment.NewLine}" +
                 $"动画索引来源: {EmptyAsUnknown(_animationIndex.LoadSource)}{Environment.NewLine}" +
-                $"可用动画: {usableCount}{Environment.NewLine}" +
-                $"全部关系动画: {allAnimationCount}{Environment.NewLine}" +
-                $"显式动画: {explicitCount}{Environment.NewLine}" +
+                $"可播放动画: {usableCount}{Environment.NewLine}" +
+                $"关系动画总数: {allAnimationCount}{Environment.NewLine}" +
+                $"显式关系动画: {explicitCount}{Environment.NewLine}" +
                 $"覆盖报告动画候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
                 animationIndexNote +
                 $"任务/交互信号: {FormatSignalList(item.TaskSignals)}{Environment.NewLine}" +
@@ -2062,14 +2062,14 @@ namespace AnimeStudio.LibraryBrowser
         {
             if (animations.Count == 0)
             {
-                return "显式动画: 0\r\n当前索引没有记录 Animator/Animation 直接绑定。";
+                return "显式关系动画: 0\r\n当前索引没有记录 Unity Animator/Animation 或 UE 组件/骨骼关系绑定。";
             }
 
             var explicitCount = animations.Count(x => x.IsExplicit);
             var lines = new List<string>
             {
-                $"显式动画: {explicitCount}",
-                $"索引候选: {animations.Count}"
+                $"显式关系动画: {explicitCount}",
+                $"关系动画总数: {animations.Count}"
             };
 
             foreach (var animation in animations.Take(24))
@@ -2079,7 +2079,7 @@ namespace AnimeStudio.LibraryBrowser
                 var capability = string.IsNullOrWhiteSpace(animation.Capability) ? "" : $" {animation.Capability}";
                 var bake = animation.RequiresHumanoidBake ? " 需要Humanoid烘焙" : "";
                 var validation = FormatAnimationValidation(animation);
-                var source = animation.IsExplicit ? "显式" : "结构";
+                var source = animation.IsExplicit ? "显式关系" : "结构关系";
                 lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}");
                 if (!string.IsNullOrWhiteSpace(animation.BestPath))
                 {

@@ -13,7 +13,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class AnimationPreviewCache
     {
-        private const string PreviewCacheVersion = "fast-preview-v6-ue-library-files";
+        private const string PreviewCacheVersion = "fast-preview-v7-ue-library-files";
         private readonly string _root;
         private readonly string _cacheRoot;
 
