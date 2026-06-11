@@ -149,6 +149,9 @@ namespace AnimeStudio.LibraryBrowser
                     MissingMaterials = coverage?.MissingMaterials ?? false,
                     NoExternalTextureSlots = coverage?.NoExternalTextureSlots ?? false,
                     NeedsReview = coverage?.NeedsReview ?? false,
+                    ReviewReasons = coverage?.ReviewReasons ?? Array.Empty<string>(),
+                    RelationNeedsReview = coverage?.RelationNeedsReview ?? false,
+                    RelationReviewReasons = coverage?.RelationReviewReasons ?? Array.Empty<string>(),
                     BonePaths = ReadStringArray(obj, "bonePaths"),
                     NodePaths = ReadStringArray(obj, "nodePaths"),
                     Signals = ReadStringArray(obj, "signals"),
@@ -226,6 +229,11 @@ namespace AnimeStudio.LibraryBrowser
                             textureCount == 0 ||
                             string.Equals(validationStatus, "warning", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(validationStatus, "error", StringComparison.OrdinalIgnoreCase)),
+                        ReviewReasons = BuildLegacyReviewReasons(isTaskOrProp, materialCount, textureCount, validationStatus),
+                        RelationNeedsReview = isTaskOrProp && componentReferenceCount == 0 && sourceIndexObjectCount == 0,
+                        RelationReviewReasons = isTaskOrProp && componentReferenceCount == 0 && sourceIndexObjectCount == 0
+                            ? new[] { "pathOnlyRelation" }
+                            : Array.Empty<string>(),
                         TaskSignals = taskSignals
                     };
                 }
@@ -259,20 +267,30 @@ namespace AnimeStudio.LibraryBrowser
                 }
 
                 var hasSourceIndexObjectCount = HasColumn(connection, "model_coverage", "source_index_object_count");
+                var hasReviewReasonColumns = HasColumn(connection, "model_coverage", "review_reasons_json")
+                    && HasColumn(connection, "model_coverage", "relation_needs_review")
+                    && HasColumn(connection, "model_coverage", "relation_review_reasons_json");
                 var result = new Dictionary<string, UnrealModelCoverage>(StringComparer.OrdinalIgnoreCase);
                 using var command = connection.CreateCommand();
-                command.CommandText = hasSourceIndexObjectCount
+                command.CommandText = hasSourceIndexObjectCount && hasReviewReasonColumns
                     ? @"
 SELECT output, object_path, is_static, has_skin, has_skeleton_path,
        material_count, texture_count, component_reference_count, source_index_object_count, animation_candidate_count, validation_status,
        is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
-       task_signals_json
+       task_signals_json, review_reasons_json, relation_needs_review, relation_review_reasons_json
+FROM model_coverage;"
+                    : hasSourceIndexObjectCount
+                    ? @"
+SELECT output, object_path, is_static, has_skin, has_skeleton_path,
+       material_count, texture_count, component_reference_count, source_index_object_count, animation_candidate_count, validation_status,
+       is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
+       task_signals_json, '[]' AS review_reasons_json, 0 AS relation_needs_review, '[]' AS relation_review_reasons_json
 FROM model_coverage;"
                     : @"
 SELECT output, object_path, is_static, has_skin, has_skeleton_path,
        material_count, texture_count, component_reference_count, 0 AS source_index_object_count, animation_candidate_count, validation_status,
        is_task_or_prop, is_path_only_task, missing_materials, no_external_texture_slots, needs_review,
-       task_signals_json
+       task_signals_json, '[]' AS review_reasons_json, 0 AS relation_needs_review, '[]' AS relation_review_reasons_json
 FROM model_coverage;";
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
@@ -283,24 +301,49 @@ FROM model_coverage;";
                         continue;
                     }
 
+                    var validationStatus = reader.IsDBNull(10) ? "" : reader.GetString(10);
+                    var isTaskOrProp = ReadSqliteBool(reader, 11);
+                    var componentReferenceCount = reader.GetInt32(7);
+                    var sourceIndexObjectCount = reader.GetInt32(8);
+                    var materialCount = reader.GetInt32(5);
+                    var textureCount = reader.GetInt32(6);
+                    var reviewReasons = ReadJsonStringArray(reader.IsDBNull(17) ? "" : reader.GetString(17));
+                    if (reviewReasons.Length == 0)
+                    {
+                        reviewReasons = BuildLegacyReviewReasons(isTaskOrProp, materialCount, textureCount, validationStatus);
+                    }
+
+                    var relationNeedsReview = ReadSqliteBool(reader, 18);
+                    var relationReviewReasons = ReadJsonStringArray(reader.IsDBNull(19) ? "" : reader.GetString(19));
+                    if (isTaskOrProp && relationReviewReasons.Length == 0 && componentReferenceCount == 0)
+                    {
+                        relationNeedsReview = true;
+                        relationReviewReasons = sourceIndexObjectCount > 0
+                            ? new[] { "sourceIndexedButNoComponentReference" }
+                            : new[] { "pathOnlyRelation" };
+                    }
+
                     result[NormalizePath(output)] = new UnrealModelCoverage
                     {
                         ObjectPath = reader.IsDBNull(1) ? "" : reader.GetString(1),
                         IsStatic = ReadSqliteBool(reader, 2),
                         HasSkin = ReadSqliteBool(reader, 3),
                         HasSkeletonPath = ReadSqliteBool(reader, 4),
-                        MaterialCount = reader.GetInt32(5),
-                        TextureCount = reader.GetInt32(6),
-                        ComponentReferenceCount = reader.GetInt32(7),
-                        SourceIndexObjectCount = reader.GetInt32(8),
+                        MaterialCount = materialCount,
+                        TextureCount = textureCount,
+                        ComponentReferenceCount = componentReferenceCount,
+                        SourceIndexObjectCount = sourceIndexObjectCount,
                         AnimationCandidateCount = reader.GetInt32(9),
-                        ValidationStatus = reader.IsDBNull(10) ? "" : reader.GetString(10),
-                        IsTaskOrProp = ReadSqliteBool(reader, 11),
-                        IsPathOnlyTask = ReadSqliteBool(reader, 12) && reader.GetInt32(8) == 0,
+                        ValidationStatus = validationStatus,
+                        IsTaskOrProp = isTaskOrProp,
+                        IsPathOnlyTask = ReadSqliteBool(reader, 12) && sourceIndexObjectCount == 0,
                         MissingMaterials = ReadSqliteBool(reader, 13),
                         NoExternalTextureSlots = ReadSqliteBool(reader, 14),
                         NeedsReview = ReadSqliteBool(reader, 15),
-                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(16) ? "" : reader.GetString(16))
+                        TaskSignals = ReadJsonStringArray(reader.IsDBNull(16) ? "" : reader.GetString(16)),
+                        ReviewReasons = reviewReasons,
+                        RelationNeedsReview = relationNeedsReview,
+                        RelationReviewReasons = relationReviewReasons
                     };
                 }
 
@@ -470,6 +513,37 @@ FROM model_coverage;";
                 .ToArray();
         }
 
+        private static string[] BuildLegacyReviewReasons(bool isTaskOrProp, int materialCount, int textureCount, string validationStatus)
+        {
+            if (!isTaskOrProp)
+            {
+                return Array.Empty<string>();
+            }
+
+            var reasons = new List<string>();
+            if (string.Equals(validationStatus, "warning", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("modelValidationWarning");
+            }
+
+            if (string.Equals(validationStatus, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("modelValidationError");
+            }
+
+            if (materialCount == 0)
+            {
+                reasons.Add("missingMaterials");
+            }
+
+            if (textureCount == 0)
+            {
+                reasons.Add("noExternalTextureSlots");
+            }
+
+            return reasons.ToArray();
+        }
+
         private static bool ReadSqliteBool(SqliteDataReader reader, int index)
         {
             return !reader.IsDBNull(index) && reader.GetInt32(index) != 0;
@@ -615,6 +689,9 @@ FROM model_coverage;";
             public bool MissingMaterials { get; init; }
             public bool NoExternalTextureSlots { get; init; }
             public bool NeedsReview { get; init; }
+            public string[] ReviewReasons { get; init; } = Array.Empty<string>();
+            public bool RelationNeedsReview { get; init; }
+            public string[] RelationReviewReasons { get; init; } = Array.Empty<string>();
             public string[] TaskSignals { get; init; } = Array.Empty<string>();
         }
     }

@@ -1258,7 +1258,7 @@ namespace AnimeStudio.LibraryBrowser
                 "任务/道具" => query.Where(x => x.IsTaskOrProp),
                 "任务需复查" => query.Where(x => x.IsTaskOrProp && x.NeedsReview),
                 "质量问题" => query.Where(x => x.IsTaskOrProp && HasTaskModelQualityIssue(x)),
-                "路径关系待补" => query.Where(x => x.IsPathOnlyTask),
+                "路径关系待补" => query.Where(x => x.RelationNeedsReview || x.IsPathOnlyTask),
                 "缺材质" => query.Where(x => x.MissingMaterials),
                 "无外部贴图" => query.Where(x => x.NoExternalTextureSlots),
                 "验证警告" => query.Where(x => string.Equals(x.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)),
@@ -1442,7 +1442,9 @@ namespace AnimeStudio.LibraryBrowser
                     $"可用动画: {animationCount}{Environment.NewLine}" +
                     $"全部关系动画: {allAnimationCount}{Environment.NewLine}" +
                     $"覆盖报告候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
-                    $"显式动画: {explicitCount}"
+                    $"显式动画: {explicitCount}{Environment.NewLine}" +
+                    $"质量复查: {(item.NeedsReview ? FormatReasonList(item.ReviewReasons) : "否")}{Environment.NewLine}" +
+                    $"关系待补: {(item.RelationNeedsReview ? FormatReasonList(item.RelationReviewReasons) : "否")}"
             };
         }
 
@@ -2031,7 +2033,8 @@ namespace AnimeStudio.LibraryBrowser
                 $"UE组件引用: {item.ComponentReferenceCount}{Environment.NewLine}" +
                 $"UE源索引对象: {item.SourceIndexObjectCount}{Environment.NewLine}" +
                 $"UE任务/道具: {(item.IsTaskOrProp ? "是" : "否")}{Environment.NewLine}" +
-                $"UE需要复查: {(item.NeedsReview ? "是" : "否")}{Environment.NewLine}" +
+                $"UE质量复查: {(item.NeedsReview ? "是" : "否")} {FormatReasonList(item.ReviewReasons)}{Environment.NewLine}" +
+                $"UE关系待补: {(item.RelationNeedsReview ? "是" : "否")} {FormatReasonList(item.RelationReviewReasons)}{Environment.NewLine}" +
                 $"UE纯路径推断任务: {(item.IsPathOnlyTask ? "是" : "否")}{Environment.NewLine}" +
                 $"UE缺材质: {(item.MissingMaterials ? "是" : "否")}{Environment.NewLine}" +
                 $"UE缺外部贴图槽: {(item.NoExternalTextureSlots ? "是" : "否")}{Environment.NewLine}" +
@@ -2549,6 +2552,11 @@ namespace AnimeStudio.LibraryBrowser
         private static string FormatSignalList(string[] signals)
         {
             return signals == null || signals.Length == 0 ? "(none)" : string.Join(", ", signals.Take(8));
+        }
+
+        private static string FormatReasonList(string[] reasons)
+        {
+            return reasons == null || reasons.Length == 0 ? "" : $"[{string.Join(", ", reasons.Take(8))}]";
         }
 
         private static string BuildTargetedAnimationDetails(IReadOnlyList<LibraryAnimationCandidate> animations)

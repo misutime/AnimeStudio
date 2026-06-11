@@ -45,6 +45,9 @@ namespace AnimeStudio.LibraryBrowser
         public bool MissingMaterials { get; init; }
         public bool NoExternalTextureSlots { get; init; }
         public bool NeedsReview { get; init; }
+        public string[] ReviewReasons { get; init; } = Array.Empty<string>();
+        public bool RelationNeedsReview { get; init; }
+        public string[] RelationReviewReasons { get; init; } = Array.Empty<string>();
         public string[] BonePaths { get; init; } = Array.Empty<string>();
         public string[] NodePaths { get; init; } = Array.Empty<string>();
         public string[] Signals { get; init; } = Array.Empty<string>();
