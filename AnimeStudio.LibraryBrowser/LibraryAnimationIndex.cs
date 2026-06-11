@@ -186,7 +186,7 @@ ORDER BY c.model_output, c.score DESC;";
                 {
                     using var command = connection.CreateCommand();
                     command.CommandText = @"
-SELECT mar.model, mar.raw_json, ra.raw_json
+SELECT mar.model, mar.confidence, ra.raw_json
 FROM model_animation_relations mar
 JOIN relation_animations ra ON ra.relation_id = mar.id
 ORDER BY mar.model, ra.name;";
@@ -194,9 +194,9 @@ ORDER BY mar.model, ra.name;";
                     while (reader.Read())
                     {
                         var modelOutput = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
-                        using var relationDocument = JsonDocument.Parse(reader.GetString(1));
+                        var confidence = reader.IsDBNull(1) ? "" : reader.GetString(1);
                         using var animationDocument = JsonDocument.Parse(reader.GetString(2));
-                        AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(root, relationDocument.RootElement, animationDocument.RootElement));
+                        AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(root, confidence, animationDocument.RootElement));
                     }
                 }
 
@@ -660,11 +660,13 @@ ORDER BY mar.model, ra.name;";
         }
 
         private static LibraryAnimationCandidate ReadUnrealRelationAnimation(string libraryRoot, JsonElement relation, JsonElement animation)
+            => ReadUnrealRelationAnimation(libraryRoot, ReadString(relation, "confidence") ?? "", animation);
+
+        private static LibraryAnimationCandidate ReadUnrealRelationAnimation(string libraryRoot, string confidence, JsonElement animation)
         {
             var exportStatus = ReadString(animation, "status") ?? "";
             var validationStatus = ReadString(animation, "validationStatus") ?? exportStatus;
             var validationCategory = ReadString(animation, "validationCategory") ?? "";
-            var confidence = ReadString(relation, "confidence") ?? "";
             var trackCoverage = ReadDouble(animation, "trackCoverage");
             var trackCount = ReadInt32(animation, "trackCount");
             var isUsableCandidate = ReadBool(animation, "isUsableCandidate")
