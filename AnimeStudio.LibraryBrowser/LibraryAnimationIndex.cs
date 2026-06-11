@@ -184,8 +184,22 @@ ORDER BY c.model_output, c.score DESC;";
                 }
                 else if (HasTable(connection, "model_animation_relations") && HasTable(connection, "relation_animations"))
                 {
+                    var hasStructuredRelationAnimationColumns =
+                        HasColumn(connection, "relation_animations", "is_usable_candidate")
+                        && HasColumn(connection, "relation_animations", "track_count")
+                        && HasColumn(connection, "relation_animations", "relation_source");
                     using var command = connection.CreateCommand();
-                    command.CommandText = @"
+                    command.CommandText = hasStructuredRelationAnimationColumns
+                        ? @"
+SELECT mar.model, mar.confidence, ra.raw_json,
+       ra.output, ra.status, ra.duration, ra.frame_count, ra.track_count,
+       ra.relation_source, ra.validation_status, ra.validation_category,
+       ra.validation_reason, ra.track_coverage, ra.is_usable_candidate,
+       ra.segment_count
+FROM model_animation_relations mar
+JOIN relation_animations ra ON ra.relation_id = mar.id
+ORDER BY mar.model, ra.name;"
+                        : @"
 SELECT mar.model, mar.confidence, ra.raw_json
 FROM model_animation_relations mar
 JOIN relation_animations ra ON ra.relation_id = mar.id
@@ -195,7 +209,10 @@ ORDER BY mar.model, ra.name;";
                     {
                         var modelOutput = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
                         var confidence = reader.IsDBNull(1) ? "" : reader.GetString(1);
-                        using var animationDocument = JsonDocument.Parse(reader.GetString(2));
+                        var rawJson = hasStructuredRelationAnimationColumns
+                            ? PatchUnrealRelationAnimationJson(reader)
+                            : reader.GetString(2);
+                        using var animationDocument = JsonDocument.Parse(rawJson);
                         AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(root, confidence, animationDocument.RootElement));
                     }
                 }
@@ -664,6 +681,9 @@ ORDER BY mar.model, ra.name;";
 
         private static LibraryAnimationCandidate ReadUnrealRelationAnimation(string libraryRoot, string confidence, JsonElement animation)
         {
+            var output = ResolveAnimationOutputPath(
+                libraryRoot,
+                ReadString(animation, "output") ?? ReadString(animation, "animationAsset") ?? "");
             var exportStatus = ReadString(animation, "status") ?? "";
             var validationStatus = ReadString(animation, "validationStatus") ?? exportStatus;
             var validationCategory = ReadString(animation, "validationCategory") ?? "";
@@ -683,10 +703,10 @@ ORDER BY mar.model, ra.name;";
             return new LibraryAnimationCandidate
             {
                 Name = ReadString(animation, "name") ?? "",
-                OutputPath = LibraryPathResolver.ResolveExistingFile(libraryRoot, ReadString(animation, "output") ?? ""),
+                OutputPath = output,
                 Source = ReadString(animation, "source") ?? "",
                 SourceType = ReadString(animation, "sourceType") ?? "",
-                Format = ReadString(animation, "format") ?? "",
+                Format = ReadString(animation, "format") ?? (output.EndsWith(".ueanim", StringComparison.OrdinalIgnoreCase) ? "ueanim" : ""),
                 AnimationType = "Unreal",
                 Capability = string.IsNullOrWhiteSpace(validationCategory) ? validationStatus : validationCategory,
                 Relation = "unreal.modelAnimationRelation",
@@ -708,6 +728,55 @@ ORDER BY mar.model, ra.name;";
                     || ReadInt32(animation, "referencedAnimationCount") > 0
                     || ReadInt32(animation, "segmentCount") > 0
             };
+        }
+
+        private static string PatchUnrealRelationAnimationJson(SqliteDataReader reader)
+        {
+            using var document = JsonDocument.Parse(reader.GetString(2));
+            var map = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                map[property.Name] = property.Value.Clone();
+            }
+
+            // SQLite 的结构化列是 UE 关系索引的稳定字段；raw_json 来自历史版本时，用这些列补齐关键预览输入。
+            SetIfPresent(map, "output", reader, 3);
+            SetIfPresent(map, "status", reader, 4);
+            SetIfPresent(map, "duration", reader, 5);
+            SetIfPresent(map, "frameCount", reader, 6);
+            SetIfPresent(map, "trackCount", reader, 7);
+            SetIfPresent(map, "relationSource", reader, 8);
+            SetIfPresent(map, "validationStatus", reader, 9);
+            SetIfPresent(map, "validationCategory", reader, 10);
+            SetIfPresent(map, "validationReason", reader, 11);
+            SetIfPresent(map, "trackCoverage", reader, 12);
+            SetIfPresent(map, "isUsableCandidate", reader, 13, sqliteBool: true);
+            SetIfPresent(map, "segmentCount", reader, 14);
+            if (!map.ContainsKey("format")
+                && map.TryGetValue("output", out var output)
+                && output is string outputText
+                && outputText.EndsWith(".ueanim", StringComparison.OrdinalIgnoreCase))
+            {
+                map["format"] = "ueanim";
+            }
+
+            return JsonSerializer.Serialize(map);
+        }
+
+        private static void SetIfPresent(Dictionary<string, object> map, string name, SqliteDataReader reader, int ordinal, bool sqliteBool = false)
+        {
+            if (reader.IsDBNull(ordinal))
+            {
+                return;
+            }
+
+            object value = reader.GetValue(ordinal);
+            if (sqliteBool && value is long longValue)
+            {
+                value = longValue != 0;
+            }
+
+            map[name] = value;
         }
 
         private static double ScoreUnrealRelationAnimation(
@@ -1011,6 +1080,23 @@ GROUP BY ab.id;";
             command.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$name LIMIT 1;";
             command.Parameters.AddWithValue("$name", tableName);
             return command.ExecuteScalar() != null;
+        }
+
+        private static bool HasColumn(SqliteConnection connection, string tableName, string columnName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA table_info({tableName});";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (reader.FieldCount > 1
+                    && string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static LibraryAnimationCandidate BuildTargetedCandidate(string libraryRoot, JsonElement animation, int matched)

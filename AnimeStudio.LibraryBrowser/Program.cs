@@ -85,6 +85,20 @@ namespace AnimeStudio.LibraryBrowser
                 .Sum(x => x.AnimationCandidateCount);
             var realModelItems = models.Where(x => !x.IsTexture && !x.IsVfx).ToList();
             var taskOrPropItems = realModelItems.Where(x => x.IsTaskOrProp).ToList();
+            var modelKinds = realModelItems
+                .GroupBy(x => string.IsNullOrWhiteSpace(x.ResourceKind) ? "Unknown" : x.ResourceKind, StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(x => x.Count())
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    kind = x.Key,
+                    models = x.Count(),
+                    modelsWithUsableAnimations = x.Count(model => animationIndex.CountForModel(model) > 0),
+                    usableAnimationCandidates = x.Sum(model => animationIndex.CountForModel(model)),
+                    reportedAnimationCandidates = x.Sum(model => model.AnimationCandidateCount),
+                    explicitAnimationCandidates = x.Sum(model => animationIndex.CountExplicitForModel(model))
+                })
+                .ToArray();
             var payload = new
             {
                 root = Path.GetFullPath(root),
@@ -111,7 +125,8 @@ namespace AnimeStudio.LibraryBrowser
                 taskOrPropMissingMaterials = taskOrPropItems.Count(x => x.MissingMaterials),
                 taskOrPropNoExternalTextureSlots = taskOrPropItems.Count(x => x.NoExternalTextureSlots),
                 taskOrPropWarnings = taskOrPropItems.Count(x => string.Equals(x.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)),
-                taskOrPropErrors = taskOrPropItems.Count(x => string.Equals(x.ValidationStatus, "error", StringComparison.OrdinalIgnoreCase))
+                taskOrPropErrors = taskOrPropItems.Count(x => string.Equals(x.ValidationStatus, "error", StringComparison.OrdinalIgnoreCase)),
+                modelKinds
             };
             Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
