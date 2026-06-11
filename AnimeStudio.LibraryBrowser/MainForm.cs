@@ -2505,6 +2505,8 @@ namespace AnimeStudio.LibraryBrowser
             return relationSource switch
             {
                 "componentOwner" => "UE组件",
+                "componentOwnerBlendSpaceSample" => "UE组件BlendSpace",
+                "componentAnimClass" => "UE动画蓝图",
                 "uniqueSkeleton" => "UE唯一骨骼",
                 "sharedSkeleton" => "UE共享骨骼",
                 "diagnostic" => "UE诊断",
