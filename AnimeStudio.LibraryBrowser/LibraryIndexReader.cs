@@ -224,7 +224,6 @@ namespace AnimeStudio.LibraryBrowser
                         MissingMaterials = isTaskOrProp && materialCount == 0,
                         NoExternalTextureSlots = isTaskOrProp && textureCount == 0,
                         NeedsReview = isTaskOrProp && (
-                            componentReferenceCount == 0 ||
                             materialCount == 0 ||
                             textureCount == 0 ||
                             string.Equals(validationStatus, "warning", StringComparison.OrdinalIgnoreCase) ||
@@ -315,12 +314,10 @@ FROM model_coverage;";
 
                     var relationNeedsReview = ReadSqliteBool(reader, 18);
                     var relationReviewReasons = ReadJsonStringArray(reader.IsDBNull(19) ? "" : reader.GetString(19));
-                    if (isTaskOrProp && relationReviewReasons.Length == 0 && componentReferenceCount == 0)
+                    if (isTaskOrProp && relationReviewReasons.Length == 0 && componentReferenceCount == 0 && sourceIndexObjectCount == 0)
                     {
                         relationNeedsReview = true;
-                        relationReviewReasons = sourceIndexObjectCount > 0
-                            ? new[] { "sourceIndexedButNoComponentReference" }
-                            : new[] { "pathOnlyRelation" };
+                        relationReviewReasons = new[] { "pathOnlyRelation" };
                     }
 
                     result[NormalizePath(output)] = new UnrealModelCoverage
