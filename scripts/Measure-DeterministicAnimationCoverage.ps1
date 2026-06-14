@@ -88,6 +88,27 @@ function Limit-Text([string]$Value, [int]$Max = 220) {
     return $oneLine.Substring(0, $Max) + "..."
 }
 
+function Try-Read-DateTimeOffset($Value) {
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    try {
+        return [DateTimeOffset]::Parse(
+            $text,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal)
+    }
+    catch {
+        return $null
+    }
+}
+
 if ($FastSummary) {
     $libraryFullPath = if ($SelfTest) { $LibraryPath } else { (Resolve-Path -LiteralPath $LibraryPath).Path }
     $cacheSummaryPath = Join-Path $libraryFullPath "animation_bake_cache_summary.json"
@@ -177,6 +198,31 @@ if ($FastSummary) {
             Select-Object -First 8 FullName, LastWriteTime, Length)
     }
 
+    $cacheSummaryFreshness = "unknown"
+    $cacheSummaryFreshnessNote = $null
+    $cacheGeneratedAt = if ($null -ne $cacheSummary) { Try-Read-DateTimeOffset $cacheSummary.generatedAt } else { $null }
+    $sqliteCreatedAt = if ($null -ne $sqliteSummary) { Try-Read-DateTimeOffset $sqliteSummary.createdUtc } else { $null }
+    if ($null -eq $cacheSummary) {
+        $cacheSummaryFreshness = "missing"
+        $cacheSummaryFreshnessNote = "animation_bake_cache_summary.json is missing."
+    }
+    elseif ($null -eq $sqliteSummary) {
+        $cacheSummaryFreshness = "unknown"
+        $cacheSummaryFreshnessNote = "sqlite_index_summary.json is missing, so cache freshness cannot be compared."
+    }
+    elseif ($null -eq $cacheGeneratedAt -or $null -eq $sqliteCreatedAt) {
+        $cacheSummaryFreshness = "unknown"
+        $cacheSummaryFreshnessNote = "Could not parse cache generatedAt or sqlite createdUtc."
+    }
+    elseif ($cacheGeneratedAt -lt $sqliteCreatedAt) {
+        $cacheSummaryFreshness = "stale"
+        $cacheSummaryFreshnessNote = "Cache summary is older than sqlite_index_summary.json; rerun bake summary or FastSummary after refreshing cache if exact counts matter."
+    }
+    else {
+        $cacheSummaryFreshness = "fresh"
+        $cacheSummaryFreshnessNote = "Cache summary is not older than sqlite_index_summary.json."
+    }
+
     $summary = [ordered]@{
         generatedAt = [DateTimeOffset]::UtcNow.ToString("O")
         mode = "fastSummary"
@@ -187,9 +233,13 @@ if ($FastSummary) {
         cacheSummaryPresent = ($null -ne $cacheSummary)
         cacheSummaryPath = if (Test-Path -LiteralPath $cacheSummaryPath) { $cacheSummaryPath } else { $null }
         cacheSummaryError = $cacheSummaryError
+        cacheSummaryFreshness = $cacheSummaryFreshness
+        cacheSummaryFreshnessNote = $cacheSummaryFreshnessNote
+        cacheSummaryGeneratedAt = if ($null -ne $cacheSummary) { $cacheSummary.generatedAt } else { $null }
         sqliteSummaryPresent = ($null -ne $sqliteSummary)
         sqliteSummaryPath = if (Test-Path -LiteralPath $sqliteSummaryPath) { $sqliteSummaryPath } else { $null }
         sqliteSummaryError = $sqliteSummaryError
+        sqliteSummaryCreatedUtc = if ($null -ne $sqliteSummary) { $sqliteSummary.createdUtc } else { $null }
         unityProject = $UnityProject
         importedAvatarRoot = $importedAvatarRoot
         importedAvatarAssetCount = $importedAvatarFiles.Count
@@ -218,6 +268,10 @@ if ($FastSummary) {
     $md.Add(("- Library: {0}" -f $libraryFullPath))
     $md.Add("- Rule: FastSummary reads root JSON summaries, ImportedAvatar files, recent ImportedAvatar probe reports, and recent batch reports. It does not scan large SQLite candidate tables.")
     $md.Add(("- Cache summary present: {0}" -f ($null -ne $cacheSummary)))
+    $md.Add(("- Cache summary freshness: {0}" -f $cacheSummaryFreshness))
+    if ($cacheSummaryFreshnessNote) {
+        $md.Add(("- Cache summary note: {0}" -f $cacheSummaryFreshnessNote))
+    }
     $md.Add(("- Imported Avatar assets: {0}" -f $importedAvatarFiles.Count))
     if ($importedAvatarProbePath) {
         $md.Add(("- Imported Avatar probe: {0}" -f $importedAvatarProbePath))
@@ -266,6 +320,7 @@ if ($FastSummary) {
     $console = [ordered]@{
         mode = "fastSummary"
         cacheSummaryPresent = ($null -ne $cacheSummary)
+        cacheSummaryFreshness = $cacheSummaryFreshness
         importedAvatarAssetCount = $importedAvatarFiles.Count
         importedAvatarProbeFreshness = $importedAvatarProbeFreshness
         importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
