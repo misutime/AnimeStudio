@@ -232,6 +232,18 @@ if ($FastSummary) {
     if ($cacheSummaryPath -and (Test-Path -LiteralPath $cacheSummaryPath)) {
         $md.Add(("- Cache summary: {0}" -f $cacheSummaryPath))
     }
+    if ($null -ne $cacheSummary) {
+        $md.Add("")
+        $md.Add("## Unity Bake Cache Summary")
+        $md.Add(("- Explicit Unity bake candidates: {0} unique: {1}" -f $cacheSummary.explicitUnityBakeCandidates, $cacheSummary.uniqueExplicitUnityBakeCandidates))
+        $md.Add(("- ImportedAvatar bake ready: {0} unique: {1} coverage: {2}%" -f $cacheSummary.importedAvatarAssetBakeReadyExplicitUnityBakeCandidates, $cacheSummary.uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates, $cacheSummary.uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCoveragePercent))
+        $md.Add(("- Effective bake ready: {0} unique: {1} coverage: {2}%" -f $cacheSummary.effectiveBakeReadyExplicitUnityBakeCandidates, $cacheSummary.uniqueEffectiveBakeReadyExplicitUnityBakeCandidates, $cacheSummary.uniqueEffectiveBakeReadyExplicitUnityBakeCoveragePercent))
+        $md.Add(("- Cache rows: {0}, trusted baked: {1}, static pose: {2}, untrusted baked: {3}, failed: {4}" -f $cacheSummary.cachedCandidates, $cacheSummary.trustedBakedCandidates, $cacheSummary.staticPoseCandidates, $cacheSummary.untrustedBakedCandidates, $cacheSummary.failedCandidates))
+        $md.Add(("- Pending Unity bake: {0} unique: {1}" -f $cacheSummary.pendingUnityBakeCandidates, $cacheSummary.uniquePendingUnityBakeCandidates))
+        if ($cacheSummary.importedAvatarProbeEnforced -ne $null) {
+            $md.Add(("- ImportedAvatar probe enforced: {0}" -f $cacheSummary.importedAvatarProbeEnforced))
+        }
+    }
     if ($sqliteSummaryPath -and (Test-Path -LiteralPath $sqliteSummaryPath)) {
         $md.Add(("- SQLite summary: {0}" -f $sqliteSummaryPath))
         if ($sqliteSummaryError) {
