@@ -952,6 +952,11 @@ namespace AnimeStudio.LibraryBrowser
             return $"动画索引: {source}，动画 {_allLibraryAnimations.Count}，预建候选 {_animationIndex.IndexedCandidateCount} / 模型 {_animationIndex.IndexedModelCount}，{_sourceIndexHealth.ShortLabel()}，{_bakeCacheSummary.ShortLabel()}";
         }
 
+        private void ReloadBakeCacheSummary()
+        {
+            _bakeCacheSummary = LibraryBakeCacheSummary.Load(_root);
+        }
+
         private void RebuildRecentMenu()
         {
             _recentButton.DropDownItems.Clear();
@@ -2143,7 +2148,7 @@ namespace AnimeStudio.LibraryBrowser
                 $"{message} | 显示 {shown} | " +
                 $"缩略图 {Volatile.Read(ref _thumbnailCached)}/{_thumbnailTotal} | " +
                 $"失败 {Volatile.Read(ref _thumbnailFailed)} | 队列 {pending} | 运行 {active} | 并发 {GetThumbnailConcurrency()}";
-            _statusLabel.Text += $" | {renderer} | {fallback}";
+            _statusLabel.Text += $" | {_bakeCacheSummary.ShortLabel()} | {renderer} | {fallback}";
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -3241,6 +3246,10 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             RebuildAnimationList();
+            if (needsUnityBake)
+            {
+                ReloadBakeCacheSummary();
+            }
             RefreshCurrentModelDetailText();
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
@@ -3358,10 +3367,12 @@ namespace AnimeStudio.LibraryBrowser
                 }
 
                 RebuildAnimationList();
+                ReloadBakeCacheSummary();
                 RefreshCurrentModelDetailText();
             }
 
             RebuildAnimationList();
+            ReloadBakeCacheSummary();
             RefreshCurrentModelDetailText();
             if (failures.Count == 0)
             {
@@ -3488,9 +3499,11 @@ namespace AnimeStudio.LibraryBrowser
                 }
 
                 RebuildAnimationModelList();
+                ReloadBakeCacheSummary();
             }
 
             RebuildAnimationModelList();
+            ReloadBakeCacheSummary();
             if (failures.Count == 0)
             {
                 UpdateStatus($"{label}完成: 成功 {pendingModels.Count}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙");
@@ -3554,6 +3567,10 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             RebuildAnimationModelList();
+            if (needsUnityBake)
+            {
+                ReloadBakeCacheSummary();
+            }
             RefreshCurrentModelDetailText();
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
