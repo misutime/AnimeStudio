@@ -30,6 +30,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripButton _refreshListButton = new("刷新列表");
         private readonly ToolStripButton _reloadButton = new("重新加载");
         private readonly ToolStripButton _refreshAnimationGateButton = new("刷新动画门禁");
+        private readonly ToolStripButton _rebuildAnimationIndexButton = new("重建动画索引");
         private readonly ToolStripButton _unitySettingsButton = new("Unity设置");
         private readonly ToolStripDropDownButton _unityWorkerButton = new("Unity Worker");
         private readonly ToolStripMenuItem _unityWorkerStatusItem = new("状态: 未选择素材库");
@@ -156,6 +157,8 @@ namespace AnimeStudio.LibraryBrowser
             _reloadButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _refreshAnimationGateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _refreshAnimationGateButton.ToolTipText = "只运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
+            _rebuildAnimationIndexButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            _rebuildAnimationIndexButton.ToolTipText = "只重建 library_index.db 的结构化索引和显式动画候选，不重新导出模型、贴图或动画。";
             _unitySettingsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _unitySettingsButton.ToolTipText = "设置 LibraryBrowser 全局 Unity Editor 和 Unity Bake Project。素材库本地配置仍可覆盖全局配置。";
             _unityWorkerButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -214,6 +217,7 @@ namespace AnimeStudio.LibraryBrowser
                 _refreshListButton,
                 _reloadButton,
                 _refreshAnimationGateButton,
+                _rebuildAnimationIndexButton,
                 _unitySettingsButton,
                 _unityWorkerButton,
             });
@@ -543,6 +547,7 @@ namespace AnimeStudio.LibraryBrowser
             _refreshListButton.Click += (_, _) => RefreshListOnly();
             _reloadButton.Click += async (_, _) => await ReloadAsync();
             _refreshAnimationGateButton.Click += async (_, _) => await RefreshAnimationGateAsync();
+            _rebuildAnimationIndexButton.Click += async (_, _) => await RebuildAnimationIndexAsync();
             _unitySettingsButton.Click += (_, _) => ConfigureUnitySettings();
             _startUnityWorkerItem.Click += async (_, _) => await StartUnityWorkerAsync();
             _restartUnityWorkerItem.Click += async (_, _) => await RestartUnityWorkerAsync();
@@ -1022,6 +1027,172 @@ namespace AnimeStudio.LibraryBrowser
                 result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
 
+        private async Task RebuildAnimationIndexAsync()
+        {
+            if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
+            {
+                MessageBox.Show(this, "请先选择素材库。", "重建动画索引", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var sourceIndex = Path.Combine(_root, "unity_source_index.db");
+            if (!File.Exists(sourceIndex))
+            {
+                MessageBox.Show(
+                    this,
+                    "素材库根目录缺少 unity_source_index.db，不能从 Unity 确定性关系重建动画候选。请先用完整 Unity 源目录重建源索引。",
+                    "重建动画索引",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var launcher = FindCliLauncher();
+            if (string.IsNullOrWhiteSpace(launcher.FileName))
+            {
+                MessageBox.Show(this, "没有找到 AnimeStudio.CLI，无法重建 library_index.db。", "重建动画索引", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                this,
+                "这会覆盖当前素材库的 library_index.db，并刷新显式动画候选和候选表 schema。不会重新导出模型、贴图或动画。\n\n大型库可能需要一段时间；运行期间请不要再打开同一个 library_index.db。是否继续？",
+                "重建动画索引",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+
+            _rebuildAnimationIndexButton.Enabled = false;
+            _refreshAnimationGateButton.Enabled = false;
+            UpdateStatus("正在重建 SQLite 动画索引");
+
+            ProcessRunResult result;
+            try
+            {
+                result = await RunBuildSqliteIndexAsync(launcher, _root);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "重建动画索引失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("重建动画索引失败");
+                return;
+            }
+            finally
+            {
+                _rebuildAnimationIndexButton.Enabled = true;
+                _refreshAnimationGateButton.Enabled = true;
+            }
+
+            if (result.ExitCode != 0)
+            {
+                UpdateStatus($"重建动画索引失败: exit {result.ExitCode}");
+                MessageBox.Show(
+                    this,
+                    TrimProcessOutput(result.CombinedOutput),
+                    $"重建动画索引失败: exit {result.ExitCode}",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            await OpenLibraryAsync(_root);
+            await RefreshAnimationGateAsync();
+            UpdateStatus("SQLite 动画索引已重建");
+            MessageBox.Show(
+                this,
+                "library_index.db 已重建，并已刷新动画关系门禁。\n\n" + TrimProcessOutput(result.CombinedOutput),
+                "重建动画索引完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        private static async Task<ProcessRunResult> RunBuildSqliteIndexAsync(CliRunLauncher launcher, string libraryRoot)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = launcher.FileName,
+                WorkingDirectory = launcher.WorkingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            foreach (var arg in launcher.BuildSqliteIndexArguments(libraryRoot))
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 AnimeStudio.CLI。");
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            var combined = string.IsNullOrWhiteSpace(error)
+                ? output
+                : output + Environment.NewLine + error;
+            return new ProcessRunResult(process.ExitCode, combined);
+        }
+
+        private static CliRunLauncher FindCliLauncher()
+        {
+            foreach (var root in EnumerateCandidateRepoRoots())
+            {
+                if (string.IsNullOrWhiteSpace(root))
+                {
+                    continue;
+                }
+
+                var exe = Path.Combine(root, "AnimeStudio.CLI", "bin", "Debug", "net9.0-windows", "AnimeStudio.CLI.exe");
+                if (File.Exists(exe))
+                {
+                    return new CliRunLauncher(exe, root, libraryRoot => new[]
+                    {
+                        "--build_sqlite_index", libraryRoot,
+                        "--require_fresh_source_animation_relations",
+                        "--skip_sqlite_file_index",
+                        "--skip_sqlite_sidecar_scan",
+                        "--skip_sqlite_json_documents",
+                    });
+                }
+
+                var project = Path.Combine(root, "AnimeStudio.CLI", "AnimeStudio.CLI.csproj");
+                if (File.Exists(project))
+                {
+                    return new CliRunLauncher("dotnet", root, libraryRoot => new[]
+                    {
+                        "run",
+                        "--project", project,
+                        "-f", "net9.0-windows",
+                        "--",
+                        "--build_sqlite_index", libraryRoot,
+                        "--require_fresh_source_animation_relations",
+                        "--skip_sqlite_file_index",
+                        "--skip_sqlite_sidecar_scan",
+                        "--skip_sqlite_json_documents",
+                    });
+                }
+            }
+
+            var siblingExe = Path.Combine(AppContext.BaseDirectory, "AnimeStudio.CLI.exe");
+            if (File.Exists(siblingExe))
+            {
+                return new CliRunLauncher(siblingExe, AppContext.BaseDirectory, libraryRoot => new[]
+                {
+                    "--build_sqlite_index", libraryRoot,
+                    "--require_fresh_source_animation_relations",
+                    "--skip_sqlite_file_index",
+                    "--skip_sqlite_sidecar_scan",
+                    "--skip_sqlite_json_documents",
+                });
+            }
+
+            return default;
+        }
+
         private static async Task<ProcessRunResult> RunDeterministicAnimationGateAsync(string script, string libraryRoot, string outputDir)
         {
             var startInfo = new ProcessStartInfo
@@ -1107,6 +1278,11 @@ namespace AnimeStudio.LibraryBrowser
         }
 
         private readonly record struct ProcessRunResult(int ExitCode, string CombinedOutput);
+
+        private readonly record struct CliRunLauncher(
+            string FileName,
+            string WorkingDirectory,
+            Func<string, string[]> BuildSqliteIndexArguments);
 
         private void RebuildRecentMenu()
         {
