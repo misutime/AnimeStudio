@@ -118,6 +118,7 @@ Library Browser 不要求用户通过环境变量配置 Unity 路径。需要运
 `unityEditor` 可以写 Unity 版本目录，也可以直接写 `Unity.exe`；Browser 会自动规范成 `...\Editor\Unity.exe`。顶部工具栏的 `Unity设置` 按钮会同时修改全局 `unityEditor` 和 `unityProject`，不会改环境变量，也不会改素材库本地配置。
 
 注意：`Unity Editor` 和 `UnityBakeProject` 是两件事。前者是 `Unity.exe`，后者是用于运行 AnimeStudio.UnityBake helper 的 Unity 工程目录。只配置 `Unity.exe` 仍然无法执行烘焙。
+Browser 校验 UnityBakeProject 时不仅检查 `AnimeStudioBakeCli.cs` 是否存在，也会检查 helper 是否包含导入 Avatar asset 强校验和 `importedAvatarAssetValid` 证明字段。若提示 helper 版本过旧，应把仓库里的 `AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake` 重新复制到 bake 工程的 `Assets` 目录；否则原神这类依赖导入 Avatar oracle 的结果可能无法被统计为可信。
 
 ### Unity Bake Worker
 

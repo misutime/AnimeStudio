@@ -122,6 +122,11 @@ namespace AnimeStudio.LibraryBrowser
                 return "UnityBakeProject 里没有安装 AnimeStudio.UnityBake helper。请把仓库里的 AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake 复制到 Bake 工程的 Assets 目录下。当前期望入口脚本："
                     + helperPath;
             }
+            var helperError = ValidateUnityBakeHelperVersion(assetsPath);
+            if (!string.IsNullOrWhiteSpace(helperError))
+            {
+                return helperError;
+            }
 
             if (string.IsNullOrWhiteSpace(UnityEditor) || !File.Exists(UnityEditor))
             {
@@ -130,6 +135,33 @@ namespace AnimeStudio.LibraryBrowser
                     + " 写入 unityEditor，或在素材库根目录写入 "
                     + localPath
                     + " 覆盖全局配置。Unity Hub 默认安装目录会自动检测。";
+            }
+
+            return null;
+        }
+
+        private static string ValidateUnityBakeHelperVersion(string assetsPath)
+        {
+            var helperRoot = Path.Combine(assetsPath, "AnimeStudio.UnityBake", "Editor");
+            var modelPath = Path.Combine(helperRoot, "AnimeStudioBakeModels.cs");
+            var bakerPath = Path.Combine(helperRoot, "AnimeStudioPlayableBaker.cs");
+            var skeletonPath = Path.Combine(helperRoot, "AnimeStudioGltfSkeletonBuilder.cs");
+            if (!File.Exists(modelPath) || !File.Exists(bakerPath) || !File.Exists(skeletonPath))
+            {
+                return "UnityBakeProject 里的 AnimeStudio.UnityBake helper 不完整。请把仓库里的 AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake 复制到 Bake 工程的 Assets 目录下。当前 helper 目录："
+                    + helperRoot;
+            }
+
+            var modelText = File.ReadAllText(modelPath);
+            var bakerText = File.ReadAllText(bakerPath);
+            var skeletonText = File.ReadAllText(skeletonPath);
+            if (!modelText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
+                || !bakerText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
+                || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
+                || !skeletonText.Contains("Request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.Ordinal))
+            {
+                return "UnityBakeProject 里的 AnimeStudio.UnityBake helper 版本过旧，缺少导入 Avatar asset 强校验和 importedAvatarAssetValid 证明字段。请把仓库里的 AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake 复制到 Bake 工程的 Assets 目录下后重试。当前 helper 目录："
+                    + helperRoot;
             }
 
             return null;
