@@ -196,6 +196,8 @@ Browser 也会读取最新的 `AnimationRelationDiagnostics*/deterministic_anima
 
 顶部工具栏的“刷新动画门禁”是下拉入口：`快速门禁` 只运行 GateOnly，检查默认候选是否全是 Unity 显式关系；`烘焙摘要` 运行 SummaryOnly，统计 Unity bake / Avatar oracle 覆盖，并在已配置 Unity Bake Project 时传入 `-UnityProject` 读取 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`。两者都不会烘焙动画，也不会新增或猜测模型-动画关系。
 
+Browser 的批量 Unity 烘焙入口只会处理已经具备生产 Avatar oracle 的显式候选。缺少原始 `Animator.avatar`、完整 `HumanDescription` 或导入 Avatar asset 的项会写入批次报告 `skipped_missing_avatar_oracle`，不调用 Unity bake，也不按旧 `BuildHumanAvatar` / AvatarConstant / 骨骼兼容 fallback 继续尝试。
+
 当 GateOnly 报告显示 `candidateTableSchema.status != ok`，但 `totals.nonExplicitCandidates == 0` 时，说明现有候选数据是干净的、只是旧 `library_index.db` schema 还没有硬约束。Browser 顶部“重建动画索引”按钮会运行 `--build_sqlite_index`，并默认带上 `--require_fresh_source_animation_relations --skip_sqlite_file_index --skip_sqlite_sidecar_scan --skip_sqlite_json_documents`，只刷新结构化索引、显式动画候选和候选表 schema，不重新导出模型、贴图或动画。这个按钮仍然只消费 `unity_source_index.db` 的 Unity 确定性关系；如果源索引缺少当前工具要求的 Animator/Animation/OverrideController 精确关系，应失败并要求先重建源索引，不能退回骨骼数量、名称或路径猜测。
 
 如果同一素材库目录里存在旁路验证 DB，例如 `library_index.schema_verify.db`，对应的 GateOnly 报告只用于人工对照。Browser 状态栏和模型详情优先读取 `libraryIndex` 指向正式 `<LibraryRoot>/library_index.db` 的报告，避免旁路报告通过后把仍未替换的正式库显示成已通过。

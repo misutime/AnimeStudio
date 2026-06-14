@@ -3832,22 +3832,38 @@ namespace AnimeStudio.LibraryBrowser
                 .Where(x => !IsUnityBakeAlreadyPlayable(model, x))
                 .ToList();
             var skippedBaked = requestedCount - pendingAnimations.Count;
-            var report = new UnityBakeBatchUiReport(_root, label, "modelAnimations", requestedCount, pendingAnimations.Count, skippedBaked);
-            if (pendingAnimations.Count == 0)
+            var readyAnimations = pendingAnimations
+                .Where(HasProductionBakeOracle)
+                .ToList();
+            var skippedMissingAvatar = pendingAnimations.Count - readyAnimations.Count;
+            var report = new UnityBakeBatchUiReport(_root, label, "modelAnimations", requestedCount, readyAnimations.Count, skippedBaked)
+            {
+                SkippedMissingAvatarOracle = skippedMissingAvatar
+            };
+            AddSkippedMissingAvatarItems(report, model, pendingAnimations.Except(readyAnimations).ToList());
+            if (readyAnimations.Count == 0)
             {
                 RebuildAnimationList();
                 RefreshCurrentModelDetailText();
-                UpdateStatus($"{label}: 已跳过 {skippedBaked} 个已 Unity 烘焙动画，没有待处理项");
-                MessageBox.Show(this, "选中的 Unity 动画都已经有可信 baked glTF，不需要重复烘焙。", label, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                var skippedReportPath = WriteUnityBakeBatchUiReport(report);
+                UpdateStatus($"{label}: 已跳过 {skippedBaked} 个已烘焙动画，{skippedMissingAvatar} 个缺 Avatar oracle | 报告 {skippedReportPath}");
+                MessageBox.Show(
+                    this,
+                    skippedMissingAvatar > 0
+                        ? "选中的 Unity 动画缺少可信生产 Avatar oracle，已跳过。请先恢复/导入原始 Unity Avatar asset 或重建包含完整 HumanDescription 的索引。"
+                        : "选中的 Unity 动画都已经有可信 baked glTF，不需要重复烘焙。",
+                    label,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
                 return;
             }
 
             var failures = new List<string>();
             var successCount = 0;
-            for (var i = 0; i < pendingAnimations.Count; i++)
+            for (var i = 0; i < readyAnimations.Count; i++)
             {
-                var animation = pendingAnimations[i];
-                var item = report.StartItem(model, animation, i + 1);
+                var animation = readyAnimations[i];
+                var item = report.StartItem(model, animation, report.Items.Count + 1);
                 var inputError = ValidateAnimationPreviewInputs(model, animation);
                 if (!string.IsNullOrWhiteSpace(inputError))
                 {
@@ -3856,7 +3872,7 @@ namespace AnimeStudio.LibraryBrowser
                     continue;
                 }
 
-                UpdateStatus($"{label} {i + 1}/{pendingAnimations.Count}: 成功 {successCount}，失败 {failures.Count}，跳过 {skippedBaked} | {animation.Name}");
+                UpdateStatus($"{label} {i + 1}/{readyAnimations.Count}: 成功 {successCount}，失败 {failures.Count}，已烘焙 {skippedBaked}，缺Avatar {skippedMissingAvatar} | {animation.Name}");
                 try
                 {
                     var status = await _previewCache.EnsureUnityBakeAsync(
@@ -3893,11 +3909,11 @@ namespace AnimeStudio.LibraryBrowser
             RefreshCurrentModelDetailText();
             if (failures.Count == 0)
             {
-                UpdateStatus($"{label}完成: 成功 {successCount}/{pendingAnimations.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
+                UpdateStatus($"{label}完成: 成功 {successCount}/{readyAnimations.Count}，已烘焙 {skippedBaked}，缺Avatar {skippedMissingAvatar} | 报告 {reportPath}");
                 return;
             }
 
-            UpdateStatus($"{label}完成: 成功 {successCount}/{pendingAnimations.Count}，失败 {failures.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
+            UpdateStatus($"{label}完成: 成功 {successCount}/{readyAnimations.Count}，失败 {failures.Count}，已烘焙 {skippedBaked}，缺Avatar {skippedMissingAvatar} | 报告 {reportPath}");
             MessageBox.Show(
                 this,
                 string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12))
@@ -3905,7 +3921,7 @@ namespace AnimeStudio.LibraryBrowser
                     + Environment.NewLine
                     + $"完整批次报告: {reportPath}"
                     + Environment.NewLine
-                    + "要重试失败项，可以按报告里的动画名过滤当前模型动画列表，再执行批量烘焙当前可见项。",
+                    + "要重试失败项，可以按报告里的动画名过滤当前模型动画列表，再执行批量烘焙当前可见项。缺 Avatar oracle 的跳过项需要先恢复/导入原始 Unity Avatar asset。",
                 "批量烘焙未全部完成",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -3920,6 +3936,65 @@ namespace AnimeStudio.LibraryBrowser
         {
             var status = _previewCache?.GetStatus(model, animation);
             return string.Equals(status?.Status, "可播放", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasProductionBakeOracle(LibraryAnimationCandidate animation)
+        {
+            if (animation == null)
+            {
+                return false;
+            }
+
+            if (!RequiresUnityBake(animation))
+            {
+                return true;
+            }
+
+            return animation.ProductionUnityBakeReady
+                || !string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset);
+        }
+
+        private void AddSkippedMissingAvatarItems(
+            UnityBakeBatchUiReport report,
+            LibraryModelItem model,
+            IReadOnlyList<LibraryAnimationCandidate> animations)
+        {
+            if (report == null || animations == null)
+            {
+                return;
+            }
+
+            foreach (var animation in animations)
+            {
+                var item = report.StartItem(model, animation, report.Items.Count + 1);
+                report.FinishItem(item, "skipped_missing_avatar_oracle", MissingAvatarOracleMessage(animation), null);
+            }
+        }
+
+        private void AddSkippedMissingAvatarItems(
+            UnityBakeBatchUiReport report,
+            IReadOnlyList<LibraryModelItem> models,
+            LibraryAnimationCandidate animation)
+        {
+            if (report == null || models == null)
+            {
+                return;
+            }
+
+            foreach (var model in models)
+            {
+                var modelAnimation = ResolveAnimationForModel(model, animation);
+                var item = report.StartItem(model, modelAnimation, report.Items.Count + 1);
+                report.FinishItem(item, "skipped_missing_avatar_oracle", MissingAvatarOracleMessage(modelAnimation), null);
+            }
+        }
+
+        private static string MissingAvatarOracleMessage(LibraryAnimationCandidate animation)
+        {
+            var reason = string.IsNullOrWhiteSpace(animation?.ProductionUnityBakeBlockedReason)
+                ? "missing_production_avatar_oracle"
+                : animation.ProductionUnityBakeBlockedReason;
+            return "缺少可信生产 Avatar oracle，未进入 Unity bake。需要原始 Animator.avatar、完整 HumanDescription，或导入的原始 Unity Avatar asset。原因: " + reason;
         }
 
         private async Task BakeSelectedLibraryAnimationModelsAsync()
@@ -3971,18 +4046,34 @@ namespace AnimeStudio.LibraryBrowser
                 .Where(x => !IsUnityBakeAlreadyPlayable(x, ResolveAnimationForModel(x, animation)))
                 .ToList();
             var skippedBaked = models.Count - pendingModels.Count;
-            var report = new UnityBakeBatchUiReport(_root, label, "animationModels", models.Count, pendingModels.Count, skippedBaked);
-            if (pendingModels.Count == 0)
+            var readyModels = pendingModels
+                .Where(x => HasProductionBakeOracle(ResolveAnimationForModel(x, animation)))
+                .ToList();
+            var skippedMissingAvatar = pendingModels.Count - readyModels.Count;
+            var report = new UnityBakeBatchUiReport(_root, label, "animationModels", models.Count, readyModels.Count, skippedBaked)
+            {
+                SkippedMissingAvatarOracle = skippedMissingAvatar
+            };
+            AddSkippedMissingAvatarItems(report, pendingModels.Except(readyModels).ToList(), animation);
+            if (readyModels.Count == 0)
             {
                 RebuildAnimationModelList();
-                UpdateStatus($"{label}: 已跳过 {skippedBaked} 个已 Unity 烘焙模型，没有待处理项");
-                MessageBox.Show(this, "选中的模型都已经有可信 baked glTF，不需要重复烘焙。", label, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                var skippedReportPath = WriteUnityBakeBatchUiReport(report);
+                UpdateStatus($"{label}: 已跳过 {skippedBaked} 个已烘焙模型，{skippedMissingAvatar} 个缺 Avatar oracle | 报告 {skippedReportPath}");
+                MessageBox.Show(
+                    this,
+                    skippedMissingAvatar > 0
+                        ? "选中的模型缺少可信生产 Avatar oracle，已跳过。请先恢复/导入原始 Unity Avatar asset 或重建包含完整 HumanDescription 的索引。"
+                        : "选中的模型都已经有可信 baked glTF，不需要重复烘焙。",
+                    label,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
                 return;
             }
 
             var confirm = MessageBox.Show(
                 this,
-                $"当前动画会对 {pendingModels.Count} 个模型执行 Unity bake，已跳过 {skippedBaked} 个可信 baked 模型。这个过程可能会持续较久。是否继续？",
+                $"当前动画会对 {readyModels.Count} 个模型执行 Unity bake，已跳过 {skippedBaked} 个可信 baked 模型、{skippedMissingAvatar} 个缺 Avatar oracle 模型。这个过程可能会持续较久。是否继续？",
                 label,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
@@ -3993,11 +4084,11 @@ namespace AnimeStudio.LibraryBrowser
 
             var failures = new List<string>();
             var successCount = 0;
-            for (var i = 0; i < pendingModels.Count; i++)
+            for (var i = 0; i < readyModels.Count; i++)
             {
-                var model = pendingModels[i];
+                var model = readyModels[i];
                 var modelAnimation = ResolveAnimationForModel(model, animation);
-                var item = report.StartItem(model, modelAnimation, i + 1);
+                var item = report.StartItem(model, modelAnimation, report.Items.Count + 1);
                 var inputError = ValidateAnimationPreviewInputs(model, modelAnimation);
                 if (!string.IsNullOrWhiteSpace(inputError))
                 {
@@ -4006,7 +4097,7 @@ namespace AnimeStudio.LibraryBrowser
                     continue;
                 }
 
-                UpdateStatus($"{label} {i + 1}/{pendingModels.Count}: 成功 {successCount}，失败 {failures.Count}，跳过 {skippedBaked} | {model.Name}");
+                UpdateStatus($"{label} {i + 1}/{readyModels.Count}: 成功 {successCount}，失败 {failures.Count}，已烘焙 {skippedBaked}，缺Avatar {skippedMissingAvatar} | {model.Name}");
                 try
                 {
                     var status = await _previewCache.EnsureUnityBakeAsync(
@@ -4041,11 +4132,11 @@ namespace AnimeStudio.LibraryBrowser
             ReloadBakeCacheSummary();
             if (failures.Count == 0)
             {
-                UpdateStatus($"{label}完成: 成功 {successCount}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
+                UpdateStatus($"{label}完成: 成功 {successCount}/{readyModels.Count}，已烘焙 {skippedBaked}，缺Avatar {skippedMissingAvatar} | 报告 {reportPath}");
                 return;
             }
 
-            UpdateStatus($"{label}完成: 成功 {successCount}/{pendingModels.Count}，失败 {failures.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
+            UpdateStatus($"{label}完成: 成功 {successCount}/{readyModels.Count}，失败 {failures.Count}，已烘焙 {skippedBaked}，缺Avatar {skippedMissingAvatar} | 报告 {reportPath}");
             MessageBox.Show(
                 this,
                 string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12))
@@ -4053,7 +4144,7 @@ namespace AnimeStudio.LibraryBrowser
                     + Environment.NewLine
                     + $"完整批次报告: {reportPath}"
                     + Environment.NewLine
-                    + "要重试失败项，可以先用“失败/需复查”过滤右侧模型列表，再执行烘焙可见模型。",
+                    + "要重试失败项，可以先用“失败/需复查”过滤右侧模型列表，再执行烘焙可见模型。缺 Avatar oracle 的跳过项需要先恢复/导入原始 Unity Avatar asset。",
                 "动画反查批量烘焙未全部完成",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -4115,6 +4206,7 @@ namespace AnimeStudio.LibraryBrowser
             public int RequestedCount { get; set; }
             public int PendingCount { get; set; }
             public int SkippedAlreadyBaked { get; set; }
+            public int SkippedMissingAvatarOracle { get; set; }
             public int SuccessCount { get; set; }
             public int FailureCount { get; set; }
             public List<UnityBakeBatchUiReportItem> Items { get; } = new();
