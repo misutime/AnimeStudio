@@ -56,7 +56,7 @@ namespace AnimeStudio.UnityBake
                 }
             }
 
-            var importedAvatar = LoadImportedAvatar(request);
+            var importedAvatar = LoadImportedAvatarAsset(request);
             var rigRestPoseSource = importedAvatar != null
                 ? "imported_unity_avatar_asset"
                 : ApplyAvatarOraclePoseToTransforms(root, model.avatar);
@@ -71,7 +71,7 @@ namespace AnimeStudio.UnityBake
             return root;
         }
 
-        private static Avatar LoadImportedAvatar(AnimeStudioBakeRequest request)
+        public static Avatar LoadImportedAvatarAsset(AnimeStudioBakeRequest request)
         {
             var path = request?.unityAssetPaths?.avatarAsset;
             if (string.IsNullOrWhiteSpace(path))

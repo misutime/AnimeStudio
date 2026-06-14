@@ -46,6 +46,14 @@ namespace AnimeStudio.UnityBake
                 animator.applyRootMotion = true;
                 animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
 
+                var explicitAvatar = AnimeStudioGltfSkeletonBuilder.LoadImportedAvatarAsset(request);
+                if (explicitAvatar != null)
+                {
+                    // request 显式指定 Avatar asset 时，它是强约束。
+                    // 即使目标来自 prefab，也要用这个原始 Unity Avatar，避免静默走到别的 Avatar。
+                    animator.avatar = explicitAvatar;
+                }
+
                 if (clip.isHumanMotion && (animator.avatar == null || !animator.avatar.isValid))
                 {
                     return Error(request, "Humanoid clip requires a valid Animator.avatar. Refusing to bake guessed data.");

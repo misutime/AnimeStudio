@@ -314,6 +314,24 @@ namespace AnimeStudio.CLI
                     Message: null);
             }
 
+            var requestedAvatarAsset = (string)request["unityAssetPaths"]?["avatarAsset"];
+            if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && ((bool?)result?["avatarValid"] ?? false))
+            {
+                return new AvatarTrustReport(
+                    TrustedProductionBake: true,
+                    Source: "imported_unity_avatar_asset",
+                    Message: null);
+            }
+
+            var requestedModelPrefab = (string)request["unityAssetPaths"]?["modelPrefab"];
+            if (!string.IsNullOrWhiteSpace(requestedModelPrefab) && ((bool?)result?["avatarValid"] ?? false))
+            {
+                return new AvatarTrustReport(
+                    TrustedProductionBake: true,
+                    Source: "unity_prefab_original_animator_avatar",
+                    Message: null);
+            }
+
             var rigRestPoseSource = (string)result?["rigRestPoseSource"];
             var rigRestPoseApplied = (bool?)result?["rigRestPoseApplied"] ?? false;
             if (string.Equals(rigRestPoseSource, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
