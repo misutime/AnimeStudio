@@ -122,6 +122,30 @@ if ($FastSummary) {
         }
     }
 
+    $importedAvatarProbePath = $null
+    $importedAvatarProbe = $null
+    $importedAvatarProbeError = $null
+    $importedAvatarProbeCandidates = @()
+    if (Test-Path -LiteralPath $libraryFullPath) {
+        $importedAvatarProbeCandidates = @(Get-ChildItem -LiteralPath $libraryFullPath -Directory -Filter "ImportedAvatarProbe*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $candidate = Join-Path $_.FullName "imported_avatar_probe_batch.json"
+                if (Test-Path -LiteralPath $candidate) {
+                    Get-Item -LiteralPath $candidate
+                }
+            } |
+            Sort-Object LastWriteTime -Descending)
+    }
+    if ($importedAvatarProbeCandidates.Count -gt 0) {
+        $importedAvatarProbePath = $importedAvatarProbeCandidates[0].FullName
+        try {
+            $importedAvatarProbe = Get-Content -LiteralPath $importedAvatarProbePath -Raw | ConvertFrom-Json
+        }
+        catch {
+            $importedAvatarProbeError = Limit-Text $_.Exception.Message
+        }
+    }
+
     $batchReportDir = Join-Path $libraryFullPath ".as_browser_cache\unity_bake_batch_reports"
     $latestBatchReports = @()
     if (Test-Path -LiteralPath $batchReportDir) {
@@ -136,7 +160,7 @@ if ($FastSummary) {
         libraryPath = $libraryFullPath
         libraryIndex = $LibraryIndex
         sourceIndex = $SourceIndex
-        rule = "FastSummary only reads root JSON summaries, ImportedAvatar files, and recent batch reports. It does not scan the large SQLite candidate tables."
+        rule = "FastSummary only reads root JSON summaries, ImportedAvatar files, recent ImportedAvatar probe reports, and recent batch reports. It does not scan the large SQLite candidate tables."
         cacheSummaryPresent = ($null -ne $cacheSummary)
         cacheSummaryPath = if (Test-Path -LiteralPath $cacheSummaryPath) { $cacheSummaryPath } else { $null }
         cacheSummaryError = $cacheSummaryError
@@ -147,6 +171,12 @@ if ($FastSummary) {
         importedAvatarRoot = $importedAvatarRoot
         importedAvatarAssetCount = $importedAvatarFiles.Count
         importedAvatarAssetSamples = @($importedAvatarFiles | Select-Object -First 12 -ExpandProperty FullName)
+        importedAvatarProbeReportPath = $importedAvatarProbePath
+        importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
+        importedAvatarProbeTotalAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.totalAssets } else { $null }
+        importedAvatarProbeValidHumanAvatars = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
+        importedAvatarProbeInvalidAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.invalidAssets } else { $null }
+        importedAvatarProbeError = $importedAvatarProbeError
         latestBatchReports = @($latestBatchReports)
         animationBakeCacheSummary = $cacheSummary
         sqliteIndexSummary = $sqliteSummary
@@ -161,9 +191,18 @@ if ($FastSummary) {
     $md.Add("")
     $md.Add("- Mode: fastSummary")
     $md.Add(("- Library: {0}" -f $libraryFullPath))
-    $md.Add("- Rule: FastSummary reads root JSON summaries, ImportedAvatar files, and recent batch reports. It does not scan large SQLite candidate tables.")
+    $md.Add("- Rule: FastSummary reads root JSON summaries, ImportedAvatar files, recent ImportedAvatar probe reports, and recent batch reports. It does not scan large SQLite candidate tables.")
     $md.Add(("- Cache summary present: {0}" -f ($null -ne $cacheSummary)))
     $md.Add(("- Imported Avatar assets: {0}" -f $importedAvatarFiles.Count))
+    if ($importedAvatarProbePath) {
+        $md.Add(("- Imported Avatar probe: {0}" -f $importedAvatarProbePath))
+        if ($importedAvatarProbeError) {
+            $md.Add(("- Imported Avatar probe read error: {0}" -f $importedAvatarProbeError))
+        }
+        elseif ($null -ne $importedAvatarProbe) {
+            $md.Add(("- Imported Avatar probe status: {0}, valid human: {1}, invalid: {2}" -f $importedAvatarProbe.status, $importedAvatarProbe.validHumanAvatars, $importedAvatarProbe.invalidAssets))
+        }
+    }
     if ($cacheSummaryPath -and (Test-Path -LiteralPath $cacheSummaryPath)) {
         $md.Add(("- Cache summary: {0}" -f $cacheSummaryPath))
     }
@@ -190,6 +229,9 @@ if ($FastSummary) {
         mode = "fastSummary"
         cacheSummaryPresent = ($null -ne $cacheSummary)
         importedAvatarAssetCount = $importedAvatarFiles.Count
+        importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
+        importedAvatarProbeValidHumanAvatars = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
+        importedAvatarProbeInvalidAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.invalidAssets } else { $null }
         latestBatchReportCount = $latestBatchReports.Count
         json = $jsonPath
         markdown = $mdPath

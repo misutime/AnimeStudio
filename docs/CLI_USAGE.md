@@ -382,7 +382,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -FastSummary
 ```
 
-`-FastSummary` 会优先读取根目录 `animation_bake_cache_summary.json`、`sqlite_index_summary.json`、`Assets/AnimeStudioBake/ImportedAvatar/*.asset` 和 `.as_browser_cache/unity_bake_batch_reports/*.json`。旧库里的 summary JSON 如果因为历史编码问题读坏，脚本会把读取错误写进报告，而不是中断整个快速验收。维护这个 PowerShell 脚本时，新增在 PowerShell 主体里的字符串应保持 ASCII；中文说明优先写到 Markdown 文档或 Python 生成内容里，避免 Windows PowerShell 5 按 ANSI 解析 UTF-8 无 BOM 文件时误报语法错误。
+`-FastSummary` 会优先读取根目录 `animation_bake_cache_summary.json`、`sqlite_index_summary.json`、`Assets/AnimeStudioBake/ImportedAvatar/*.asset`、最近的 `ImportedAvatarProbe*/imported_avatar_probe_batch.json` 和 `.as_browser_cache/unity_bake_batch_reports/*.json`。旧库里的 summary JSON 如果因为历史编码问题读坏，脚本会把读取错误写进报告，而不是中断整个快速验收。维护这个 PowerShell 脚本时，新增在 PowerShell 主体里的字符串应保持 ASCII；中文说明优先写到 Markdown 文档或 Python 生成内容里，避免 Windows PowerShell 5 按 ANSI 解析 UTF-8 无 BOM 文件时误报语法错误。
 
 非 `-FastSummary` 的深度模式主要读取 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
 
