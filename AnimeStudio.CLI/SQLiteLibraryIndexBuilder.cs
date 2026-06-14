@@ -786,17 +786,22 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 return null;
             }
 
+            var hasHumanDescriptionFlag = B(avatar, "hasHumanDescription") == 1;
             if (humanBones == null || humanBones.Count == 0)
             {
                 return HasCompleteAvatarConstantOracle(avatar)
                     ? "avatar_constant_oracle_diagnostic_only"
-                    : "missing_human_description_human_bones";
+                    : hasHumanDescriptionFlag
+                        ? "empty_human_description_human_bones"
+                        : "missing_human_description_human_bones";
             }
             if (skeletonBones == null || skeletonBones.Count == 0)
             {
                 return HasCompleteAvatarConstantOracle(avatar)
                     ? "avatar_constant_oracle_diagnostic_only"
-                    : "missing_human_description_skeleton_bones";
+                    : hasHumanDescriptionFlag
+                        ? "empty_human_description_skeleton_bones"
+                        : "missing_human_description_skeleton_bones";
             }
 
             return null;
@@ -1545,7 +1550,13 @@ SELECT COUNT(*) AS avatarModels,
        SUM(CASE WHEN COALESCE(json_array_length(json_extract(raw_json, '$.avatar.humanBones')), 0) > 0
                  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.skeletonBones')), 0) > 0
                 THEN 1 ELSE 0 END) AS productionAvatarModels,
-       SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1 THEN 1 ELSE 0 END) AS humanDescriptionModels,
+       SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1 THEN 1 ELSE 0 END) AS humanDescriptionFlagModels,
+       SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1
+                 AND (
+                   COALESCE(json_array_length(json_extract(raw_json, '$.avatar.humanBones')), 0)=0
+                   OR COALESCE(json_array_length(json_extract(raw_json, '$.avatar.skeletonBones')), 0)=0
+                 )
+                THEN 1 ELSE 0 END) AS emptyHumanDescriptionModels,
        SUM(CASE WHEN json_extract(raw_json, '$.avatar.oracle') IS NOT NULL
                  OR json_extract(raw_json, '$.avatar.internalSolver') IS NOT NULL
                 THEN 1 ELSE 0 END) AS avatarConstantOracleModels
@@ -1554,7 +1565,8 @@ WHERE kind='Model'
   AND json_extract(raw_json, '$.avatar') IS NOT NULL;";
             var avatarModels = 0L;
             var productionAvatarModels = 0L;
-            var humanDescriptionModels = 0L;
+            var humanDescriptionFlagModels = 0L;
+            var emptyHumanDescriptionModels = 0L;
             var avatarConstantOracleModels = 0L;
             using (var command = connection.CreateCommand())
             {
@@ -1564,8 +1576,9 @@ WHERE kind='Model'
                 {
                     avatarModels = reader.IsDBNull(0) ? 0 : reader.GetInt64(0);
                     productionAvatarModels = reader.IsDBNull(1) ? 0 : reader.GetInt64(1);
-                    humanDescriptionModels = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
-                    avatarConstantOracleModels = reader.IsDBNull(3) ? 0 : reader.GetInt64(3);
+                    humanDescriptionFlagModels = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+                    emptyHumanDescriptionModels = reader.IsDBNull(3) ? 0 : reader.GetInt64(3);
+                    avatarConstantOracleModels = reader.IsDBNull(4) ? 0 : reader.GetInt64(4);
                 }
             }
 
@@ -1618,7 +1631,10 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                 ["rule"] = "生产 Unity bake 只接受真实 Unity prefab/Animator.avatar，或完整 HumanDescription.humanBones + skeletonBones。AvatarConstant/internalSolver/oracle 只作为诊断和后续恢复输入，不能单独计入 production ready。",
                 ["avatarModels"] = avatarModels,
                 ["productionAvatarModels"] = productionAvatarModels,
-                ["humanDescriptionModels"] = humanDescriptionModels,
+                ["humanDescriptionModels"] = humanDescriptionFlagModels,
+                ["humanDescriptionFlagModels"] = humanDescriptionFlagModels,
+                ["completeHumanDescriptionModels"] = productionAvatarModels,
+                ["emptyHumanDescriptionModels"] = emptyHumanDescriptionModels,
                 ["avatarConstantOracleModels"] = avatarConstantOracleModels,
                 ["productionAvatarModelCoverage"] = Ratio(productionAvatarModels, avatarModels),
                 ["productionAvatarModelCoveragePercent"] = Percent(productionAvatarModels, avatarModels),

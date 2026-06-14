@@ -620,7 +620,13 @@ def avatar_production_gate(cur):
                SUM(CASE WHEN COALESCE(json_array_length(json_extract(raw_json, '$.avatar.humanBones')), 0) > 0
                          AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.skeletonBones')), 0) > 0
                         THEN 1 ELSE 0 END) AS productionAvatarModels,
-               SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1 THEN 1 ELSE 0 END) AS humanDescriptionModels,
+               SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1 THEN 1 ELSE 0 END) AS humanDescriptionFlagModels,
+               SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1
+                         AND (
+                           COALESCE(json_array_length(json_extract(raw_json, '$.avatar.humanBones')), 0)=0
+                           OR COALESCE(json_array_length(json_extract(raw_json, '$.avatar.skeletonBones')), 0)=0
+                         )
+                        THEN 1 ELSE 0 END) AS emptyHumanDescriptionModels,
                SUM(CASE WHEN json_extract(raw_json, '$.avatar.oracle') IS NOT NULL
                          OR json_extract(raw_json, '$.avatar.internalSolver') IS NOT NULL
                         THEN 1 ELSE 0 END) AS avatarConstantOracleModels
@@ -631,7 +637,8 @@ def avatar_production_gate(cur):
     ).fetchone()
     avatar_models = int(model_avatar["avatarModels"] or 0)
     production_avatar_models = int(model_avatar["productionAvatarModels"] or 0)
-    human_description_models = int(model_avatar["humanDescriptionModels"] or 0)
+    human_description_flag_models = int(model_avatar["humanDescriptionFlagModels"] or 0)
+    empty_human_description_models = int(model_avatar["emptyHumanDescriptionModels"] or 0)
     avatar_constant_oracle_models = int(model_avatar["avatarConstantOracleModels"] or 0)
     explicit_humanoid_candidates = int(scalar(
         cur,
@@ -709,7 +716,10 @@ def avatar_production_gate(cur):
         "rule": "Production Unity bake requires the original Unity prefab/Animator.avatar or complete HumanDescription.humanBones + skeletonBones. AvatarConstant/internalSolver/oracle is diagnostic recovery input only and is not production ready by itself.",
         "avatarModels": avatar_models,
         "productionAvatarModels": production_avatar_models,
-        "humanDescriptionModels": human_description_models,
+        "humanDescriptionModels": human_description_flag_models,
+        "humanDescriptionFlagModels": human_description_flag_models,
+        "completeHumanDescriptionModels": production_avatar_models,
+        "emptyHumanDescriptionModels": empty_human_description_models,
         "avatarConstantOracleModels": avatar_constant_oracle_models,
         "productionAvatarModelCoverage": ratio(production_avatar_models, avatar_models),
         "productionAvatarModelCoveragePercent": round(ratio(production_avatar_models, avatar_models) * 100.0, 3),
@@ -1079,6 +1089,9 @@ def main():
         "avatarModels",
         "productionAvatarModels",
         "humanDescriptionModels",
+        "humanDescriptionFlagModels",
+        "completeHumanDescriptionModels",
+        "emptyHumanDescriptionModels",
         "avatarConstantOracleModels",
         "productionAvatarModelCoveragePercent",
         "explicitHumanoidCandidates",
