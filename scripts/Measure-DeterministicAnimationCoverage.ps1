@@ -125,7 +125,12 @@ if ($FastSummary) {
     $importedAvatarProbePath = $null
     $importedAvatarProbe = $null
     $importedAvatarProbeError = $null
+    $importedAvatarProbeFreshness = "not_run"
+    $importedAvatarLatestWriteUtc = $null
     $importedAvatarProbeCandidates = @()
+    if ($importedAvatarFiles.Count -gt 0) {
+        $importedAvatarLatestWriteUtc = @($importedAvatarFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)[0].LastWriteTimeUtc.ToString("O")
+    }
     if (Test-Path -LiteralPath $libraryFullPath) {
         $importedAvatarProbeCandidates = @(Get-ChildItem -LiteralPath $libraryFullPath -Directory -Filter "ImportedAvatarProbe*" -ErrorAction SilentlyContinue |
             ForEach-Object {
@@ -143,6 +148,24 @@ if ($FastSummary) {
         }
         catch {
             $importedAvatarProbeError = Limit-Text $_.Exception.Message
+        }
+    }
+    if ($importedAvatarProbeError) {
+        $importedAvatarProbeFreshness = "error"
+    }
+    elseif ($null -ne $importedAvatarProbe) {
+        $probeTotal = 0
+        if ($null -ne $importedAvatarProbe.totalAssets) {
+            $probeTotal = [int]$importedAvatarProbe.totalAssets
+        }
+        if ($probeTotal -ne $importedAvatarFiles.Count) {
+            $importedAvatarProbeFreshness = "mismatch"
+        }
+        elseif ($importedAvatarFiles.Count -gt 0 -and $importedAvatarProbeCandidates[0].LastWriteTimeUtc -lt @($importedAvatarFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)[0].LastWriteTimeUtc) {
+            $importedAvatarProbeFreshness = "stale"
+        }
+        else {
+            $importedAvatarProbeFreshness = "fresh"
         }
     }
 
@@ -171,7 +194,9 @@ if ($FastSummary) {
         importedAvatarRoot = $importedAvatarRoot
         importedAvatarAssetCount = $importedAvatarFiles.Count
         importedAvatarAssetSamples = @($importedAvatarFiles | Select-Object -First 12 -ExpandProperty FullName)
+        importedAvatarLatestWriteUtc = $importedAvatarLatestWriteUtc
         importedAvatarProbeReportPath = $importedAvatarProbePath
+        importedAvatarProbeFreshness = $importedAvatarProbeFreshness
         importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
         importedAvatarProbeTotalAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.totalAssets } else { $null }
         importedAvatarProbeValidHumanAvatars = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
@@ -201,6 +226,7 @@ if ($FastSummary) {
         }
         elseif ($null -ne $importedAvatarProbe) {
             $md.Add(("- Imported Avatar probe status: {0}, valid human: {1}, invalid: {2}" -f $importedAvatarProbe.status, $importedAvatarProbe.validHumanAvatars, $importedAvatarProbe.invalidAssets))
+            $md.Add(("- Imported Avatar probe freshness: {0}" -f $importedAvatarProbeFreshness))
         }
     }
     if ($cacheSummaryPath -and (Test-Path -LiteralPath $cacheSummaryPath)) {
@@ -229,6 +255,7 @@ if ($FastSummary) {
         mode = "fastSummary"
         cacheSummaryPresent = ($null -ne $cacheSummary)
         importedAvatarAssetCount = $importedAvatarFiles.Count
+        importedAvatarProbeFreshness = $importedAvatarProbeFreshness
         importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
         importedAvatarProbeValidHumanAvatars = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
         importedAvatarProbeInvalidAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.invalidAssets } else { $null }

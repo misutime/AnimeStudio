@@ -30,6 +30,7 @@ namespace AnimeStudio.LibraryBrowser
             0,
             0,
             "",
+            "",
             0,
             0,
             0,
@@ -60,6 +61,7 @@ namespace AnimeStudio.LibraryBrowser
             long importedAvatarAssetKeyCount,
             long importedAvatarAssetBakeReadyCandidates,
             string importedAvatarProbeStatus,
+            string importedAvatarProbeFreshness,
             long importedAvatarProbeTotalAssets,
             long importedAvatarProbeValidHumanAvatars,
             long importedAvatarProbeInvalidAssets,
@@ -89,6 +91,7 @@ namespace AnimeStudio.LibraryBrowser
             ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
             ImportedAvatarAssetBakeReadyCandidates = importedAvatarAssetBakeReadyCandidates;
             ImportedAvatarProbeStatus = importedAvatarProbeStatus ?? "";
+            ImportedAvatarProbeFreshness = importedAvatarProbeFreshness ?? "";
             ImportedAvatarProbeTotalAssets = importedAvatarProbeTotalAssets;
             ImportedAvatarProbeValidHumanAvatars = importedAvatarProbeValidHumanAvatars;
             ImportedAvatarProbeInvalidAssets = importedAvatarProbeInvalidAssets;
@@ -119,6 +122,7 @@ namespace AnimeStudio.LibraryBrowser
         public long ImportedAvatarAssetKeyCount { get; }
         public long ImportedAvatarAssetBakeReadyCandidates { get; }
         public string ImportedAvatarProbeStatus { get; }
+        public string ImportedAvatarProbeFreshness { get; }
         public long ImportedAvatarProbeTotalAssets { get; }
         public long ImportedAvatarProbeValidHumanAvatars { get; }
         public long ImportedAvatarProbeInvalidAssets { get; }
@@ -143,7 +147,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 var cacheText = CacheSummaryPresent ? "cache OK" : "cache 缺失";
                 var avatarText = ImportedAvatarProbeTotalAssets > 0
-                    ? $"Avatar {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}有效"
+                    ? $"Avatar {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}有效{FormatProbeFreshnessSuffix()}"
                     : $"Avatar {ImportedAvatarAssetFileCount:N0}";
                 var bakeText = EffectiveBakeReadyCandidates > 0
                     ? $"，oracle {FormatPercent(EffectiveBakeReadyCoveragePercent)}"
@@ -278,6 +282,7 @@ namespace AnimeStudio.LibraryBrowser
                         : ReadInt64(importedAvatarReadiness, "keyCount"),
                     ReadInt64(bake, "uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates", "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
                     isFastSummary ? ReadString(root, "importedAvatarProbeStatus") : "",
+                    isFastSummary ? ReadString(root, "importedAvatarProbeFreshness") : "",
                     isFastSummary ? ReadInt64(root, "importedAvatarProbeTotalAssets") : 0,
                     isFastSummary ? ReadInt64(root, "importedAvatarProbeValidHumanAvatars") : 0,
                     isFastSummary ? ReadInt64(root, "importedAvatarProbeInvalidAssets") : 0,
@@ -360,13 +365,28 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var text =
-                $"导入Avatar asset有效性: {EmptyAsUnknown(ImportedAvatarProbeStatus)}，有效 {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}，无效 {ImportedAvatarProbeInvalidAssets:N0}{Environment.NewLine}";
+                $"导入Avatar asset有效性: {EmptyAsUnknown(ImportedAvatarProbeStatus)}，freshness {EmptyAsUnknown(ImportedAvatarProbeFreshness)}，有效 {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}，无效 {ImportedAvatarProbeInvalidAssets:N0}{Environment.NewLine}";
             if (!string.IsNullOrWhiteSpace(ImportedAvatarProbeError))
             {
                 text += $"导入Avatar asset验证读取错误: {ImportedAvatarProbeError}{Environment.NewLine}";
             }
+            if (!string.Equals(ImportedAvatarProbeFreshness, "fresh", StringComparison.OrdinalIgnoreCase))
+            {
+                text += "导入Avatar asset验证可能不是当前文件集的最新结果；请重新运行“验证AvatarAsset”。" + Environment.NewLine;
+            }
 
             return text;
+        }
+
+        private string FormatProbeFreshnessSuffix()
+        {
+            if (string.IsNullOrWhiteSpace(ImportedAvatarProbeFreshness)
+                || string.Equals(ImportedAvatarProbeFreshness, "fresh", StringComparison.OrdinalIgnoreCase))
+            {
+                return "";
+            }
+
+            return "(需重验)";
         }
 
         private bool IsFastSummary => string.Equals(Mode, "fastSummary", StringComparison.OrdinalIgnoreCase);
