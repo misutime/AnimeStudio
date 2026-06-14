@@ -583,7 +583,7 @@ def source_health(source_index):
         con.close()
 
 
-def create_temp_imported_avatar_asset_keys(cur, unity_project):
+def create_temp_imported_avatar_asset_keys(cur, unity_project, library_root):
     cur.execute("DROP TABLE IF EXISTS temp_imported_avatar_asset_keys;")
     cur.execute("CREATE TEMP TABLE temp_imported_avatar_asset_keys(key TEXT PRIMARY KEY);")
     if not unity_project:
@@ -605,22 +605,28 @@ def create_temp_imported_avatar_asset_keys(cur, unity_project):
             "note": "Imported Avatar asset directory was not found.",
         }
 
-    keys = set()
-    file_count = 0
+    asset_files = []
     for root, _dirs, files in os.walk(imported_root):
         for file_name in files:
             if not file_name.lower().endswith(".asset"):
                 continue
             if file_name.lower().endswith(".meta"):
                 continue
-            name = os.path.splitext(file_name)[0].strip()
-            if not name:
-                continue
-            file_count += 1
-            keys.add(name)
-            suffix = "_ModelAvatar"
-            if name.lower().endswith(suffix.lower()):
-                keys.add(name[:-len(suffix)])
+            asset_files.append(os.path.join(root, file_name))
+
+    probe_info = latest_imported_avatar_probe(library_root, len(asset_files), latest_write_utc(asset_files))
+    valid_probe_keys = probe_info.get("validKeys")
+    keys = set()
+    file_count = 0
+    for path in asset_files:
+        file_name = os.path.basename(path)
+        name = os.path.splitext(file_name)[0].strip()
+        if not name:
+            continue
+        if valid_probe_keys is not None and name not in valid_probe_keys and strip_model_avatar_suffix(name) not in valid_probe_keys:
+            continue
+        file_count += 1
+        add_imported_avatar_keys(keys, name)
 
     cur.executemany(
         "INSERT OR IGNORE INTO temp_imported_avatar_asset_keys(key) VALUES (?);",
@@ -630,10 +636,98 @@ def create_temp_imported_avatar_asset_keys(cur, unity_project):
         "available": True,
         "unityProject": unity_project,
         "importedAvatarRoot": imported_root,
-        "fileCount": file_count,
+        "fileCount": len(asset_files),
+        "trustedFileCount": file_count,
         "keyCount": len(keys),
-        "note": "Imported Avatar assets are matched by exact avatar.name or model name keys, using the same production oracle rule as CLI bake requests.",
+        "probeReportPath": probe_info.get("path"),
+        "probeFreshness": probe_info.get("freshness"),
+        "probeEnforced": valid_probe_keys is not None,
+        "probeValidHumanAvatars": probe_info.get("validHumanAvatars"),
+        "probeInvalidAssets": probe_info.get("invalidAssets"),
+        "note": (
+            "Fresh ImportedAvatar probe is enforced; only Unity-validated human Avatar assets are used."
+            if valid_probe_keys is not None else
+            "Imported Avatar assets are matched by exact avatar.name or model name keys. Run ImportedAvatar probe for strict Unity-validated readiness."
+        ),
     }
+
+
+def add_imported_avatar_keys(target, name):
+    if not name:
+        return
+    target.add(name)
+    stripped = strip_model_avatar_suffix(name)
+    if stripped != name:
+        target.add(stripped)
+
+
+def strip_model_avatar_suffix(name):
+    suffix = "_ModelAvatar"
+    if name and name.lower().endswith(suffix.lower()):
+        return name[:-len(suffix)]
+    return name
+
+
+def latest_write_utc(paths):
+    if not paths:
+        return None
+    return max(os.path.getmtime(path) for path in paths)
+
+
+def latest_imported_avatar_probe(library_root, asset_count, latest_asset_write):
+    result = {
+        "freshness": "not_run",
+        "path": None,
+        "validKeys": None,
+        "validHumanAvatars": None,
+        "invalidAssets": None,
+    }
+    if not library_root or not os.path.isdir(library_root):
+        return result
+
+    candidates = []
+    for name in os.listdir(library_root):
+        if not name.startswith("ImportedAvatarProbe"):
+            continue
+        path = os.path.join(library_root, name, "imported_avatar_probe_batch.json")
+        if os.path.isfile(path):
+            candidates.append(path)
+    if not candidates:
+        return result
+
+    report_path = max(candidates, key=lambda path: os.path.getmtime(path))
+    result["path"] = report_path
+    try:
+        with open(report_path, "r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except Exception as exc:
+        result["freshness"] = "error"
+        result["error"] = str(exc)
+        return result
+
+    result["validHumanAvatars"] = int(report.get("validHumanAvatars") or 0)
+    result["invalidAssets"] = int(report.get("invalidAssets") or 0)
+    if int(report.get("totalAssets") or 0) != asset_count:
+        result["freshness"] = "mismatch"
+        return result
+    if latest_asset_write is not None and os.path.getmtime(report_path) < latest_asset_write:
+        result["freshness"] = "stale"
+        return result
+
+    result["freshness"] = "fresh"
+    keys = set()
+    for item in report.get("items") or []:
+        if (item.get("status") or "").lower() != "ok":
+            continue
+        if not item.get("isValid") or not item.get("isHuman"):
+            continue
+        asset_path = item.get("avatarAssetPath") or ""
+        name = os.path.splitext(os.path.basename(asset_path.replace("/", os.sep)))[0].strip()
+        if not name:
+            name = (item.get("avatarName") or "").strip()
+        add_imported_avatar_keys(keys, name)
+    result["validKeys"] = keys
+    return result
 
 
 def imported_avatar_asset_match_sql(model_alias):
@@ -1277,7 +1371,7 @@ def main():
     con = sqlite3.connect(args.library_index)
     con.row_factory = sqlite3.Row
     cur = con.cursor()
-    imported_avatar_info = create_temp_imported_avatar_asset_keys(cur, args.unity_project)
+    imported_avatar_info = create_temp_imported_avatar_asset_keys(cur, args.unity_project, args.library_path)
     try:
         if not table_exists(cur, "assets") or not table_exists(cur, "model_animation_candidates"):
             raise RuntimeError("library_index.db is missing assets or model_animation_candidates table.")

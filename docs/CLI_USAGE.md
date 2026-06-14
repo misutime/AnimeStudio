@@ -360,7 +360,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -FailOnWarning
 ```
 
-如果要看大库的 Unity bake 生产覆盖，但不想跑最重的 top 模型/动画/Avatar blocker 明细，可以加 `-SummaryOnly`。原神这类依赖导入原始 `UnityEngine.Avatar` asset 的库，还必须传入 bake 工程 `-UnityProject`，脚本才会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，并按和 CLI bake 一致的精确 Avatar 名/模型名 key 统计 `importedAvatarAssetBakeReadyExplicitUnityBakeCandidates`。没有传 `-UnityProject` 时，脚本不会猜测 Avatar oracle，ImportedAvatar ready 覆盖会保守显示为不可测或 0。大库统计会把显式候选的 Humanoid/Direct glTF 标记和模型级 Avatar oracle 先物化成临时表复用；这只是性能优化，不新增模型-动画关系，也不改变 `relation_source=explicit` 门禁：
+如果要看大库的 Unity bake 生产覆盖，但不想跑最重的 top 模型/动画/Avatar blocker 明细，可以加 `-SummaryOnly`。原神这类依赖导入原始 `UnityEngine.Avatar` asset 的库，还必须传入 bake 工程 `-UnityProject`，脚本才会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，并按和 CLI bake 一致的精确 Avatar 名/模型名 key 统计 `importedAvatarAssetBakeReadyExplicitUnityBakeCandidates`。如果素材库根目录存在 fresh 的 `ImportedAvatarProbe*/imported_avatar_probe_batch.json`，`SummaryOnly` 会和 Browser/CLI bake 一样只把 `isValid && isHuman` 的 asset 写入 readiness key 表，并在报告里标出 `probeEnforced=true`；验证失败、过期或数量不匹配的 probe 不会被强行当成通过。没有传 `-UnityProject` 时，脚本不会猜测 Avatar oracle，ImportedAvatar ready 覆盖会保守显示为不可测或 0。大库统计会把显式候选的 Humanoid/Direct glTF 标记和模型级 Avatar oracle 先物化成临时表复用；这只是性能优化，不新增模型-动画关系，也不改变 `relation_source=explicit` 门禁：
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass `
