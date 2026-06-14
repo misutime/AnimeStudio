@@ -1,0 +1,141 @@
+param(
+    [string]$RepoRoot
+)
+
+$ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+} else {
+    $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+}
+
+function Read-RepoFile {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $path = Join-Path $RepoRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Missing file: $RelativePath"
+    }
+
+    return Get-Content -LiteralPath $path -Raw -Encoding UTF8
+}
+
+function Assert-Contains {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Needle,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    if (-not $Text.Contains($Needle)) {
+        throw $Message
+    }
+}
+
+function Assert-NotContains {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Needle,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    if ($Text.Contains($Needle)) {
+        throw $Message
+    }
+}
+
+function Assert-Before {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Earlier,
+        [Parameter(Mandatory = $true)][string]$Later,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $earlierIndex = $Text.IndexOf($Earlier, [System.StringComparison]::Ordinal)
+    $laterIndex = $Text.IndexOf($Later, [System.StringComparison]::Ordinal)
+    if ($earlierIndex -lt 0 -or $laterIndex -lt 0 -or $earlierIndex -gt $laterIndex) {
+        throw $Message
+    }
+}
+
+function Get-MethodBodyText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$MethodName
+    )
+
+    $index = $Text.IndexOf($MethodName, [System.StringComparison]::Ordinal)
+    if ($index -lt 0) {
+        throw "Missing method: $MethodName"
+    }
+
+    $brace = $Text.IndexOf("{", $index, [System.StringComparison]::Ordinal)
+    if ($brace -lt 0) {
+        throw "Missing method body: $MethodName"
+    }
+
+    $depth = 0
+    for ($i = $brace; $i -lt $Text.Length; $i++) {
+        if ($Text[$i] -eq "{") {
+            $depth++
+        } elseif ($Text[$i] -eq "}") {
+            $depth--
+            if ($depth -eq 0) {
+                return $Text.Substring($brace, $i - $brace + 1)
+            }
+        }
+    }
+
+    throw "Unclosed method body: $MethodName"
+}
+
+$builder = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor\AnimeStudioGltfSkeletonBuilder.cs"
+$baker = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor\AnimeStudioPlayableBaker.cs"
+$applier = Read-RepoFile "AnimeStudio.CLI\UnityBakeResultApplier.cs"
+$browserCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
+$unityReadme = Read-RepoFile "AnimeStudio.UnityBake\README.md"
+$standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
+
+$loadImportedAvatar = Get-MethodBodyText $builder "public static Avatar LoadImportedAvatarAsset"
+Assert-Contains $loadImportedAvatar "AssetDatabase.LoadAssetAtPath<Avatar>" "Unity helper must load the explicit Avatar asset through Unity."
+Assert-Contains $loadImportedAvatar "throw new InvalidOperationException" "Explicit Avatar asset load failure must throw."
+Assert-Contains $loadImportedAvatar "must fail instead of falling back" "Explicit Avatar asset failure must not fall back."
+Assert-Contains $loadImportedAvatar "!avatar.isValid || !avatar.isHuman" "Explicit Avatar asset must be a valid Humanoid Avatar."
+Assert-NotContains $loadImportedAvatar "BuildAvatar(" "LoadImportedAvatarAsset must not build a fallback Avatar."
+
+$bakeResult = Get-MethodBodyText $baker "public static AnimeStudioBakeResult Bake"
+Assert-Contains $bakeResult "requestedAvatarAsset" "Bake result must record requestedAvatarAsset."
+Assert-Contains $bakeResult "importedAvatarAssetValid" "Bake result must record importedAvatarAssetValid."
+Assert-Contains $bakeResult 'restPoseSource, "imported_unity_avatar_asset"' "Imported Avatar validity must require imported rest pose source."
+
+$trustReport = Get-MethodBodyText $applier "private static AvatarTrustReport BuildAvatarTrustReport"
+Assert-Before $trustReport "if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && IsImportedAvatarAssetResultValid(result))" "var skeletonBoneCount" "Requested Avatar asset trust must be decided before HumanDescription fallback."
+Assert-Before $trustReport "if (!string.IsNullOrWhiteSpace(requestedAvatarAsset))" "var skeletonBoneCount" "Invalid requested Avatar asset must be rejected before HumanDescription fallback."
+Assert-Contains $trustReport "imported_unity_avatar_asset_invalid" "Invalid requested Avatar asset must be marked untrusted."
+Assert-Contains $trustReport "must not fall back to HumanDescription, AvatarConstant, internalSolver, or glTF rest pose trust" "Invalid requested Avatar asset message must forbid fallback trust."
+Assert-Contains $trustReport "avatar_constant_oracle_diagnostic" "AvatarConstant oracle path must be diagnostic."
+Assert-Contains $trustReport "TrustedProductionBake: false" "Diagnostic Avatar paths must not be trusted production bakes."
+
+$importedValid = Get-MethodBodyText $applier "private static bool IsImportedAvatarAssetResultValid"
+Assert-Contains $importedValid 'result["importedAvatarAssetValid"]' "Applier must prefer importedAvatarAssetValid proof."
+Assert-Contains $importedValid 'result["rigRestPoseSource"]' "Applier may only use legacy imported rest-pose proof as compatibility evidence."
+Assert-Contains $importedValid '"imported_unity_avatar_asset"' "Imported Avatar proof must name imported_unity_avatar_asset."
+
+$browserTrust = Get-MethodBodyText $browserCache "private static bool AvatarTrustSourceMatchesExplicitRequest"
+Assert-Contains $browserTrust "ReportRequestHasExplicitAvatarAsset(root)" "Browser trust must inspect explicit Avatar asset requests."
+Assert-Contains $browserTrust '"imported_unity_avatar_asset"' "Browser explicit Avatar request must require imported_unity_avatar_asset source."
+Assert-Contains $browserTrust "ReportHasImportedAvatarAssetProof(root)" "Browser explicit Avatar request must require imported Avatar proof."
+
+$productionSource = Get-MethodBodyText $browserCache "private static bool IsProductionAvatarTrustSource"
+Assert-Contains $productionSource '"internal_solver"' "Browser must reject internal_solver trust sources."
+Assert-Contains $productionSource '"avatar_constant"' "Browser must reject avatar_constant trust sources."
+Assert-Contains $productionSource '"oracle"' "Browser must reject oracle trust sources."
+
+Assert-Contains $unityReadme "unityAssetPaths.avatarAsset" "Unity bake README must document explicit Avatar asset requests."
+Assert-Contains $unityReadme "BuildHumanAvatar" "Unity bake README must document BuildHumanAvatar fallback limits."
+Assert-Contains $standards "unityAssetPaths.avatarAsset" "Project standards must document explicit Avatar asset requests."
+Assert-Contains $standards "BuildHumanAvatar" "Project standards must document BuildHumanAvatar fallback limits."
+
+Write-Output "OK: Unity Avatar asset trust gate rejects fallback trust for explicit avatarAsset requests."
