@@ -7,12 +7,16 @@ param(
 
     [string]$SourceIndex,
 
+    [string]$UnityProject,
+
     [Alias("OutputDirectory")]
     [string]$OutputDir,
 
     [string[]]$AnimatedCategory = @("NPC", "Avatar", "Monster", "Animal", "Partner", "Vehicle"),
 
     [int]$TopCategoryLimit = 24,
+
+    [switch]$SummaryOnly,
 
     [switch]$GateOnly,
 
@@ -81,7 +85,18 @@ def rows(cur, sql, args=()):
 
 
 def table_exists(cur, name):
-    return scalar(cur, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?;", (name,)) > 0
+    return scalar(
+        cur,
+        """
+        SELECT COUNT(*) FROM (
+          SELECT name FROM sqlite_master WHERE type='table'
+          UNION ALL
+          SELECT name FROM sqlite_temp_master WHERE type='table'
+        )
+        WHERE name=?;
+        """,
+        (name,),
+    ) > 0
 
 
 def candidate_table_schema_health(cur):
@@ -316,16 +331,94 @@ def source_health(source_index):
         con.close()
 
 
-def unity_bake_production(cur, library_root):
+def create_temp_imported_avatar_asset_keys(cur, unity_project):
+    cur.execute("DROP TABLE IF EXISTS temp_imported_avatar_asset_keys;")
+    cur.execute("CREATE TEMP TABLE temp_imported_avatar_asset_keys(key TEXT PRIMARY KEY);")
+    if not unity_project:
+        return {
+            "available": False,
+            "unityProject": unity_project,
+            "fileCount": 0,
+            "keyCount": 0,
+            "note": "No Unity project was supplied, so imported Unity Avatar asset readiness cannot be measured.",
+        }
+    imported_root = os.path.join(unity_project, "Assets", "AnimeStudioBake", "ImportedAvatar")
+    if not os.path.isdir(imported_root):
+        return {
+            "available": False,
+            "unityProject": unity_project,
+            "importedAvatarRoot": imported_root,
+            "fileCount": 0,
+            "keyCount": 0,
+            "note": "Imported Avatar asset directory was not found.",
+        }
+
+    keys = set()
+    file_count = 0
+    for root, _dirs, files in os.walk(imported_root):
+        for file_name in files:
+            if not file_name.lower().endswith(".asset"):
+                continue
+            if file_name.lower().endswith(".meta"):
+                continue
+            name = os.path.splitext(file_name)[0].strip()
+            if not name:
+                continue
+            file_count += 1
+            keys.add(name)
+            suffix = "_ModelAvatar"
+            if name.lower().endswith(suffix.lower()):
+                keys.add(name[:-len(suffix)])
+
+    cur.executemany(
+        "INSERT OR IGNORE INTO temp_imported_avatar_asset_keys(key) VALUES (?);",
+        [(key,) for key in sorted(keys, key=str.lower)]
+    )
+    return {
+        "available": True,
+        "unityProject": unity_project,
+        "importedAvatarRoot": imported_root,
+        "fileCount": file_count,
+        "keyCount": len(keys),
+        "note": "Imported Avatar assets are matched by exact avatar.name or model name keys, using the same production oracle rule as CLI bake requests.",
+    }
+
+
+def imported_avatar_asset_match_sql(model_alias):
+    raw = f"{model_alias}.raw_json"
+    return f"""
+        EXISTS (
+          SELECT 1
+          FROM temp_imported_avatar_asset_keys importedAvatar
+          WHERE importedAvatar.key = COALESCE(json_extract({raw}, '$.avatar.name'), '')
+             OR importedAvatar.key = COALESCE({model_alias}.name, '')
+        )
+    """
+
+
+def bake_ready_avatar_sql(model_alias):
+    raw = f"{model_alias}.raw_json"
+    return f"""
+        (
+          COALESCE(json_array_length(json_extract({raw}, '$.avatar.humanBones')), 0) > 0
+          AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.skeletonBones')), 0) > 0
+        )
+    """
+
+
+def effective_bake_ready_avatar_sql(model_alias):
+    return f"""
+        (
+          {bake_ready_avatar_sql(model_alias)}
+          OR {imported_avatar_asset_match_sql(model_alias)}
+        )
+    """
+
+
+def unity_bake_production(cur, library_root, include_details=True, imported_avatar_info=None):
     bake_where = """
         c.relation_source='explicit'
         AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-    """
-    bake_ready_model_where = """
-        AND (
-          COALESCE(json_array_length(json_extract(m.raw_json, '$.avatar.humanBones')), 0) > 0
-          AND COALESCE(json_array_length(json_extract(m.raw_json, '$.avatar.skeletonBones')), 0) > 0
-        )
     """
     cur.execute("DROP TABLE IF EXISTS temp_unity_bake_candidates;")
     # Materialize the explicit Unity-bake candidate set once. The JSON filter is
@@ -349,11 +442,13 @@ def unity_bake_production(cur, library_root):
         """
         CREATE TEMP TABLE temp_bake_ready_animation_candidates AS
         SELECT t.model_output AS model_output,
-               t.animation_output AS animation_output
+               t.animation_output AS animation_output,
+               CASE WHEN """ + bake_ready_avatar_sql("m") + """ THEN 1 ELSE 0 END AS bake_ready_avatar,
+               CASE WHEN """ + imported_avatar_asset_match_sql("m") + """ THEN 1 ELSE 0 END AS imported_avatar_ready
         FROM temp_unity_bake_candidates t
         JOIN assets m ON m.kind='Model' AND m.output=t.model_output
-        WHERE 1=1
-        """ + bake_ready_model_where + ";"
+        WHERE """ + effective_bake_ready_avatar_sql("m") + """;
+        """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS temp_bake_ready_animation_candidates_pair ON temp_bake_ready_animation_candidates(model_output, animation_output);")
     bake_ready_cache_where = """
@@ -400,6 +495,36 @@ def unity_bake_production(cur, library_root):
         );
         """
     ))
+    human_description_bake_ready_candidates = int(scalar(
+        cur,
+        "SELECT COUNT(*) FROM temp_bake_ready_animation_candidates WHERE bake_ready_avatar=1;"
+    ))
+    unique_human_description_bake_ready_candidates = int(scalar(
+        cur,
+        """
+        SELECT COUNT(*)
+        FROM (
+          SELECT DISTINCT model_output, animation_output
+          FROM temp_bake_ready_animation_candidates
+          WHERE bake_ready_avatar=1
+        );
+        """
+    ))
+    imported_avatar_bake_ready_candidates = int(scalar(
+        cur,
+        "SELECT COUNT(*) FROM temp_bake_ready_animation_candidates WHERE imported_avatar_ready=1;"
+    ))
+    unique_imported_avatar_bake_ready_candidates = int(scalar(
+        cur,
+        """
+        SELECT COUNT(*)
+        FROM (
+          SELECT DISTINCT model_output, animation_output
+          FROM temp_bake_ready_animation_candidates
+          WHERE imported_avatar_ready=1
+        );
+        """
+    ))
     path_flags = cur.execute(
         """
         SELECT
@@ -424,6 +549,11 @@ def unity_bake_production(cur, library_root):
         "explicitUnityBakeAnimations": explicit_unity_bake_animations,
         "bakeReadyExplicitUnityBakeCandidates": bake_ready_explicit_unity_bake_candidates,
         "uniqueBakeReadyExplicitUnityBakeCandidates": unique_bake_ready_explicit_unity_bake_candidates,
+        "humanDescriptionBakeReadyExplicitUnityBakeCandidates": human_description_bake_ready_candidates,
+        "uniqueHumanDescriptionBakeReadyExplicitUnityBakeCandidates": unique_human_description_bake_ready_candidates,
+        "importedAvatarAssetReadiness": imported_avatar_info or {},
+        "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates": imported_avatar_bake_ready_candidates,
+        "uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates": unique_imported_avatar_bake_ready_candidates,
         "bakeReadyExplicitUnityBakeCoverage": ratio(bake_ready_explicit_unity_bake_candidates, explicit_unity_bake_candidates),
         "uniqueBakeReadyExplicitUnityBakeCoverage": ratio(unique_bake_ready_explicit_unity_bake_candidates, unique_explicit_unity_bake_candidates),
         "bakeReadyExplicitUnityBakeCoveragePercent": round(ratio(bake_ready_explicit_unity_bake_candidates, explicit_unity_bake_candidates) * 100.0, 3),
@@ -556,53 +686,59 @@ def unity_bake_production(cur, library_root):
         {"status": "baked_missing_gltf_or_report", "count": result["bakedMissingGltfCandidates"]},
         {"status": "failed", "count": result["failedCandidates"]},
     ]
-    result["topModelsByBakeCandidates"] = rows(
-        cur,
-        f"""
-        SELECT t.model_output AS modelOutput,
-               COUNT(*) AS candidateCount,
-               COUNT(DISTINCT t.animation_output) AS animationCount
-        FROM temp_unity_bake_candidates t
-        GROUP BY t.model_output
-        ORDER BY candidateCount DESC, t.model_output COLLATE NOCASE
-        LIMIT 24;
-        """
-    )
-    result["topAnimationsByBakeCandidates"] = rows(
-        cur,
-        f"""
-        SELECT t.animation_output AS animationOutput,
-               COUNT(*) AS candidateCount,
-               COUNT(DISTINCT t.model_output) AS modelCount
-        FROM temp_unity_bake_candidates t
-        GROUP BY t.animation_output
-        ORDER BY candidateCount DESC, t.animation_output COLLATE NOCASE
-        LIMIT 24;
-        """
-    )
-    category_counts = {}
-    for row in cur.execute(
-        f"""
-        SELECT t.model_output AS model_output,
-               COUNT(*) AS candidate_count,
-               COUNT(DISTINCT t.animation_output) AS animation_count
-        FROM temp_unity_bake_candidates t
-        GROUP BY t.model_output;
-        """
-    ):
-        category = category_from_output(row["model_output"])
-        item = category_counts.setdefault(
-            category,
-            {"category": category, "candidateCount": 0, "modelCount": 0, "animationAssignments": 0},
+    if include_details:
+        result["topModelsByBakeCandidates"] = rows(
+            cur,
+            f"""
+            SELECT t.model_output AS modelOutput,
+                   COUNT(*) AS candidateCount,
+                   COUNT(DISTINCT t.animation_output) AS animationCount
+            FROM temp_unity_bake_candidates t
+            GROUP BY t.model_output
+            ORDER BY candidateCount DESC, t.model_output COLLATE NOCASE
+            LIMIT 24;
+            """
         )
-        item["modelCount"] += 1
-        item["candidateCount"] += int(row["candidate_count"] or 0)
-        item["animationAssignments"] += int(row["animation_count"] or 0)
-    result["topCategoriesByBakeCandidates"] = sorted(
-        category_counts.values(),
-        key=lambda x: (-x["candidateCount"], x["category"].lower()),
-    )[:24]
-    result["note"] = "Unity bake production coverage is normalized to bake-ready explicit candidates. Trusted baked requires unity_bake_apply_report.json status ok/warning, frameVaryingTracks > 0, avatarTrust.TrustedProductionBake=true, and imported_unity_avatar_asset source when the original request explicitly supplied unityAssetPaths.avatarAsset; static_pose and needs_review are terminal diagnostics and are not counted as failed or pending."
+        result["topAnimationsByBakeCandidates"] = rows(
+            cur,
+            f"""
+            SELECT t.animation_output AS animationOutput,
+                   COUNT(*) AS candidateCount,
+                   COUNT(DISTINCT t.model_output) AS modelCount
+            FROM temp_unity_bake_candidates t
+            GROUP BY t.animation_output
+            ORDER BY candidateCount DESC, t.animation_output COLLATE NOCASE
+            LIMIT 24;
+            """
+        )
+        category_counts = {}
+        for row in cur.execute(
+            f"""
+            SELECT t.model_output AS model_output,
+                   COUNT(*) AS candidate_count,
+                   COUNT(DISTINCT t.animation_output) AS animation_count
+            FROM temp_unity_bake_candidates t
+            GROUP BY t.model_output;
+            """
+        ):
+            category = category_from_output(row["model_output"])
+            item = category_counts.setdefault(
+                category,
+                {"category": category, "candidateCount": 0, "modelCount": 0, "animationAssignments": 0},
+            )
+            item["modelCount"] += 1
+            item["candidateCount"] += int(row["candidate_count"] or 0)
+            item["animationAssignments"] += int(row["animation_count"] or 0)
+        result["topCategoriesByBakeCandidates"] = sorted(
+            category_counts.values(),
+            key=lambda x: (-x["candidateCount"], x["category"].lower()),
+        )[:24]
+    else:
+        result["detailMode"] = "summary_only"
+        result["topModelsByBakeCandidates"] = []
+        result["topAnimationsByBakeCandidates"] = []
+        result["topCategoriesByBakeCandidates"] = []
+    result["note"] = "Unity bake production coverage is normalized to effective bake-ready explicit candidates: complete HumanDescription.humanBones + skeletonBones or exact matched imported Unity Avatar asset. Trusted baked requires unity_bake_apply_report.json status ok/warning, frameVaryingTracks > 0, avatarTrust.TrustedProductionBake=true, and imported_unity_avatar_asset source when the original request explicitly supplied unityAssetPaths.avatarAsset; static_pose and needs_review are terminal diagnostics and are not counted as failed or pending."
     return result
 
 
@@ -617,9 +753,9 @@ def avatar_production_gate(cur):
     model_avatar = cur.execute(
         """
         SELECT COUNT(*) AS avatarModels,
-               SUM(CASE WHEN COALESCE(json_array_length(json_extract(raw_json, '$.avatar.humanBones')), 0) > 0
-                         AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.skeletonBones')), 0) > 0
-                        THEN 1 ELSE 0 END) AS productionAvatarModels,
+               SUM(CASE WHEN """ + bake_ready_avatar_sql("assets") + """ THEN 1 ELSE 0 END) AS humanDescriptionProductionModels,
+               SUM(CASE WHEN """ + imported_avatar_asset_match_sql("assets") + """ THEN 1 ELSE 0 END) AS importedAvatarAssetProductionModels,
+               SUM(CASE WHEN """ + effective_bake_ready_avatar_sql("assets") + """ THEN 1 ELSE 0 END) AS productionAvatarModels,
                SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1 THEN 1 ELSE 0 END) AS humanDescriptionFlagModels,
                SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1
                          AND (
@@ -658,67 +794,82 @@ def avatar_production_gate(cur):
           AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1;
         """
     ))
-    ready_candidates = int(scalar(
-        cur,
-        """
-        SELECT COUNT(*)
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-          AND COALESCE(json_extract(raw_json, '$.productionUnityBakeReady'), 0)=1;
-        """
-    ))
-    ready_models = int(scalar(
-        cur,
-        """
-        SELECT COUNT(DISTINCT model_output)
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-          AND COALESCE(json_extract(raw_json, '$.productionUnityBakeReady'), 0)=1;
-        """
-    ))
-    blocked_candidates = int(scalar(
-        cur,
-        """
-        SELECT COUNT(*)
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-          AND COALESCE(json_extract(raw_json, '$.productionUnityBakeBlocked'), 0)=1;
-        """
-    ))
-    blocked_models = int(scalar(
-        cur,
-        """
-        SELECT COUNT(DISTINCT model_output)
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-          AND COALESCE(json_extract(raw_json, '$.productionUnityBakeBlocked'), 0)=1;
-        """
-    ))
+    if table_exists(cur, "temp_bake_ready_animation_candidates"):
+        ready_candidates = int(scalar(cur, "SELECT COUNT(*) FROM temp_bake_ready_animation_candidates;"))
+        ready_models = int(scalar(cur, "SELECT COUNT(DISTINCT model_output) FROM temp_bake_ready_animation_candidates;"))
+        blocked_candidates = max(explicit_humanoid_candidates - ready_candidates, 0)
+        blocked_models = int(scalar(
+            cur,
+            """
+            SELECT COUNT(DISTINCT t.model_output)
+            FROM temp_unity_bake_candidates t
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM temp_bake_ready_animation_candidates ready
+              WHERE ready.model_output=t.model_output
+                AND ready.animation_output=t.animation_output
+            );
+            """
+        ))
+    else:
+        ready_candidates = int(scalar(
+            cur,
+            """
+            SELECT COUNT(*)
+            FROM model_animation_candidates c
+            JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+            WHERE c.relation_source='explicit'
+              AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+              AND """ + effective_bake_ready_avatar_sql("m") + """;
+            """
+        ))
+        ready_models = int(scalar(
+            cur,
+            """
+            SELECT COUNT(DISTINCT c.model_output)
+            FROM model_animation_candidates c
+            JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+            WHERE c.relation_source='explicit'
+              AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+              AND """ + effective_bake_ready_avatar_sql("m") + """;
+            """
+        ))
+        blocked_candidates = max(explicit_humanoid_candidates - ready_candidates, 0)
+        blocked_models = int(scalar(
+            cur,
+            """
+            SELECT COUNT(DISTINCT c.model_output)
+            FROM model_animation_candidates c
+            JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+            WHERE c.relation_source='explicit'
+              AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+              AND NOT (""" + effective_bake_ready_avatar_sql("m") + """);
+            """
+        ))
     blocked_reasons = rows(
         cur,
         """
-        SELECT COALESCE(json_extract(raw_json, '$.productionUnityBakeBlockedReason'), '(null)') AS reason,
+        SELECT COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)') AS reason,
                COUNT(*) AS count
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-          AND COALESCE(json_extract(raw_json, '$.productionUnityBakeBlocked'), 0)=1
-        GROUP BY COALESCE(json_extract(raw_json, '$.productionUnityBakeBlockedReason'), '(null)')
+        FROM model_animation_candidates c
+        JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+        WHERE c.relation_source='explicit'
+          AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+          AND NOT (""" + effective_bake_ready_avatar_sql("m") + """)
+        GROUP BY COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)')
         ORDER BY count DESC, reason COLLATE NOCASE;
         """
     )
     return {
         "available": True,
-        "rule": "Production Unity bake requires the original Unity prefab/Animator.avatar or complete HumanDescription.humanBones + skeletonBones. AvatarConstant/internalSolver/oracle is diagnostic recovery input only and is not production ready by itself.",
+        "rule": "Production Unity bake requires the original Unity prefab/Animator.avatar, complete HumanDescription.humanBones + skeletonBones, or an exact matched imported original Unity Avatar asset. AvatarConstant/internalSolver/oracle is diagnostic recovery input only and is not production ready by itself.",
         "avatarModels": avatar_models,
         "productionAvatarModels": production_avatar_models,
+        "humanDescriptionProductionModels": int(model_avatar["humanDescriptionProductionModels"] or 0),
+        "importedAvatarAssetProductionModels": int(model_avatar["importedAvatarAssetProductionModels"] or 0),
         "humanDescriptionModels": human_description_flag_models,
         "humanDescriptionFlagModels": human_description_flag_models,
-        "completeHumanDescriptionModels": production_avatar_models,
+        "completeHumanDescriptionModels": int(model_avatar["humanDescriptionProductionModels"] or 0),
         "emptyHumanDescriptionModels": empty_human_description_models,
         "avatarConstantOracleModels": avatar_constant_oracle_models,
         "productionAvatarModelCoverage": ratio(production_avatar_models, avatar_models),
@@ -807,9 +958,11 @@ def main():
     parser.add_argument("--library-path", required=True)
     parser.add_argument("--library-index", required=True)
     parser.add_argument("--source-index", required=True)
+    parser.add_argument("--unity-project", required=False)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--animated-category", action="append", default=[])
     parser.add_argument("--top-category-limit", type=int, default=24)
+    parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--gate-only", action="store_true")
     parser.add_argument("--fail-on-warning", action="store_true")
     args = parser.parse_args()
@@ -817,6 +970,7 @@ def main():
     con = sqlite3.connect(args.library_index)
     con.row_factory = sqlite3.Row
     cur = con.cursor()
+    imported_avatar_info = create_temp_imported_avatar_asset_keys(cur, args.unity_project)
     try:
         if not table_exists(cur, "assets") or not table_exists(cur, "model_animation_candidates"):
             raise RuntimeError("library_index.db is missing assets or model_animation_candidates table.")
@@ -915,9 +1069,24 @@ def main():
                 animated_categories.append(item)
             animated_total = sum(x["models"] for x in animated_categories)
             animated_linked = sum(x["modelsWithExplicitCandidates"] for x in animated_categories)
-            unity_bake_summary = unity_bake_production(cur, args.library_path)
+            unity_bake_summary = unity_bake_production(
+                cur,
+                args.library_path,
+                include_details=not args.summary_only,
+                imported_avatar_info=imported_avatar_info)
             avatar_gate_summary = avatar_production_gate(cur)
-            avatar_blockers = model_avatar_refresh_blockers(cur, args.top_category_limit)
+            avatar_blockers = (
+                {
+                    "available": False,
+                    "note": "SummaryOnly skips model Avatar refresh blocker detail queries.",
+                    "byReason": [],
+                    "topModels": [],
+                    "totalModelCount": 0,
+                    "totalCandidateCount": 0,
+                }
+                if args.summary_only else
+                model_avatar_refresh_blockers(cur, args.top_category_limit)
+            )
 
         gate_reasons = []
         if non_explicit_candidates != 0:
@@ -927,7 +1096,7 @@ def main():
 
         summary = {
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "mode": "gateOnly" if args.gate_only else "full",
+            "mode": "gateOnly" if args.gate_only else "summaryOnly" if args.summary_only else "full",
             "libraryPath": args.library_path,
             "libraryIndex": args.library_index,
             "sourceIndex": args.source_index,
@@ -1024,6 +1193,11 @@ def main():
     bake = summary["unityBakeProduction"]
     md.append(f"- Rule: {bake.get('rule')}")
     md.append(f"- Cache present: `{bake.get('cachePresent')}`")
+    imported_readiness = bake.get("importedAvatarAssetReadiness") or {}
+    if imported_readiness:
+        md.append(f"- Imported Avatar assets: `{imported_readiness.get('fileCount', 0)}` files / `{imported_readiness.get('keyCount', 0)}` keys")
+        if imported_readiness.get("note"):
+            md.append(f"- Imported Avatar note: {imported_readiness.get('note')}")
     md.append(f"- Note: {bake.get('note')}")
     md.append("")
     md.extend(table([bake], [
@@ -1033,6 +1207,9 @@ def main():
         "explicitUnityBakeAnimations",
         "bakeReadyExplicitUnityBakeCandidates",
         "uniqueBakeReadyExplicitUnityBakeCandidates",
+        "humanDescriptionBakeReadyExplicitUnityBakeCandidates",
+        "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates",
+        "uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates",
         "bakeReadyExplicitUnityBakeCoveragePercent",
         "uniqueBakeReadyExplicitUnityBakeCoveragePercent",
         "fullHumanoidBakeRequiredCandidates",
@@ -1088,6 +1265,8 @@ def main():
     md.extend(table([avatar_gate], [
         "avatarModels",
         "productionAvatarModels",
+        "humanDescriptionProductionModels",
+        "importedAvatarAssetProductionModels",
         "humanDescriptionModels",
         "humanDescriptionFlagModels",
         "completeHumanDescriptionModels",
@@ -1194,6 +1373,12 @@ if ($FailOnWarning) {
 }
 if ($GateOnly) {
     $argsList += "--gate-only"
+}
+if ($SummaryOnly) {
+    $argsList += "--summary-only"
+}
+if (-not [string]::IsNullOrWhiteSpace($UnityProject)) {
+    $argsList += @("--unity-project", (Resolve-Path -LiteralPath $UnityProject).Path)
 }
 
 try {

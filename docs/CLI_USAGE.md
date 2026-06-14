@@ -360,6 +360,17 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -FailOnWarning
 ```
 
+如果要看大库的 Unity bake 生产覆盖，但不想跑最重的 top 模型/动画/Avatar blocker 明细，可以加 `-SummaryOnly`。原神这类依赖导入原始 `UnityEngine.Avatar` asset 的库，还必须传入 bake 工程 `-UnityProject`，脚本才会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，并按和 CLI bake 一致的精确 Avatar 名/模型名 key 统计 `importedAvatarAssetBakeReadyExplicitUnityBakeCandidates`。没有传 `-UnityProject` 时，脚本不会猜测 Avatar oracle，ImportedAvatar ready 覆盖会保守显示为不可测或 0：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\Measure-DeterministicAnimationCoverage.ps1 `
+  -LibraryPath "D:\Assets\AS-Assets\YuanShen-Assets" `
+  -UnityProject "D:\misutime\AnimeStudioUnityProject" `
+  -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\AnimationRelationDiagnostics_Summary" `
+  -SummaryOnly
+```
+
 脚本只读 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
 
 - `gate.status`：默认应为 `ok`。
