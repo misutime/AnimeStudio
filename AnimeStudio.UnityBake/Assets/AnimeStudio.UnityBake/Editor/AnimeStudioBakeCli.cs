@@ -30,9 +30,10 @@ namespace AnimeStudio.UnityBake
                 return;
             }
 
+            AnimeStudioBakeRequest request = null;
             try
             {
-                var request = JsonUtility.FromJson<AnimeStudioBakeRequest>(File.ReadAllText(requestPath));
+                request = JsonUtility.FromJson<AnimeStudioBakeRequest>(File.ReadAllText(requestPath));
                 if (request == null)
                 {
                     Fail("Unable to parse AnimeStudio bake request.");
@@ -47,7 +48,9 @@ namespace AnimeStudio.UnityBake
             }
             catch (Exception e)
             {
-                var request = new AnimeStudioBakeRequest { outputJson = Path.Combine(Path.GetDirectoryName(requestPath) ?? ".", "unity_bake_result.json") };
+                // 已经读到 request 时，错误也必须写到 request.outputJson。
+                // 这样显式 Avatar asset 加载失败不会让调用端等错结果文件。
+                request ??= new AnimeStudioBakeRequest { outputJson = Path.Combine(Path.GetDirectoryName(requestPath) ?? ".", "unity_bake_result.json") };
                 WriteResult(request, new AnimeStudioBakeResult
                 {
                     status = "error",
@@ -106,9 +109,10 @@ namespace AnimeStudio.UnityBake
                 };
             }
 
+            AnimeStudioBakeRequest request = null;
             try
             {
-                var request = JsonUtility.FromJson<AnimeStudioBakeRequest>(File.ReadAllText(requestPath));
+                request = JsonUtility.FromJson<AnimeStudioBakeRequest>(File.ReadAllText(requestPath));
                 if (request == null)
                 {
                     return new AnimeStudioBakeResult
@@ -124,7 +128,8 @@ namespace AnimeStudio.UnityBake
             }
             catch (Exception e)
             {
-                var request = new AnimeStudioBakeRequest { outputJson = Path.Combine(Path.GetDirectoryName(requestPath) ?? ".", "unity_bake_result.json") };
+                // 保留原 request.outputJson，避免测试/批处理读取不到失败报告。
+                request ??= new AnimeStudioBakeRequest { outputJson = Path.Combine(Path.GetDirectoryName(requestPath) ?? ".", "unity_bake_result.json") };
                 var result = new AnimeStudioBakeResult
                 {
                     status = "error",
