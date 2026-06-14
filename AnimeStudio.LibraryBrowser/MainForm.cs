@@ -2069,9 +2069,7 @@ namespace AnimeStudio.LibraryBrowser
         private bool ModelNeedsAvatarMetadata(LibraryModelItem item)
         {
             return ModelHasAnimation(item, animation =>
-                !animation.IsUnreal
-                && animation.IsExplicit
-                && NeedsAvatarHumanDescriptionRefresh(animation));
+                HasMissingProductionAvatarOracle(animation));
         }
 
         private bool ModelHasAnimation(LibraryModelItem item, Func<LibraryAnimationCandidate, bool> predicate)
@@ -3009,7 +3007,7 @@ namespace AnimeStudio.LibraryBrowser
                     {
                         stats.UnityBakeWithModelAvatar++;
                     }
-                    else
+                    else if (HasMissingProductionAvatarOracle(animation))
                     {
                         stats.UnityBakeWithoutAvatarOracle++;
                     }
@@ -3785,6 +3783,20 @@ namespace AnimeStudio.LibraryBrowser
         {
             return string.Equals(animation?.ProductionUnityBakeAvatarSource, "model_human_description", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(animation?.ProductionUnityBakeAvatarSource, "candidate_production_avatar", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasMissingProductionAvatarOracle(LibraryAnimationCandidate animation)
+        {
+            if (animation == null
+                || animation.IsUnreal
+                || !animation.IsExplicit
+                || !RequiresUnityBake(animation))
+            {
+                return false;
+            }
+
+            return !string.Equals(animation.ProductionUnityBakeAvatarSource, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                && !IsKnownProductionAvatarSource(animation);
         }
 
         private static string FormatProductionAvatarSource(LibraryAnimationCandidate animation)
