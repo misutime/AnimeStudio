@@ -156,6 +156,11 @@ $browserAnimationSummary = Get-MethodBodyText $libraryBrowserMainForm "private s
 Assert-Contains $browserAnimationSummary "IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation)" "Browser animation page pending count must exclude terminal diagnostics."
 Assert-Contains $browserAnimationSummary '"人工验收"' "Browser animation page review count must include needs_review terminal diagnostics."
 
+$browserOpenDiagnostic = Get-MethodBodyText $libraryBrowserMainForm "private static bool IsOpenableUnityBakeDiagnosticStatus"
+Assert-Contains $browserOpenDiagnostic '"静态姿态"' "Browser double-click must allow opening static_pose diagnostic glTF."
+Assert-Contains $browserOpenDiagnostic '"需人工验收"' "Browser double-click must allow opening needs_review diagnostic glTF."
+Assert-Contains $browserOpenDiagnostic '"已烘焙但需重建"' "Browser double-click must allow opening untrusted baked diagnostic glTF."
+
 $browserPreviewPriority = Get-MethodBodyText $libraryBrowserPreviewCache "private static int BakeCacheStatusPriority"
 Assert-Contains $browserPreviewPriority '"需人工验收" => 45' "Browser preview status must keep needs_review above request_written rows."
 Assert-Contains $browserPreviewPriority '"静态姿态" => 44' "Browser preview status must keep static_pose above request_written rows."

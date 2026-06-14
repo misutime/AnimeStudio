@@ -4173,6 +4173,7 @@ namespace AnimeStudio.LibraryBrowser
                     title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
+                OpenUnityBakeDiagnosticIfRequested(needsUnityBake, openAfterGenerate, status);
                 return;
             }
 
@@ -4786,6 +4787,7 @@ namespace AnimeStudio.LibraryBrowser
                     title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
+                OpenUnityBakeDiagnosticIfRequested(needsUnityBake, openAfterGenerate, status);
                 return;
             }
 
@@ -4843,6 +4845,28 @@ namespace AnimeStudio.LibraryBrowser
             {
                 OpenPathWithF3d(status.GltfPath);
             }
+        }
+
+        private static void OpenUnityBakeDiagnosticIfRequested(bool needsUnityBake, bool openAfterGenerate, AnimationPreviewStatus status)
+        {
+            if (!needsUnityBake
+                || !openAfterGenerate
+                || status == null
+                || string.IsNullOrWhiteSpace(status.GltfPath)
+                || !File.Exists(status.GltfPath)
+                || !IsOpenableUnityBakeDiagnosticStatus(status.Status))
+            {
+                return;
+            }
+
+            OpenPathWithF3d(status.GltfPath);
+        }
+
+        private static bool IsOpenableUnityBakeDiagnosticStatus(string status)
+        {
+            return string.Equals(status, "静态姿态", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "需人工验收", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "已烘焙但需重建", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string ValidateUnrealAnimationPreviewInputs(LibraryModelItem model, LibraryAnimationCandidate animation)
