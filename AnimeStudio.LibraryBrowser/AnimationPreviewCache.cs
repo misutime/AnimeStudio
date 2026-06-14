@@ -258,7 +258,8 @@ namespace AnimeStudio.LibraryBrowser
             var unityAvatarAsset = config.ResolveUnityAvatarAsset(
                 model.Name,
                 model.OutputPath,
-                model.FileName);
+                model.FileName,
+                ResolveModelAvatarName(model));
             var args = cli.BuildUnityBakeArguments(
                 _root,
                 model.OutputPath,
@@ -616,6 +617,53 @@ namespace AnimeStudio.LibraryBrowser
             return cache.TryGetValue(BuildBakeCacheKey(model.OutputPath, animation.BestPath), out var status)
                 ? status
                 : null;
+        }
+
+        private string ResolveModelAvatarName(LibraryModelItem model)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(model.OutputPath))
+            {
+                return null;
+            }
+
+            var dbPath = Path.Combine(_root, "library_index.db");
+            if (!File.Exists(dbPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT raw_json
+FROM assets
+WHERE output=$output
+LIMIT 1;";
+                command.Parameters.AddWithValue("$output", model.OutputPath);
+                var rawJson = command.ExecuteScalar() as string;
+                if (string.IsNullOrWhiteSpace(rawJson))
+                {
+                    return null;
+                }
+
+                using var document = JsonDocument.Parse(rawJson);
+                if (!document.RootElement.TryGetProperty("avatar", out var avatar)
+                    || avatar.ValueKind != JsonValueKind.Object)
+                {
+                    return null;
+                }
+
+                var avatarName = ReadString(avatar, "name");
+                return string.IsNullOrWhiteSpace(avatarName) ? null : avatarName;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private Dictionary<string, AnimationPreviewStatus> LoadSqliteBakeCache()

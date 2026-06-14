@@ -707,6 +707,8 @@ Library Browser 也支持同一条路径。素材库根目录可写本地配置 
 
 `unityAvatarAssets` 是显式模型名到 Avatar asset 的映射。没有命中的模型不会自动套用这些 Avatar，因此 VRising、Freedunk 等普通 Unity 库仍走默认 `Animator.avatar` / HumanDescription 路径。
 
+映射 key 可以写模型名，也可以写模型元数据里的 `avatar.name`。推荐对原神这类共用 Avatar 的 NPC 写 Avatar 名，例如 `NPC_Male_Common_ModelAvatar`；Browser 会从 `library_index.db assets.raw_json.avatar.name` 读取该模型真实 Avatar 名后再查映射，这样一个配置可以覆盖所有引用同一个 Unity Avatar 的模型。这个关系来自导出的 Unity Avatar 元数据，不是按目录或角色名前缀推断。
+
 ### 独立动画资产
 
 默认 Library 导出会把动画作为独立资产保存，而不是直接塞进模型：
