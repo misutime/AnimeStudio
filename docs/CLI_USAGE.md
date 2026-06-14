@@ -371,7 +371,20 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -SummaryOnly
 ```
 
-脚本只读 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
+如果只是阶段性确认“根目录 bake cache 摘要还在、bake 工程里 ImportedAvatar asset 能被看到、最近批次报告在哪里”，可以用 `-FastSummary`。这个模式不扫描大型 SQLite 候选表，适合原神这类 10GB 级 `library_index.db` 的快速验收入口；它不会替代 `-GateOnly` / `-SummaryOnly` / 完整模式的确定性关系门禁：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\Measure-DeterministicAnimationCoverage.ps1 `
+  -LibraryPath "D:\Assets\AS-Assets\YuanShen-Assets" `
+  -UnityProject "D:\misutime\AnimeStudioUnityProject" `
+  -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\AnimationRelationDiagnostics_Fast" `
+  -FastSummary
+```
+
+`-FastSummary` 会优先读取根目录 `animation_bake_cache_summary.json`、`sqlite_index_summary.json`、`Assets/AnimeStudioBake/ImportedAvatar/*.asset` 和 `.as_browser_cache/unity_bake_batch_reports/*.json`。旧库里的 summary JSON 如果因为历史编码问题读坏，脚本会把读取错误写进报告，而不是中断整个快速验收。维护这个 PowerShell 脚本时，新增在 PowerShell 主体里的字符串应保持 ASCII；中文说明优先写到 Markdown 文档或 Python 生成内容里，避免 Windows PowerShell 5 按 ANSI 解析 UTF-8 无 BOM 文件时误报语法错误。
+
+非 `-FastSummary` 的深度模式主要读取 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
 
 - `gate.status`：默认应为 `ok`。
 - `totals.nonExplicitCandidates`：必须为 `0`，否则说明默认候选表混入了非 Unity 显式关系，需要追查是否退回骨骼数量、名称或路径 fallback。

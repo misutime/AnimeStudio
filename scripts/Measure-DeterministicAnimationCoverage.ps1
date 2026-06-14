@@ -17,6 +17,8 @@ param(
 
     [switch]$SummaryOnly,
 
+    [switch]$FastSummary,
+
     [switch]$GateOnly,
 
     [switch]$FailOnWarning,
@@ -72,6 +74,129 @@ if (-not $SelfTest -and -not (Test-Path -LiteralPath $LibraryIndex)) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+
+function Limit-Text([string]$Value, [int]$Max = 220) {
+    if ([string]::IsNullOrEmpty($Value)) {
+        return $Value
+    }
+
+    $oneLine = $Value -replace "\s+", " "
+    if ($oneLine.Length -le $Max) {
+        return $oneLine
+    }
+
+    return $oneLine.Substring(0, $Max) + "..."
+}
+
+if ($FastSummary) {
+    $libraryFullPath = if ($SelfTest) { $LibraryPath } else { (Resolve-Path -LiteralPath $LibraryPath).Path }
+    $cacheSummaryPath = Join-Path $libraryFullPath "animation_bake_cache_summary.json"
+    $sqliteSummaryPath = Join-Path $libraryFullPath "sqlite_index_summary.json"
+    $cacheSummary = $null
+    $sqliteSummary = $null
+    $cacheSummaryError = $null
+    $sqliteSummaryError = $null
+    if (Test-Path -LiteralPath $cacheSummaryPath) {
+        try {
+            $cacheSummary = Get-Content -LiteralPath $cacheSummaryPath -Raw | ConvertFrom-Json
+        }
+        catch {
+            $cacheSummaryError = Limit-Text $_.Exception.Message
+        }
+    }
+    if (Test-Path -LiteralPath $sqliteSummaryPath) {
+        try {
+            $sqliteSummary = Get-Content -LiteralPath $sqliteSummaryPath -Raw | ConvertFrom-Json
+        }
+        catch {
+            $sqliteSummaryError = Limit-Text $_.Exception.Message
+        }
+    }
+
+    $importedAvatarRoot = $null
+    $importedAvatarFiles = @()
+    if (-not [string]::IsNullOrWhiteSpace($UnityProject) -and (Test-Path -LiteralPath $UnityProject)) {
+        $importedAvatarRoot = Join-Path (Resolve-Path -LiteralPath $UnityProject).Path "Assets\AnimeStudioBake\ImportedAvatar"
+        if (Test-Path -LiteralPath $importedAvatarRoot) {
+            $importedAvatarFiles = @(Get-ChildItem -LiteralPath $importedAvatarRoot -Filter *.asset -File -Recurse -ErrorAction SilentlyContinue)
+        }
+    }
+
+    $batchReportDir = Join-Path $libraryFullPath ".as_browser_cache\unity_bake_batch_reports"
+    $latestBatchReports = @()
+    if (Test-Path -LiteralPath $batchReportDir) {
+        $latestBatchReports = @(Get-ChildItem -LiteralPath $batchReportDir -Filter *.json -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 8 FullName, LastWriteTime, Length)
+    }
+
+    $summary = [ordered]@{
+        generatedAt = [DateTimeOffset]::UtcNow.ToString("O")
+        mode = "fastSummary"
+        libraryPath = $libraryFullPath
+        libraryIndex = $LibraryIndex
+        sourceIndex = $SourceIndex
+        rule = "FastSummary only reads root JSON summaries, ImportedAvatar files, and recent batch reports. It does not scan the large SQLite candidate tables."
+        cacheSummaryPresent = ($null -ne $cacheSummary)
+        cacheSummaryPath = if (Test-Path -LiteralPath $cacheSummaryPath) { $cacheSummaryPath } else { $null }
+        cacheSummaryError = $cacheSummaryError
+        sqliteSummaryPresent = ($null -ne $sqliteSummary)
+        sqliteSummaryPath = if (Test-Path -LiteralPath $sqliteSummaryPath) { $sqliteSummaryPath } else { $null }
+        sqliteSummaryError = $sqliteSummaryError
+        unityProject = $UnityProject
+        importedAvatarRoot = $importedAvatarRoot
+        importedAvatarAssetCount = $importedAvatarFiles.Count
+        importedAvatarAssetSamples = @($importedAvatarFiles | Select-Object -First 12 -ExpandProperty FullName)
+        latestBatchReports = @($latestBatchReports)
+        animationBakeCacheSummary = $cacheSummary
+        sqliteIndexSummary = $sqliteSummary
+    }
+
+    $jsonPath = Join-Path $OutputDir "deterministic_animation_coverage.json"
+    $mdPath = Join-Path $OutputDir "DETERMINISTIC_ANIMATION_COVERAGE.md"
+    $summary | ConvertTo-Json -Depth 64 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+    $md = New-Object System.Collections.Generic.List[string]
+    $md.Add("# Deterministic Animation Coverage")
+    $md.Add("")
+    $md.Add("- Mode: fastSummary")
+    $md.Add(("- Library: {0}" -f $libraryFullPath))
+    $md.Add("- Rule: FastSummary reads root JSON summaries, ImportedAvatar files, and recent batch reports. It does not scan large SQLite candidate tables.")
+    $md.Add(("- Cache summary present: {0}" -f ($null -ne $cacheSummary)))
+    $md.Add(("- Imported Avatar assets: {0}" -f $importedAvatarFiles.Count))
+    if ($cacheSummaryPath -and (Test-Path -LiteralPath $cacheSummaryPath)) {
+        $md.Add(("- Cache summary: {0}" -f $cacheSummaryPath))
+    }
+    if ($sqliteSummaryPath -and (Test-Path -LiteralPath $sqliteSummaryPath)) {
+        $md.Add(("- SQLite summary: {0}" -f $sqliteSummaryPath))
+        if ($sqliteSummaryError) {
+            $md.Add(("- SQLite summary read error: {0}" -f $sqliteSummaryError))
+        }
+    }
+    if ($latestBatchReports.Count -gt 0) {
+        $md.Add("")
+        $md.Add("## Latest Batch Reports")
+        foreach ($report in $latestBatchReports) {
+            $md.Add(("- {0}" -f $report.FullName))
+        }
+    }
+    $md.Add("")
+    $md.Add("For the deep deterministic gate, run the full mode without -FastSummary. Large libraries should run it offline.")
+    $md | Set-Content -LiteralPath $mdPath -Encoding UTF8
+
+    Write-Output $jsonPath
+    Write-Output $mdPath
+    $console = [ordered]@{
+        mode = "fastSummary"
+        cacheSummaryPresent = ($null -ne $cacheSummary)
+        importedAvatarAssetCount = $importedAvatarFiles.Count
+        latestBatchReportCount = $latestBatchReports.Count
+        json = $jsonPath
+        markdown = $mdPath
+    }
+    Write-Output ($console | ConvertTo-Json -Compress)
+    return
+}
 
 $python = @'
 import argparse
