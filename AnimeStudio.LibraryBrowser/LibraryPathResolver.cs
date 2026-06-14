@@ -35,12 +35,6 @@ namespace AnimeStudio.LibraryBrowser
                 return path;
             }
 
-            var direct = TryFullPath(path);
-            if (ExistsAsExpected(direct, expectDirectory))
-            {
-                return direct;
-            }
-
             if (!Path.IsPathRooted(path) && !string.IsNullOrWhiteSpace(libraryRoot))
             {
                 var fromRoot = TryFullPath(Path.Combine(libraryRoot, path));
@@ -48,6 +42,20 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     return fromRoot;
                 }
+
+                var relocatedFromRoot = RelocateFromKnownAssetRoot(libraryRoot, path);
+                if (ExistsAsExpected(relocatedFromRoot, expectDirectory))
+                {
+                    return relocatedFromRoot;
+                }
+
+                return path;
+            }
+
+            var direct = TryFullPath(path);
+            if (ExistsAsExpected(direct, expectDirectory))
+            {
+                return direct;
             }
 
             var relocated = RelocateFromKnownAssetRoot(libraryRoot, path);

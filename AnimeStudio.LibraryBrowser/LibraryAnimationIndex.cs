@@ -33,6 +33,8 @@ namespace AnimeStudio.LibraryBrowser
         private readonly Dictionary<string, List<LibraryAnimationCandidate>> _byModelOutput;
         private readonly Dictionary<string, LibraryAnimationUsage> _byAnimationKey;
         private readonly Dictionary<string, int> _sqliteCandidateCountByModelOutput;
+        private readonly Dictionary<string, int> _sqliteModelCountByAnimationKey;
+        private readonly Dictionary<string, IReadOnlyList<string>> _sqliteAnimationModelOutputCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, IReadOnlyList<LibraryAnimationCandidate>> _targetedCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly string _root;
         private readonly string _sqliteDbPath;
@@ -47,6 +49,7 @@ namespace AnimeStudio.LibraryBrowser
             string loadSource = "",
             int indexedCandidateCount = 0,
             Dictionary<string, int> sqliteCandidateCountByModelOutput = null,
+            Dictionary<string, int> sqliteModelCountByAnimationKey = null,
             string sqliteDbPath = null,
             LibraryBrowserSettings settings = null,
             bool lazySqlite = false)
@@ -54,10 +57,11 @@ namespace AnimeStudio.LibraryBrowser
             _root = root;
             _byModelOutput = byModelOutput;
             _sqliteCandidateCountByModelOutput = sqliteCandidateCountByModelOutput;
+            _sqliteModelCountByAnimationKey = sqliteModelCountByAnimationKey;
             _sqliteDbPath = sqliteDbPath;
             _settings = settings;
             _lazySqlite = lazySqlite;
-            _byAnimationKey = BuildAnimationUsageMap(byModelOutput, allAnimations);
+            _byAnimationKey = BuildAnimationUsageMap(byModelOutput, allAnimations, sqliteModelCountByAnimationKey);
             LoadSource = loadSource;
             IndexedModelCount = _lazySqlite && _sqliteCandidateCountByModelOutput != null
                 ? _sqliteCandidateCountByModelOutput.Count
@@ -155,6 +159,40 @@ namespace AnimeStudio.LibraryBrowser
                 .ToArray();
         }
 
+        public IReadOnlyList<string> FindModelOutputsForAnimation(LibraryAnimationUsage usage)
+        {
+            if (usage == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            if (!_lazySqlite)
+            {
+                return usage.ModelOutputs;
+            }
+
+            var key = usage.Key;
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return Array.Empty<string>();
+            }
+
+            lock (_cacheLock)
+            {
+                if (_sqliteAnimationModelOutputCache.TryGetValue(key, out var cached))
+                {
+                    return cached;
+                }
+            }
+
+            var outputs = LoadSqliteModelOutputsForAnimation(usage).ToArray();
+            lock (_cacheLock)
+            {
+                _sqliteAnimationModelOutputCache[key] = outputs;
+            }
+            return outputs;
+        }
+
         public IReadOnlyList<LibraryAnimationCandidate> FindTargetedForModel(LibraryModelItem model)
         {
             if (model == null || string.IsNullOrWhiteSpace(_root))
@@ -222,6 +260,7 @@ namespace AnimeStudio.LibraryBrowser
                     if (candidateCount > LargeSqliteCandidateLazyThreshold)
                     {
                         var counts = LoadSqliteCandidateCounts(root, connection);
+                        var animationCounts = LoadSqliteAnimationModelCounts(root, connection);
                         return new LibraryAnimationIndex(
                             root,
                             result,
@@ -229,6 +268,7 @@ namespace AnimeStudio.LibraryBrowser
                             "SQLite-lazy",
                             (int)Math.Min(candidateCount, int.MaxValue),
                             counts,
+                            animationCounts,
                             dbPath,
                             settings,
                             lazySqlite: true);
@@ -378,7 +418,31 @@ GROUP BY model_output;";
                     continue;
                 }
 
-                result[NormalizePath(output)] = reader.GetInt32(1);
+                result[NormalizeLibraryPath(root, output)] = reader.GetInt32(1);
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, int> LoadSqliteAnimationModelCounts(string root, SqliteConnection connection)
+        {
+            var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT animation_output, COUNT(DISTINCT model_output)
+FROM model_animation_candidates
+WHERE relation_source='explicit'
+GROUP BY animation_output;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var output = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    continue;
+                }
+
+                result[NormalizeLibraryPath(root, output)] = reader.GetInt32(1);
             }
 
             return result;
@@ -475,6 +539,59 @@ ORDER BY c.score DESC;";
             }
 
             yield return outputPath.Replace('\\', '/');
+        }
+
+        private IReadOnlyList<string> LoadSqliteModelOutputsForAnimation(LibraryAnimationUsage usage)
+        {
+            if (usage == null || string.IsNullOrWhiteSpace(_sqliteDbPath) || !File.Exists(_sqliteDbPath))
+            {
+                return Array.Empty<string>();
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={_sqliteDbPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                var outputs = BuildSqliteModelOutputKeys(usage.Animation.BestPath).ToArray();
+                if (outputs.Length == 0)
+                {
+                    return Array.Empty<string>();
+                }
+
+                var parameterNames = new List<string>();
+                for (var i = 0; i < outputs.Length; i++)
+                {
+                    var name = "$p" + i;
+                    parameterNames.Add(name);
+                    command.Parameters.AddWithValue(name, outputs[i]);
+                }
+
+                command.CommandText = $@"
+SELECT DISTINCT model_output
+FROM model_animation_candidates
+WHERE relation_source='explicit'
+  AND animation_output IN ({string.Join(",", parameterNames)})
+ORDER BY model_output;";
+                using var reader = command.ExecuteReader();
+                var result = new List<string>();
+                while (reader.Read())
+                {
+                    var modelOutput = LibraryPathResolver.ResolveExistingFile(_root, reader.GetString(0));
+                    if (!string.IsNullOrWhiteSpace(modelOutput))
+                    {
+                        result.Add(NormalizeLibraryPath(_root, modelOutput));
+                    }
+                }
+
+                return result;
+            }
+            catch (Exception ex) when (!System.Diagnostics.Debugger.IsAttached)
+            {
+                WriteSqliteLoadError(_root, ex.ToString());
+                return Array.Empty<string>();
+            }
         }
 
         private static LibraryAnimationIndex LoadCompact(string path)
@@ -1569,7 +1686,8 @@ GROUP BY ab.id;";
 
         private static Dictionary<string, LibraryAnimationUsage> BuildAnimationUsageMap(
             Dictionary<string, List<LibraryAnimationCandidate>> byModelOutput,
-            IEnumerable<LibraryAnimationCandidate> allAnimations)
+            IEnumerable<LibraryAnimationCandidate> allAnimations,
+            IReadOnlyDictionary<string, int> sqliteModelCountByAnimationKey = null)
         {
             var builders = new Dictionary<string, AnimationUsageBuilder>(StringComparer.OrdinalIgnoreCase);
             foreach (var pair in byModelOutput)
@@ -1619,6 +1737,10 @@ GROUP BY ab.id;";
                 {
                     Key = x.Key,
                     Animation = x.Value.Animation,
+                    ModelCountOverride = sqliteModelCountByAnimationKey != null
+                        && sqliteModelCountByAnimationKey.TryGetValue(x.Key, out var modelCount)
+                            ? modelCount
+                            : null,
                     ModelOutputs = x.Value.ModelOutputs
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .OrderBy(y => y, StringComparer.OrdinalIgnoreCase)
@@ -1670,6 +1792,19 @@ GROUP BY ab.id;";
         private static string NormalizePath(string path)
         {
             return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private static string NormalizeLibraryPath(string libraryRoot, string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return "";
+            }
+
+            var absolute = Path.IsPathRooted(path) || string.IsNullOrWhiteSpace(libraryRoot)
+                ? path
+                : Path.Combine(libraryRoot, path);
+            return NormalizePath(absolute);
         }
 
         private static string NormalizeUnityPath(string path)

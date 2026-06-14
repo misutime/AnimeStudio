@@ -76,7 +76,7 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 
 运行前需要关闭正在打开该素材库的 Library Browser，避免 `library_index.db` 被占用。
 
-原神这类几百万候选的大库不能在 Browser 启动时一次性读取全部 `model_animation_candidates`。Browser 应优先使用 SQLite lazy 模式：启动阶段只统计每个模型的显式候选数量，选中模型时再按 `model_output` 查询该模型自己的候选。SQLite 加载失败时必须写出 `.as_browser_cache/animation_index_sqlite_error.txt`，不能静默回退成“0 动画”误导用户。
+原神这类几百万候选的大库不能在 Browser 启动时一次性读取全部 `model_animation_candidates`。Browser 应优先使用 SQLite lazy 模式：启动阶段只统计每个模型的显式候选数量、每个动画关联的模型数量；选中模型时再按 `model_output` 查询该模型自己的候选，选中动画时再按 `animation_output` 查询该动画关联的模型。SQLite 加载失败时必须写出 `.as_browser_cache/animation_index_sqlite_error.txt`，不能静默回退成“0 动画”误导用户。素材库索引中的相对路径只能相对当前 Library root 解析，不能回退到 Browser 当前工作目录，避免旧索引或缺失文件误命中仓库里的同名 `Models/`。
 
 ## Unity Bake 配置（生产主线）
 

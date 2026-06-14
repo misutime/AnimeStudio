@@ -2550,7 +2550,7 @@ namespace AnimeStudio.LibraryBrowser
             IEnumerable<LibraryModelItem> query = Enumerable.Empty<LibraryModelItem>();
             if (_selectedLibraryAnimation != null)
             {
-                var modelOutputs = _selectedLibraryAnimation.ModelOutputs
+                var modelOutputs = _animationIndex.FindModelOutputsForAnimation(_selectedLibraryAnimation)
                     .Select(NormalizePathForCompare)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 if (modelOutputs.Count > 0)
