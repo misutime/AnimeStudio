@@ -209,7 +209,7 @@ namespace AnimeStudio.LibraryBrowser
             _kindBox.Width = 160;
             _qualityBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _qualityBox.Width = 160;
-            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "质量问题", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画", "有导入Avatar候选", "待可信烘焙", "需Avatar元数据" });
+            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "质量问题", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画", "有导入Avatar候选", "待可信烘焙", "缺Avatar", "需Avatar元数据" });
             _qualityBox.SelectedIndex = 0;
             _thumbnailStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _thumbnailStateBox.Width = 120;
@@ -2041,6 +2041,7 @@ namespace AnimeStudio.LibraryBrowser
                 "有动画" => query.Where(x => _animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
                 "有导入Avatar候选" => query.Where(ModelHasImportedAvatarBakeCandidate),
                 "待可信烘焙" => query.Where(ModelHasPendingTrustedUnityBake),
+                "缺Avatar" => query.Where(ModelNeedsAvatarMetadata),
                 "需Avatar元数据" => query.Where(ModelNeedsAvatarMetadata),
                 _ => query,
             };
@@ -2605,10 +2606,15 @@ namespace AnimeStudio.LibraryBrowser
         {
             if (bakeStats == null || bakeStats.UnityBakeWithAvatarAsset <= 0)
             {
-                return "";
+                return bakeStats?.UnityBakeWithoutAvatarOracle > 0
+                    ? $" 缺A{bakeStats.UnityBakeWithoutAvatarOracle}"
+                    : "";
             }
 
-            return $" Avatar{bakeStats.UnityBakeWithAvatarAsset}";
+            var missing = bakeStats.UnityBakeWithoutAvatarOracle > 0
+                ? $" 缺A{bakeStats.UnityBakeWithoutAvatarOracle}"
+                : "";
+            return $" Avatar{bakeStats.UnityBakeWithAvatarAsset}{missing}";
         }
 
         private sealed class ModelAnimationBakeStats
