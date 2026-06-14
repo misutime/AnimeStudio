@@ -9,7 +9,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class LibraryBakeCacheSummary
     {
-        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "");
+        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", "", "");
 
         public LibraryBakeCacheSummary(
             bool exists,
@@ -32,6 +32,8 @@ namespace AnimeStudio.LibraryBrowser
             double cacheCoveragePercent,
             double trustedBakedCoveragePercent,
             string generatedAt,
+            string cacheSummaryFreshness,
+            string cacheSummaryFreshnessNote,
             LatestBatchReport latestBatchReport = null)
         {
             Exists = exists;
@@ -54,6 +56,8 @@ namespace AnimeStudio.LibraryBrowser
             CacheCoveragePercent = cacheCoveragePercent;
             TrustedBakedCoveragePercent = trustedBakedCoveragePercent;
             GeneratedAt = generatedAt ?? "";
+            CacheSummaryFreshness = cacheSummaryFreshness ?? "";
+            CacheSummaryFreshnessNote = cacheSummaryFreshnessNote ?? "";
             LatestBatch = latestBatchReport ?? LatestBatchReport.Empty;
         }
 
@@ -77,6 +81,8 @@ namespace AnimeStudio.LibraryBrowser
         public double CacheCoveragePercent { get; }
         public double TrustedBakedCoveragePercent { get; }
         public string GeneratedAt { get; }
+        public string CacheSummaryFreshness { get; }
+        public string CacheSummaryFreshnessNote { get; }
         public LatestBatchReport LatestBatch { get; }
 
         public string ShortLabel()
@@ -93,10 +99,10 @@ namespace AnimeStudio.LibraryBrowser
 
             if (LatestBatch.Exists && LatestBatch.SkippedMissingAvatarOracle > 0)
             {
-                return $"Unity烘焙oracle {FormatPercent(EffectiveCoveragePercent)}，可信 {TrustedBakedCandidates}，最近缺Avatar {LatestBatch.SkippedMissingAvatarOracle}";
+                return $"Unity烘焙oracle {FormatPercent(EffectiveCoveragePercent)}，{FormatCacheFreshnessShortText()}，可信 {TrustedBakedCandidates}，最近缺Avatar {LatestBatch.SkippedMissingAvatarOracle}";
             }
 
-            return $"Unity烘焙oracle {FormatPercent(EffectiveCoveragePercent)}，可信 {TrustedBakedCandidates}";
+            return $"Unity烘焙oracle {FormatPercent(EffectiveCoveragePercent)}，{FormatCacheFreshnessShortText()}，可信 {TrustedBakedCandidates}";
         }
 
         public string DetailText()
@@ -110,6 +116,7 @@ namespace AnimeStudio.LibraryBrowser
             return
                 $"Unity烘焙摘要: {SummaryPath}{Environment.NewLine}" +
                 $"Unity烘焙摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
+                FormatCacheFreshnessDetailText() +
                 $"显式Humanoid/Muscle候选: {ExplicitUnityBakeCandidates:N0}{Environment.NewLine}" +
                 $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveCoveragePercent)}){Environment.NewLine}" +
                 FormatAvatarOraclePathText() +
@@ -131,13 +138,21 @@ namespace AnimeStudio.LibraryBrowser
             var path = Path.Combine(libraryRoot, "animation_bake_cache_summary.json");
             if (!File.Exists(path))
             {
-                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", "missing", "animation_bake_cache_summary.json 不存在。", latestBatchReport);
             }
 
             try
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(path));
                 var root = document.RootElement;
+                var generatedAt = ReadString(root, "generatedAt");
+                var freshness = ReadString(root, "cacheSummaryFreshness");
+                var freshnessNote = ReadString(root, "cacheSummaryFreshnessNote");
+                if (string.IsNullOrWhiteSpace(freshness))
+                {
+                    ResolveCacheFreshness(libraryRoot, generatedAt, out freshness, out freshnessNote);
+                }
+
                 return new LibraryBakeCacheSummary(
                     true,
                     path,
@@ -158,13 +173,96 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(root, "untrustedBakedCandidates"),
                     ReadDouble(root, "cacheCoveragePercent"),
                     ReadDouble(root, "trustedBakedCoveragePercent"),
-                    ReadString(root, "generatedAt"),
+                    generatedAt,
+                    freshness,
+                    freshnessNote,
                     latestBatchReport);
             }
             catch
             {
-                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", "unknown", "animation_bake_cache_summary.json 读取失败。", latestBatchReport);
             }
+        }
+
+        private string FormatCacheFreshnessShortText()
+        {
+            if (string.Equals(CacheSummaryFreshness, "fresh", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(CacheSummaryFreshness))
+            {
+                return "cache fresh";
+            }
+
+            if (string.Equals(CacheSummaryFreshness, "stale", StringComparison.OrdinalIgnoreCase))
+            {
+                return "cache 过期";
+            }
+
+            if (string.Equals(CacheSummaryFreshness, "missing", StringComparison.OrdinalIgnoreCase))
+            {
+                return "cache 缺失";
+            }
+
+            return $"cache {CacheSummaryFreshness}";
+        }
+
+        private string FormatCacheFreshnessDetailText()
+        {
+            var text = $"烘焙摘要cache freshness: {EmptyAsUnknown(CacheSummaryFreshness)}{Environment.NewLine}";
+            if (!string.IsNullOrWhiteSpace(CacheSummaryFreshnessNote)
+                && !string.Equals(CacheSummaryFreshness, "fresh", StringComparison.OrdinalIgnoreCase))
+            {
+                text += $"烘焙摘要cache提示: {CacheSummaryFreshnessNote}{Environment.NewLine}";
+            }
+
+            return text;
+        }
+
+        private static void ResolveCacheFreshness(string libraryRoot, string cacheGeneratedAt, out string freshness, out string note)
+        {
+            var sqliteSummaryPath = Path.Combine(libraryRoot ?? "", "sqlite_index_summary.json");
+            if (!File.Exists(sqliteSummaryPath))
+            {
+                freshness = "unknown";
+                note = "sqlite_index_summary.json 不存在，无法判断 bake cache 是否对应当前索引。";
+                return;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(sqliteSummaryPath));
+                var sqliteCreatedUtc = ReadString(document.RootElement, "createdUtc");
+                if (!TryReadDate(cacheGeneratedAt, out var cacheTime)
+                    || !TryReadDate(sqliteCreatedUtc, out var sqliteTime))
+                {
+                    freshness = "unknown";
+                    note = "无法解析 bake cache generatedAt 或 sqlite_index_summary.json createdUtc。";
+                    return;
+                }
+
+                if (cacheTime < sqliteTime)
+                {
+                    freshness = "stale";
+                    note = "bake cache 早于 sqlite_index_summary.json；如需准确覆盖率，请刷新烘焙摘要或 FastSummary。";
+                    return;
+                }
+
+                freshness = "fresh";
+                note = "bake cache 不早于 sqlite_index_summary.json。";
+            }
+            catch
+            {
+                freshness = "unknown";
+                note = "sqlite_index_summary.json 读取失败，无法判断 bake cache 新鲜度。";
+            }
+        }
+
+        private static bool TryReadDate(string value, out DateTimeOffset result)
+        {
+            return DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out result);
         }
 
         private string FormatAvatarOraclePathText()
