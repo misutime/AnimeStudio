@@ -81,20 +81,25 @@ namespace AnimeStudio.LibraryBrowser
 
         public string ResolveUnityAvatarAsset(params string[] modelKeys)
         {
+            return ResolveUnityAvatarAssetDetails(modelKeys).AssetPath;
+        }
+
+        public UnityAvatarAssetResolution ResolveUnityAvatarAssetDetails(params string[] modelKeys)
+        {
             if (UnityAvatarAssets == null || UnityAvatarAssets.Count == 0)
             {
-                return null;
+                return new UnityAvatarAssetResolution(null, null);
             }
 
             foreach (var key in BuildLookupKeys(modelKeys))
             {
                 if (UnityAvatarAssets.TryGetValue(key, out var value))
                 {
-                    return NormalizeUnityAssetPath(value);
+                    return new UnityAvatarAssetResolution(NormalizeUnityAssetPath(value), key);
                 }
             }
 
-            return null;
+            return new UnityAvatarAssetResolution(null, null);
         }
 
         public string ValidateUnityBake()
@@ -427,4 +432,6 @@ namespace AnimeStudio.LibraryBrowser
             };
         }
     }
+
+    internal sealed record UnityAvatarAssetResolution(string AssetPath, string MatchKey);
 }

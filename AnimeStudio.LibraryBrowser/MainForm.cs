@@ -2254,9 +2254,10 @@ namespace AnimeStudio.LibraryBrowser
                 var capability = string.IsNullOrWhiteSpace(animation.Capability) ? "" : $" {animation.Capability}";
                 var bake = RequiresUnityBake(animation) ? " 需要Unity烘焙" : "";
                 var avatarAsset = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset) ? "" : $" AvatarAsset={animation.ProductionUnityBakeAvatarAsset}";
+                var avatarKey = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarMatchKey) ? "" : $" AvatarKey={animation.ProductionUnityBakeAvatarMatchKey}";
                 var validation = FormatAnimationValidation(animation);
                 var source = animation.IsExplicit ? "显式关系" : "结构关系";
-                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}{avatarAsset}");
+                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}{avatarAsset}{avatarKey}");
                 if (!string.IsNullOrWhiteSpace(animation.BestPath))
                 {
                     lines.Add($"  {animation.BestPath}");
@@ -2661,7 +2662,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 var avatarText = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
                     ? ""
-                    : $" 已匹配导入 Avatar asset: {animation.ProductionUnityBakeAvatarAsset}。";
+                    : $" 已匹配导入 Avatar asset: {animation.ProductionUnityBakeAvatarAsset}{FormatAvatarMatchKey(animation)}。";
                 return new AnimationModelPreviewStatus("需 Unity 烘焙", "该模型-动画关系来自显式 Unity 索引，Humanoid/Muscle 身体动画需双击后由 Unity bake 生成可信 glTF。" + avatarText);
             }
 
@@ -2777,6 +2778,13 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return "未知";
+        }
+
+        private static string FormatAvatarMatchKey(LibraryAnimationCandidate animation)
+        {
+            return string.IsNullOrWhiteSpace(animation?.ProductionUnityBakeAvatarMatchKey)
+                ? ""
+                : $"，匹配键: {animation.ProductionUnityBakeAvatarMatchKey}";
         }
 
         private static bool RequiresUnityBake(LibraryAnimationCandidate animation)

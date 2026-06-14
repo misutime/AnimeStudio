@@ -890,7 +890,7 @@ ORDER BY model_output;";
             JsonElement animation,
             JsonElement candidate,
             JsonElement? model,
-            string importedAvatarAsset)
+            UnityAvatarAssetResolution importedAvatar)
         {
             var output = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "output") ?? ReadString(candidate, "output") ?? "");
             var animationAsset = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "animationAsset") ?? "");
@@ -898,6 +898,7 @@ ORDER BY model_output;";
             var relationSource = ReadString(candidate, "relationSource") ?? "";
             var animationType = ReadString(animation, "animationType") ?? ReadString(candidate, "animationType") ?? "";
             var modelHasProductionAvatar = HasProductionUnityBakeAvatar(model);
+            var importedAvatarAsset = importedAvatar?.AssetPath;
             var hasImportedAvatarAsset = !string.IsNullOrWhiteSpace(importedAvatarAsset);
             var productionReady = ReadBool(candidate, "productionUnityBakeReady") || modelHasProductionAvatar || hasImportedAvatarAsset;
             var productionBlocked = ReadBool(candidate, "productionUnityBakeBlocked") && !productionReady;
@@ -940,7 +941,8 @@ ORDER BY model_output;";
                 ProductionUnityBakeReady = productionReady,
                 ProductionUnityBakeBlocked = productionBlocked,
                 ProductionUnityBakeBlockedReason = productionBlocked ? ReadString(candidate, "productionUnityBakeBlockedReason") ?? "" : "",
-                ProductionUnityBakeAvatarAsset = importedAvatarAsset ?? "",
+                ProductionUnityBakeAvatarAsset = importedAvatarAsset ?? ReadString(candidate, "unityAvatarAsset") ?? "",
+                ProductionUnityBakeAvatarMatchKey = importedAvatar?.MatchKey ?? ReadString(candidate, "unityAvatarMatchKey") ?? "",
                 HasAvatarOracle = HasAvatarOracle(model),
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
@@ -1881,7 +1883,7 @@ GROUP BY ab.id;";
             return humanBones > 0 && skeletonBones > 0;
         }
 
-        private static string ResolveImportedAvatarAsset(
+        private static UnityAvatarAssetResolution ResolveImportedAvatarAsset(
             LibraryBrowserSettings settings,
             JsonElement? model,
             string modelOutput)
@@ -1897,7 +1899,7 @@ GROUP BY ab.id;";
                 avatarName = ReadString(avatar, "name") ?? "";
             }
 
-            return settings.ResolveUnityAvatarAsset(
+            return settings.ResolveUnityAvatarAssetDetails(
                 avatarName,
                 ReadString(model.Value, "name"),
                 ReadString(model.Value, "output"),
