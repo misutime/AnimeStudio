@@ -124,7 +124,7 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets);
+            var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets).AssetPath;
             ResolveSelectionLibraryPaths(selection, libraryRoot);
             GenerateSelection(
                 dbPath,
@@ -253,7 +253,8 @@ namespace AnimeStudio.CLI
                 var animationName = (string)selection.Animation["name"];
                 var itemOutput = Path.Combine(output, $"{SafeName(modelName)}__{SafeName(animationName)}");
                 var itemFbx = BuildBatchFbxPath(bakedFbxOutput, output, modelName, animationName);
-                var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets);
+                var avatarResolution = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets);
+                var effectiveUnityAvatarAsset = avatarResolution.AssetPath;
 
                 var requestPath = GenerateSelection(
                     dbPath,
@@ -314,9 +315,8 @@ namespace AnimeStudio.CLI
                     ["relationSource"] = (string)selection.Animation["relationSource"],
                     ["confidence"] = (string)selection.Animation["confidence"],
                     ["unityAvatarAsset"] = effectiveUnityAvatarAsset,
-                    ["avatarSource"] = string.IsNullOrWhiteSpace(effectiveUnityAvatarAsset)
-                        ? "model_human_description_or_prefab"
-                        : "unityAssetPaths.avatarAsset",
+                    ["avatarSource"] = avatarResolution.Source,
+                    ["avatarMatchKey"] = avatarResolution.MatchKey,
                     ["request"] = requestPath,
                     ["result"] = resultPath,
                     ["bakedGltf"] = bakedGltf,
@@ -2160,17 +2160,26 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
   )";
         }
 
-        private static string ResolveUnityAvatarAssetForSelection(
+        private static AvatarAssetResolution ResolveUnityAvatarAssetForSelection(
             PreviewSelection selection,
             string suppliedUnityAvatarAsset,
             IReadOnlyDictionary<string, string> importedAvatarAssets)
         {
             if (!string.IsNullOrWhiteSpace(suppliedUnityAvatarAsset))
             {
-                return suppliedUnityAvatarAsset;
+                return new AvatarAssetResolution(
+                    suppliedUnityAvatarAsset,
+                    "unityAssetPaths.avatarAsset",
+                    "--unity_avatar_asset");
             }
 
-            return ResolveUnityAvatarAsset(selection?.Model?["model"] as JObject, importedAvatarAssets);
+            var resolved = ResolveUnityAvatarAssetDetails(selection?.Model?["model"] as JObject, importedAvatarAssets);
+            if (!string.IsNullOrWhiteSpace(resolved.AssetPath))
+            {
+                return resolved;
+            }
+
+            return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
         }
 
         private static bool ValidateSuppliedUnityAvatarAssetScope(string modelSelector, string suppliedUnityAvatarAsset)
@@ -2225,20 +2234,25 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
 
         private static string ResolveUnityAvatarAsset(JObject model, IReadOnlyDictionary<string, string> importedAvatarAssets)
         {
+            return ResolveUnityAvatarAssetDetails(model, importedAvatarAssets).AssetPath;
+        }
+
+        private static AvatarAssetResolution ResolveUnityAvatarAssetDetails(JObject model, IReadOnlyDictionary<string, string> importedAvatarAssets)
+        {
             if (model == null || importedAvatarAssets == null || importedAvatarAssets.Count == 0)
             {
-                return null;
+                return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
             }
 
             foreach (var key in BuildUnityAvatarLookupKeys(model))
             {
                 if (importedAvatarAssets.TryGetValue(key, out var value))
                 {
-                    return value;
+                    return new AvatarAssetResolution(value, "unityAssetPaths.avatarAsset", key);
                 }
             }
 
-            return null;
+            return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
         }
 
         private static IEnumerable<string> BuildUnityAvatarLookupKeys(JObject model)
@@ -3084,6 +3098,8 @@ LIMIT 32;";
         private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
 
         private sealed record PreviewSelection(JObject Model, JObject Animation);
+
+        private sealed record AvatarAssetResolution(string AssetPath, string Source, string MatchKey);
 
         private sealed record BatchBakeApplyInfo(
             string BakedGltfPath,
