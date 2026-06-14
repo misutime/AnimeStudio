@@ -1169,6 +1169,14 @@ FROM animation_bake_cache;";
 
         private static string BuildUnityBakeFailureMessage(int exitCode, string reportPath, string stdout, string stderr)
         {
+            var batchReportMessage = ReadUnityBakeBatchFailureMessage(reportPath);
+            if (!string.IsNullOrWhiteSpace(batchReportMessage))
+            {
+                return batchReportMessage
+                    + Environment.NewLine
+                    + $"CLI exit code {exitCode}";
+            }
+
             var report = "";
             if (!string.IsNullOrWhiteSpace(reportPath) && File.Exists(reportPath))
             {
@@ -1197,6 +1205,66 @@ FROM animation_bake_cache;";
                 + $"CLI exit code {exitCode}"
                 + Environment.NewLine
                 + text;
+        }
+
+        private static string ReadUnityBakeBatchFailureMessage(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || !File.Exists(reportPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                var root = document.RootElement;
+                var status = ReadString(root, "status");
+                if (string.Equals(status, "noop_missing_avatar_oracle", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "Unity 烘焙未生成 request：当前显式候选缺少可信生产 Avatar oracle。"
+                        + Environment.NewLine
+                        + "需要原始 Animator.avatar、完整 HumanDescription，或导入的原始 Unity Avatar asset。"
+                        + Environment.NewLine
+                        + ReadFirstBatchItemMessage(root);
+                }
+
+                var itemMessage = ReadFirstBatchItemMessage(root);
+                return string.IsNullOrWhiteSpace(itemMessage) ? null : itemMessage;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string ReadFirstBatchItemMessage(JsonElement root)
+        {
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var item in items.EnumerateArray())
+            {
+                var status = ReadString(item, "status");
+                var message = ReadString(item, "message");
+                if (string.Equals(status, "skipped_missing_avatar_oracle", StringComparison.OrdinalIgnoreCase))
+                {
+                    return string.IsNullOrWhiteSpace(message)
+                        ? "该项已跳过：缺少可信生产 Avatar oracle。"
+                        : message;
+                }
+
+                if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(message))
+                {
+                    return message;
+                }
+            }
+
+            return null;
         }
 
         private static CliLauncher ResolveCliLauncher()
