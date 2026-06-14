@@ -14,6 +14,8 @@ namespace AnimeStudio.LibraryBrowser
             "",
             "",
             "",
+            "",
+            "",
             0,
             0,
             0,
@@ -27,6 +29,8 @@ namespace AnimeStudio.LibraryBrowser
             string mode,
             string gateStatus,
             string sourceIndexStatus,
+            string candidateTableSchemaStatus,
+            string candidateTableSchemaNote,
             long candidates,
             long explicitCandidates,
             long nonExplicitCandidates,
@@ -39,6 +43,8 @@ namespace AnimeStudio.LibraryBrowser
             Mode = mode ?? "";
             GateStatus = gateStatus ?? "";
             SourceIndexStatus = sourceIndexStatus ?? "";
+            CandidateTableSchemaStatus = candidateTableSchemaStatus ?? "";
+            CandidateTableSchemaNote = candidateTableSchemaNote ?? "";
             Candidates = candidates;
             ExplicitCandidates = explicitCandidates;
             NonExplicitCandidates = nonExplicitCandidates;
@@ -52,6 +58,8 @@ namespace AnimeStudio.LibraryBrowser
         public string Mode { get; }
         public string GateStatus { get; }
         public string SourceIndexStatus { get; }
+        public string CandidateTableSchemaStatus { get; }
+        public string CandidateTableSchemaNote { get; }
         public long Candidates { get; }
         public long ExplicitCandidates { get; }
         public long NonExplicitCandidates { get; }
@@ -71,6 +79,12 @@ namespace AnimeStudio.LibraryBrowser
                 return $"动画关系门禁 OK，显式 {ExplicitCandidates:N0}";
             }
 
+            if (!string.Equals(CandidateTableSchemaStatus, "ok", StringComparison.OrdinalIgnoreCase)
+                && NonExplicitCandidates == 0)
+            {
+                return $"动画关系门禁 {EmptyAsUnknown(GateStatus)}，schema需重建";
+            }
+
             return $"动画关系门禁 {EmptyAsUnknown(GateStatus)}，非显式 {NonExplicitCandidates:N0}";
         }
 
@@ -86,6 +100,7 @@ namespace AnimeStudio.LibraryBrowser
                 $"动画关系门禁时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
                 $"动画关系门禁模式: {EmptyAsUnknown(Mode)}{Environment.NewLine}" +
                 $"动画关系门禁状态: {EmptyAsUnknown(GateStatus)}，源索引: {EmptyAsUnknown(SourceIndexStatus)}{Environment.NewLine}" +
+                $"候选表约束: {EmptyAsUnknown(CandidateTableSchemaStatus)}{FormatSchemaNote()}{Environment.NewLine}" +
                 $"默认候选: {Candidates:N0}，显式: {ExplicitCandidates:N0}，非显式: {NonExplicitCandidates:N0}{Environment.NewLine}" +
                 $"有显式动画的模型/动画: {ModelsWithExplicitCandidates:N0} / {AnimationsWithExplicitCandidates:N0}{Environment.NewLine}";
         }
@@ -112,12 +127,18 @@ namespace AnimeStudio.LibraryBrowser
                     && sourceHealthElement.ValueKind == JsonValueKind.Object
                         ? sourceHealthElement
                         : default;
+                var candidateSchema = root.TryGetProperty("candidateTableSchema", out var candidateSchemaElement)
+                    && candidateSchemaElement.ValueKind == JsonValueKind.Object
+                        ? candidateSchemaElement
+                        : default;
                 return new LibraryDeterministicAnimationSummary(
                     true,
                     path,
                     ReadString(root, "mode"),
                     ReadString(gate, "status"),
                     ReadString(sourceHealth, "status"),
+                    ReadString(candidateSchema, "status"),
+                    ReadString(candidateSchema, "note"),
                     ReadInt64(totals, "candidates"),
                     ReadInt64(totals, "explicitCandidates"),
                     ReadInt64(totals, "nonExplicitCandidates"),
@@ -152,6 +173,16 @@ namespace AnimeStudio.LibraryBrowser
         private static string EmptyAsUnknown(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? "Unknown" : value;
+        }
+
+        private string FormatSchemaNote()
+        {
+            if (string.IsNullOrWhiteSpace(CandidateTableSchemaNote))
+            {
+                return "";
+            }
+
+            return $"，{CandidateTableSchemaNote}";
         }
 
         private static string ReadString(JsonElement element, string property)
