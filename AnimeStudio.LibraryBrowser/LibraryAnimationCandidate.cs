@@ -34,6 +34,7 @@ namespace AnimeStudio.LibraryBrowser
         public bool ProductionUnityBakeReady { get; init; }
         public bool ProductionUnityBakeBlocked { get; init; }
         public string ProductionUnityBakeBlockedReason { get; init; } = "";
+        public string ProductionUnityBakeAvatarAsset { get; init; } = "";
         public bool HasAvatarOracle { get; init; }
         public bool NeedsValidation { get; init; }
         public bool IsContainerAnimation { get; init; }
@@ -59,10 +60,10 @@ namespace AnimeStudio.LibraryBrowser
         public bool IsMetadataOnly => string.Equals(ExportStatus, "metadata", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Format, "json", System.StringComparison.OrdinalIgnoreCase)
             || BestPath.EndsWith(".metadata.json", System.StringComparison.OrdinalIgnoreCase);
-        public bool NeedsProductionAvatarRefresh => ProductionUnityBakeBlocked
+        public bool NeedsProductionAvatarRefresh => !ProductionUnityBakeReady && (ProductionUnityBakeBlocked
             || string.Equals(NextAction, "refresh_avatar_human_description", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(ProductionUnityBakeBlockedReason, "missing_human_description_human_bones", System.StringComparison.OrdinalIgnoreCase)
-            || string.Equals(ProductionUnityBakeBlockedReason, "avatar_constant_oracle_diagnostic_only", System.StringComparison.OrdinalIgnoreCase);
+            || string.Equals(ProductionUnityBakeBlockedReason, "avatar_constant_oracle_diagnostic_only", System.StringComparison.OrdinalIgnoreCase));
         public bool IsUsableCandidate => !NeedsProductionAvatarRefresh &&
             (!IsUnreal ||
              ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&

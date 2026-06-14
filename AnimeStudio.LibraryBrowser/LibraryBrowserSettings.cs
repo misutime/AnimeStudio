@@ -94,16 +94,6 @@ namespace AnimeStudio.LibraryBrowser
                 }
             }
 
-            foreach (var key in BuildLookupKeys(modelKeys))
-            {
-                var match = UnityAvatarAssets
-                    .FirstOrDefault(x => ContainsIgnoreCase(key, x.Key) || ContainsIgnoreCase(x.Key, key));
-                if (!string.IsNullOrWhiteSpace(match.Value))
-                {
-                    return NormalizeUnityAssetPath(match.Value);
-                }
-            }
-
             return null;
         }
 
@@ -304,13 +294,6 @@ namespace AnimeStudio.LibraryBrowser
                 })
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private static bool ContainsIgnoreCase(string value, string text)
-        {
-            return !string.IsNullOrWhiteSpace(value)
-                && !string.IsNullOrWhiteSpace(text)
-                && value.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject)

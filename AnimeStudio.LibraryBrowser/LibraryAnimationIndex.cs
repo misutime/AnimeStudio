@@ -10,6 +10,7 @@ namespace AnimeStudio.LibraryBrowser
     internal sealed class LibraryAnimationIndex
     {
         private const int MaxTargetedCandidateCount = 256;
+        private const int LargeSqliteCandidateLazyThreshold = 200_000;
         private static readonly HashSet<string> TargetedSemanticStopWords = new(StringComparer.OrdinalIgnoreCase)
         {
             "anim",
@@ -31,8 +32,12 @@ namespace AnimeStudio.LibraryBrowser
 
         private readonly Dictionary<string, List<LibraryAnimationCandidate>> _byModelOutput;
         private readonly Dictionary<string, LibraryAnimationUsage> _byAnimationKey;
+        private readonly Dictionary<string, int> _sqliteCandidateCountByModelOutput;
         private readonly Dictionary<string, IReadOnlyList<LibraryAnimationCandidate>> _targetedCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly string _root;
+        private readonly string _sqliteDbPath;
+        private readonly LibraryBrowserSettings _settings;
+        private readonly bool _lazySqlite;
         private readonly object _cacheLock = new();
 
         private LibraryAnimationIndex(
@@ -40,14 +45,26 @@ namespace AnimeStudio.LibraryBrowser
             Dictionary<string, List<LibraryAnimationCandidate>> byModelOutput,
             IEnumerable<LibraryAnimationCandidate> allAnimations = null,
             string loadSource = "",
-            int indexedCandidateCount = 0)
+            int indexedCandidateCount = 0,
+            Dictionary<string, int> sqliteCandidateCountByModelOutput = null,
+            string sqliteDbPath = null,
+            LibraryBrowserSettings settings = null,
+            bool lazySqlite = false)
         {
             _root = root;
             _byModelOutput = byModelOutput;
+            _sqliteCandidateCountByModelOutput = sqliteCandidateCountByModelOutput;
+            _sqliteDbPath = sqliteDbPath;
+            _settings = settings;
+            _lazySqlite = lazySqlite;
             _byAnimationKey = BuildAnimationUsageMap(byModelOutput, allAnimations);
             LoadSource = loadSource;
-            IndexedModelCount = byModelOutput.Count;
-            IndexedCandidateCount = indexedCandidateCount > 0
+            IndexedModelCount = _lazySqlite && _sqliteCandidateCountByModelOutput != null
+                ? _sqliteCandidateCountByModelOutput.Count
+                : byModelOutput.Count;
+            IndexedCandidateCount = _lazySqlite && _sqliteCandidateCountByModelOutput != null
+                ? _sqliteCandidateCountByModelOutput.Values.Sum()
+                : indexedCandidateCount > 0
                 ? Math.Min(indexedCandidateCount, byModelOutput.Values.Sum(x => x.Count(y => y.IsUsableCandidate)))
                 : byModelOutput.Values.Sum(x => x.Count(y => y.IsUsableCandidate));
         }
@@ -64,9 +81,31 @@ namespace AnimeStudio.LibraryBrowser
                 return Array.Empty<LibraryAnimationCandidate>();
             }
 
-            return _byModelOutput.TryGetValue(NormalizePath(model.OutputPath), out var candidates)
-                ? candidates
-                : Array.Empty<LibraryAnimationCandidate>();
+            var key = NormalizePath(model.OutputPath);
+            if (_byModelOutput.TryGetValue(key, out var candidates))
+            {
+                return candidates;
+            }
+
+            if (!_lazySqlite)
+            {
+                return Array.Empty<LibraryAnimationCandidate>();
+            }
+
+            lock (_cacheLock)
+            {
+                if (_byModelOutput.TryGetValue(key, out candidates))
+                {
+                    return candidates;
+                }
+            }
+
+            candidates = LoadSqliteCandidatesForModel(model).ToList();
+            lock (_cacheLock)
+            {
+                _byModelOutput[key] = candidates;
+            }
+            return candidates;
         }
 
         public int CountForModel(LibraryModelItem model)
@@ -76,16 +115,35 @@ namespace AnimeStudio.LibraryBrowser
 
         public int CountAllForModel(LibraryModelItem model)
         {
+            if (_lazySqlite
+                && model != null
+                && _sqliteCandidateCountByModelOutput != null
+                && _sqliteCandidateCountByModelOutput.TryGetValue(NormalizePath(model.OutputPath), out var count))
+            {
+                return count;
+            }
+
             return FindForModel(model).Count;
         }
 
         public int CountUsableForModel(LibraryModelItem model)
         {
+            if (_lazySqlite)
+            {
+                // 大库列表只需要一个稳定的显式候选数量，具体可用性在打开模型详情时再按候选精确判断。
+                return CountAllForModel(model);
+            }
+
             return FindForModel(model).Count(x => x.IsUsableCandidate);
         }
 
         public int CountExplicitForModel(LibraryModelItem model)
         {
+            if (_lazySqlite)
+            {
+                return CountAllForModel(model);
+            }
+
             return FindForModel(model).Count(x => x.IsExplicit);
         }
 
@@ -156,9 +214,26 @@ namespace AnimeStudio.LibraryBrowser
                 SQLitePCL.Batteries_V2.Init();
                 using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
                 connection.Open();
+                var settings = LibraryBrowserSettings.LoadEffective(root);
                 var result = new Dictionary<string, List<LibraryAnimationCandidate>>(StringComparer.OrdinalIgnoreCase);
                 if (HasTable(connection, "model_animation_candidates"))
                 {
+                    var candidateCount = CountExplicitSqliteCandidates(connection);
+                    if (candidateCount > LargeSqliteCandidateLazyThreshold)
+                    {
+                        var counts = LoadSqliteCandidateCounts(root, connection);
+                        return new LibraryAnimationIndex(
+                            root,
+                            result,
+                            LoadAllAnimationsFromSqlite(root, connection),
+                            "SQLite-lazy",
+                            (int)Math.Min(candidateCount, int.MaxValue),
+                            counts,
+                            dbPath,
+                            settings,
+                            lazySqlite: true);
+                    }
+
                     using var command = connection.CreateCommand();
                     command.CommandText = @"
 SELECT c.model_output, c.raw_json, a.raw_json, m.raw_json
@@ -177,13 +252,14 @@ ORDER BY c.model_output, c.score DESC;";
                         var candidate = candidateDocument.RootElement;
                         var animation = animationDocument.RootElement;
                         var model = modelDocument.RootElement;
+                        var importedAvatarAsset = ResolveImportedAvatarAsset(settings, model, modelOutput);
                         if (!result.TryGetValue(NormalizePath(modelOutput), out var list))
                         {
                             list = new List<LibraryAnimationCandidate>();
                             result[NormalizePath(modelOutput)] = list;
                         }
 
-                        var merged = MergeCandidate(root, animation, candidate, model);
+                        var merged = MergeCandidate(root, animation, candidate, model, importedAvatarAsset);
                         if (merged.IsExplicit)
                         {
                             list.Add(merged);
@@ -241,18 +317,164 @@ ORDER BY mar.model, ra.name;";
                     "SQLite",
                     result.Values.Sum(x => x.Count));
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                WriteSqliteLoadError(root, ex.ToString());
                 return null;
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
+                WriteSqliteLoadError(root, ex.ToString());
                 return null;
             }
-            catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
+            catch (Exception ex) when (!System.Diagnostics.Debugger.IsAttached)
             {
+                WriteSqliteLoadError(root, ex.ToString());
                 return null;
             }
+        }
+
+        private static void WriteSqliteLoadError(string root, string message)
+        {
+            try
+            {
+                var cache = Path.Combine(root, ".as_browser_cache");
+                Directory.CreateDirectory(cache);
+                File.WriteAllText(
+                    Path.Combine(cache, "animation_index_sqlite_error.txt"),
+                    $"{DateTime.UtcNow:O}{Environment.NewLine}{message}");
+            }
+            catch
+            {
+                // 诊断文件写失败不能影响 Browser 打开素材库；UI 仍会回退旧索引。
+            }
+        }
+
+        private static long CountExplicitSqliteCandidates(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(*)
+FROM model_animation_candidates
+WHERE relation_source='explicit';";
+            return Convert.ToInt64(command.ExecuteScalar());
+        }
+
+        private static Dictionary<string, int> LoadSqliteCandidateCounts(string root, SqliteConnection connection)
+        {
+            var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT model_output, COUNT(*)
+FROM model_animation_candidates
+WHERE relation_source='explicit'
+GROUP BY model_output;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var output = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    continue;
+                }
+
+                result[NormalizePath(output)] = reader.GetInt32(1);
+            }
+
+            return result;
+        }
+
+        private IReadOnlyList<LibraryAnimationCandidate> LoadSqliteCandidatesForModel(LibraryModelItem model)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(_sqliteDbPath) || !File.Exists(_sqliteDbPath))
+            {
+                return Array.Empty<LibraryAnimationCandidate>();
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={_sqliteDbPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                var outputs = BuildSqliteModelOutputKeys(model.OutputPath).ToArray();
+                var parameterNames = new List<string>();
+                for (var i = 0; i < outputs.Length; i++)
+                {
+                    var name = "$p" + i;
+                    parameterNames.Add(name);
+                    command.Parameters.AddWithValue(name, outputs[i]);
+                }
+
+                command.CommandText = $@"
+SELECT c.model_output, c.raw_json, a.raw_json, m.raw_json
+FROM model_animation_candidates c
+JOIN assets m ON m.kind = 'Model' AND m.output = c.model_output
+JOIN assets a ON a.kind = 'Animation' AND a.output = c.animation_output
+WHERE c.relation_source = 'explicit'
+  AND c.model_output IN ({string.Join(",", parameterNames)})
+ORDER BY c.score DESC;";
+                using var reader = command.ExecuteReader();
+                var result = new List<LibraryAnimationCandidate>();
+                while (reader.Read())
+                {
+                    var modelOutput = LibraryPathResolver.ResolveExistingFile(_root, reader.GetString(0));
+                    using var candidateDocument = JsonDocument.Parse(reader.GetString(1));
+                    using var animationDocument = JsonDocument.Parse(reader.GetString(2));
+                    using var modelDocument = JsonDocument.Parse(reader.GetString(3));
+                    var candidate = candidateDocument.RootElement;
+                    var animation = animationDocument.RootElement;
+                    var modelJson = modelDocument.RootElement;
+                    var importedAvatarAsset = ResolveImportedAvatarAsset(_settings, modelJson, modelOutput);
+                    var merged = MergeCandidate(_root, animation, candidate, modelJson, importedAvatarAsset);
+                    if (merged.IsExplicit)
+                    {
+                        result.Add(merged);
+                    }
+                }
+
+                return SortCandidates(result);
+            }
+            catch (Exception ex) when (!System.Diagnostics.Debugger.IsAttached)
+            {
+                WriteSqliteLoadError(_root, ex.ToString());
+                return Array.Empty<LibraryAnimationCandidate>();
+            }
+        }
+
+        private IEnumerable<string> BuildSqliteModelOutputKeys(string outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath))
+            {
+                yield break;
+            }
+
+            yield return outputPath;
+
+            if (!string.IsNullOrWhiteSpace(_root))
+            {
+                string relative = null;
+                try
+                {
+                    var fullRoot = Path.GetFullPath(_root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    var fullOutput = Path.GetFullPath(outputPath);
+                    if (fullOutput.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        relative = Path.GetRelativePath(_root, fullOutput).Replace('\\', '/');
+                    }
+                }
+                catch
+                {
+                    relative = null;
+                }
+
+                if (!string.IsNullOrWhiteSpace(relative))
+                {
+                    yield return relative;
+                }
+            }
+
+            yield return outputPath.Replace('\\', '/');
         }
 
         private static LibraryAnimationIndex LoadCompact(string path)
@@ -544,9 +766,14 @@ ORDER BY mar.model, ra.name;";
         }
 
         private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate)
-            => MergeCandidate(libraryRoot, animation, candidate, null);
+            => MergeCandidate(libraryRoot, animation, candidate, null, null);
 
-        private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate, JsonElement? model)
+        private static LibraryAnimationCandidate MergeCandidate(
+            string libraryRoot,
+            JsonElement animation,
+            JsonElement candidate,
+            JsonElement? model,
+            string importedAvatarAsset)
         {
             var output = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "output") ?? ReadString(candidate, "output") ?? "");
             var animationAsset = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "animationAsset") ?? "");
@@ -554,8 +781,9 @@ ORDER BY mar.model, ra.name;";
             var relationSource = ReadString(candidate, "relationSource") ?? "";
             var animationType = ReadString(animation, "animationType") ?? ReadString(candidate, "animationType") ?? "";
             var modelHasProductionAvatar = HasProductionUnityBakeAvatar(model);
-            var productionReady = ReadBool(candidate, "productionUnityBakeReady") || modelHasProductionAvatar;
-            var productionBlocked = ReadBool(candidate, "productionUnityBakeBlocked") && !modelHasProductionAvatar;
+            var hasImportedAvatarAsset = !string.IsNullOrWhiteSpace(importedAvatarAsset);
+            var productionReady = ReadBool(candidate, "productionUnityBakeReady") || modelHasProductionAvatar || hasImportedAvatarAsset;
+            var productionBlocked = ReadBool(candidate, "productionUnityBakeBlocked") && !productionReady;
             if (IsUnrealAnimationRecord(output, animationAsset, relation, relationSource, animationType, ReadString(animation, "source")))
             {
                 animationType = "Unreal";
@@ -595,6 +823,7 @@ ORDER BY mar.model, ra.name;";
                 ProductionUnityBakeReady = productionReady,
                 ProductionUnityBakeBlocked = productionBlocked,
                 ProductionUnityBakeBlockedReason = productionBlocked ? ReadString(candidate, "productionUnityBakeBlockedReason") ?? "" : "",
+                ProductionUnityBakeAvatarAsset = importedAvatarAsset ?? "",
                 HasAvatarOracle = HasAvatarOracle(model),
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
@@ -673,6 +902,7 @@ ORDER BY mar.model, ra.name;";
                 ProductionUnityBakeReady = ReadBool(candidate, "productionUnityBakeReady"),
                 ProductionUnityBakeBlocked = ReadBool(candidate, "productionUnityBakeBlocked"),
                 ProductionUnityBakeBlockedReason = ReadString(candidate, "productionUnityBakeBlockedReason") ?? "",
+                ProductionUnityBakeAvatarAsset = ReadString(candidate, "unityAvatarAsset") ?? "",
                 IsContainerAnimation = ReadBool(candidate, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(candidate, "transformBindingPaths")
             };
@@ -727,6 +957,7 @@ ORDER BY mar.model, ra.name;";
                 ProductionUnityBakeReady = ReadBool(animation, "productionUnityBakeReady"),
                 ProductionUnityBakeBlocked = ReadBool(animation, "productionUnityBakeBlocked"),
                 ProductionUnityBakeBlockedReason = ReadString(animation, "productionUnityBakeBlockedReason") ?? "",
+                ProductionUnityBakeAvatarAsset = ReadString(animation, "unityAvatarAsset") ?? "",
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
@@ -1513,6 +1744,29 @@ GROUP BY ab.id;";
             var humanBones = ReadArrayLength(avatar, "humanBones");
             var skeletonBones = ReadArrayLength(avatar, "skeletonBones");
             return humanBones > 0 && skeletonBones > 0;
+        }
+
+        private static string ResolveImportedAvatarAsset(
+            LibraryBrowserSettings settings,
+            JsonElement? model,
+            string modelOutput)
+        {
+            if (settings == null || model == null || model.Value.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var avatarName = "";
+            if (model.Value.TryGetProperty("avatar", out var avatar) && avatar.ValueKind == JsonValueKind.Object)
+            {
+                avatarName = ReadString(avatar, "name") ?? "";
+            }
+
+            return settings.ResolveUnityAvatarAsset(
+                avatarName,
+                ReadString(model.Value, "name"),
+                ReadString(model.Value, "output"),
+                modelOutput);
         }
 
         private static bool HasAvatarOracle(JsonElement? model)

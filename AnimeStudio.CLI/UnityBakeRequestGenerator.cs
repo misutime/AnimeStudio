@@ -2128,15 +2128,6 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
                 }
             }
 
-            foreach (var key in BuildUnityAvatarLookupKeys(model))
-            {
-                var match = importedAvatarAssets.FirstOrDefault(x => ContainsIgnoreCase(key, x.Key) || ContainsIgnoreCase(x.Key, key));
-                if (!string.IsNullOrWhiteSpace(match.Value))
-                {
-                    return match.Value;
-                }
-            }
-
             return null;
         }
 
@@ -2150,13 +2141,6 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             return new[] { avatarName, modelName, stem, fileName }
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private static bool ContainsIgnoreCase(string value, string text)
-        {
-            return !string.IsNullOrWhiteSpace(value)
-                && !string.IsNullOrWhiteSpace(text)
-                && value.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool ModelHasBakeReadyAvatar(JObject model)

@@ -76,6 +76,8 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 
 运行前需要关闭正在打开该素材库的 Library Browser，避免 `library_index.db` 被占用。
 
+原神这类几百万候选的大库不能在 Browser 启动时一次性读取全部 `model_animation_candidates`。Browser 应优先使用 SQLite lazy 模式：启动阶段只统计每个模型的显式候选数量，选中模型时再按 `model_output` 查询该模型自己的候选。SQLite 加载失败时必须写出 `.as_browser_cache/animation_index_sqlite_error.txt`，不能静默回退成“0 动画”误导用户。
+
 ## Unity Bake 配置（生产主线）
 
 当前 Humanoid/Muscle 的可验收生产主线是 Unity bake -> glTF。Browser 调用 CLI 时应只针对 `library_index.db` 中 `relation_source=explicit` 的候选生成请求，由 Unity 采样 `Animator` / `Avatar` / `PlayableGraph`，再让 AnimeStudio 把采样后的目标骨架 TRS 写回 glTF。
@@ -86,7 +88,7 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 2. 如果索引里保留了完整 `HumanDescription.humanBones + skeletonBones`，可以由 Unity `AvatarBuilder.BuildHumanAvatar` 复建 Avatar。
 3. 原神这类只靠 `AvatarConstant` / `internalSolver` 会出现肢体扭曲的库，必须先从打包 Unity 对象恢复原始 `UnityEngine.Avatar` asset，导入 bake 工程，并在 request 的 `unityAssetPaths.avatarAsset` 里显式指定。导入后仍由 Unity 自身加载 Avatar，因此它也是确定性生产来源，不是名称或骨骼数量猜测。
 
-Library Browser 和 CLI 批量 Unity bake 会自动扫描 `UnityBakeProject/Assets/AnimeStudioBake/ImportedAvatar/*.asset`，按文件名把已导入的 Avatar asset 加入候选映射；全局或素材库本地 `unityAvatarAssets` 仍可显式覆盖。这样原神恢复新的 Avatar asset 后，通常只需要把 `.asset` 放进固定目录并让 Unity 导入，不需要每次手写 JSON 或给每个批量命令传同一个 `--unity_avatar_asset`。
+Library Browser 和 CLI 批量 Unity bake 会自动扫描 `UnityBakeProject/Assets/AnimeStudioBake/ImportedAvatar/*.asset`，按文件名把已导入的 Avatar asset 加入候选映射；全局或素材库本地 `unityAvatarAssets` 仍可显式覆盖。自动匹配只接受模型 `avatar.name`、模型名和模型文件名这些 key 的精确命中，不做 contains 模糊匹配。这样原神恢复新的 Avatar asset 后，通常只需要把 `.asset` 放进固定目录并让 Unity 导入，不需要每次手写 JSON 或给每个批量命令传同一个 `--unity_avatar_asset`。
 
 CLI 全量摘要也会把这条路径单独统计出来。`--bake_animation_previews_from_library ... --preview_validation_limit 0` 会写出 `importedAvatarAssetBakeReadyExplicitUnityBakeCandidates` 和 `effectiveBakeReadyExplicitUnityBakeCandidates`：前者只看导入 Avatar asset 命中的显式候选，后者是 HumanDescription / 原始 prefab Avatar 与导入 Avatar asset 的联合覆盖。这个数字只说明“已经具备确定性 Unity bake oracle”，不新增模型-动画关系，也不代表视觉已经人工验收。
 
