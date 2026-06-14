@@ -57,8 +57,7 @@ namespace AnimeStudio.LibraryBrowser
         public bool IsExplicit => string.Equals(RelationSource, "explicit", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(RelationSource, "componentOwner", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(RelationSource, "componentOwnerBlendSpaceSample", System.StringComparison.OrdinalIgnoreCase)
-            || string.Equals(RelationSource, "componentAnimClass", System.StringComparison.OrdinalIgnoreCase)
-            || string.Equals(Confidence, "explicit_unity_reference", System.StringComparison.OrdinalIgnoreCase);
+            || string.Equals(RelationSource, "componentAnimClass", System.StringComparison.OrdinalIgnoreCase);
         public bool IsMetadataOnly => string.Equals(ExportStatus, "metadata", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Format, "json", System.StringComparison.OrdinalIgnoreCase)
             || BestPath.EndsWith(".metadata.json", System.StringComparison.OrdinalIgnoreCase);

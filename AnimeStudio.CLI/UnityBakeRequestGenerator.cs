@@ -1094,9 +1094,7 @@ namespace AnimeStudio.CLI
 
         private static bool IsExplicitBakeRelation(JObject animation)
         {
-            return string.Equals((string)animation?["relationSource"], "explicit", StringComparison.OrdinalIgnoreCase)
-                || string.Equals((string)animation?["confidence"], "explicit_unity_reference", StringComparison.OrdinalIgnoreCase)
-                || string.Equals((string)animation?["confidence"], "explicit_unity_source_index", StringComparison.OrdinalIgnoreCase);
+            return string.Equals((string)animation?["relationSource"], "explicit", StringComparison.OrdinalIgnoreCase);
         }
 
         private static PreviewSelection SelectExplicitCandidateFromLibraryDb(

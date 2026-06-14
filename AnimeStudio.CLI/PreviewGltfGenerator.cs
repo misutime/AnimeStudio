@@ -1544,8 +1544,9 @@ LIMIT 128;";
         private static bool IsExplicitPreviewRelation(JObject animation)
         {
             return string.Equals((string)animation?["relationSource"], "explicit", StringComparison.OrdinalIgnoreCase)
-                || string.Equals((string)animation?["confidence"], "explicit_unity_reference", StringComparison.OrdinalIgnoreCase)
-                || string.Equals((string)animation?["confidence"], "explicit_unity_source_index", StringComparison.OrdinalIgnoreCase);
+                || string.Equals((string)animation?["relationSource"], "componentOwner", StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)animation?["relationSource"], "componentOwnerBlendSpaceSample", StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)animation?["relationSource"], "componentAnimClass", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ResolveSelectionLibraryPaths(PreviewSelection selection, string libraryRoot)

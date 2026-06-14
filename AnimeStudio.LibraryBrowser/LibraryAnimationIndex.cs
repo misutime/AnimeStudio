@@ -324,7 +324,6 @@ FROM model_animation_relations mar
 JOIN relation_animations ra ON ra.relation_id = mar.id
 -- 旧表也只读取确定性显式关系；fallback/diagnostic 不能进入默认动画列表。
 WHERE LOWER(COALESCE(ra.relation_source, '')) IN ('explicit', 'componentowner', 'componentownerblendspacesample', 'componentanimclass')
-   OR mar.confidence = 'explicit_unity_reference'
 ORDER BY mar.model, ra.name;"
                         : @"
 SELECT mar.model, mar.confidence, ra.raw_json
@@ -1119,8 +1118,9 @@ ORDER BY model_output;";
             var rawRelationSource = ReadString(animation, "relationSource") ?? "";
             var relationSource = !string.IsNullOrWhiteSpace(rawRelationSource)
                 ? rawRelationSource
-                : confidence.Contains("Explicit", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase)
+                : string.Equals(confidence, "ComponentOwner", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(confidence, "ComponentOwnerBlendSpaceSample", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(confidence, "ComponentAnimClass", StringComparison.OrdinalIgnoreCase)
                     ? "explicit"
                     : "unreal";
 
