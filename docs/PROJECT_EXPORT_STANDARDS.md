@@ -58,6 +58,8 @@ fallback 必须在索引或报告里标注，不能混入默认绑定结果。
 
 不要为了样本变快而只复制少量 bundle 当输入。Unity 游戏常把脸、头发、附件、材质、Mesh、动画拆到外部 CAB，裁掉依赖源会导致模型缺件或引用断链。
 
+单模型/单动画预览、少量动画 decoded sidecar 刷新等定向诊断任务，可以显式使用 `--source_files` 缩小本次加载的源文件集合，并用 `--path_ids` 定位选中的 Unity 对象；但前提是输入 root 仍指向完整 Unity 源目录，并且使用完整 `unity_source_index.db` 提供依赖闭包。`--source_files` / `--path_ids` 不能参与默认模型-动画匹配，也不能替代全量源索引。
+
 ### glTF 主格式
 
 glTF/GLB 是默认主格式，用于模型、骨骼、材质、贴图和动画预览。
@@ -187,7 +189,11 @@ SQLite 源索引规则：
 - 非角色 Transform 动画。
 - 材质、激活、事件类动画。
 
-Humanoid/Muscle 动画作为可复用身体动画验收时，必须优先通过 Unity Editor 的 `Animator`、`Avatar`、`PlayableGraph` / `AnimationClipPlayable` 采样烘焙成目标骨架 TRS。内部近似 muscle 求解只能用于诊断和报告，不能作为最终正确动画导出路径。
+当前 Humanoid/Muscle 的可验收生产主线是 Unity bake -> glTF/GLB：由 Unity Editor 的 `Animator`、`Avatar`、`PlayableGraph` / `AnimationClipPlayable` 对确定性候选采样，再由 AnimeStudio 把目标骨架 TRS 写回 glTF/GLB。长期仍可研究 AnimeStudio 内部 `Avatar` / `HumanDescription` / Muscle -> TRS 求解器，但在公式没有通过大规模 Unity oracle 之前，它只能作为实验诊断路径，不能进入默认生产验收。
+
+Unity bake 的可信 Avatar 来源固定为三类：原始 prefab / Animator 上的 `Animator.avatar`；完整、可复建的 `HumanDescription.humanBones` + `HumanDescription.skeletonBones`；或从打包 Unity 对象恢复并导入 bake 工程的原始 `UnityEngine.Avatar` asset。原神这类游戏如果索引里只有 `AvatarConstant/internalSolver`，必须优先恢复原始 Avatar asset，并通过 request 的 `unityAssetPaths.avatarAsset` 显式传给 bake helper。`AvatarConstant/internalSolver` 本身只能作为定位和诊断输入，不能单独标记为可信生产 Avatar。
+
+Unity bake 只能作用在已经来自 Unity 显式关系的候选上，不能用来新增或猜测模型-动画绑定。报告必须保留 `relation_source=explicit`、`baked=true` / `bakeMode`、request/result 路径和 glTF 验证状态。内部 Humanoid/Muscle 求解器保留现有代码和文档作为后续研究基础，但默认流程不得把近似 muscle 求解、骨架数量兼容或名称匹配伪装成已验证可复用身体动画。
 
 动画候选必须严格验证：
 
@@ -197,8 +203,10 @@ Humanoid/Muscle 动画作为可复用身体动画验收时，必须优先通过 
 - 带明确附件的模型必须拒绝冲突动作：例如 bow/crossbow 模型不能默认匹配 bomb、bottle、drink、sword 等动作；crossbow/bow/gun/sword 等动作应优先匹配同类附件或显式 Unity 引用。
 - 如果只有结构兼容、但武器/道具/动作语义缺失或冲突，默认不进入推荐候选。需要研究时应通过显式预览命令人工强制选择，并在报告里标注为 fallback/人工验证。
 - 对短动作或定格动作，判断有效性时要同时比较采样姿态相对 rest pose 的变化和帧间变化。
-- 不要因为 Humanoid bake 成功，就把表情、非角色、材质动画标为已验证。
+- 不要因为 Humanoid 内部求解或 Unity bake 对照成功，就把表情、非角色、材质动画标为已验证。
+- `SkinnedMeshRenderer` 浮点曲线不等于 BlendShape。只有 Unity binding 明确是 BlendShape，或解析出的曲线属性是 `blendShape.*`，才能计入 `trueBlendShapeBindingCount` 并走 glTF `weights` 验收；材质、Renderer 属性、激活/显隐曲线必须单独标注、单独实现和单独验证。
 - 全量 Library 不应做海量模型 × 动画组合搜索。结构候选匹配只服务于小样本/过滤导出；超过保守阈值时必须直接 defer，到定向预览、打包或 UI 查询阶段再按选中模型精确匹配。
+- 默认 `model_animations.json` 和 SQLite 推荐候选必须来自 Unity 确定性关系，例如 `Animator`、`Animation`、`AnimatorController`、`AnimatorOverrideController`、PPtr 和源索引依赖图。骨骼数量、skeleton hash、binding path 兼容、Avatar 兼容、路径/名称语义只能作为诊断、过滤、验证或显式人工预览依据，不能作为默认模型-动画绑定关系。
 
 ## 7. 材质、贴图、shader
 
@@ -324,7 +332,7 @@ Shader 默认作为实验功能：
 
 - 动作自然，不明显扭曲、左右腿交叉、手臂反向、上下乱跳。
 - glTF animation channel 目标有效。
-- Humanoid 身体动画以 Unity bake 结果为准。
+- Humanoid 身体动画以 Unity bake 采样写回后的目标骨架 TRS 和 glTF channel 验证为准；AnimeStudio 内部 Humanoid/Muscle 求解只能作为实验诊断和对照，不进入默认生产验收。
 - 表情/BlendShape、非角色 Transform 动画分别验收。
 
 材质验收：

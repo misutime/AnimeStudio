@@ -395,6 +395,8 @@ namespace AnimeStudio
         public Dictionary<uint, string> m_TOS;
 
         public HumanDescription m_HumanDescription;
+        public int m_HumanDescriptionBytesRemainingBeforeRead;
+        public string m_HumanDescriptionReadRule;
 
         public bool IsZZZ { get; }
 
@@ -417,10 +419,16 @@ namespace AnimeStudio
                 m_TOS.Add(reader.ReadUInt32(), reader.ReadAlignedString());
             }
 
+            m_HumanDescriptionBytesRemainingBeforeRead = reader.BytesLeft();
             // finally implemented the humandescription, not particularly useful but hey one step closer to being able to export to unity ready files
             if (reader.version[0] >= 2019)
             {
+                m_HumanDescriptionReadRule = "unity_version_2019_or_newer";
                 m_HumanDescription = new HumanDescription(reader);
+            }
+            else
+            {
+                m_HumanDescriptionReadRule = "skipped_for_unity_version_before_2019";
             }
         }
 

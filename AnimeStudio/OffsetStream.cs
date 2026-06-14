@@ -31,6 +31,7 @@ namespace AnimeStudio
             }
         }
         public long AbsolutePosition => _offset + _position;
+        public long BaseLength => _baseStream.Length;
         public long Remaining => Length - Position;
 
         public override long Length => _length ?? _baseStream.Length - _offset;

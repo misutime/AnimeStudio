@@ -3,16 +3,25 @@
 	<OutputType>Exe</OutputType>
 	<TargetFrameworks>net9.0-windows;net8.0-windows</TargetFrameworks>
 	<ApplicationIcon>Resources\as.ico</ApplicationIcon>
-	<Copyright>Copyright © Escartem 2024-2025; Copyright © Razmoth 2022-2024; Copyright © Perfare 2018-2022</Copyright>
+	<Copyright
+        >Copyright © Escartem 2024-2025; Copyright © Razmoth 2022-2024; Copyright © Perfare 2018-2022</Copyright>
 	<BaseOutputPath>..\AnimeStudio.CLI\bin</BaseOutputPath>
-	<SolutionDir Condition="'$(SolutionDir)' == '' Or '$(SolutionDir)' == '*Undefined*'">$(MSBuildThisFileDirectory)..\</SolutionDir>
+	<SolutionDir
+            Condition="'$(SolutionDir)' == '' Or '$(SolutionDir)' == '*Undefined*'"
+        >$(MSBuildThisFileDirectory)..\</SolutionDir>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.10" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="9.0.10" />
+    <PackageReference
+            Include="System.CommandLine"
+            Version="2.0.0-beta4.22272.1"
+        />
+    <PackageReference
+            Include="System.Configuration.ConfigurationManager"
+            Version="9.0.10"
+        />
   </ItemGroup>
 
   <ItemGroup>
@@ -72,13 +81,29 @@
 	</ItemGroup>
 
   <Target Name="CopyExtraFiles" AfterTargets="AfterBuild">
-  	<Copy SourceFiles="$(SolutionDir)AnimeStudio.Libraries\x86\AnimeStudio.FBXNative.dll" DestinationFolder="$(TargetDir)x86" ContinueOnError="true" />
-  	<Copy SourceFiles="$(SolutionDir)AnimeStudio.Libraries\x64\AnimeStudio.FBXNative.dll" DestinationFolder="$(TargetDir)x64" ContinueOnError="true" />
+  	<Copy
+            SourceFiles="$(SolutionDir)AnimeStudio.Libraries\x86\AnimeStudio.FBXNative.dll"
+            DestinationFolder="$(TargetDir)x86"
+            ContinueOnError="true"
+        />
+  	<Copy
+            SourceFiles="$(SolutionDir)AnimeStudio.Libraries\x64\AnimeStudio.FBXNative.dll"
+            DestinationFolder="$(TargetDir)x64"
+            ContinueOnError="true"
+        />
   </Target>
-  
+
   <Target Name="PublishExtraFiles" AfterTargets="Publish">
-  	<Copy SourceFiles="$(TargetDir)x86\AnimeStudio.FBXNative.dll" DestinationFolder="$(PublishDir)x86" ContinueOnError="true" />
-  	<Copy SourceFiles="$(TargetDir)x64\AnimeStudio.FBXNative.dll" DestinationFolder="$(PublishDir)x64" ContinueOnError="true" />
+  	<Copy
+            SourceFiles="$(TargetDir)x86\AnimeStudio.FBXNative.dll"
+            DestinationFolder="$(PublishDir)x86"
+            ContinueOnError="true"
+        />
+  	<Copy
+            SourceFiles="$(TargetDir)x64\AnimeStudio.FBXNative.dll"
+            DestinationFolder="$(PublishDir)x64"
+            ContinueOnError="true"
+        />
   </Target>
 
 </Project>

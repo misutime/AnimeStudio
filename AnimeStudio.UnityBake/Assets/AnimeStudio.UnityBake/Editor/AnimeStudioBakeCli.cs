@@ -9,6 +9,13 @@ namespace AnimeStudio.UnityBake
     {
         public static void Run()
         {
+            var avatarOraclePath = GetArgument("-animeStudioAvatarOracleProbe");
+            if (!string.IsNullOrWhiteSpace(avatarOraclePath))
+            {
+                AnimeStudioAvatarOracleProbe.Run(avatarOraclePath, GetArgument("-outputJson"));
+                return;
+            }
+
             var requestPath = GetArgument("-animeStudioBakeRequest");
             if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
             {

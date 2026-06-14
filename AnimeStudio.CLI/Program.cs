@@ -39,6 +39,22 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.ExportFbxFromGltf != null)
+                {
+                    if (o.BakedFbxOutput == null || string.IsNullOrWhiteSpace(o.BakedFbxOutput.FullName))
+                    {
+                        Logger.Error("--export_fbx_from_gltf requires --baked_fbx_output.");
+                        return;
+                    }
+
+                    BlenderFbxExporter.Export(
+                        o.ExportFbxFromGltf.FullName,
+                        o.BakedFbxOutput.FullName,
+                        o.Blender?.FullName
+                    );
+                    return;
+                }
+
                 if (o.GeneratePreviewGltf != null)
                 {
                     PreviewGltfGenerator.Generate(
@@ -79,6 +95,38 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.PackModelAnimationsFromLibrary != null)
+                {
+                    PreviewGltfGenerator.GeneratePackFromLibrary(
+                        o.PackModelAnimationsFromLibrary.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PackAnimations,
+                        o.PackOutput?.FullName,
+                        o.PackLimit,
+                        o.PreviewSourceRoot?.FullName,
+                        o.IndexPath?.FullName
+                    );
+                    return;
+                }
+
+                if (o.ValidateAnimationPreviewsFromLibrary != null)
+                {
+                    PreviewGltfGenerator.ValidatePreviewBatchFromLibrary(
+                        o.ValidateAnimationPreviewsFromLibrary.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PackAnimations ?? o.PreviewAnimation,
+                        o.PreviewValidationOutput?.FullName ?? o.PackOutput?.FullName,
+                        o.PreviewValidationLimit,
+                        o.PreviewValidationKind.ToString(),
+                        o.PreviewValidationForce,
+                        o.PreviewSourceRoot?.FullName,
+                        o.IndexPath?.FullName
+                    );
+                    return;
+                }
+
                 if (o.GenerateUnityBakeRequest != null)
                 {
                     UnityBakeRequestGenerator.Generate(
@@ -91,8 +139,10 @@ namespace AnimeStudio.CLI
                         o.UnityEditor?.FullName,
                         o.UnityBakeModelPrefab,
                         o.UnityBakeAnimationClip,
+                        o.UnityBakeAvatarAsset,
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
+                        o.UnityProbeMuscles,
                         o.RunUnityBake,
                         o.UnityBakeWorkerQueue?.FullName,
                         o.BakedGltfOutput?.FullName,
@@ -114,13 +164,41 @@ namespace AnimeStudio.CLI
                         o.UnityEditor?.FullName,
                         o.UnityBakeModelPrefab,
                         o.UnityBakeAnimationClip,
+                        o.UnityBakeAvatarAsset,
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
+                        o.UnityProbeMuscles,
                         o.RunUnityBake,
                         o.UnityBakeWorkerQueue?.FullName,
                         o.BakedGltfOutput?.FullName,
                         o.BakedFbxOutput?.FullName,
-                        o.Blender?.FullName
+                        o.Blender?.FullName,
+                        o.IndexPath?.FullName
+                    );
+                    return;
+                }
+
+                if (o.BakeAnimationPreviewsFromLibrary != null)
+                {
+                    UnityBakeRequestGenerator.GenerateBatchFromLibrary(
+                        o.BakeAnimationPreviewsFromLibrary.FullName,
+                        o.PreviewModel,
+                        o.PackAnimations ?? o.PreviewAnimation,
+                        o.PreviewValidationOutput?.FullName ?? o.PackOutput?.FullName ?? o.PreviewOutput?.FullName,
+                        o.PreviewSourceRoot?.FullName,
+                        o.UnityProject?.FullName,
+                        o.UnityEditor?.FullName,
+                        o.UnityBakeModelPrefab,
+                        o.UnityBakeAnimationClip,
+                        o.UnityBakeAvatarAsset,
+                        o.UnityBakeFps,
+                        o.RunUnityBake,
+                        o.UnityBakeWorkerQueue?.FullName,
+                        o.BakedFbxOutput?.FullName,
+                        o.Blender?.FullName,
+                        o.PreviewValidationLimit,
+                        o.IndexPath?.FullName,
+                        o.PreviewValidationForce
                     );
                     return;
                 }
@@ -135,6 +213,16 @@ namespace AnimeStudio.CLI
                     {
                         BlenderFbxExporter.Export(bakedGltf, o.BakedFbxOutput.FullName, o.Blender?.FullName);
                     }
+                    return;
+                }
+
+                if (o.CompareUnityBakeResult != null)
+                {
+                    UnityBakeComparisonReporter.Compare(
+                        o.CompareUnityBakeResult.FullName,
+                        o.CompareGltf?.FullName,
+                        o.CompareOutput?.FullName
+                    );
                     return;
                 }
 
@@ -165,6 +253,12 @@ namespace AnimeStudio.CLI
 
                 if (o.RebuildLibraryIndexes != null)
                 {
+                    if (o.RequireFreshSourceAnimationRelations)
+                    {
+                        var strictSourceIndex = Path.Combine(o.RebuildLibraryIndexes.FullName, "unity_source_index.db");
+                        SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(strictSourceIndex, requireHealthy: true);
+                    }
+
                     Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName);
                     return;
                 }
@@ -177,13 +271,35 @@ namespace AnimeStudio.CLI
 
                 if (o.BuildSqliteIndex != null)
                 {
-                    SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName);
+                    if (o.RequireFreshSourceAnimationRelations)
+                    {
+                        var strictSourceIndex = o.SourceIndex?.FullName ?? Path.Combine(o.BuildSqliteIndex.FullName, "unity_source_index.db");
+                        SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(strictSourceIndex, requireHealthy: true);
+                    }
+
+                    SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName, o.SkipSqliteFileIndex, o.SkipSqliteSidecarScan, o.SkipSqliteJsonDocuments, o.SourceIndex?.FullName);
+                    return;
+                }
+
+                if (o.VerifySourceIndex != null)
+                {
+                    SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(o.VerifySourceIndex.FullName, requireHealthy: o.RequireFreshSourceAnimationRelations);
+                    return;
+                }
+
+                if (o.ExportAvatarOracle != null)
+                {
+                    AvatarOracleExporter.Export(
+                        o.ExportAvatarOracle.FullName,
+                        o.PreviewModel,
+                        o.PreviewOutput?.FullName
+                    );
                     return;
                 }
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -232,8 +348,15 @@ namespace AnimeStudio.CLI
                 CliExportOptions.HumanoidBakeSolver = o.HumanoidBakeSolver;
                 CliExportOptions.ModelFormat = o.ModelFormat;
                 CliExportOptions.AnimationPackage = o.AnimationPackage;
+                CliExportOptions.ExportFullDecodedAnimationCurves = o.ExportFullDecodedAnimationCurves;
                 CliExportOptions.ModelSource = o.ModelSource;
                 CliExportOptions.TextureMode = o.TextureMode;
+
+                if (o.DumpUnityBlockChunks)
+                {
+                    UnityBlockChunkDumper.Dump(o.Input.FullName, o.Output.FullName, game);
+                    return;
+                }
                 CliExportOptions.OutputRoot = o.Output.FullName;
                 Logger.FileLogging = Settings.Default.enableFileLogging;
                 AssetsHelper.Minimal = Settings.Default.minimalAssetMap;
@@ -391,6 +514,16 @@ namespace AnimeStudio.CLI
                 var inputBaseFolder = o.Input.Attributes.HasFlag(FileAttributes.Directory)
                     ? o.Input.FullName
                     : Path.GetDirectoryName(o.Input.FullName);
+                if (!o.SourceFileFilter.IsNullOrEmpty())
+                {
+                    files = FilterSourceFilesForTargetedExport(files, inputBaseFolder, o.SourceFileFilter);
+                    Logger.Info($"--source_files selected {files.Length} Unity source file(s) for this targeted export. Default full Library exports should leave this unset.");
+                    if (files.Length == 0)
+                    {
+                        Logger.Warning("--source_files did not match any Unity-loadable input files.");
+                        return;
+                    }
+                }
                 var containerExcludeFilters = GetContainerExcludeFilters(o.WorkMode, o.Profile3D, o.ContainerExcludeFilter);
                 var nameExcludeFilters = GetNameExcludeFilters(o.WorkMode, o.Profile3D, o.NameExcludeFilter);
                 if (o.WorkMode != WorkMode.Export && !containerExcludeFilters.IsNullOrEmpty())
@@ -429,6 +562,11 @@ namespace AnimeStudio.CLI
 
                 if (!string.IsNullOrWhiteSpace(sourceIndexPath))
                 {
+                    if (o.RequireFreshSourceAnimationRelations && o.WorkMode == WorkMode.Library)
+                    {
+                        SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(sourceIndexPath, requireHealthy: true);
+                    }
+
                     sourceIndexResult = SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(
                         sourceIndexPath,
                         o.Input.FullName,
@@ -593,6 +731,7 @@ namespace AnimeStudio.CLI
                                     classTypeFilter,
                                     o.NameFilter,
                                     o.ContainerFilter,
+                                    o.PathIdFilter,
                                     nameExcludeFilters,
                                     containerExcludeFilters,
                                     ref i
@@ -636,7 +775,11 @@ namespace AnimeStudio.CLI
                     }
                     else if (o.WorkMode == WorkMode.Library)
                     {
-                        GenerateLibraryIndexes(o.Output.FullName);
+                        if (o.SkipSqliteIndex)
+                        {
+                            Logger.Info("Skipping library SQLite index build because --skip_sqlite_index is set.");
+                        }
+                        GenerateLibraryIndexes(o.Output.FullName, skipSqliteIndex: o.SkipSqliteIndex);
                     }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
@@ -667,6 +810,51 @@ namespace AnimeStudio.CLI
             var key = $"{game.Type}|{fullPath}".ToLowerInvariant();
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..12].ToLowerInvariant();
             return $"auto_{game.Type}_{hash}";
+        }
+
+        private static string[] FilterSourceFilesForTargetedExport(
+            string[] files,
+            string inputBaseFolder,
+            string[] sourceFileFilters
+        )
+        {
+            var inputRoot = Path.GetFullPath(inputBaseFolder ?? string.Empty).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar
+            );
+            var wanted = sourceFileFilters
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(NormalizeSourceFileFilter)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (wanted.Count == 0)
+            {
+                return files;
+            }
+
+            return files
+                .Where(x => wanted.Contains(NormalizeSourceFileForMatch(x, inputRoot)))
+                .ToArray();
+        }
+
+        private static string NormalizeSourceFileFilter(string path)
+        {
+            return path
+                .Trim()
+                .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Replace('\\', '/');
+        }
+
+        private static string NormalizeSourceFileForMatch(string path, string inputRoot)
+        {
+            var fullPath = Path.GetFullPath(path);
+            var relative = fullPath;
+            if (!string.IsNullOrWhiteSpace(inputRoot)
+                && fullPath.StartsWith(inputRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                relative = fullPath[(inputRoot.Length + 1)..];
+            }
+
+            return NormalizeSourceFileFilter(relative);
         }
 
         private static void WarnForLikelyGenshinPathMismatch(string inputPath, Game game)
@@ -726,6 +914,14 @@ namespace AnimeStudio.CLI
                             .Take(30)
                             .ToArray()
                     );
+                var animatorControllers = assetsFile.Objects
+                    .OfType<AnimatorController>()
+                    .Select(BuildAnimatorControllerInspect)
+                    .ToArray();
+                var avatars = assetsFile.Objects
+                    .OfType<Avatar>()
+                    .Select(BuildAvatarInspect)
+                    .ToArray();
 
                 yield return new
                 {
@@ -738,9 +934,104 @@ namespace AnimeStudio.CLI
                     rawTypeCounts,
                     parsedTypeCounts,
                     sampleNames,
+                    avatars,
+                    animatorControllers,
                     batch = batch.ToArray(),
                 };
             }
+        }
+
+        private static object BuildAvatarInspect(Avatar avatar)
+        {
+            return new
+            {
+                name = avatar.Name,
+                pathId = avatar.m_PathID,
+                avatarSize = avatar.m_AvatarSize,
+                hasHumanDescription = avatar.m_HumanDescription != null,
+                humanDescriptionReadRule = avatar.m_HumanDescriptionReadRule,
+                humanDescriptionBytesRemainingBeforeRead = avatar.m_HumanDescriptionBytesRemainingBeforeRead,
+                humanBoneCount = avatar.m_HumanDescription?.m_Human?.Count ?? 0,
+                skeletonBoneCount = avatar.m_HumanDescription?.m_Skeleton?.Count ?? 0,
+                avatarSkeletonNodeCount = avatar.m_Avatar?.m_AvatarSkeleton?.m_Node?.Count ?? 0,
+                avatarSkeletonPoseCount = avatar.m_Avatar?.m_AvatarSkeletonPose?.m_X?.Length ?? 0,
+                avatarDefaultPoseCount = avatar.m_Avatar?.m_DefaultPose?.m_X?.Length ?? 0,
+                humanSkeletonNodeCount = avatar.m_Avatar?.m_Human?.m_Skeleton?.m_Node?.Count ?? 0,
+                humanSkeletonPoseCount = avatar.m_Avatar?.m_Human?.m_SkeletonPose?.m_X?.Length ?? 0,
+                humanBoneIndexCount = avatar.m_Avatar?.m_Human?.m_HumanBoneIndex?.Length ?? 0,
+                tosCount = avatar.m_TOS?.Count ?? 0,
+            };
+        }
+
+        private static object BuildAnimatorControllerInspect(AnimatorController controller)
+        {
+            var stateMachines = controller.m_Controller?.m_StateMachineArray ?? new List<StateMachineConstant>();
+            return new
+            {
+                name = controller.Name,
+                pathId = controller.m_PathID,
+                tosCount = controller.m_TOS?.Count ?? 0,
+                clips = controller.m_AnimationClips?.Select((x, index) => new
+                {
+                    index,
+                    fileId = x.m_FileID,
+                    pathId = x.m_PathID,
+                }).ToArray() ?? Array.Empty<object>(),
+                layers = controller.m_Controller?.m_LayerArray?.Select((x, index) => new
+                {
+                    index,
+                    stateMachineIndex = x.m_StateMachineIndex,
+                    stateMachineMotionSetIndex = x.m_StateMachineMotionSetIndex,
+                }).ToArray() ?? Array.Empty<object>(),
+                stateMachines = stateMachines.Select((machine, machineIndex) => new
+                {
+                    machineIndex,
+                    defaultState = machine.m_DefaultState,
+                    motionSetCount = machine.m_MotionSetCount,
+                    states = machine.m_StateConstantArray?.Select((state, stateIndex) => new
+                    {
+                        stateIndex,
+                        nameId = state.m_NameID,
+                        name = TryGetTos(controller, state.m_NameID),
+                        pathId = state.m_PathID,
+                        fullPathId = state.m_FullPathID,
+                        fullPath = TryGetTos(controller, state.m_FullPathID),
+                        speed = state.m_Speed,
+                        cycleOffset = state.m_CycleOffset,
+                        loop = state.m_Loop,
+                        mirror = state.m_Mirror,
+                        blendTreeIndexArray = state.m_BlendTreeConstantIndexArray,
+                        blendTrees = state.m_BlendTreeConstantArray?.Select((tree, treeIndex) => new
+                        {
+                            treeIndex,
+                            nodes = tree.m_NodeArray?.Select((node, nodeIndex) => new
+                            {
+                                nodeIndex,
+                                blendType = node.m_BlendType,
+                                blendEventId = node.m_BlendEventID,
+                                blendEvent = TryGetTos(controller, node.m_BlendEventID),
+                                blendEventYId = node.m_BlendEventYID,
+                                blendEventY = TryGetTos(controller, node.m_BlendEventYID),
+                                childIndices = node.m_ChildIndices,
+                                childThresholds = node.m_ChildThresholdArray,
+                                clipId = node.m_ClipID,
+                                clip = TryGetTos(controller, node.m_ClipID),
+                                clipIndex = node.m_ClipIndex,
+                                duration = node.m_Duration,
+                                cycleOffset = node.m_CycleOffset,
+                                mirror = node.m_Mirror,
+                            }).ToArray() ?? Array.Empty<object>(),
+                        }).ToArray() ?? Array.Empty<object>(),
+                    }).ToArray() ?? Array.Empty<object>(),
+                }).ToArray(),
+            };
+        }
+
+        private static string TryGetTos(AnimatorController controller, uint id)
+        {
+            return controller.m_TOS != null && controller.m_TOS.TryGetValue(id, out var value)
+                ? value
+                : null;
         }
 
         private static void WriteUnityFileInspect(string outputFolder, IReadOnlyCollection<object> reports)

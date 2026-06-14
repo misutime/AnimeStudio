@@ -29,11 +29,32 @@ namespace AnimeStudio.CLI
                 return false;
             }
 
-            var outputDir = Path.GetDirectoryName(Path.GetFullPath(outputFbx));
+            var originalInputGltf = Path.GetFullPath(inputGltf);
+            var originalOutputFbx = Path.GetFullPath(outputFbx);
+            var outputDir = Path.GetDirectoryName(originalOutputFbx);
             Directory.CreateDirectory(outputDir);
+            var blenderInputGltf = originalInputGltf;
+            var blenderOutputFbx = originalOutputFbx;
+            var stagedInputDir = null as string;
+            var stagedOutputDir = null as string;
+            if (NeedsShortBlenderPath(blenderInputGltf))
+            {
+                stagedInputDir = Path.Combine(Path.GetTempPath(), $"as_gltf_in_{Guid.NewGuid():N}");
+                CopyDirectory(Path.GetDirectoryName(originalInputGltf), stagedInputDir);
+                blenderInputGltf = Path.Combine(stagedInputDir, Path.GetFileName(originalInputGltf));
+                Logger.Info($"Blender input path is long; using temporary short path: {blenderInputGltf}");
+            }
+            if (NeedsShortBlenderPath(blenderOutputFbx))
+            {
+                stagedOutputDir = Path.Combine(Path.GetTempPath(), $"as_fbx_out_{Guid.NewGuid():N}");
+                Directory.CreateDirectory(stagedOutputDir);
+                blenderOutputFbx = Path.Combine(stagedOutputDir, Path.GetFileName(originalOutputFbx));
+                Logger.Info($"Blender output path is long; using temporary short path: {blenderOutputFbx}");
+            }
+
             var scriptPath = Path.Combine(Path.GetTempPath(), $"animestudio_blender_export_fbx_{Guid.NewGuid():N}.py");
             var reportPath = Path.Combine(outputDir, "blender_fbx_export_report.json");
-            File.WriteAllText(scriptPath, BuildScript(inputGltf, outputFbx, reportPath), Encoding.UTF8);
+            File.WriteAllText(scriptPath, BuildScript(blenderInputGltf, blenderOutputFbx, reportPath), Encoding.UTF8);
 
             var startInfo = new ProcessStartInfo
             {
@@ -47,13 +68,18 @@ namespace AnimeStudio.CLI
             startInfo.ArgumentList.Add("--python");
             startInfo.ArgumentList.Add(scriptPath);
 
-            Logger.Info($"Blender FBX export: {outputFbx}");
+            Logger.Info($"Blender FBX export: {originalOutputFbx}");
             using var process = Process.Start(startInfo);
             var stdout = process.StandardOutput.ReadToEnd();
             var stderr = process.StandardError.ReadToEnd();
             process.WaitForExit();
 
-            var ok = process.ExitCode == 0 && File.Exists(outputFbx);
+            if (process.ExitCode == 0 && !string.Equals(blenderOutputFbx, originalOutputFbx, StringComparison.OrdinalIgnoreCase) && File.Exists(blenderOutputFbx))
+            {
+                File.Copy(blenderOutputFbx, originalOutputFbx, true);
+            }
+
+            var ok = process.ExitCode == 0 && File.Exists(originalOutputFbx);
             object blenderReport = null;
             if (File.Exists(reportPath))
             {
@@ -71,8 +97,10 @@ namespace AnimeStudio.CLI
                 generatedAt = DateTime.UtcNow.ToString("O"),
                 status = ok ? "ok" : "error",
                 blender = blenderPath,
-                inputGltf = Path.GetFullPath(inputGltf),
-                outputFbx = Path.GetFullPath(outputFbx),
+                inputGltf = originalInputGltf,
+                outputFbx = originalOutputFbx,
+                stagedInputGltf = string.Equals(blenderInputGltf, originalInputGltf, StringComparison.OrdinalIgnoreCase) ? null : blenderInputGltf,
+                stagedOutputFbx = string.Equals(blenderOutputFbx, originalOutputFbx, StringComparison.OrdinalIgnoreCase) ? null : blenderOutputFbx,
                 exitCode = process.ExitCode,
                 blenderReport,
                 stdoutTail = Tail(stdout),
@@ -83,12 +111,16 @@ namespace AnimeStudio.CLI
             if (!ok)
             {
                 TryDelete(scriptPath);
+                TryDeleteDirectory(stagedInputDir);
+                TryDeleteDirectory(stagedOutputDir);
                 Logger.Error($"Blender FBX export failed. See {reportPath}");
                 return false;
             }
 
             TryDelete(scriptPath);
-            Logger.Info($"Baked FBX preview: {outputFbx}");
+            TryDeleteDirectory(stagedInputDir);
+            TryDeleteDirectory(stagedOutputDir);
+            Logger.Info($"Baked FBX preview: {originalOutputFbx}");
             Logger.Info($"Blender FBX report: {reportPath}");
             return true;
         }
@@ -194,6 +226,42 @@ print('ANIMESTUDIO_BLENDER_FBX_EXPORT ' + json.dumps(report, ensure_ascii=False)
             catch
             {
                 // Temporary script cleanup should not fail the export.
+            }
+        }
+
+        private static bool NeedsShortBlenderPath(string path)
+        {
+            // Blender 的 Python/glTF 插件在部分 Windows 环境仍会卡在 MAX_PATH，长路径先转短临时目录。
+            return !string.IsNullOrWhiteSpace(path) && path.Length >= 240;
+        }
+
+        private static void CopyDirectory(string sourceDir, string targetDir)
+        {
+            Directory.CreateDirectory(targetDir);
+            foreach (var directory in Directory.EnumerateDirectories(sourceDir, "*", SearchOption.AllDirectories))
+            {
+                Directory.CreateDirectory(Path.Combine(targetDir, Path.GetRelativePath(sourceDir, directory)));
+            }
+            foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(targetDir, Path.GetRelativePath(sourceDir, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                File.Copy(file, target, true);
+            }
+        }
+
+        private static void TryDeleteDirectory(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                {
+                    Directory.Delete(path, true);
+                }
+            }
+            catch
+            {
+                // 临时目录清理失败不影响 FBX 结果，后续系统临时目录会自然清理。
             }
         }
     }

@@ -342,6 +342,7 @@ namespace AnimeStudio.CLI
             ClassIDType[] typeFilters,
             Regex[] nameFilters,
             Regex[] containerFilters,
+            long[] pathIdFilters,
             Regex[] nameExcludeFilters,
             Regex[] containerExcludeFilters,
             ref int i
@@ -403,6 +404,9 @@ namespace AnimeStudio.CLI
             }
 
             var preFilterCounts = CountAssetItemsByType(exportableAssets);
+            var pathIdFilterSet = pathIdFilters.IsNullOrEmpty()
+                ? null
+                : pathIdFilters.ToHashSet();
             var matches = exportableAssets
                 .Where(x =>
                 {
@@ -413,15 +417,26 @@ namespace AnimeStudio.CLI
                     var isContainerMatch =
                         containerFilters.IsNullOrEmpty()
                         || containerFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
+                    var isPathIdExactMatch = pathIdFilterSet != null && pathIdFilterSet.Contains(x.m_PathID);
+                    var isPathIdMatch =
+                        pathIdFilterSet == null || isPathIdExactMatch;
                     var isNameExcluded =
                         !nameExcludeFilters.IsNullOrEmpty()
                         && nameExcludeFilters.Any(y => y.IsMatch(x.Text ?? string.Empty));
                     var isContainerExcluded =
                         !containerExcludeFilters.IsNullOrEmpty()
                         && containerExcludeFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
+                    // 显式 --path_ids 是定向诊断/刷新入口，已经精确到 Unity 对象。
+                    // 这类对象不应再被空 container 或源路径正则误杀，但仍要遵守类型和排除规则。
+                    if (isPathIdExactMatch)
+                    {
+                        return isFilteredType && !isNameExcluded && !isContainerExcluded;
+                    }
+
                     return isMatchRegex
                         && isFilteredType
                         && isContainerMatch
+                        && isPathIdMatch
                         && !isNameExcluded
                         && !isContainerExcluded;
                 })
@@ -440,6 +455,7 @@ namespace AnimeStudio.CLI
                     ["beforeFilterByType"] = preFilterCounts,
                     ["afterNameContainerFilterTotal"] = regexFilteredCounts.Values.Sum(),
                     ["afterNameContainerFilterByType"] = regexFilteredCounts,
+                    ["pathIdFilterCount"] = pathIdFilterSet?.Count ?? 0,
                     ["afterModelRootFilterTotal"] = matches.Length,
                     ["afterModelRootFilterByType"] = CountAssetItemsByType(matches),
                     ["containerMainAssetCount"] = containerMainAssets.Count,
@@ -3380,7 +3396,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             map[key] = count + 1;
         }
 
-        public static void GenerateLibraryIndexes(string savePath)
+        public static void GenerateLibraryIndexes(string savePath, bool skipSqliteIndex = false)
         {
             if (IncludeVfx)
             {
@@ -3454,7 +3470,14 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 {
                     LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
                 }
-                BuildDefaultLibrarySqliteIndex(savePath);
+                if (skipSqliteIndex)
+                {
+                    Logger.Info("Skipped library_index.db build for this Library export.");
+                }
+                else
+                {
+                    BuildDefaultLibrarySqliteIndex(savePath);
+                }
                 Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
             }
         }
@@ -3483,7 +3506,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
             LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
             BuildDefaultLibrarySqliteIndex(savePath);
-            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). Explicit Animator/Animation relations require a fresh export; structural Unity binding links were rebuilt.");
+            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). If unity_source_index.db exists beside the Library, SQLite rebuild restores deterministic Animator/Animation/Controller/PPtr candidates without full re-export.");
         }
 
         private static void NormalizePathPollutedModelResourceKinds(string savePath)
@@ -3792,7 +3815,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                             matchReasons = link.Reasons,
                             matchedBindingPaths = link.MatchedBindingPaths,
                             unmatchedBindingPaths = link.UnmatchedBindingPaths,
-                            requiresHumanoidBake = link.RequiresHumanoidBake,
+                            requiresHumanoidBake = false,
+                            legacyUnityBakeSupported = link.RequiresHumanoidBake,
+                            requiresInternalHumanoidSolve = link.RequiresInternalHumanoidSolve,
                         }).ToArray(),
                     };
                     writer.WriteLine(JsonConvert.SerializeObject(binding));
@@ -3806,7 +3831,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     generatedAt = DateTime.UtcNow.ToString("O"),
                     catalog = catalogPath,
                     rule = "Full verbose model-animation candidates were intentionally deferred for this large Library export. Models and animations remain clean and standalone; use model_animations.compact.json, animation_bindings.jsonl, skeletons.json, and targeted preview/pack commands.",
-                    relationRule = "No path/name/resourceKind guesses are emitted for large full exports. This preserves the usable-library rule: strict relations only,宁缺毋滥.",
+                    relationRule = "Default model-animation candidates only use deterministic Unity Animator/Animation references. Skeleton/binding compatibility is kept for diagnostics and targeted preview, not emitted as a default binding relation.",
                     matchingDeferred = true,
                     deferredReason = explicitAnimationLinks.DeferredReason,
                     pairCount = explicitAnimationLinks.PairCount,
@@ -3835,8 +3860,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                         generatedAt = DateTime.UtcNow.ToString("O"),
                         catalog = catalogPath,
                         rule = "Models stay clean by default. Animation candidates are indexed here; preview or bundle commands should explicitly write selected animations into glTF/GLB.",
-                        relationRule = "Default candidates come from explicit Unity Animator/Animation references first, then Unity AnimationClip binding paths matched against exported model bone paths. Path/name/resourceKind guesses are not emitted unless a future explicit fallback option enables them.",
-                        capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                        relationRule = "Default candidates come from explicit Unity Animator/Animation references. Unity AnimationClip binding paths, skeleton compatibility, path/name/resourceKind signals are diagnostics only unless an explicit fallback option enables them.",
+                        capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback requires generated glTF animation channels and validation reports.",
                         capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
                         relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                         relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
@@ -4060,6 +4085,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)animation["humanoidBindingCount"],
                 blendShapeBindingCount = (int?)animation["blendShapeBindingCount"],
+                trueBlendShapeBindingCount = (int?)animation["trueBlendShapeBindingCount"],
+                rendererMaterialBindingCount = (int?)animation["rendererMaterialBindingCount"],
+                rendererPropertyBindingCount = (int?)animation["rendererPropertyBindingCount"],
+                activeStateBindingCount = (int?)animation["activeStateBindingCount"],
                 auxiliaryBindingCount = (int?)animation["auxiliaryBindingCount"],
                 classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
             }).ToArray();
@@ -4079,7 +4108,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                         confidence = x.Confidence,
                         relation = x.Relation,
                         relationSource = x.Source,
-                        requiresHumanoidBake = x.RequiresHumanoidBake,
+                        requiresHumanoidBake = false,
+                        legacyUnityBakeSupported = x.RequiresHumanoidBake,
+                        requiresInternalHumanoidSolve = x.RequiresInternalHumanoidSolve,
                         animationCapability = ClassifyAnimationCapability(x.Animation, x),
                         nextAction = GetAnimationNextAction(x.Animation, x),
                         matchReasons = x.Reasons,
@@ -4103,8 +4134,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 version = 1,
                 catalog = catalogPath,
                 rule = "Normalized compact model-animation index for tools and browsing. Full verbose objects stay in model_animations.json for compatibility and diagnostics.",
-                relationRule = "Candidates are still Unity explicit/structural relations; this file removes repeated full animation/model payloads.",
-                capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback still requires bake/apply reports with valid glTF channels.",
+                relationRule = "Default candidates are deterministic Unity Animator/Animation references. Structural compatibility data is diagnostic and is not a default binding relation.",
+                capabilityRule = "animationCapability only describes the next safe processing path. It is not visual proof; trusted playback requires generated glTF animation channels and validation reports.",
                 capabilitySummary = BuildAnimationCapabilitySummary(models, animations),
                 relationGraph = Path.Combine(savePath, "unity_relations.jsonl"),
                 relationSummary = Path.Combine(savePath, "unity_relation_summary.json"),
@@ -4242,7 +4273,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                                 score = link.Score,
                                 confidence = link.Confidence,
                                 relation = link.Relation,
-                                requiresHumanoidBake = link.RequiresHumanoidBake,
+                                requiresHumanoidBake = false,
+                                legacyUnityBakeSupported = link.RequiresHumanoidBake,
+                                requiresInternalHumanoidSolve = link.RequiresInternalHumanoidSolve,
                                 matchedModel = link.ModelName,
                             })
                             .ToArray(),
@@ -4304,7 +4337,6 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
         private static ExplicitAnimationLinks BuildStructuralUnityAnimationLinks(List<JObject> models, List<JObject> animations)
         {
             var links = BuildExplicitUnityAnimationLinks(models, animations);
-            AddStructuralUnityBindingLinks(links, models, animations);
             return links;
         }
 
@@ -4317,69 +4349,16 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             if (pairCount > FullStructuralAnimationPairLimit)
             {
                 Logger.Warning(
-                    $"Skipped full structural model-animation matching for large Library index: {models.Count} model(s) x {animations.Count} animation(s) = {pairCount} pair(s), limit {FullStructuralAnimationPairLimit}. Kept {links.ByModel.Count} model(s) with explicit Unity animation reference(s). Use targeted preview/pack commands or a smaller filtered export to build extra structural candidates."
+                    $"Skipped structural model-animation matching for Library index: {models.Count} model(s) x {animations.Count} animation(s) = {pairCount} pair(s), limit {FullStructuralAnimationPairLimit}. Kept {links.ByModel.Count} model(s) with explicit Unity animation reference(s). Default Library candidates must come from deterministic Unity references, not bone-count or skeleton-compatible fallback."
                 );
                 links.MatchingDeferred = true;
-                links.DeferredReason = $"Large Library index has {pairCount} model-animation pairs, above limit {FullStructuralAnimationPairLimit}. Explicit Unity Animator/Animation references were kept; extra structural matching is deferred to targeted tools.";
+                links.DeferredReason = $"Large Library index has {pairCount} model-animation pairs, above limit {FullStructuralAnimationPairLimit}. Explicit Unity Animator/Animation references were kept; structural skeleton/binding fallback is not emitted as a default model-animation relation.";
                 links.PairCount = pairCount;
                 links.PairLimit = FullStructuralAnimationPairLimit;
                 return links;
             }
 
-            AddStructuralUnityBindingLinks(links, models, animations);
             return links;
-        }
-
-        private static void AddStructuralUnityBindingLinks(ExplicitAnimationLinks links, List<JObject> models, List<JObject> animations)
-        {
-            foreach (var model in models)
-            {
-                var modelKey = GetCatalogKey(model);
-                var usesNodeBindingPaths = ShouldUseNodeBindingPathsForAnimationMatch(model);
-                var modelAnimationTarget = ClassifyModelAnimationTarget(model);
-                var modelResourceKind = ((string)model["resourceKind"] ?? string.Empty).Trim();
-                var modelBindingPaths = GetModelAnimationBindingPaths(model);
-                if (modelBindingPaths.Length == 0)
-                {
-                    continue;
-                }
-
-                foreach (var animation in animations)
-                {
-                    var animationKey = GetCatalogKey(animation);
-                    if (links.ContainsModelAnimation(modelKey, animationKey))
-                    {
-                        continue;
-                    }
-
-                    if (!IsStructuralBindingResourceCompatible(modelAnimationTarget, modelResourceKind, animation))
-                    {
-                        continue;
-                    }
-
-                    var semanticMatch = AnalyzeAnimationSemanticMatch(model, animation, requireStrictAttachmentSemantics: true);
-                    if (!semanticMatch.IsCandidate)
-                    {
-                        continue;
-                    }
-
-                    var animationPaths = animation["transformBindingPaths"]?.ToObject<string[]>() ?? Array.Empty<string>();
-                    var match = AnalyzeStructuralAnimationMatch(modelBindingPaths, animationPaths, usesNodeBindingPaths);
-                    if (!match.IsCandidate)
-                    {
-                        var humanoidMatch = AnalyzeHumanoidAnimationMatch(model, animation);
-                        if (!humanoidMatch.IsCandidate)
-                        {
-                            continue;
-                        }
-
-                        links.Add(modelKey, animationKey, BuildHumanoidLink(model, animation, humanoidMatch, semanticMatch));
-                        continue;
-                    }
-
-                    links.Add(modelKey, animationKey, BuildStructuralLink(model, animation, match, semanticMatch));
-                }
-            }
         }
 
         private static IEnumerable<ExplicitAnimationRelation> CollectExplicitAnimationRelations(AnimeStudio.Object modelAsset)
@@ -4494,24 +4473,41 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     }
                     break;
                 case AnimatorOverrideController overrideController:
+                    var overriddenOriginalClips = new HashSet<AnimationClip>();
+                    var selectedOverrideClips = new List<AnimationClip>();
+                    foreach (var pair in overrideController.m_Clips ?? Enumerable.Empty<AnimationClipOverride>())
+                    {
+                        var hasOriginal = pair.m_OriginalClip.TryGet(out var originalClip);
+                        var hasOverride = pair.m_OverrideClip.TryGet(out var overrideClip);
+                        if (hasOverride)
+                        {
+                            if (hasOriginal)
+                            {
+                                overriddenOriginalClips.Add(originalClip);
+                            }
+                            selectedOverrideClips.Add(overrideClip);
+                        }
+                        else if (hasOriginal)
+                        {
+                            selectedOverrideClips.Add(originalClip);
+                        }
+                    }
+
                     if (overrideController.m_Controller.TryGet<RuntimeAnimatorController>(out var baseController))
                     {
                         foreach (var clip in CollectRuntimeControllerClips(baseController))
                         {
-                            yield return clip;
+                            // OverrideController 的原始 clip 被替换后不应再作为该模型的默认候选。
+                            if (!overriddenOriginalClips.Contains(clip))
+                            {
+                                yield return clip;
+                            }
                         }
                     }
 
-                    foreach (var pair in overrideController.m_Clips ?? Enumerable.Empty<AnimationClipOverride>())
+                    foreach (var clip in selectedOverrideClips.Distinct())
                     {
-                        if (pair.m_OverrideClip.TryGet(out var overrideClip))
-                        {
-                            yield return overrideClip;
-                        }
-                        else if (pair.m_OriginalClip.TryGet(out var originalClip))
-                        {
-                            yield return originalClip;
-                        }
+                        yield return clip;
                     }
                     break;
             }
@@ -4528,6 +4524,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 : null;
             var unmatchedPaths = match.UnmatchedPaths?.Length > 0 ? match.UnmatchedPaths : null;
             var reasons = relation.Reasons ?? Array.Empty<string>();
+            var requiresInternalHumanoidSolve = IsHumanoidCharacterTarget(model) && IsHumanoidAnimationAsset(animation);
             if (match.MatchedPathCount > 0)
             {
                 reasons = reasons
@@ -4556,69 +4553,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 MatchedBindingPaths = matchedPaths,
                 MatchedVisibleMeshBindingPaths = matchedVisibleMeshPaths,
                 UnmatchedBindingPaths = unmatchedPaths,
-            };
-        }
-
-        private static ExplicitModelAnimationLink BuildStructuralLink(JObject model, JObject animation, StructuralAnimationMatch match, AnimationSemanticMatch semanticMatch)
-        {
-            return new ExplicitModelAnimationLink
-            {
-                ModelName = (string)model["name"],
-                ModelResourceKind = (string)model["resourceKind"],
-                ModelOutput = (string)model["output"],
-                ModelSkeletonHash = (string)model["skeletonHash"],
-                ModelBoneCount = (int?)model["boneCount"] ?? 0,
-                ModelMeshCount = (int?)model["meshCount"] ?? 0,
-                ModelTextureCount = (int?)model["textureCount"] ?? 0,
-                Animation = animation,
-                Relation = "animationClip.bindingPath.compatibleWithModelBones",
-                Source = "structural",
-                Score = Math.Min(100, match.Score + semanticMatch.ScoreBonus),
-                Confidence = semanticMatch.Confidence,
-                Reasons = new[]
-                {
-                    $"AnimationClip Transform binding paths match {match.MatchedPathCount} model bone/node path(s).",
-                    $"Core body binding matches: {match.CoreMatchedPathCount}.",
-                    "This uses Unity AnimationClip binding paths and exported model bone/node paths, not name/path fallback.",
-                }.Concat(semanticMatch.Reasons).ToArray(),
-                MatchedBindingPaths = match.MatchedPaths,
-                MatchedVisibleMeshBindingPaths = GetMatchedVisibleMeshBindingPaths(model, match.MatchedPaths),
-                UnmatchedBindingPaths = match.UnmatchedPaths,
-                RequiresHumanoidBake = IsHumanoidCharacterTarget(model) && IsHumanoidAnimationAsset(animation),
-                SemanticModelTags = semanticMatch.ModelTags,
-                SemanticAnimationTags = semanticMatch.AnimationTags,
-                SemanticSharedTags = semanticMatch.SharedTags,
-                SemanticRejectedTags = semanticMatch.RejectedTags,
-            };
-        }
-
-        private static ExplicitModelAnimationLink BuildHumanoidLink(JObject model, JObject animation, HumanoidAnimationMatch match, AnimationSemanticMatch semanticMatch)
-        {
-            return new ExplicitModelAnimationLink
-            {
-                ModelName = (string)model["name"],
-                ModelResourceKind = (string)model["resourceKind"],
-                ModelOutput = (string)model["output"],
-                ModelSkeletonHash = (string)model["skeletonHash"],
-                ModelBoneCount = (int?)model["boneCount"] ?? 0,
-                ModelMeshCount = (int?)model["meshCount"] ?? 0,
-                ModelTextureCount = (int?)model["textureCount"] ?? 0,
-                Animation = animation,
-                Relation = "avatar.humanoidCompatibleWithAnimationClip",
-                Source = "structural",
-                Score = Math.Min(100, match.Score + semanticMatch.ScoreBonus),
-                Confidence = semanticMatch.Confidence,
-                RequiresHumanoidBake = true,
-                Reasons = new[]
-                {
-                    $"Model has Unity Avatar '{match.AvatarName}' with human description.",
-                    $"AnimationClip has {match.HumanoidBindingCount} Animator/Humanoid binding(s) or MuscleClip data.",
-                    "This candidate is Unity Avatar compatible, but must be baked from Humanoid/Muscle curves to skeleton TRS before glTF body playback.",
-                }.Concat(semanticMatch.Reasons).ToArray(),
-                SemanticModelTags = semanticMatch.ModelTags,
-                SemanticAnimationTags = semanticMatch.AnimationTags,
-                SemanticSharedTags = semanticMatch.SharedTags,
-                SemanticRejectedTags = semanticMatch.RejectedTags,
+                RequiresHumanoidBake = requiresInternalHumanoidSolve,
+                RequiresInternalHumanoidSolve = requiresInternalHumanoidSolve,
             };
         }
 
@@ -4640,6 +4576,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 coreTransformBindingCount = (int?)entry["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)entry["humanoidBindingCount"],
                 blendShapeBindingCount = (int?)entry["blendShapeBindingCount"],
+                trueBlendShapeBindingCount = (int?)entry["trueBlendShapeBindingCount"],
+                rendererMaterialBindingCount = (int?)entry["rendererMaterialBindingCount"],
+                rendererPropertyBindingCount = (int?)entry["rendererPropertyBindingCount"],
+                activeStateBindingCount = (int?)entry["activeStateBindingCount"],
                 auxiliaryBindingCount = (int?)entry["auxiliaryBindingCount"],
                 transformBindingPaths = TruncateArray(entry["transformBindingPaths"]?.ToObject<string[]>(), 64),
                 transformBindingPathsTruncated = (entry["transformBindingPaths"] as JArray)?.Count > 64,
@@ -4694,6 +4634,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 coreTransformBindingCount = (int?)animation["coreTransformBindingCount"],
                 humanoidBindingCount = (int?)animation["humanoidBindingCount"],
                 blendShapeBindingCount = (int?)animation["blendShapeBindingCount"],
+                trueBlendShapeBindingCount = (int?)animation["trueBlendShapeBindingCount"],
+                rendererMaterialBindingCount = (int?)animation["rendererMaterialBindingCount"],
+                rendererPropertyBindingCount = (int?)animation["rendererPropertyBindingCount"],
+                activeStateBindingCount = (int?)animation["activeStateBindingCount"],
                 auxiliaryBindingCount = (int?)animation["auxiliaryBindingCount"],
                 classificationNotes = animation["classificationNotes"]?.ToObject<string[]>(),
                 confidence = link.Confidence,
@@ -4711,7 +4655,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 matchedVisibleMeshBindingPathsTruncated = link.MatchedVisibleMeshBindingPaths?.Length > 32,
                 unmatchedBindingPaths = TruncateArray(link.UnmatchedBindingPaths, 32),
                 unmatchedBindingPathsTruncated = link.UnmatchedBindingPaths?.Length > 32,
-                requiresHumanoidBake = link.RequiresHumanoidBake,
+                requiresHumanoidBake = false,
+                legacyUnityBakeSupported = link.RequiresHumanoidBake,
+                requiresInternalHumanoidSolve = link.RequiresInternalHumanoidSolve,
                 verification = new
                 {
                     status = link.Confidence,
@@ -4766,9 +4712,14 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             var animationType = (string)animation["animationType"] ?? "UnknownAnimation";
             var resourceKind = (string)animation["resourceKind"] ?? string.Empty;
             var legacy = (bool?)animation["legacy"] ?? false;
-            var blendShapeCount = (int?)animation["blendShapeBindingCount"] ?? 0;
+            var trueBlendShapeCount = (int?)animation["trueBlendShapeBindingCount"] ?? 0;
+            var rendererMaterialCount = (int?)animation["rendererMaterialBindingCount"] ?? 0;
+            var rendererPropertyCount = (int?)animation["rendererPropertyBindingCount"] ?? 0;
+            var activeStateCount = (int?)animation["activeStateBindingCount"] ?? 0;
             var coreTransformCount = (int?)animation["coreTransformBindingCount"] ?? 0;
             var humanoidBindingCount = (int?)animation["humanoidBindingCount"] ?? 0;
+            var transformBindingCount = (int?)animation["transformBindingCount"] ?? 0;
+            var curveCount = (int?)animation["curveCount"] ?? 0;
             var hasMuscleClip = (bool?)animation["hasMuscleClip"] ?? false;
             var duration = (float?)animation["duration"];
             var isCharacter = string.Equals(resourceKind, "Character", StringComparison.OrdinalIgnoreCase);
@@ -4779,9 +4730,21 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             var isMixedHumanoidTransform = string.Equals(animationType, "MixedHumanoidTransform", StringComparison.OrdinalIgnoreCase);
             var isTransformLike = isTransformAnimation || isAuxiliaryAnimation || isTransformBodyAnimation || isMixedHumanoidTransform;
 
-            if (blendShapeCount > 0)
+            if (trueBlendShapeCount > 0)
             {
                 return legacy ? "BlendShapeLegacyNotImplemented" : "BlendShapePreviewReady";
+            }
+            if (rendererMaterialCount > 0)
+            {
+                return "MaterialAnimationNotMapped";
+            }
+            if (activeStateCount > 0)
+            {
+                return "ActiveStateAnimationNotMapped";
+            }
+            if (rendererPropertyCount > 0)
+            {
+                return "RendererPropertyAnimationNotMapped";
             }
             if (legacy)
             {
@@ -4790,6 +4753,17 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             if (duration.HasValue && duration.Value <= 0.0001f && isTransformLike)
             {
                 return "StaticPoseOnly";
+            }
+            if (hasMuscleClip
+                && humanoidBindingCount == 0
+                && transformBindingCount == 0
+                && curveCount == 0
+                && trueBlendShapeCount == 0
+                && rendererMaterialCount == 0
+                && rendererPropertyCount == 0
+                && activeStateCount == 0)
+            {
+                return "EmptyHumanoidClip";
             }
 
             if (!isCharacter
@@ -4809,7 +4783,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
 
             if (link?.RequiresHumanoidBake == true || (isCharacter && isHumanoidLike))
             {
-                return "HumanoidBodyBakeReady";
+                return "HumanoidBodyNeedsInternalSolver";
             }
             if (isTransformBodyAnimation && coreTransformCount >= 3)
             {
@@ -4889,11 +4863,15 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
         {
             return ClassifyAnimationCapability(animation, link) switch
             {
-                "HumanoidBodyBakeReady" => "generate_unity_bake_request",
+                "HumanoidBodyNeedsInternalSolver" => "generate_preview_gltf",
                 "TransformBodyPreviewReady" => "generate_preview_gltf",
                 "BlendShapePreviewReady" => "generate_preview_gltf",
                 "NonCharacterTransformPreviewReady" => "generate_preview_gltf",
                 "StaticPoseOnly" => "treat_as_static_model",
+                "EmptyHumanoidClip" => "treat_as_empty_animation_marker",
+                "MaterialAnimationNotMapped" => "implement_material_animation_mapping",
+                "ActiveStateAnimationNotMapped" => "implement_visibility_animation_mapping",
+                "RendererPropertyAnimationNotMapped" => "inspect_renderer_property_animation",
                 "BlendShapeLegacyNotImplemented" => "implement_blendshape_animation_export",
                 "LegacyNotPlayableYet" => "implement_legacy_clip_sampling",
                 "NonCharacterTransformNeedsMapping" => "implement_non_character_transform_mapping",
@@ -4906,11 +4884,15 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
         {
             return ClassifyAnimationCapability(animation, link) switch
             {
-                "HumanoidBodyBakeReady" => "Humanoid/Avatar body motion can use Unity bake, but trusted playback still requires the generated bake/apply reports.",
+                "HumanoidBodyNeedsInternalSolver" => "Humanoid/Avatar body motion needs AnimeStudio's internal Humanoid/Muscle to skeleton TRS solver before direct glTF playback can be trusted.",
                 "TransformBodyPreviewReady" => "Transform body bindings look playable without Humanoid retargeting, but the preview glTF report must still validate target channels.",
                 "BlendShapePreviewReady" => "BlendShape/morph animation can be written as glTF morph targets and weights channels; preview validation must confirm morph target and weights channel counts.",
                 "NonCharacterTransformPreviewReady" => "Non-character Transform animation has Unity binding paths matched to exported glTF nodes; generate a preview glTF and validate channel targets.",
                 "StaticPoseOnly" => "This Transform clip has no effective duration; keep it as a static pose/static model signal instead of exposing it as playable animation.",
+                "EmptyHumanoidClip" => "This Humanoid/Muscle clip carries timing/marker metadata but no serialized curve payload or bindings; keep the explicit Unity relation, but do not expose it as playable body animation.",
+                "MaterialAnimationNotMapped" => "Renderer material curves are captured, but direct glTF material animation mapping is not implemented yet.",
+                "ActiveStateAnimationNotMapped" => "Unity active-state curves are captured, but glTF visibility mapping is not implemented yet.",
+                "RendererPropertyAnimationNotMapped" => "Renderer property curves are captured, but they are not BlendShape weights and need separate inspection.",
                 "BlendShapeLegacyNotImplemented" => "This looks like legacy face/blendshape animation. It needs legacy clip sampling before morph target channel export.",
                 "LegacyNotPlayableYet" => "This clip is legacy; Unity Playables cannot use it directly in the current helper path.",
                 "NonCharacterTransformNeedsMapping" => "This is non-character or low-core Transform animation. It needs original prefab/node path mapping before glTF playback can be trusted.",
@@ -5443,6 +5425,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             public int? coreTransformBindingCount { get; set; }
             public int? humanoidBindingCount { get; set; }
             public int? blendShapeBindingCount { get; set; }
+            public int? trueBlendShapeBindingCount { get; set; }
+            public int? rendererMaterialBindingCount { get; set; }
+            public int? rendererPropertyBindingCount { get; set; }
+            public int? activeStateBindingCount { get; set; }
             public int? auxiliaryBindingCount { get; set; }
             public string[] classificationNotes { get; set; }
             public string confidence { get; set; }
@@ -5461,6 +5447,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             public string[] unmatchedBindingPaths { get; set; }
             public bool? unmatchedBindingPathsTruncated { get; set; }
             public bool requiresHumanoidBake { get; set; }
+            public bool legacyUnityBakeSupported { get; set; }
+            public bool requiresInternalHumanoidSolve { get; set; }
             public object verification { get; set; }
             public string nextAction { get; set; }
         }
@@ -5523,6 +5511,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             public string[] MatchedVisibleMeshBindingPaths { get; set; }
             public string[] UnmatchedBindingPaths { get; set; }
             public bool RequiresHumanoidBake { get; set; }
+            public bool RequiresInternalHumanoidSolve { get; set; }
             public string[] SemanticModelTags { get; set; }
             public string[] SemanticAnimationTags { get; set; }
             public string[] SemanticSharedTags { get; set; }

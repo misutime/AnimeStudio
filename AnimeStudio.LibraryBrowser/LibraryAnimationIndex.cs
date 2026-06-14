@@ -161,9 +161,11 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     using var command = connection.CreateCommand();
                     command.CommandText = @"
-SELECT c.model_output, c.raw_json, a.raw_json
+SELECT c.model_output, c.raw_json, a.raw_json, m.raw_json
 FROM model_animation_candidates c
+JOIN assets m ON m.kind = 'Model' AND m.output = c.model_output
 JOIN assets a ON a.kind = 'Animation' AND a.output = c.animation_output
+WHERE c.relation_source = 'explicit'
 ORDER BY c.model_output, c.score DESC;";
                     using var reader = command.ExecuteReader();
                     while (reader.Read())
@@ -171,15 +173,21 @@ ORDER BY c.model_output, c.score DESC;";
                         var modelOutput = LibraryPathResolver.ResolveExistingFile(root, reader.GetString(0));
                         using var candidateDocument = JsonDocument.Parse(reader.GetString(1));
                         using var animationDocument = JsonDocument.Parse(reader.GetString(2));
+                        using var modelDocument = JsonDocument.Parse(reader.GetString(3));
                         var candidate = candidateDocument.RootElement;
                         var animation = animationDocument.RootElement;
+                        var model = modelDocument.RootElement;
                         if (!result.TryGetValue(NormalizePath(modelOutput), out var list))
                         {
                             list = new List<LibraryAnimationCandidate>();
                             result[NormalizePath(modelOutput)] = list;
                         }
 
-                        list.Add(MergeCandidate(root, animation, candidate));
+                        var merged = MergeCandidate(root, animation, candidate, model);
+                        if (merged.IsExplicit)
+                        {
+                            list.Add(merged);
+                        }
                     }
                 }
                 else if (HasTable(connection, "model_animation_relations") && HasTable(connection, "relation_animations"))
@@ -213,7 +221,11 @@ ORDER BY mar.model, ra.name;";
                             ? PatchUnrealRelationAnimationJson(reader)
                             : reader.GetString(2);
                         using var animationDocument = JsonDocument.Parse(rawJson);
-                        AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(root, confidence, animationDocument.RootElement));
+                        var candidate = ReadUnrealRelationAnimation(root, confidence, animationDocument.RootElement);
+                        if (candidate.IsExplicit)
+                        {
+                            AddCandidate(result, modelOutput, candidate);
+                        }
                     }
                 }
 
@@ -295,7 +307,11 @@ ORDER BY mar.model, ra.name;";
                         continue;
                     }
 
-                    list.Add(MergeCandidate(libraryRoot, animation, candidate));
+                    var merged = MergeCandidate(libraryRoot, animation, candidate);
+                    if (merged.IsExplicit)
+                    {
+                        list.Add(merged);
+                    }
                 }
 
                 if (list.Count > 0)
@@ -350,7 +366,11 @@ ORDER BY mar.model, ra.name;";
                     var list = new List<LibraryAnimationCandidate>();
                     foreach (var candidate in candidates.EnumerateArray())
                     {
-                        list.Add(MergeCandidate(root, animation, candidate));
+                        var merged = MergeCandidate(root, animation, candidate);
+                        if (merged.IsExplicit)
+                        {
+                            list.Add(merged);
+                        }
                     }
 
                     if (list.Count > 0)
@@ -443,7 +463,11 @@ ORDER BY mar.model, ra.name;";
                 var list = new List<LibraryAnimationCandidate>();
                 foreach (var candidate in candidates.EnumerateArray())
                 {
-                    list.Add(ReadCandidate(Path.GetDirectoryName(path) ?? "", candidate));
+                    var merged = ReadCandidate(Path.GetDirectoryName(path) ?? "", candidate);
+                    if (merged.IsExplicit)
+                    {
+                        list.Add(merged);
+                    }
                 }
 
                 if (list.Count > 0)
@@ -476,7 +500,11 @@ ORDER BY mar.model, ra.name;";
 
                 foreach (var animation in animations.EnumerateArray())
                 {
-                    AddCandidate(result, modelOutput, ReadUnrealRelationAnimation(libraryRoot, relation, animation));
+                    var candidate = ReadUnrealRelationAnimation(libraryRoot, relation, animation);
+                    if (candidate.IsExplicit)
+                    {
+                        AddCandidate(result, modelOutput, candidate);
+                    }
                 }
             }
 
@@ -516,12 +544,18 @@ ORDER BY mar.model, ra.name;";
         }
 
         private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate)
+            => MergeCandidate(libraryRoot, animation, candidate, null);
+
+        private static LibraryAnimationCandidate MergeCandidate(string libraryRoot, JsonElement animation, JsonElement candidate, JsonElement? model)
         {
             var output = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "output") ?? ReadString(candidate, "output") ?? "");
             var animationAsset = ResolveAnimationOutputPath(libraryRoot, ReadString(animation, "animationAsset") ?? "");
             var relation = ReadString(candidate, "relation") ?? ReadString(candidate, "relationSource") ?? "";
             var relationSource = ReadString(candidate, "relationSource") ?? "";
             var animationType = ReadString(animation, "animationType") ?? ReadString(candidate, "animationType") ?? "";
+            var modelHasProductionAvatar = HasProductionUnityBakeAvatar(model);
+            var productionReady = ReadBool(candidate, "productionUnityBakeReady") || modelHasProductionAvatar;
+            var productionBlocked = ReadBool(candidate, "productionUnityBakeBlocked") && !modelHasProductionAvatar;
             if (IsUnrealAnimationRecord(output, animationAsset, relation, relationSource, animationType, ReadString(animation, "source")))
             {
                 animationType = "Unreal";
@@ -537,6 +571,8 @@ ORDER BY mar.model, ra.name;";
                 Format = ReadString(animation, "format") ?? ReadString(candidate, "format") ?? "",
                 AnimationType = animationType,
                 Capability = ReadString(animation, "animationCapability") ?? "",
+                NextAction = ReadString(candidate, "nextAction") ?? ReadString(animation, "nextAction") ?? "",
+                ProductionAnimationPath = ReadString(candidate, "productionAnimationPath") ?? ReadString(animation, "productionAnimationPath") ?? "",
                 Relation = relation,
                 RelationSource = relationSource,
                 Confidence = ReadString(candidate, "confidence") ?? "",
@@ -554,6 +590,12 @@ ORDER BY mar.model, ra.name;";
                 ValidationCategory = ReadString(animation, "validationCategory") ?? "",
                 ValidationReason = ReadString(animation, "validationReason") ?? "",
                 RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
+                RequiresUnityBake = ReadBool(candidate, "requiresUnityBake") || ReadBool(animation, "requiresUnityBake") || productionReady,
+                RequiresInternalHumanoidSolve = ReadBool(candidate, "requiresInternalHumanoidSolve") || ReadBool(animation, "requiresInternalHumanoidSolve"),
+                ProductionUnityBakeReady = productionReady,
+                ProductionUnityBakeBlocked = productionBlocked,
+                ProductionUnityBakeBlockedReason = productionBlocked ? ReadString(candidate, "productionUnityBakeBlockedReason") ?? "" : "",
+                HasAvatarOracle = HasAvatarOracle(model),
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
@@ -607,6 +649,8 @@ ORDER BY mar.model, ra.name;";
                 Format = ReadString(candidate, "format") ?? "",
                 AnimationType = ReadString(candidate, "animationType") ?? "",
                 Capability = ReadString(candidate, "animationCapability") ?? "",
+                NextAction = ReadString(candidate, "nextAction") ?? "",
+                ProductionAnimationPath = ReadString(candidate, "productionAnimationPath") ?? "",
                 Relation = ReadString(candidate, "relation") ?? ReadString(candidate, "relationSource") ?? "",
                 RelationSource = ReadString(candidate, "relationSource") ?? "",
                 Confidence = ReadString(candidate, "confidence") ?? "",
@@ -624,6 +668,11 @@ ORDER BY mar.model, ra.name;";
                 ValidationCategory = ReadString(candidate, "validationCategory") ?? "",
                 ValidationReason = ReadString(candidate, "validationReason") ?? "",
                 RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
+                RequiresUnityBake = ReadBool(candidate, "requiresUnityBake"),
+                RequiresInternalHumanoidSolve = ReadBool(candidate, "requiresInternalHumanoidSolve"),
+                ProductionUnityBakeReady = ReadBool(candidate, "productionUnityBakeReady"),
+                ProductionUnityBakeBlocked = ReadBool(candidate, "productionUnityBakeBlocked"),
+                ProductionUnityBakeBlockedReason = ReadString(candidate, "productionUnityBakeBlockedReason") ?? "",
                 IsContainerAnimation = ReadBool(candidate, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(candidate, "transformBindingPaths")
             };
@@ -655,6 +704,8 @@ ORDER BY mar.model, ra.name;";
                 Format = ReadString(animation, "format") ?? "",
                 AnimationType = animationType,
                 Capability = ReadString(animation, "animationCapability") ?? "",
+                NextAction = ReadString(animation, "nextAction") ?? "",
+                ProductionAnimationPath = ReadString(animation, "productionAnimationPath") ?? "",
                 Relation = "",
                 RelationSource = "",
                 Confidence = "",
@@ -671,6 +722,11 @@ ORDER BY mar.model, ra.name;";
                 ValidationCategory = ReadString(animation, "validationCategory") ?? "",
                 ValidationReason = ReadString(animation, "validationReason") ?? "",
                 RequiresHumanoidBake = ReadBool(animation, "hasMuscleClip"),
+                RequiresUnityBake = ReadBool(animation, "requiresUnityBake"),
+                RequiresInternalHumanoidSolve = ReadBool(animation, "requiresInternalHumanoidSolve"),
+                ProductionUnityBakeReady = ReadBool(animation, "productionUnityBakeReady"),
+                ProductionUnityBakeBlocked = ReadBool(animation, "productionUnityBakeBlocked"),
+                ProductionUnityBakeBlockedReason = ReadString(animation, "productionUnityBakeBlockedReason") ?? "",
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
@@ -1440,6 +1496,68 @@ GROUP BY ab.id;";
         private static int ReadArrayLength(JsonElement obj, string name)
         {
             return obj.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.Array ? property.GetArrayLength() : 0;
+        }
+
+        private static bool HasProductionUnityBakeAvatar(JsonElement? model)
+        {
+            if (model == null || model.Value.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (!model.Value.TryGetProperty("avatar", out var avatar) || avatar.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var humanBones = ReadArrayLength(avatar, "humanBones");
+            var skeletonBones = ReadArrayLength(avatar, "skeletonBones");
+            return humanBones > 0 && skeletonBones > 0;
+        }
+
+        private static bool HasAvatarOracle(JsonElement? model)
+        {
+            if (model == null || model.Value.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (!model.Value.TryGetProperty("avatar", out var avatar) || avatar.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            return HasCompleteOraclePayload(avatar, "oracle") || HasCompleteOraclePayload(avatar, "internalSolver");
+        }
+
+        private static bool HasCompleteOraclePayload(JsonElement avatar, string name)
+        {
+            if (!avatar.TryGetProperty(name, out var oracle) || oracle.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var humanBoneIndex = ReadArrayLength(oracle, "humanBoneIndex");
+            if (humanBoneIndex <= 0)
+            {
+                return false;
+            }
+
+            return HasCompleteSkeletonPose(oracle, "humanSkeleton", "pose")
+                || HasCompleteSkeletonPose(oracle, "skeleton", "humanSkeletonPose")
+                || HasCompleteSkeletonPose(oracle, "avatarSkeleton", "defaultPose");
+        }
+
+        private static bool HasCompleteSkeletonPose(JsonElement oracle, string skeletonName, string poseName)
+        {
+            if (!oracle.TryGetProperty(skeletonName, out var skeleton) || skeleton.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var nodes = ReadArrayLength(skeleton, "nodes");
+            var pose = ReadArrayLength(skeleton, poseName);
+            return nodes > 0 && pose >= nodes;
         }
     }
 }

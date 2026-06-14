@@ -1285,20 +1285,8 @@ namespace AnimeStudio
                     }
                     foreach (var m_FloatCurve in animationClip.m_FloatCurves)
                     {
-                        if (m_FloatCurve.classID == ClassIDType.SkinnedMeshRenderer) //BlendShape
+                        if (TryResolveBlendShapeCurve(animationClip, m_FloatCurve, out var path, out var channelName))
                         {
-                            var channelName = m_FloatCurve.attribute;
-                            int dotPos = channelName.IndexOf('.');
-                            if (dotPos >= 0)
-                            {
-                                channelName = channelName.Substring(dotPos + 1);
-                            }
-
-                            var path = GetPathByChannelName(channelName);
-                            if (string.IsNullOrEmpty(path))
-                            {
-                                path = FixBonePath(animationClip, m_FloatCurve.path);
-                            }
                             var track = iAnim.FindTrack(path, channelName);
                             if (track.BlendShape == null)
                             {
@@ -1969,25 +1957,8 @@ namespace AnimeStudio
         private void ReadCurveData(AnimationClip animationClip, ImportedKeyframedAnimation iAnim, AnimationClipBindingConstant m_ClipBindingConstant, int index, float time, float[] data, int offset, ref int curveIndex)
         {
             var binding = m_ClipBindingConstant.FindBinding(index);
-            if (binding.typeID == ClassIDType.SkinnedMeshRenderer) //BlendShape
+            if (TryResolveBlendShapeBinding(animationClip, binding, out var path, out var channelName))
             {
-                var channelName = GetChannelNameFromHash(binding.attribute);
-                if (string.IsNullOrEmpty(channelName))
-                {
-                    curveIndex++;
-                    return;
-                }
-                int dotPos = channelName.IndexOf('.');
-                if (dotPos >= 0)
-                {
-                    channelName = channelName.Substring(dotPos + 1);
-                }
-
-                var path = GetPathByChannelName(channelName);
-                if (string.IsNullOrEmpty(path))
-                {
-                    path = FixBonePath(GetPathFromHash(binding.path, animationClip));
-                }
                 var track = iAnim.FindTrack(path, channelName);
                 if (track.BlendShape == null)
                 {
@@ -1996,10 +1967,16 @@ namespace AnimeStudio
                 }
                 track.BlendShape.Keyframes.Add(new ImportedKeyframe<float>(time, data[curveIndex++ + offset]));
             }
+            else if (binding.typeID == ClassIDType.SkinnedMeshRenderer)
+            {
+                // SkinnedMeshRenderer 也承载材质、Renderer 属性等浮点曲线。
+                // 这些不是 glTF morph weights，不能伪装成 BlendShape 动画。
+                curveIndex++;
+            }
             else if (binding.typeID == ClassIDType.Transform)
             {
-                var path = FixBonePath(GetPathFromHash(binding.path, animationClip));
-                var track = iAnim.FindTrack(path);
+                var transformPath = FixBonePath(GetPathFromHash(binding.path, animationClip));
+                var track = iAnim.FindTrack(transformPath);
 
                 switch (binding.attribute)
                 {
@@ -2186,6 +2163,70 @@ namespace AnimeStudio
                 }
             }
             return null;
+        }
+
+        private bool TryResolveBlendShapeCurve(AnimationClip animationClip, FloatCurve curve, out string path, out string channelName)
+        {
+            path = null;
+            channelName = null;
+            if (curve == null || curve.classID != ClassIDType.SkinnedMeshRenderer)
+            {
+                return false;
+            }
+
+            channelName = NormalizeBlendShapeAttribute(curve.attribute);
+            if (string.IsNullOrWhiteSpace(channelName) || GetPathByChannelName(channelName) == null)
+            {
+                return false;
+            }
+
+            path = GetPathByChannelName(channelName);
+            if (string.IsNullOrEmpty(path))
+            {
+                path = FixBonePath(animationClip, curve.path);
+            }
+            return !string.IsNullOrWhiteSpace(path);
+        }
+
+        private bool TryResolveBlendShapeBinding(AnimationClip animationClip, GenericBinding binding, out string path, out string channelName)
+        {
+            path = null;
+            channelName = null;
+            if (binding == null || binding.typeID != ClassIDType.SkinnedMeshRenderer)
+            {
+                return false;
+            }
+
+            var customType = (BindingCustomType)binding.customType;
+            if (customType != BindingCustomType.BlendShape && customType != BindingCustomType.None)
+            {
+                return false;
+            }
+
+            channelName = NormalizeBlendShapeAttribute(GetChannelNameFromHash(binding.attribute));
+            if (string.IsNullOrWhiteSpace(channelName) || GetPathByChannelName(channelName) == null)
+            {
+                return false;
+            }
+
+            path = GetPathByChannelName(channelName);
+            if (string.IsNullOrEmpty(path))
+            {
+                path = FixBonePath(GetPathFromHash(binding.path, animationClip));
+            }
+            return !string.IsNullOrWhiteSpace(path);
+        }
+
+        private static string NormalizeBlendShapeAttribute(string attribute)
+        {
+            if (string.IsNullOrWhiteSpace(attribute))
+            {
+                return null;
+            }
+            const string Prefix = "blendShape.";
+            return attribute.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase)
+                ? attribute[Prefix.Length..]
+                : attribute;
         }
 
         private string GetChannelNameFromHash(uint attribute)

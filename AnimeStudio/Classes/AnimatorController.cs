@@ -841,13 +841,14 @@ namespace AnimeStudio
 
     public sealed class AnimatorController : RuntimeAnimatorController
     {
+        public ControllerConstant m_Controller;
         public Dictionary<uint, string> m_TOS;
         public List<PPtr<AnimationClip>> m_AnimationClips;
 
         public AnimatorController(ObjectReader reader) : base(reader)
         {
             var m_ControllerSize = reader.ReadUInt32();
-            var m_Controller = new ControllerConstant(reader);
+            m_Controller = new ControllerConstant(reader);
 
             int tosSize = reader.ReadInt32();
             m_TOS = new Dictionary<uint, string>();

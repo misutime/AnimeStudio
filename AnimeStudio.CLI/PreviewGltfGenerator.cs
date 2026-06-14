@@ -37,12 +37,35 @@ namespace AnimeStudio.CLI
             var selection = SelectPreview(index, modelSelector, animationSelector);
             if (selection == null)
             {
+                if (IsDeferredLargeLibraryIndex(index))
+                {
+                    var libraryRoot = Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? "";
+                    var dbPath = Path.Combine(libraryRoot, "library_index.db");
+                    if (File.Exists(dbPath))
+                    {
+                        Logger.Info("model_animations.json is a deferred large-Library stub; selecting preview candidate from sibling library_index.db.");
+                        selection = SelectPreviewFromLibraryDb(dbPath, modelSelector, animationSelector);
+                        if (selection != null)
+                        {
+                            ResolveSelectionLibraryPaths(selection, libraryRoot);
+                            var deferredSourceIndex = ResolveExistingSourceIndex(libraryRoot);
+                            return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride, deferredSourceIndex);
+                        }
+                    }
+                }
                 Logger.Error("No model/animation candidate matched the preview selectors.");
                 return null;
             }
 
             ResolveSelectionLibraryPaths(selection, Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? "");
-            return GenerateSelection(indexPath, gameName, selection, outputDirectory, sourceRootOverride);
+            var sourceIndex = ResolveExistingSourceIndex(Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? "");
+            return GenerateSelection(indexPath, gameName, selection, outputDirectory, sourceRootOverride, sourceIndex);
+        }
+
+        private static bool IsDeferredLargeLibraryIndex(JObject index)
+        {
+            return string.Equals((string)index?["matchingDeferred"], "true", StringComparison.OrdinalIgnoreCase) ||
+                (bool?)index?["matchingDeferred"] == true;
         }
 
         public static string GenerateFromLibrary(
@@ -80,7 +103,8 @@ namespace AnimeStudio.CLI
             }
 
             ResolveSelectionLibraryPaths(selection, libraryRoot);
-            return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride);
+            var sourceIndex = ResolveExistingSourceIndex(libraryRoot);
+            return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride, sourceIndex);
         }
 
         private static string GenerateSelection(
@@ -88,7 +112,8 @@ namespace AnimeStudio.CLI
             string gameName,
             PreviewSelection selection,
             string outputDirectory,
-            string sourceRootOverride)
+            string sourceRootOverride,
+            string sourceIndexOverride = null)
         {
             var modelName = (string)selection.Model["model"]?["name"];
             var animationName = (string)selection.Animation["name"];
@@ -99,14 +124,6 @@ namespace AnimeStudio.CLI
                 Logger.Error("Selected preview entry is missing model or animation name.");
                 return null;
             }
-            if (!File.Exists(modelSource) || !File.Exists(animationSource))
-            {
-                Logger.Error("Selected preview entry source files no longer exist. Re-run the Library export from an accessible game/source folder.");
-                Logger.Error($"Model source: {modelSource}");
-                Logger.Error($"Animation source: {animationSource}");
-                return null;
-            }
-
             var output = string.IsNullOrWhiteSpace(outputDirectory)
                 ? Path.Combine(
                     Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? Directory.GetCurrentDirectory(),
@@ -120,7 +137,8 @@ namespace AnimeStudio.CLI
             }
             Directory.CreateDirectory(output);
 
-            if (FastPreviewGltfBuilder.TryGenerate(selection.Model, selection.Animation, animationName, output, out var fastGltfPath, out var fastMessage))
+            var forceInternalHumanoidSolve = CandidateRequiresInternalHumanoidSolve(selection.Animation);
+            if (FastPreviewGltfBuilder.TryGenerate(selection.Model, selection.Animation, animationName, output, out var fastGltfPath, out var fastMessage, forceInternalHumanoidSolve))
             {
                 Logger.Info(fastMessage);
                 var fastReport = GltfPreviewValidator.Validate(fastGltfPath, modelName, animationName, selection.Model, selection.Animation, Array.Empty<string>());
@@ -131,6 +149,13 @@ namespace AnimeStudio.CLI
                 return fastGltfPath;
             }
             Logger.Info($"Fast preview skipped: {fastMessage}");
+            if (!File.Exists(modelSource) || !File.Exists(animationSource))
+            {
+                Logger.Error("Selected preview entry source files no longer exist. Re-run the Library export from an accessible game/source folder or provide exported glTF + animation sidecar data that FastPreview can consume.");
+                Logger.Error($"Model source: {modelSource}");
+                Logger.Error($"Animation source: {animationSource}");
+                return null;
+            }
             if (Directory.Exists(output))
             {
                 Directory.Delete(output, recursive: true);
@@ -138,9 +163,18 @@ namespace AnimeStudio.CLI
             Directory.CreateDirectory(output);
 
             var inputRoot = GetCommonRoot(new[] { Path.GetDirectoryName(modelSource), Path.GetDirectoryName(animationSource) });
+            var sourceIndexRoot = ReadSourceIndexRoot(sourceIndexOverride);
+            if (!string.IsNullOrWhiteSpace(sourceIndexRoot)
+                && IsUnderDirectory(modelSource, sourceIndexRoot)
+                && IsUnderDirectory(animationSource, sourceIndexRoot))
+            {
+                inputRoot = sourceIndexRoot;
+            }
             var modelFilter = BuildSourceFilter(modelSource);
             var animationFilter = BuildSourceFilter(animationSource);
             var sourceFilter = $"({modelFilter})|({animationFilter})";
+            var sourceFiles = BuildSourceFileArguments(inputRoot, modelSource, animationSource);
+            var pathIds = BuildPathIdArguments(selection);
             var names = $"^{Regex.Escape(modelName)}$|^{Regex.Escape(animationName)}$";
             var exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
             if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
@@ -152,9 +186,9 @@ namespace AnimeStudio.CLI
             Logger.Info($"Generating preview glTF: {modelName} + {animationName}");
             var args = new List<string>
             {
-                Quote(inputRoot),
-                Quote(output),
-                "--game", Quote(gameName),
+                inputRoot,
+                output,
+                "--game", gameName,
                 "--mode", "Library",
                 "--group_assets", "ByLibrary",
                 "--profile_3d", "All",
@@ -162,22 +196,44 @@ namespace AnimeStudio.CLI
                 "--texture_mode", "Png",
                 "--animation_package", "Both",
                 "--fbx_animation", "All",
-                "--names", Quote(names),
-                "--containers", Quote(sourceFilter),
+                "--export_full_decoded_animation_curves",
+                "--names", names,
+                "--containers", sourceFilter,
                 "--batch_files", "64",
                 "--profile_log", "off",
+                "--skip_sqlite_index",
                 "--silent",
             };
+            if (sourceFiles.Length > 0)
+            {
+                args.Add("--source_files");
+                args.AddRange(sourceFiles);
+            }
+            if (pathIds.Length > 0)
+            {
+                args.Add("--path_ids");
+                args.AddRange(pathIds);
+            }
+            if (!string.IsNullOrWhiteSpace(sourceIndexOverride) && File.Exists(sourceIndexOverride))
+            {
+                args.Add("--source_index");
+                args.Add(sourceIndexOverride);
+            }
 
-            var process = Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = exe,
-                Arguments = string.Join(" ", args),
                 WorkingDirectory = Directory.GetCurrentDirectory(),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-            });
+            };
+            foreach (var arg in args)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            var process = Process.Start(startInfo);
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
             process.WaitForExit();
@@ -208,12 +264,71 @@ namespace AnimeStudio.CLI
             }
 
             var exportIssues = ExtractExportIssues(stdout, stderr);
+            if (TryGenerateFastPreviewFromExport(output, modelName, animationName, exportIssues, out var solvedGltfPath))
+            {
+                return solvedGltfPath;
+            }
+
             var report = GltfPreviewValidator.Validate(gltfPath, modelName, animationName, selection.Model, selection.Animation, exportIssues);
             var reportPath = Path.Combine(output, "preview_validation.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Preview glTF: {gltfPath}");
             Logger.Info($"Preview validation: {reportPath}");
             return gltfPath;
+        }
+
+        private static bool TryGenerateFastPreviewFromExport(
+            string exportRoot,
+            string modelName,
+            string animationName,
+            string[] exportIssues,
+            out string gltfPath)
+        {
+            gltfPath = null;
+            var catalogPath = Path.Combine(exportRoot, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                return false;
+            }
+
+            var entries = ReadJsonLines(catalogPath).ToList();
+            var model = entries.FirstOrDefault(x =>
+                string.Equals((string)x["kind"], "Model", StringComparison.OrdinalIgnoreCase)
+                && Matches(modelName, (string)x["name"], (string)x["output"]));
+            var animation = entries.FirstOrDefault(x =>
+                string.Equals((string)x["kind"], "Animation", StringComparison.OrdinalIgnoreCase)
+                && Matches(animationName, (string)x["name"], (string)x["output"]));
+            if (model == null || animation == null)
+            {
+                return false;
+            }
+            ResolvePathProperty(model, exportRoot, "output");
+            ResolvePathProperty(model, exportRoot, "modelPreview");
+            ResolvePathProperty(animation, exportRoot, "output");
+            ResolvePathProperty(animation, exportRoot, "animationAsset");
+
+            var selectionModel = new JObject
+            {
+                ["model"] = model,
+                ["candidateCount"] = 1,
+                ["candidates"] = new JArray(animation),
+            };
+            var fastOutput = Path.Combine(exportRoot, "FastPreview");
+            var forceInternalHumanoidSolve = CandidateRequiresInternalHumanoidSolve(animation);
+            if (!FastPreviewGltfBuilder.TryGenerate(selectionModel, animation, animationName, fastOutput, out var fastGltfPath, out var message, forceInternalHumanoidSolve))
+            {
+                Logger.Info($"Post-export fast preview skipped: {message}");
+                return false;
+            }
+
+            Logger.Info(message);
+            var report = GltfPreviewValidator.Validate(fastGltfPath, modelName, animationName, selectionModel, animation, exportIssues);
+            var reportPath = Path.Combine(exportRoot, "preview_validation.json");
+            File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
+            Logger.Info($"Preview glTF: {fastGltfPath}");
+            Logger.Info($"Preview validation: {reportPath}");
+            gltfPath = fastGltfPath;
+            return true;
         }
 
         public static void GeneratePack(
@@ -284,25 +399,7 @@ namespace AnimeStudio.CLI
                 var gltfPath = validation == null
                     ? Directory.EnumerateFiles(itemOutput, "*.gltf", SearchOption.AllDirectories).FirstOrDefault()
                     : (string)validation["gltf"];
-                results.Add(new
-                {
-                    model = modelName,
-                    animation = animationName,
-                    output = gltfPath,
-                    validation = validationPath,
-                    status = (string)validation?["status"] ?? "missing",
-                    channels = (int?)validation?["counts"]?["channels"] ?? 0,
-                    coreBoneNodes = (int?)validation?["animationCoverage"]?["coreBoneNodeCount"] ?? 0,
-                    invalidChannels = (int?)validation?["counts"]?["invalidChannels"] ?? 0,
-                    baked = (bool?)validation?["humanoid"]?["baked"] ?? false,
-                    bakeMode = (string)validation?["humanoid"]?["bakeMode"],
-                    bakedTrackCount = (int?)validation?["humanoid"]?["bakedTrackCount"] ?? 0,
-                    bakedKeyframeCount = (int?)validation?["humanoid"]?["bakedKeyframeCount"] ?? 0,
-                    exportIssueCount = (int?)validation?["exportIssues"]?["count"] ?? 0,
-                    humanoid = validation?["humanoid"],
-                    exportIssues = validation?["exportIssues"],
-                    notes = validation?["notes"],
-                });
+                results.Add(BuildPackResult(modelName, animationName, gltfPath, validationPath, validation));
             }
 
             var report = new
@@ -319,6 +416,925 @@ namespace AnimeStudio.CLI
             var reportPath = Path.Combine(output, "animation_pack_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Animation pack report: {reportPath}");
+        }
+
+        private static object BuildPackResult(string modelName, string animationName, string gltfPath, string validationPath, JObject validation)
+        {
+            return new
+            {
+                model = modelName,
+                animation = animationName,
+                output = gltfPath,
+                validation = validationPath,
+                status = (string)validation?["status"] ?? "missing",
+                channels = (int?)validation?["counts"]?["channels"] ?? 0,
+                coreBoneNodes = (int?)validation?["animationCoverage"]?["coreBoneNodeCount"] ?? 0,
+                invalidChannels = (int?)validation?["counts"]?["invalidChannels"] ?? 0,
+                baked = (bool?)validation?["humanoid"]?["baked"] ?? false,
+                bakeMode = (string)validation?["humanoid"]?["bakeMode"],
+                bakedTrackCount = (int?)validation?["humanoid"]?["bakedTrackCount"] ?? 0,
+                bakedKeyframeCount = (int?)validation?["humanoid"]?["bakedKeyframeCount"] ?? 0,
+                internalSolved = (bool?)validation?["humanoid"]?["internalSolved"] ?? false,
+                solvedTrackCount = (int?)validation?["humanoid"]?["solvedTrackCount"] ?? 0,
+                solvedKeyframeCount = (int?)validation?["humanoid"]?["solvedKeyframeCount"] ?? 0,
+                rootMotion = validation?["humanoid"]?["rootMotion"],
+                exportIssueCount = (int?)validation?["exportIssues"]?["count"] ?? 0,
+                humanoid = validation?["humanoid"],
+                exportIssues = validation?["exportIssues"],
+                notes = validation?["notes"],
+            };
+        }
+
+        public static void GeneratePackFromLibrary(
+            string libraryRoot,
+            string gameName,
+            string modelSelector,
+            string animationSelectors,
+            string outputDirectory,
+            int limit,
+            string sourceRootOverride = null,
+            string indexPathOverride = null
+        )
+        {
+            if (string.IsNullOrWhiteSpace(gameName))
+            {
+                Logger.Error("--game is required with --pack_model_animations_from_library.");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                Logger.Error($"Library root not found: {libraryRoot}");
+                return;
+            }
+
+            var dbPath = string.IsNullOrWhiteSpace(indexPathOverride)
+                ? Path.Combine(libraryRoot, "library_index.db")
+                : indexPathOverride;
+            if (!File.Exists(dbPath))
+            {
+                Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
+                return;
+            }
+
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+            connection.Open();
+            var modelInfo = SelectAssetFromLibraryDb(connection, "Model", modelSelector);
+            if (modelInfo == null)
+            {
+                Logger.Error("No model matched --preview_model for --pack_model_animations_from_library.");
+                return;
+            }
+
+            var modelName = (string)modelInfo["name"];
+            var candidates = SelectPackAnimationCandidatesFromLibraryDb(connection, modelInfo, animationSelectors, Math.Max(1, limit), libraryRoot);
+            if (candidates.Count == 0)
+            {
+                Logger.Error("No deterministic SQLite animation candidates matched --pack_animations.");
+                return;
+            }
+            ResolvePathProperty(modelInfo, libraryRoot, "output");
+            ResolvePathProperty(modelInfo, libraryRoot, "modelPreview");
+
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(libraryRoot, "AnimationPacks", SafeName(modelName ?? "Model"))
+                : outputDirectory;
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+            Directory.CreateDirectory(output);
+
+            Logger.Info($"Generating SQLite animation pack: {modelName} + {candidates.Count} animation(s)");
+            var results = new List<object>();
+            foreach (var candidate in candidates)
+            {
+                var animationName = (string)candidate["name"];
+                var itemOutput = Path.Combine(output, SafeName(animationName ?? "Animation"));
+                var selection = new PreviewSelection(
+                    new JObject
+                    {
+                        ["model"] = modelInfo.DeepClone(),
+                        ["candidateCount"] = candidates.Count,
+                        ["candidates"] = new JArray(candidate),
+                    },
+                    candidate);
+                var sourceIndex = ResolveExistingSourceIndex(libraryRoot);
+                GenerateSelection(dbPath, gameName, selection, itemOutput, sourceRootOverride, sourceIndex);
+
+                var validationPath = Path.Combine(itemOutput, "preview_validation.json");
+                JObject validation = null;
+                if (File.Exists(validationPath))
+                {
+                    validation = JObject.Parse(File.ReadAllText(validationPath));
+                }
+
+                var gltfPath = validation == null
+                    ? Directory.EnumerateFiles(itemOutput, "*.gltf", SearchOption.AllDirectories).FirstOrDefault()
+                    : (string)validation["gltf"];
+                results.Add(BuildPackResult(modelName, animationName, gltfPath, validationPath, validation));
+            }
+
+            var report = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                rule = "Each item is generated from library_index.db model_animation_candidates. Candidates must already come from Unity deterministic relations; this command does not run model x animation guessing.",
+                libraryRoot,
+                dbPath,
+                sourceRootOverride,
+                model = modelInfo,
+                requestedAnimations = animationSelectors,
+                count = results.Count,
+                animations = results,
+            };
+            var reportPath = Path.Combine(output, "animation_pack_report.json");
+            File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
+            Logger.Info($"Animation pack report: {reportPath}");
+        }
+
+        public static void ValidatePreviewBatchFromLibrary(
+            string libraryRoot,
+            string gameName,
+            string modelSelector,
+            string animationSelectors,
+            string outputDirectory,
+            int limit,
+            string validationKind,
+            bool force,
+            string sourceRootOverride = null,
+            string indexPathOverride = null)
+        {
+            if (string.IsNullOrWhiteSpace(gameName))
+            {
+                Logger.Error("--game is required with --validate_animation_previews_from_library.");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                Logger.Error($"Library root not found: {libraryRoot}");
+                return;
+            }
+
+            var dbPath = string.IsNullOrWhiteSpace(indexPathOverride)
+                ? Path.Combine(libraryRoot, "library_index.db")
+                : indexPathOverride;
+            if (!File.Exists(dbPath))
+            {
+                Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
+                return;
+            }
+
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(libraryRoot, "AnimationPreviewValidation")
+                : outputDirectory;
+            Directory.CreateDirectory(output);
+
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={dbPath}");
+            connection.Open();
+            EnsurePreviewCacheTable(connection);
+
+            var normalizedValidationKind = NormalizePreviewValidationKind(validationKind);
+            if (limit <= 0)
+            {
+                Logger.Info("Preview validation limit is 0; writing animation preview cache summary only.");
+                WritePreviewCacheSummary(connection, libraryRoot, dbPath, output, modelSelector, animationSelectors, normalizedValidationKind);
+                return;
+            }
+
+            var candidates = SelectPreviewValidationCandidates(connection, modelSelector, animationSelectors, normalizedValidationKind, Math.Max(1, limit), libraryRoot, force);
+            if (candidates.Count == 0)
+            {
+                var cacheHint = force ? string.Empty : " uncached";
+                Logger.Warning($"No{cacheHint} deterministic SQLite preview candidates matched the validation selectors.");
+                WritePreviewCacheSummary(connection, libraryRoot, dbPath, output, modelSelector, animationSelectors, normalizedValidationKind);
+                return;
+            }
+
+            Logger.Info($"Validating SQLite animation previews: {candidates.Count} candidate(s){(force ? " (force re-run enabled)" : string.Empty)}");
+            var sourceIndex = ResolveExistingSourceIndex(libraryRoot);
+            var results = new List<object>();
+            var okCount = 0;
+            foreach (var item in candidates)
+            {
+                var modelName = (string)item.Model["name"];
+                var animationName = (string)item.Animation["name"];
+                var itemOutput = Path.Combine(output, $"{SafeName(modelName ?? "Model")}__{SafeName(animationName ?? "Animation")}");
+                ResolvePathProperty(item.Model, libraryRoot, "output");
+                ResolvePathProperty(item.Model, libraryRoot, "modelPreview");
+                ResolvePathProperty(item.Animation, libraryRoot, "output");
+                ResolvePathProperty(item.Animation, libraryRoot, "animationAsset");
+
+                var selection = new PreviewSelection(
+                    new JObject
+                    {
+                        ["model"] = item.Model,
+                        ["candidateCount"] = 1,
+                        ["candidates"] = new JArray(item.Animation),
+                    },
+                    item.Animation);
+
+                string gltfPath = null;
+                string validationPath = null;
+                JObject validation = null;
+                string status = "failed";
+                string message = null;
+                try
+                {
+                    gltfPath = GenerateSelection(dbPath, gameName, selection, itemOutput, sourceRootOverride, sourceIndex);
+                    validationPath = Path.Combine(itemOutput, "preview_validation.json");
+                    if (File.Exists(validationPath))
+                    {
+                        validation = JObject.Parse(File.ReadAllText(validationPath));
+                    }
+                    status = (string)validation?["status"]
+                        ?? (gltfPath == null ? "failed" : "warning");
+                    message = (string)validation?["status"] ?? (gltfPath == null ? "preview_generation_failed" : "preview_validation_missing");
+                    if (TryReadGeneratedDecodedStatus(itemOutput, animationName, out var decodedStatus, out var decodedHint)
+                        && string.Equals(decodedStatus, "empty_humanoid_clip", StringComparison.OrdinalIgnoreCase))
+                    {
+                        status = "empty_humanoid_clip";
+                        message = decodedHint;
+                    }
+                }
+                catch (Exception e)
+                {
+                    message = e.GetType().Name + ": " + e.Message;
+                    Logger.Warning($"Preview validation failed for {modelName} + {animationName}: {message}");
+                }
+
+                var solverVersion = ResolvePreviewCacheSolverVersion(validation);
+                var diagnosticStatus = ResolvePreviewCacheDiagnosticStatus(validation);
+                var internalSolved = ResolvePreviewCacheInternalSolved(validation);
+                var muscleCurveCount = ResolvePreviewCacheMuscleCurveCount(validation);
+                UpsertPreviewCache(
+                    connection,
+                    item.ModelOutput,
+                    item.AnimationOutput,
+                    status,
+                    gltfPath,
+                    validationPath,
+                    message,
+                    solverVersion,
+                    diagnosticStatus,
+                    internalSolved,
+                    muscleCurveCount);
+                if (string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    okCount++;
+                }
+                results.Add(new
+                {
+                    model = modelName,
+                    animation = animationName,
+                    modelOutput = item.ModelOutput,
+                    animationOutput = item.AnimationOutput,
+                    status,
+                    gltfPath,
+                    validationPath,
+                    validation,
+                    message,
+                });
+            }
+
+            var report = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                rule = "Batch validates only deterministic SQLite model-animation candidates (relation_source=explicit). It writes animation_preview_cache and does not guess model-animation relations.",
+                libraryRoot,
+                dbPath,
+                sourceRootOverride,
+                modelSelector,
+                animationSelectors,
+                previewValidationKind = normalizedValidationKind,
+                previewValidationForce = force,
+                limit,
+                count = results.Count,
+                ok = okCount,
+                results,
+            };
+            var reportPath = Path.Combine(output, "animation_preview_validation_report.json");
+            File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
+            Logger.Info($"Animation preview validation report: {reportPath}");
+            WritePreviewCacheSummary(connection, libraryRoot, dbPath, output, modelSelector, animationSelectors, normalizedValidationKind);
+        }
+
+        private static bool TryReadGeneratedDecodedStatus(string itemOutput, string animationName, out string status, out string hint)
+        {
+            status = null;
+            hint = null;
+            if (string.IsNullOrWhiteSpace(itemOutput) || !Directory.Exists(itemOutput))
+            {
+                return false;
+            }
+
+            var files = Directory.EnumerateFiles(itemOutput, "*.animation_asset.json", SearchOption.AllDirectories).ToArray();
+            if (files.Length == 0)
+            {
+                return false;
+            }
+
+            var safeAnimation = SafeName(animationName ?? string.Empty);
+            var selected = files
+                .OrderByDescending(x => string.Equals(Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(x)), animationName, StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(x => string.Equals(Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(x)), safeAnimation, StringComparison.OrdinalIgnoreCase))
+                .ThenBy(x => x.Length)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(selected))
+            {
+                return false;
+            }
+
+            var json = JObject.Parse(File.ReadAllText(selected));
+            var decoded = json["decoded"] as JObject;
+            status = (string)decoded?["status"];
+            if (string.IsNullOrWhiteSpace(status))
+            {
+                return false;
+            }
+
+            var note = (string)decoded["note"];
+            var decoderInput = decoded["decoderInput"] as JObject;
+            if (decoderInput != null)
+            {
+                hint = $"decoded.status={status}; bindings={(int?)decoderInput["clipBindingCount"] ?? 0}; valueBindings={(int?)decoderInput["valueBindingCount"] ?? 0}; acl={(int?)decoderInput["aclCurveCount"] ?? 0}; streamed={(int?)decoderInput["streamedCurveCount"] ?? 0}; dense={(int?)decoderInput["denseCurveCount"] ?? 0}; constant={(int?)decoderInput["constantValueCount"] ?? 0}";
+            }
+            else
+            {
+                hint = $"decoded.status={status}";
+            }
+            if (!string.IsNullOrWhiteSpace(note))
+            {
+                hint += $"; note={note}";
+            }
+            return true;
+        }
+
+        private static void WritePreviewCacheSummary(
+            SqliteConnection connection,
+            string libraryRoot,
+            string dbPath,
+            string output,
+            string modelSelector,
+            string animationSelectors,
+            string validationKind)
+        {
+            var totalExplicitCandidates = HasTable(connection, "model_animation_candidate_model_summary")
+                ? ScalarLong(connection, "SELECT COALESCE(SUM(explicit_count), 0) FROM model_animation_candidate_model_summary;")
+                : ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_candidates WHERE relation_source='explicit';");
+            var directPreviewCandidates = HasTable(connection, "model_animation_candidate_model_summary")
+                ? ScalarLong(connection, "SELECT COALESCE(SUM(direct_preview_count), 0) FROM model_animation_candidate_model_summary;")
+                : ScalarLong(connection, @"SELECT COUNT(*) FROM model_animation_candidates WHERE relation_source='explicit' AND COALESCE(json_extract(raw_json, '$.nextAction'), '')='generate_preview_gltf' AND COALESCE(json_extract(raw_json, '$.requiresInternalHumanoidSolve'), 0)=0;");
+            var internalHumanoidCandidates = HasTable(connection, "model_animation_candidate_model_summary")
+                ? ScalarLong(connection, "SELECT COALESCE(SUM(internal_humanoid_count), 0) FROM model_animation_candidate_model_summary;")
+                : ScalarLong(connection, @"SELECT COUNT(*) FROM model_animation_candidates WHERE relation_source='explicit' AND (
+    COALESCE(json_extract(raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+    OR COALESCE(json_extract(raw_json, '$.missingInternalHumanoidSolver'), 0)=1
+    OR COALESCE(json_extract(raw_json, '$.nextAction'), '')='inspect_missing_humanoid_avatar'
+);");
+            var legacyUnityBakeCandidates = HasTable(connection, "model_animation_candidate_model_summary")
+                ? ScalarLong(connection, "SELECT COALESCE(SUM(legacy_unity_bake_count), 0) FROM model_animation_candidate_model_summary;")
+                : ScalarLong(connection, @"SELECT COUNT(*) FROM model_animation_candidates WHERE relation_source='explicit' AND COALESCE(json_extract(raw_json, '$.legacyUnityBakeSupported'), 0)=1;");
+            EnsureInternalSolverModelTempTable(connection);
+            var internalHumanoidProcessableCandidates = HasTable(connection, "model_animation_candidate_model_summary")
+                ? ScalarLong(connection, @"
+SELECT COALESCE(SUM(s.internal_humanoid_count), 0)
+FROM model_animation_candidate_model_summary s
+JOIN temp_internal_solver_models m ON m.output=s.model_output;")
+                : ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM model_animation_candidates c
+JOIN temp_internal_solver_models m ON m.output=c.model_output
+WHERE c.relation_source='explicit'
+  AND COALESCE(json_extract(c.raw_json, '$.nextAction'), '')='generate_preview_gltf'
+  AND COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1;");
+            var internalHumanoidMissingModelSolverCandidates = Math.Max(0, internalHumanoidCandidates - internalHumanoidProcessableCandidates);
+
+            var cachedExplicitCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM animation_preview_cache;");
+            var okCachedCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM animation_preview_cache
+WHERE status='ok';");
+            var emptyHumanoidClipCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM animation_preview_cache
+WHERE status='empty_humanoid_clip';");
+            var noHumanoidMuscleCurveCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM animation_preview_cache
+WHERE diagnostic_status='no_humanoid_muscle_curves';");
+            var knownLimbFormulaRiskCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM animation_preview_cache
+WHERE diagnostic_status='experimental_solved_known_limb_formula_risk';");
+            var internalSolvedCachedCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM animation_preview_cache
+WHERE internal_solved=1;");
+            var currentHumanoidSolverSql = SqlStringLiteral(FastPreviewGltfBuilder.HumanoidSolverCacheVersion);
+            var cachedInternalHumanoidCandidates = ScalarLong(connection, $@"
+SELECT COUNT(*)
+FROM animation_preview_cache cache
+JOIN temp_internal_solver_models m ON m.output=cache.model_output
+WHERE EXISTS (
+    SELECT 1
+    FROM model_animation_candidates c
+    WHERE c.model_output=cache.model_output
+      AND c.animation_output=cache.animation_output
+      AND c.relation_source='explicit'
+      AND COALESCE(json_extract(c.raw_json, '$.nextAction'), '')='generate_preview_gltf'
+      AND COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+)
+  AND COALESCE(cache.solver_version, '')={currentHumanoidSolverSql};");
+            var okInternalHumanoidCandidates = ScalarLong(connection, $@"
+SELECT COUNT(*)
+FROM animation_preview_cache cache
+JOIN temp_internal_solver_models m ON m.output=cache.model_output
+WHERE cache.status='ok'
+  AND EXISTS (
+    SELECT 1
+    FROM model_animation_candidates c
+    WHERE c.model_output=cache.model_output
+      AND c.animation_output=cache.animation_output
+      AND c.relation_source='explicit'
+      AND COALESCE(json_extract(c.raw_json, '$.nextAction'), '')='generate_preview_gltf'
+      AND COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+)
+  AND COALESCE(cache.solver_version, '')={currentHumanoidSolverSql};");
+            var warningInternalHumanoidKnownLimbRiskCandidates = ScalarLong(connection, $@"
+SELECT COUNT(*)
+FROM animation_preview_cache cache
+JOIN temp_internal_solver_models m ON m.output=cache.model_output
+WHERE cache.status='warning'
+  AND cache.diagnostic_status='experimental_solved_known_limb_formula_risk'
+  AND EXISTS (
+    SELECT 1
+    FROM model_animation_candidates c
+    WHERE c.model_output=cache.model_output
+      AND c.animation_output=cache.animation_output
+      AND c.relation_source='explicit'
+      AND COALESCE(json_extract(c.raw_json, '$.nextAction'), '')='generate_preview_gltf'
+      AND COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+)
+  AND COALESCE(cache.solver_version, '')={currentHumanoidSolverSql};");
+
+            var summary = new JObject
+            {
+                ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                ["rule"] = "Only deterministic SQLite model-animation candidates (relation_source=explicit) are counted. This report measures validation progress; it does not create or infer new model-animation relations.",
+                ["libraryRoot"] = libraryRoot,
+                ["dbPath"] = dbPath,
+                ["modelSelector"] = modelSelector,
+                ["animationSelectors"] = animationSelectors,
+                ["previewValidationKind"] = validationKind,
+                ["totals"] = new JObject
+                {
+                    ["models"] = ScalarLong(connection, "SELECT COUNT(*) FROM assets WHERE kind='Model';"),
+                    ["animations"] = ScalarLong(connection, "SELECT COUNT(*) FROM assets WHERE kind='Animation';"),
+                    ["modelsWithExplicitCandidates"] = HasTable(connection, "model_animation_candidate_model_summary")
+                        ? ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_candidate_model_summary WHERE explicit_count > 0;")
+                        : ScalarLong(connection, "SELECT COUNT(DISTINCT model_output) FROM model_animation_candidates WHERE relation_source='explicit';"),
+                    ["animationsWithExplicitCandidates"] = HasTable(connection, "model_animation_candidate_animation_summary")
+                        ? ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_candidate_animation_summary WHERE explicit_model_count > 0;")
+                        : ScalarLong(connection, "SELECT COUNT(DISTINCT animation_output) FROM model_animation_candidates WHERE relation_source='explicit';"),
+                    ["explicitCandidates"] = totalExplicitCandidates,
+                    ["directPreviewCandidates"] = directPreviewCandidates,
+                    ["internalHumanoidCandidates"] = internalHumanoidCandidates,
+                    ["internalHumanoidProcessableCandidates"] = internalHumanoidProcessableCandidates,
+                    ["internalHumanoidMissingModelSolverCandidates"] = internalHumanoidMissingModelSolverCandidates,
+                    ["legacyUnityBakeCandidates"] = legacyUnityBakeCandidates,
+                },
+                ["cache"] = new JObject
+                {
+                    ["currentHumanoidSolverVersion"] = FastPreviewGltfBuilder.HumanoidSolverCacheVersion,
+                    ["cachedExplicitCandidates"] = cachedExplicitCandidates,
+                    ["okCachedCandidates"] = okCachedCandidates,
+                    ["emptyHumanoidClipCandidates"] = emptyHumanoidClipCandidates,
+                    ["noHumanoidMuscleCurveCandidates"] = noHumanoidMuscleCurveCandidates,
+                    ["knownLimbFormulaRiskCandidates"] = knownLimbFormulaRiskCandidates,
+                    ["internalSolvedCachedCandidates"] = internalSolvedCachedCandidates,
+                    ["statusCounts"] = QueryGroupedCounts(connection, @"
+SELECT status, COUNT(*)
+FROM animation_preview_cache
+GROUP BY status
+ORDER BY COUNT(*) DESC, status COLLATE NOCASE;"),
+                    ["diagnosticStatusCounts"] = QueryGroupedCounts(connection, @"
+SELECT COALESCE(NULLIF(diagnostic_status, ''), 'Unknown'), COUNT(*)
+FROM animation_preview_cache
+GROUP BY COALESCE(NULLIF(diagnostic_status, ''), 'Unknown')
+ORDER BY COUNT(*) DESC, COALESCE(NULLIF(diagnostic_status, ''), 'Unknown') COLLATE NOCASE;"),
+                    ["coverageOfExplicitCandidates"] = Ratio(cachedExplicitCandidates, totalExplicitCandidates),
+                    ["okCoverageOfExplicitCandidates"] = Ratio(okCachedCandidates, totalExplicitCandidates),
+                    ["okCoverageExcludingEmptyHumanoidClips"] = Ratio(okCachedCandidates, Math.Max(0, totalExplicitCandidates - emptyHumanoidClipCandidates)),
+                    ["okRateOfCachedCandidates"] = Ratio(okCachedCandidates, cachedExplicitCandidates),
+                    ["cachedInternalHumanoidCandidates"] = cachedInternalHumanoidCandidates,
+                    ["okInternalHumanoidCandidates"] = okInternalHumanoidCandidates,
+                    ["warningInternalHumanoidKnownLimbRiskCandidates"] = warningInternalHumanoidKnownLimbRiskCandidates,
+                    ["coverageOfInternalHumanoidProcessableCandidates"] = Ratio(cachedInternalHumanoidCandidates, internalHumanoidProcessableCandidates),
+                    ["okCoverageOfInternalHumanoidProcessableCandidates"] = Ratio(okInternalHumanoidCandidates, internalHumanoidProcessableCandidates),
+                    ["okRateOfCachedInternalHumanoidCandidates"] = Ratio(okInternalHumanoidCandidates, cachedInternalHumanoidCandidates),
+                },
+                ["modelResourceKinds"] = QueryPreviewCacheByModelResourceKind(connection),
+                ["animationCapabilities"] = QueryPreviewCacheByAnimationCapability(connection),
+            };
+
+            var summaryPath = Path.Combine(output, "animation_preview_cache_summary.json");
+            File.WriteAllText(summaryPath, JsonConvert.SerializeObject(summary, Formatting.Indented));
+            Logger.Info($"Animation preview cache summary: {summaryPath}");
+
+            var rootSummaryPath = Path.Combine(libraryRoot, "animation_preview_cache_summary.json");
+            if (!string.Equals(Path.GetFullPath(summaryPath), Path.GetFullPath(rootSummaryPath), StringComparison.OrdinalIgnoreCase))
+            {
+                File.WriteAllText(rootSummaryPath, JsonConvert.SerializeObject(summary, Formatting.Indented));
+                Logger.Info($"Animation preview cache summary: {rootSummaryPath}");
+            }
+        }
+
+        private static JArray QueryPreviewCacheByModelResourceKind(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COALESCE(NULLIF(m.resource_kind, ''), 'Unknown') AS resource_kind,
+       cache.status,
+       COUNT(*) AS count
+FROM animation_preview_cache cache
+JOIN assets m ON m.kind='Model' AND m.output=cache.model_output
+GROUP BY COALESCE(NULLIF(m.resource_kind, ''), 'Unknown'), cache.status
+ORDER BY count DESC, resource_kind COLLATE NOCASE, cache.status COLLATE NOCASE;";
+            var rows = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add(new JObject
+                {
+                    ["resourceKind"] = reader.GetString(0),
+                    ["status"] = reader.GetString(1),
+                    ["count"] = reader.GetInt64(2),
+                });
+            }
+            return rows;
+        }
+
+        private static void EnsureInternalSolverModelTempTable(SqliteConnection connection)
+        {
+            using var create = connection.CreateCommand();
+            create.CommandText = @"
+CREATE TEMP TABLE IF NOT EXISTS temp_internal_solver_models (
+    output TEXT PRIMARY KEY
+) WITHOUT ROWID;";
+            create.ExecuteNonQuery();
+
+            using var clear = connection.CreateCommand();
+            clear.CommandText = "DELETE FROM temp_internal_solver_models;";
+            clear.ExecuteNonQuery();
+
+            using var insert = connection.CreateCommand();
+            insert.CommandText = @"
+INSERT OR IGNORE INTO temp_internal_solver_models(output)
+SELECT output
+FROM assets
+WHERE kind='Model'
+  AND output IS NOT NULL
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.internalSolver.skeleton.nodes')), 0) > 0
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.internalSolver.skeleton.humanSkeletonPose')), 0)
+      >= COALESCE(json_array_length(json_extract(raw_json, '$.avatar.internalSolver.skeleton.nodes')), 0)
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.internalSolver.humanBoneIndex')), 0) > 0;";
+            insert.ExecuteNonQuery();
+        }
+
+        private static JArray QueryPreviewCacheByAnimationCapability(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COALESCE(NULLIF(json_extract(a.raw_json, '$.animationCapability'), ''), NULLIF(a.animation_type, ''), 'Unknown') AS capability,
+       cache.status,
+       COUNT(*) AS count
+FROM animation_preview_cache cache
+JOIN assets a ON a.kind='Animation' AND a.output=cache.animation_output
+GROUP BY COALESCE(NULLIF(json_extract(a.raw_json, '$.animationCapability'), ''), NULLIF(a.animation_type, ''), 'Unknown'), cache.status
+ORDER BY count DESC, capability COLLATE NOCASE, cache.status COLLATE NOCASE;";
+            var rows = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add(new JObject
+                {
+                    ["animationCapability"] = reader.GetString(0),
+                    ["status"] = reader.GetString(1),
+                    ["count"] = reader.GetInt64(2),
+                });
+            }
+            return rows;
+        }
+
+        private static JObject QueryGroupedCounts(SqliteConnection connection, string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            var result = new JObject();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result[reader.GetString(0)] = reader.GetInt64(1);
+            }
+            return result;
+        }
+
+        private static long ScalarLong(SqliteConnection connection, string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            var value = command.ExecuteScalar();
+            if (value == null || value == DBNull.Value)
+            {
+                return 0;
+            }
+            return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+        }
+
+        private static bool HasTable(SqliteConnection connection, string tableName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$name;";
+            command.Parameters.AddWithValue("$name", tableName);
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) > 0;
+        }
+
+        private static double Ratio(long numerator, long denominator)
+        {
+            return denominator <= 0 ? 0 : Math.Round((double)numerator / denominator, 6);
+        }
+
+        private static string SqlStringLiteral(string value)
+        {
+            return "'" + (value ?? string.Empty).Replace("'", "''") + "'";
+        }
+
+        private static List<PreviewValidationCandidate> SelectPreviewValidationCandidates(
+            SqliteConnection connection,
+            string modelSelector,
+            string animationSelectors,
+            string validationKind,
+            int limit,
+            string libraryRoot,
+            bool force)
+        {
+            EnsureInternalSolverModelTempTable(connection);
+            using var command = connection.CreateCommand();
+            var hasModelSelector = CanUseSelectorSqlPrefilter(modelSelector);
+            var hasAnimationSelector = CanUseSelectorSqlPrefilter(animationSelectors);
+            var modelSelectorClause = BuildAssetSelectorSqlClause(command, "modelMatch", modelSelector, "model");
+            var animationSelectorClause = BuildAssetSelectorSqlClause(command, "animationMatch", animationSelectors, "animation");
+            var validationKindClause = BuildPreviewValidationKindSqlClause(validationKind);
+            var cacheClause = force
+                ? "1=1"
+                : @"
+  (
+    cache.model_output IS NULL
+    OR (
+      COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 1
+      AND COALESCE(cache.solver_version, '') <> $humanoidSolverVersion
+    )
+  )";
+            command.CommandText = $@"
+SELECT m.raw_json, a.raw_json, c.raw_json, c.model_output, c.animation_output
+FROM model_animation_candidates c
+JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
+LEFT JOIN animation_preview_cache cache
+  ON cache.model_output=c.model_output AND cache.animation_output=c.animation_output
+WHERE c.relation_source='explicit'
+  AND COALESCE(json_extract(c.raw_json, '$.nextAction'), '') = 'generate_preview_gltf'
+  AND (
+    COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 0
+    OR c.model_output IN (SELECT output FROM temp_internal_solver_models)
+  )
+  AND {cacheClause}
+  AND {validationKindClause}
+  AND (
+    $hasModelSelector = 0
+    OR c.model_output IN (
+      SELECT modelMatch.output
+      FROM assets modelMatch
+      WHERE modelMatch.kind='Model' AND {modelSelectorClause}
+      LIMIT 64
+    )
+  )
+  AND (
+    $hasAnimationSelector = 0
+    OR c.animation_output IN (
+      SELECT animationMatch.output
+      FROM assets animationMatch
+      WHERE animationMatch.kind='Animation' AND {animationSelectorClause}
+      LIMIT 256
+    )
+  )
+ORDER BY
+  COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) ASC,
+  c.score DESC,
+  m.name COLLATE NOCASE,
+  a.name COLLATE NOCASE
+LIMIT 8192;";
+            command.Parameters.AddWithValue("$hasModelSelector", hasModelSelector ? 1 : 0);
+            command.Parameters.AddWithValue("$hasAnimationSelector", hasAnimationSelector ? 1 : 0);
+            command.Parameters.AddWithValue("$humanoidSolverVersion", FastPreviewGltfBuilder.HumanoidSolverCacheVersion);
+
+            var result = new List<PreviewValidationCandidate>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read() && result.Count < limit)
+            {
+                var model = JObject.Parse(reader.GetString(0));
+                var animation = JObject.Parse(reader.GetString(1));
+                var relation = JObject.Parse(reader.GetString(2));
+                var modelOutput = reader.GetString(3);
+                var animationOutput = reader.GetString(4);
+
+                if (!Matches(modelSelector, (string)model["name"], modelOutput))
+                {
+                    continue;
+                }
+                if (!string.IsNullOrWhiteSpace(animationSelectors)
+                    && !FilterPackCandidates(new[] { animation }, animationSelectors).Any())
+                {
+                    continue;
+                }
+
+                animation["relation"] = (string)relation["relation"] ?? (string)relation["relationSource"] ?? "library.sqlite.candidate";
+                animation["relationSource"] = (string)relation["relationSource"] ?? "explicit";
+                animation["confidence"] = (string)relation["confidence"] ?? "explicit_unity_source_index";
+                animation["score"] = (int?)relation["score"] ?? 100;
+                animation["candidate"] = relation;
+                result.Add(new PreviewValidationCandidate(model, animation, modelOutput, animationOutput));
+            }
+            return result;
+        }
+
+        private static string BuildPreviewValidationKindSqlClause(string validationKind)
+        {
+            return validationKind switch
+            {
+                "Direct" => "COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 0 AND COALESCE(json_extract(c.raw_json, '$.missingInternalHumanoidSolver'), 0) = 0",
+                "InternalHumanoid" => "COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 1 AND c.model_output IN (SELECT output FROM temp_internal_solver_models)",
+                _ => "1=1",
+            };
+        }
+
+        private static string NormalizePreviewValidationKind(string validationKind)
+        {
+            var text = (validationKind ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(text)
+                || text.Equals("All", StringComparison.OrdinalIgnoreCase))
+            {
+                return "All";
+            }
+            if (text.Equals("Direct", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Direct";
+            }
+            if (text.Equals("InternalHumanoid", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("Internal_Humanoid", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("internal-humanoid", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("humanoid", StringComparison.OrdinalIgnoreCase))
+            {
+                return "InternalHumanoid";
+            }
+
+            Logger.Warning($"Unknown --preview_validation_kind '{validationKind}', falling back to All.");
+            return "All";
+        }
+
+        private static void EnsurePreviewCacheTable(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+CREATE TABLE IF NOT EXISTS animation_preview_cache (
+    model_output TEXT NOT NULL,
+    animation_output TEXT NOT NULL,
+    status TEXT NOT NULL,
+    gltf_path TEXT,
+    validation_path TEXT,
+    message TEXT,
+    solver_version TEXT,
+    diagnostic_status TEXT,
+    internal_solved INTEGER,
+    muscle_curve_count INTEGER,
+    updated_utc TEXT,
+    PRIMARY KEY(model_output, animation_output)
+);";
+            command.ExecuteNonQuery();
+
+            EnsurePreviewCacheColumn(connection, "solver_version", "TEXT");
+            EnsurePreviewCacheColumn(connection, "diagnostic_status", "TEXT");
+            EnsurePreviewCacheColumn(connection, "internal_solved", "INTEGER");
+            EnsurePreviewCacheColumn(connection, "muscle_curve_count", "INTEGER");
+        }
+
+        private static void UpsertPreviewCache(
+            SqliteConnection connection,
+            string modelOutput,
+            string animationOutput,
+            string status,
+            string gltfPath,
+            string validationPath,
+            string message,
+            string solverVersion,
+            string diagnosticStatus,
+            bool? internalSolved,
+            int? muscleCurveCount)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+INSERT INTO animation_preview_cache(model_output, animation_output, status, gltf_path, validation_path, message, solver_version, diagnostic_status, internal_solved, muscle_curve_count, updated_utc)
+VALUES ($modelOutput, $animationOutput, $status, $gltfPath, $validationPath, $message, $solverVersion, $diagnosticStatus, $internalSolved, $muscleCurveCount, $updatedUtc)
+ON CONFLICT(model_output, animation_output) DO UPDATE SET
+    status=excluded.status,
+    gltf_path=excluded.gltf_path,
+    validation_path=excluded.validation_path,
+    message=excluded.message,
+    solver_version=excluded.solver_version,
+    diagnostic_status=excluded.diagnostic_status,
+    internal_solved=excluded.internal_solved,
+    muscle_curve_count=excluded.muscle_curve_count,
+    updated_utc=excluded.updated_utc;";
+            command.Parameters.AddWithValue("$modelOutput", modelOutput ?? string.Empty);
+            command.Parameters.AddWithValue("$animationOutput", animationOutput ?? string.Empty);
+            command.Parameters.AddWithValue("$status", status ?? "failed");
+            command.Parameters.AddWithValue("$gltfPath", (object)gltfPath ?? DBNull.Value);
+            command.Parameters.AddWithValue("$validationPath", (object)validationPath ?? DBNull.Value);
+            command.Parameters.AddWithValue("$message", (object)message ?? DBNull.Value);
+            command.Parameters.AddWithValue("$solverVersion", (object)solverVersion ?? DBNull.Value);
+            command.Parameters.AddWithValue("$diagnosticStatus", (object)diagnosticStatus ?? DBNull.Value);
+            command.Parameters.AddWithValue("$internalSolved", internalSolved.HasValue ? (object)(internalSolved.Value ? 1 : 0) : DBNull.Value);
+            command.Parameters.AddWithValue("$muscleCurveCount", muscleCurveCount.HasValue ? (object)muscleCurveCount.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+
+        private static void EnsurePreviewCacheColumn(SqliteConnection connection, string columnName, string sqlType)
+        {
+            using var check = connection.CreateCommand();
+            check.CommandText = "PRAGMA table_info(animation_preview_cache);";
+            using (var reader = check.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            using var alter = connection.CreateCommand();
+            alter.CommandText = $"ALTER TABLE animation_preview_cache ADD COLUMN {columnName} {sqlType};";
+            alter.ExecuteNonQuery();
+        }
+
+        private static string ResolvePreviewCacheSolverVersion(JObject validation)
+        {
+            var humanoid = validation?["humanoid"] as JObject;
+            if ((bool?)humanoid?["internalSolved"] != true)
+            {
+                return null;
+            }
+
+            var explicitVersion = (string)humanoid["solverCacheVersion"];
+            if (!string.IsNullOrWhiteSpace(explicitVersion))
+            {
+                return explicitVersion;
+            }
+
+            var solveMode = (string)humanoid["solveMode"];
+            var diagnostics = humanoid["diagnostics"] as JObject;
+            var restPoseSpace = (string)diagnostics?["restPoseSpace"];
+            if (string.Equals(solveMode, FastPreviewGltfBuilder.HumanoidSolverMode, StringComparison.Ordinal)
+                && string.Equals(restPoseSpace, FastPreviewGltfBuilder.HumanoidSolverRestPoseSpace, StringComparison.Ordinal))
+            {
+                return FastPreviewGltfBuilder.HumanoidSolverCacheVersion;
+            }
+
+            // 老缓存缺少 restPoseSpace 时不能继续算作可视验收通过。
+            return string.IsNullOrWhiteSpace(solveMode) ? "unknown_internal_humanoid_solver" : solveMode;
+        }
+
+        private static string ResolvePreviewCacheDiagnosticStatus(JObject validation)
+        {
+            var humanoid = validation?["humanoid"] as JObject;
+            var diagnostics = humanoid?["diagnostics"] as JObject;
+            var status = (string)diagnostics?["status"];
+            return string.IsNullOrWhiteSpace(status) ? null : status;
+        }
+
+        private static bool? ResolvePreviewCacheInternalSolved(JObject validation)
+        {
+            return (bool?)validation?["humanoid"]?["internalSolved"];
+        }
+
+        private static int? ResolvePreviewCacheMuscleCurveCount(JObject validation)
+        {
+            return (int?)validation?["humanoid"]?["muscleCurveCount"];
         }
 
         private static JObject SelectModel(JObject index, string modelSelector)
@@ -361,6 +1377,75 @@ namespace AnimeStudio.CLI
                 .ToList();
         }
 
+        private static List<JObject> SelectPackAnimationCandidatesFromLibraryDb(
+            SqliteConnection connection,
+            JObject modelInfo,
+            string animationSelectors,
+            int limit,
+            string libraryRoot)
+        {
+            var modelOutput = (string)modelInfo?["output"] ?? string.Empty;
+            using var command = connection.CreateCommand();
+            var hasAnimationSelector = CanUseSelectorSqlPrefilter(animationSelectors);
+            var animationSelectorClause = BuildAssetSelectorSqlClause(command, "animationMatch", animationSelectors, "packAnimation");
+            command.CommandText = $@"
+SELECT a.raw_json, c.raw_json
+FROM model_animation_candidates c
+JOIN assets a ON a.output = c.animation_output AND a.kind = 'Animation'
+WHERE c.model_output = $modelOutput
+  AND c.relation_source = 'explicit'
+  AND (
+    $hasAnimationSelector = 0
+    OR c.animation_output IN (
+      SELECT animationMatch.output
+      FROM assets animationMatch
+      WHERE animationMatch.kind='Animation' AND {animationSelectorClause}
+      LIMIT 256
+    )
+  )
+ORDER BY c.score DESC, a.name COLLATE NOCASE
+LIMIT 4096;";
+            command.Parameters.AddWithValue("$modelOutput", modelOutput);
+            command.Parameters.AddWithValue("$hasAnimationSelector", hasAnimationSelector ? 1 : 0);
+
+            var candidates = new List<JObject>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var animation = JObject.Parse(reader.GetString(0));
+                    var relation = JObject.Parse(reader.GetString(1));
+                    ResolvePathProperty(animation, libraryRoot, "output");
+                    ResolvePathProperty(animation, libraryRoot, "animationAsset");
+                    animation["relation"] = (string)relation["relation"] ?? (string)relation["relationSource"] ?? "library.sqlite.candidate";
+                    animation["relationSource"] = (string)relation["relationSource"] ?? "explicit";
+                    animation["confidence"] = (string)relation["confidence"] ?? "explicit_unity_source_index";
+                    animation["score"] = (int?)relation["score"] ?? 100;
+                    animation["candidate"] = relation;
+                    candidates.Add(animation);
+                }
+            }
+
+            var filtered = FilterPackCandidates(candidates, animationSelectors)
+                .Take(limit)
+                .ToList();
+            return filtered;
+        }
+
+        private static IEnumerable<JObject> FilterPackCandidates(IEnumerable<JObject> candidates, string animationSelectors)
+        {
+            var selectors = SplitSelectors(animationSelectors);
+            if (selectors.Length == 0)
+            {
+                return candidates;
+            }
+
+            return candidates
+                .Where(candidate => selectors.Any(selector => Matches(selector, (string)candidate["name"], (string)candidate["output"])))
+                .GroupBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First());
+        }
+
         private static PreviewSelection SelectPreview(JObject index, string modelSelector, string animationSelector)
         {
             foreach (var model in index["models"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
@@ -400,8 +1485,14 @@ namespace AnimeStudio.CLI
                 ["output"] = animation["output"],
                 ["animationAsset"] = animation["animationAsset"],
                 ["source"] = animation["source"],
+                ["sourceType"] = animation["sourceType"],
+                ["pathId"] = animation["pathId"],
                 ["animationType"] = animation["animationType"],
                 ["animationCapability"] = animation["animationCapability"],
+                ["hasMuscleClip"] = animation["hasMuscleClip"],
+                ["curveCount"] = animation["curveCount"],
+                ["transformBindingCount"] = animation["transformBindingCount"],
+                ["humanoidBindingCount"] = animation["humanoidBindingCount"],
                 ["relation"] = "library.sqlite.selection",
                 ["relationSource"] = "sqlite",
                 ["confidence"] = "manual_preview_selection",
@@ -446,7 +1537,8 @@ namespace AnimeStudio.CLI
 
         private static JObject SelectAssetFromLibraryDb(SqliteConnection connection, string kind, string selector)
         {
-            var fileName = string.IsNullOrWhiteSpace(selector) ? string.Empty : Path.GetFileName(selector);
+            var sqlSelector = NormalizeSelectorForSqlSearch(selector);
+            var fileName = string.IsNullOrWhiteSpace(sqlSelector) ? string.Empty : Path.GetFileName(sqlSelector);
             var stem = string.IsNullOrWhiteSpace(fileName) ? string.Empty : Path.GetFileNameWithoutExtension(fileName);
             using var command = connection.CreateCommand();
             command.CommandText = @"
@@ -475,7 +1567,7 @@ LIMIT 32;";
             command.Parameters.AddWithValue("$selector", selector ?? string.Empty);
             command.Parameters.AddWithValue("$fileNameSelector", "%" + fileName);
             command.Parameters.AddWithValue("$stem", stem);
-            command.Parameters.AddWithValue("$likeSelector", "%" + (selector ?? string.Empty) + "%");
+            command.Parameters.AddWithValue("$likeSelector", "%" + sqlSelector + "%");
 
             var rows = new List<JObject>();
             using var reader = command.ExecuteReader();
@@ -491,6 +1583,112 @@ LIMIT 32;";
 
             return rows.FirstOrDefault(x => Matches(selector, (string)x["name"], (string)x["output"]))
                 ?? rows[0];
+        }
+
+        private static string NormalizeSelectorForSqlSearch(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return string.Empty;
+            }
+
+            var text = selector.Trim();
+            if (text.StartsWith("^", StringComparison.Ordinal))
+            {
+                text = text[1..];
+            }
+            if (text.EndsWith("$", StringComparison.Ordinal))
+            {
+                text = text[..^1];
+            }
+
+            // SQL 只做粗筛，真正的正则匹配仍由 Matches 负责；这里去掉常见转义，避免 ^Name$ / Regex.Escape(Name) 查不到行。
+            text = text.Replace("\\", string.Empty);
+            return text;
+        }
+
+        private static string BuildAssetSelectorSqlClause(SqliteCommand command, string tableAlias, string selectorsText, string parameterPrefix)
+        {
+            var selectors = SplitSelectors(selectorsText);
+            if (selectors.Length == 0)
+            {
+                return "1=1";
+            }
+            if (!CanUseSelectorSqlPrefilter(selectorsText))
+            {
+                // SQL 只负责加速简单名字/路径选择器。带分组、分支等正则语义时，必须交给 C# Matches 做最终判断，
+                // 否则 "^(Idle|Run)$" 这类合法选择器会在 LIKE 粗筛阶段被误杀。
+                return "1=1";
+            }
+
+            var clauses = new List<string>();
+            for (var i = 0; i < selectors.Length && i < 8; i++)
+            {
+                var selector = selectors[i];
+                var sqlSelector = NormalizeSelectorForSqlSearch(selector);
+                var fileName = string.IsNullOrWhiteSpace(sqlSelector) ? string.Empty : Path.GetFileName(sqlSelector);
+                var stem = string.IsNullOrWhiteSpace(fileName) ? string.Empty : Path.GetFileNameWithoutExtension(fileName);
+                var selectorParameter = "$" + parameterPrefix + "Selector" + i.ToString(CultureInfo.InvariantCulture);
+                var fileNameParameter = "$" + parameterPrefix + "FileName" + i.ToString(CultureInfo.InvariantCulture);
+                var stemParameter = "$" + parameterPrefix + "Stem" + i.ToString(CultureInfo.InvariantCulture);
+                var likeParameter = "$" + parameterPrefix + "Like" + i.ToString(CultureInfo.InvariantCulture);
+
+                clauses.Add($@"(
+    {tableAlias}.output = {selectorParameter}
+    OR {tableAlias}.name = {selectorParameter}
+    OR {tableAlias}.name = {stemParameter}
+    OR {tableAlias}.output LIKE {fileNameParameter}
+    OR {tableAlias}.output LIKE {likeParameter}
+    OR {tableAlias}.name LIKE {likeParameter}
+  )");
+                command.Parameters.AddWithValue(selectorParameter, selector);
+                command.Parameters.AddWithValue(fileNameParameter, "%" + fileName);
+                command.Parameters.AddWithValue(stemParameter, stem);
+                command.Parameters.AddWithValue(likeParameter, "%" + sqlSelector + "%");
+            }
+
+            return "(" + string.Join(" OR ", clauses) + ")";
+        }
+
+        private static bool CanUseSelectorSqlPrefilter(string selectorsText)
+        {
+            var selectors = SplitSelectors(selectorsText);
+            return selectors.Length > 0 && selectors.All(CanUseSingleSelectorSqlPrefilter);
+        }
+
+        private static bool CanUseSingleSelectorSqlPrefilter(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return false;
+            }
+            var text = selector.Trim();
+            if (text.StartsWith("^", StringComparison.Ordinal))
+            {
+                text = text[1..];
+            }
+            if (text.EndsWith("$", StringComparison.Ordinal))
+            {
+                text = text[..^1];
+            }
+
+            // 简单锚定名字仍可转成 LIKE；真正的正则分组、分支、通配和字符类不能进入 SQL 粗筛。
+            return text.IndexOfAny(new[] { '|', '(', ')', '[', ']', '*', '+', '?' }) < 0;
+        }
+
+        private static string[] SplitSelectors(string selectorsText)
+        {
+            if (string.IsNullOrWhiteSpace(selectorsText))
+            {
+                return Array.Empty<string>();
+            }
+
+            return selectorsText
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         private static bool Matches(string selector, params string[] values)
@@ -552,6 +1750,33 @@ LIMIT 32;";
             return Regex.Escape(withoutExtension).Replace("/", "[\\\\/]");
         }
 
+        private static string[] BuildSourceFileArguments(string inputRoot, params string[] sourcePaths)
+        {
+            var root = Path.GetFullPath(inputRoot ?? string.Empty).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar
+            );
+            return sourcePaths
+                .Where(x => !string.IsNullOrWhiteSpace(x) && IsUnderDirectory(x, root))
+                .Select(x => Path.GetRelativePath(root, x).Replace('\\', '/'))
+                .Where(x => !string.IsNullOrWhiteSpace(x) && x != ".")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static string[] BuildPathIdArguments(PreviewSelection selection)
+        {
+            return new[]
+                {
+                    (long?)selection?.Model?["model"]?["pathId"],
+                    (long?)selection?.Animation?["pathId"],
+                }
+                .Where(x => x.HasValue)
+                .Select(x => x.Value.ToString(CultureInfo.InvariantCulture))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         private static string ResolveSourcePath(string indexedSourcePath, string sourceRootOverride)
         {
             if (string.IsNullOrWhiteSpace(sourceRootOverride))
@@ -609,6 +1834,75 @@ LIMIT 32;";
             return indexedSourcePath;
         }
 
+        private static string ResolveExistingSourceIndex(string libraryRoot)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot))
+            {
+                return null;
+            }
+
+            var sourceIndex = Path.Combine(libraryRoot, "unity_source_index.db");
+            return File.Exists(sourceIndex) ? sourceIndex : null;
+        }
+
+        private static IEnumerable<JObject> ReadJsonLines(string path)
+        {
+            foreach (var line in File.ReadLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                JObject obj;
+                try
+                {
+                    obj = JObject.Parse(line);
+                }
+                catch (JsonException e)
+                {
+                    Logger.Warning($"Skipping invalid JSONL row in {path}: {e.Message}");
+                    continue;
+                }
+                yield return obj;
+            }
+        }
+
+        private static string ReadSourceIndexRoot(string sourceIndexPath)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT value FROM metadata WHERE key='sourceRoot' LIMIT 1;";
+                return command.ExecuteScalar() as string;
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to read source index root from {sourceIndexPath}: {e.Message}");
+                return null;
+            }
+        }
+
+        private static bool IsUnderDirectory(string path, string root)
+        {
+            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+            {
+                return false;
+            }
+
+            var fullPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string[] ExtractExportIssues(params string[] logs)
         {
             return logs
@@ -633,10 +1927,16 @@ LIMIT 32;";
             return name;
         }
 
-        private static string Quote(string value)
+        private static bool CandidateRequiresInternalHumanoidSolve(JObject animation)
         {
-            return "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
+            var candidate = animation?["candidate"] as JObject;
+            // SQLite 候选是模型-动画关系的权威处理口径；旧 sidecar 可能还没写
+            // decoded.requiresInternalHumanoidSolve，不能因此误走普通 Transform 预览。
+            return (bool?)candidate?["requiresInternalHumanoidSolve"] == true
+                || (bool?)animation?["requiresInternalHumanoidSolve"] == true;
         }
+
+        private sealed record PreviewValidationCandidate(JObject Model, JObject Animation, string ModelOutput, string AnimationOutput);
 
         private sealed record PreviewSelection(JObject Model, JObject Animation);
     }
@@ -685,11 +1985,13 @@ LIMIT 32;";
             exportIssues ??= Array.Empty<string>();
             var hasExperimentalHumanoidBake = humanoid?.baked == true
                 && (humanoid.bakeMode ?? string.Empty).StartsWith("Approximate", StringComparison.OrdinalIgnoreCase);
-            var nonCharacterTransformOk = string.Equals(
-                    (string)animationIndex?["animationCapability"],
-                    "NonCharacterTransformPreviewReady",
-                    StringComparison.OrdinalIgnoreCase
-                )
+            var hasKnownHumanoidLimbRisk = humanoid?.internalSolved == true
+                && ((int?)humanoid.diagnostics?["knownRiskTargetCount"] ?? 0) > 0;
+            var nonCharacterTransformExpected = string.Equals(
+                (string)animationIndex?["animationCapability"],
+                "NonCharacterTransformPreviewReady",
+                StringComparison.OrdinalIgnoreCase);
+            var nonCharacterTransformOk = (nonCharacterTransformExpected || skins.Length == 0)
                 && channels.Length > 0
                 && invalidChannels == 0
                 && visibleTransformChannelCount > 0
@@ -710,7 +2012,7 @@ LIMIT 32;";
                         && coverage.coreBoneChannelCount > 0
                         && coverage.coreBoneNodeCount >= 3))
                 && bbox?.skinnedSizeLooksReasonable != false;
-            var status = !structurallyOk || exportIssues.Length > 0
+            var status = !structurallyOk || exportIssues.Length > 0 || hasKnownHumanoidLimbRisk
                 ? "warning"
                 : hasExperimentalHumanoidBake
                     ? "experimental"
@@ -746,8 +2048,9 @@ LIMIT 32;";
                 morph,
                 nonCharacterTransform = new
                 {
-                    expected = nonCharacterTransformOk,
+                    expected = nonCharacterTransformExpected,
                     capability = (string)animationIndex?["animationCapability"],
+                    acceptedByVisibleTransform = !nonCharacterTransformExpected && skins.Length == 0 && nonCharacterTransformOk,
                     channelCount = channels.Length,
                     visibleTransformChannelCount,
                     invalidChannels,
@@ -765,7 +2068,7 @@ LIMIT 32;";
             var humanoid = animation?["extras"]?["unityHumanoid"] as JObject;
             if (humanoid == null)
             {
-                return new HumanoidAnimationReport(false, false, false, null, 0, 0, 0, 0, Array.Empty<string>(), null);
+                return new HumanoidAnimationReport(false, false, false, false, null, null, null, 0, 0, 0, 0, 0, 0, Array.Empty<string>(), null, null);
             }
 
             var attributes = humanoid["attributes"]?.Values<string>()?.ToArray() ?? Array.Empty<string>();
@@ -773,13 +2076,19 @@ LIMIT 32;";
                 true,
                 (bool?)humanoid["requiresBake"] ?? false,
                 (bool?)humanoid["baked"] ?? false,
+                (bool?)humanoid["internalSolved"] ?? false,
                 (string)humanoid["bakeMode"],
+                (string)humanoid["solveMode"],
+                (string)humanoid["solverCacheVersion"],
                 (int?)humanoid["bakedTrackCount"] ?? 0,
                 (int?)humanoid["bakedKeyframeCount"] ?? 0,
+                (int?)humanoid["solvedTrackCount"] ?? 0,
+                (int?)humanoid["solvedKeyframeCount"] ?? 0,
                 (int?)humanoid["muscleCurveCount"] ?? 0,
                 (int?)humanoid["keyframeCount"] ?? 0,
                 attributes.Take(128).ToArray(),
-                humanoid["diagnostics"] as JObject
+                humanoid["diagnostics"] as JObject,
+                humanoid["rootMotion"] as JObject
             );
         }
 
@@ -844,10 +2153,12 @@ LIMIT 32;";
             }
 
             var weightChannelCount = channels.Count(x => string.Equals((string)x["target"]?["path"], "weights", StringComparison.OrdinalIgnoreCase));
-            var expectedBindingCount = (int?)animationIndex?["blendShapeBindingCount"] ?? 0;
+            var expectedBindingCount = (int?)animationIndex?["trueBlendShapeBindingCount"] ?? 0;
+            var ambiguousBindingCount = (int?)animationIndex?["blendShapeBindingCount"] ?? 0;
             return new MorphReport(
                 expectedBindingCount > 0 || weightChannelCount > 0,
                 expectedBindingCount,
+                ambiguousBindingCount,
                 meshTargetCount,
                 targetCount,
                 weightChannelCount,
@@ -923,13 +2234,56 @@ LIMIT 32;";
                     notes.Add($"BlendShape bindings were expected ({morph.expectedBindingCount}), but glTF morph targets or weights channels are missing.");
                 }
             }
+            else if (morph?.ambiguousBindingCount > 0)
+            {
+                notes.Add($"Animation has {morph.ambiguousBindingCount} historical SkinnedMeshRenderer float binding(s), but no confirmed BlendShape binding; treat renderer/material/visibility curves separately from glTF morph weights.");
+            }
             if (nonCharacterTransformOk)
             {
                 notes.Add("Non-character Transform animation channels target exported glTF nodes.");
             }
             if (humanoid?.requiresBake == true)
             {
-                notes.Add($"Unity Humanoid/Muscle curves are present ({humanoid.muscleCurveCount} curves, {humanoid.keyframeCount} keyframes); they must be baked to skeleton TRS before the body animation can play in glTF.");
+                notes.Add($"Unity Humanoid/Muscle curves are present ({humanoid.muscleCurveCount} curves, {humanoid.keyframeCount} keyframes); AnimeStudio needs an internal Humanoid/Muscle to skeleton TRS solver before this body animation can play directly in glTF.");
+            }
+            else if (humanoid?.internalSolved == true)
+            {
+                notes.Add($"Unity Humanoid/Muscle curves were solved internally with {humanoid.solveMode ?? "unknown"} into {humanoid.solvedTrackCount} skeleton track(s), {humanoid.solvedKeyframeCount} keyframes.");
+                var diagnosticsStatus = (string)humanoid.diagnostics?["status"];
+                if (!string.IsNullOrWhiteSpace(diagnosticsStatus))
+                {
+                    notes.Add($"Humanoid internal solver diagnostics: {diagnosticsStatus}, solved {(int?)humanoid.diagnostics?["solvedTrackCount"] ?? 0}/{(int?)humanoid.diagnostics?["targetCount"] ?? 0} target bone(s), sample times {(int?)humanoid.diagnostics?["sampleTimeCount"] ?? 0}.");
+                }
+                var knownRiskTargetCount = (int?)humanoid.diagnostics?["knownRiskTargetCount"] ?? 0;
+                if (knownRiskTargetCount > 0)
+                {
+                    var knownRiskTargets = humanoid.diagnostics?["knownRiskTargets"]?
+                        .OfType<JObject>()
+                        .Select(x => (string)x["humanBone"])
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                        .Take(16)
+                        .ToArray() ?? Array.Empty<string>();
+                    notes.Add($"Humanoid internal solver wrote {knownRiskTargetCount} known-risk limb target(s): {string.Join(", ", knownRiskTargets)}. Current Forearm/LowerLeg muscle delta formula is still experimental; use Unity oracle comparison before treating this preview as visually correct.");
+                }
+            }
+            if (string.Equals((string)humanoid?.rootMotion?["status"], "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                notes.Add($"Humanoid RootT/RootQ root motion was written to scene root `{(string)humanoid.rootMotion["targetPath"]}` as {(int?)humanoid.rootMotion["trackCount"] ?? 0} glTF track(s).");
+            }
+            else if (humanoid?.present == true && humanoid.internalSolved != true && !string.IsNullOrWhiteSpace(humanoid.solveMode))
+            {
+                var diagnosticsStatus = (string)humanoid.diagnostics?["status"];
+                if (humanoid.muscleCurveCount == 0
+                    || string.Equals(diagnosticsStatus, "no_humanoid_muscle_curves", StringComparison.OrdinalIgnoreCase))
+                {
+                    notes.Add($"This explicit Humanoid-related animation has no decoded body muscle curves for AnimeStudio's internal solver; diagnostics={diagnosticsStatus ?? "unknown"}. Keep the Unity relation, but treat the current glTF channels as root/helper/accessory Transform motion rather than a solved body animation.");
+                }
+                else
+                {
+                    notes.Add($"Humanoid internal solver did not produce muscle TRS tracks with {humanoid.solveMode}; diagnostics={diagnosticsStatus ?? "unknown"}. Decoded Transform TRS channels may still be valid, but Humanoid/Muscle body motion is not solved.");
+                }
             }
             else if (humanoid?.baked == true)
             {
@@ -1258,6 +2612,7 @@ LIMIT 32;";
         private sealed record MorphReport(
             bool expected,
             int expectedBindingCount,
+            int ambiguousBindingCount,
             int meshTargetCount,
             int targetCount,
             int weightChannelCount,
@@ -1268,13 +2623,19 @@ LIMIT 32;";
             bool present,
             bool requiresBake,
             bool baked,
+            bool internalSolved,
             string bakeMode,
+            string solveMode,
+            string solverCacheVersion,
             int bakedTrackCount,
             int bakedKeyframeCount,
+            int solvedTrackCount,
+            int solvedKeyframeCount,
             int muscleCurveCount,
             int keyframeCount,
             string[] attributes,
-            JObject diagnostics
+            JObject diagnostics,
+            JObject rootMotion
         );
 
         private sealed record AnimationMotionReport(

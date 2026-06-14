@@ -32,6 +32,8 @@ namespace AnimeStudio
         public List<Vector3Curve> Eulers { get; private set; }
         public List<FloatCurve> Floats { get; private set; }
         public List<PPtrCurve> PPtrs { get; private set; }
+        public string BindingSource { get; private set; }
+        public int BindingCount { get; private set; }
 
         public AnimationClipConverter(AnimationClip clip)
         {
@@ -49,7 +51,7 @@ namespace AnimeStudio
         private void ProcessInner()
         {
             var m_Clip = animationClip.m_MuscleClip.m_Clip;
-            var bindings = animationClip.m_ClipBindingConstant;
+            var bindings = ResolveBindings(m_Clip);
             var tos = animationClip.FindTOS();
 
             var streamedFrames = m_Clip.m_StreamedClip.ReadData();
@@ -76,6 +78,36 @@ namespace AnimeStudio
                 ProcessConstant(m_Clip, bindings, tos, lastFrame);
             }
             CreateCurves();
+        }
+
+        private AnimationClipBindingConstant ResolveBindings(Clip clip)
+        {
+            var directBindings = animationClip.m_ClipBindingConstant;
+            if ((directBindings?.genericBindings?.Count ?? 0) > 0)
+            {
+                BindingSource = "AnimationClip.m_ClipBindingConstant";
+                BindingCount = directBindings.genericBindings.Count;
+                return directBindings;
+            }
+
+            if ((clip?.m_Binding?.m_ValueArray?.Count ?? 0) > 0)
+            {
+                // 有些 Unity 版本会把曲线 binding 存在 MuscleClip 的 ValueArray 中。
+                // 解码流数据前必须先还原 GenericBinding，否则有效动画会被误判为空。
+                var convertedBindings = clip.ConvertValueArrayToGenericBinding();
+                convertedBindings.pptrCurveMapping = directBindings?.pptrCurveMapping ?? new List<PPtr<Object>>();
+                BindingSource = "MuscleClip.m_Clip.m_Binding.ConvertValueArrayToGenericBinding";
+                BindingCount = convertedBindings.genericBindings?.Count ?? 0;
+                return convertedBindings;
+            }
+
+            BindingSource = "Missing";
+            BindingCount = 0;
+            return new AnimationClipBindingConstant
+            {
+                genericBindings = new List<GenericBinding>(),
+                pptrCurveMapping = directBindings?.pptrCurveMapping ?? new List<PPtr<Object>>(),
+            };
         }
 
         private void CreateCurves()
@@ -190,6 +222,11 @@ namespace AnimeStudio
             float[] slopeValues = new float[4]; // no slopes - 0 values
 
             int frameCount = times.Length;
+            if (frameCount == 0)
+            {
+                return 0.0f;
+            }
+
             for (int frameIndex = 0; frameIndex < frameCount; frameIndex++)
             {
                 float time = times[frameIndex];
@@ -285,6 +322,11 @@ namespace AnimeStudio
         private void AddTransformCurve(float time, uint transType, float[] curveValues,
             float[] inSlopeValues, float[] outSlopeValues, int offset, string path)
         {
+            if (!HasTransformCurveValues(transType, curveValues, inSlopeValues, outSlopeValues, offset))
+            {
+                return;
+            }
+
             switch (transType)
             {
                 case 1:
@@ -405,6 +447,23 @@ namespace AnimeStudio
                 default:
                     throw new NotImplementedException(transType.ToString());
             }
+        }
+
+        private static bool HasTransformCurveValues(uint transType, float[] curveValues, float[] inSlopeValues, float[] outSlopeValues, int offset)
+        {
+            var dimension = transType == 2 ? 4 : transType is 1 or 3 or 4 ? 3 : 0;
+            if (dimension == 0)
+            {
+                return true;
+            }
+
+            return curveValues != null
+                && inSlopeValues != null
+                && outSlopeValues != null
+                && offset >= 0
+                && offset + dimension <= curveValues.Length
+                && dimension <= inSlopeValues.Length
+                && dimension <= outSlopeValues.Length;
         }
 
         private void AddDefaultCurve(GenericBinding binding, string path, float time, float value)

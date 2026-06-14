@@ -27,6 +27,7 @@ namespace AnimeStudio.CLI
         public static bool IncludeVfx { get; set; }
         public static AnimeStudio.TextureExportMode TextureMode { get; set; } = AnimeStudio.TextureExportMode.Raw;
         public static string OutputRoot { get; set; }
+        public static bool ExportFullDecodedAnimationCurves { get; set; }
 
         public static bool ExportEmbeddedAnimations =>
             FbxAnimationMode != FbxAnimationMode.Skip
@@ -2149,12 +2150,25 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             if (!TryExportFile(exportPath, item, ".anim", out var exportFullPath))
                 return false;
             var m_AnimationClip = (AnimationClip)item.Asset;
-            var str = m_AnimationClip.Convert();
+            ProfileLogger.Event("animation_export_start", GetAnimationProfileData(item, exportFullPath));
+            string str;
+            using (ProfileLogger.Measure("animation_convert_yaml", GetAnimationProfileData(item, exportFullPath)))
+            {
+                str = m_AnimationClip.Convert();
+            }
             if (string.IsNullOrEmpty(str))
                 return false;
-            File.WriteAllText(exportFullPath, str);
-            var animationAssetPath = WriteAnimationAssetJson(item, m_AnimationClip, exportFullPath);
+            using (ProfileLogger.Measure("animation_write_yaml", GetAnimationProfileData(item, exportFullPath, str.Length)))
+            {
+                File.WriteAllText(exportFullPath, str);
+            }
+            string animationAssetPath;
+            using (ProfileLogger.Measure("animation_write_sidecar", GetAnimationProfileData(item, exportFullPath)))
+            {
+                animationAssetPath = WriteAnimationAssetJson(item, m_AnimationClip, exportFullPath);
+            }
             AppendAssetCatalog(item, exportFullPath, "Animation", animationAssetPath);
+            ProfileLogger.Event("animation_export_done", GetAnimationProfileData(item, exportFullPath));
             return true;
         }
 
@@ -2776,6 +2790,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 .Select(x => $"{x.m_HumanName}:{x.m_BoneName}")
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToArray() ?? Array.Empty<string>();
+            var humanBoneDetails = BuildHumanBoneDetails(avatar.m_HumanDescription);
             var skeletonBones = avatar.m_HumanDescription?.m_Skeleton?
                 .Where(x => !string.IsNullOrWhiteSpace(x.m_Name))
                 .Select(x => string.IsNullOrWhiteSpace(x.m_ParentName) ? x.m_Name : $"{x.m_ParentName}/{x.m_Name}")
@@ -2794,6 +2809,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 .Take(256)
                 .ToArray() ?? Array.Empty<object>();
             var humanDescription = avatar.m_HumanDescription;
+            var internalSolver = BuildAvatarInternalSolverInfo(avatar);
 
             return JObject.FromObject(new
             {
@@ -2807,7 +2823,9 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 humanBoneMapHash = humanBones.Length == 0 ? null : HashText(string.Join("\n", humanBones)),
                 skeletonBoneNameHash = skeletonBones.Length == 0 ? null : HashText(string.Join("\n", skeletonBones)),
                 humanBones = humanBones.Take(128).ToArray(),
+                humanBoneDetails,
                 skeletonBones = skeletonBonePose,
+                internalSolver,
                 humanDescription = humanDescription == null ? null : new
                 {
                     armTwist = humanDescription.m_ArmTwist,
@@ -2824,6 +2842,203 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     skeletonHasParents = humanDescription.m_SkeletonHasParents,
                 },
             });
+        }
+
+        private static object BuildAvatarInternalSolverInfo(Avatar avatar)
+        {
+            var human = avatar?.m_Avatar?.m_Human;
+            var skeleton = human?.m_Skeleton;
+            if (human == null || skeleton?.m_Node == null || skeleton.m_AxesArray == null || human.m_HumanBoneIndex == null)
+            {
+                return null;
+            }
+
+            var avatarSkeleton = avatar.m_Avatar?.m_AvatarSkeleton;
+
+            // 这些是 Humanoid/Muscle 离线求解必需的 Unity Avatar 内部轴系数据。
+            // 只保存通用序列化结构，不写游戏私有规则。
+            return new
+            {
+                version = 1,
+                source = "Unity AvatarConstant.m_Human",
+                rule = "Used by AnimeStudio internal Humanoid/Muscle to target skeleton TRS solver. Unity bake may compare against this data but is not the production dependency.",
+                humanBoneIndex = human.m_HumanBoneIndex,
+                scale = human.m_Scale,
+                hasTranslationDoF = human.m_HasTDoF,
+                root = ToJsonXForm(human.m_RootX),
+                human = new
+                {
+                    // AvatarConstant.m_Human 里的左右手索引和 bone mass 是 Unity 原始求解上下文。
+                    // 先完整保留，后续用 oracle 判断它们是否参与手臂/前臂 zero base 或 twist 公式。
+                    hasLeftHand = human.m_HasLeftHand,
+                    hasRightHand = human.m_HasRightHand,
+                    leftHandBoneIndex = human.m_LeftHand?.m_HandBoneIndex ?? Array.Empty<int>(),
+                    rightHandBoneIndex = human.m_RightHand?.m_HandBoneIndex ?? Array.Empty<int>(),
+                    humanBoneMass = human.m_HumanBoneMass ?? Array.Empty<float>(),
+                },
+                twist = new
+                {
+                    arm = human.m_ArmTwist,
+                    foreArm = human.m_ForeArmTwist,
+                    upperLeg = human.m_UpperLegTwist,
+                    leg = human.m_LegTwist,
+                    armStretch = human.m_ArmStretch,
+                    legStretch = human.m_LegStretch,
+                    feetSpacing = human.m_FeetSpacing,
+                },
+                humanBoneLimits = BuildHumanBoneLimitsByName(avatar.m_HumanDescription),
+                humanSkeletonIndexArray = avatar.m_Avatar?.m_HumanSkeletonIndexArray ?? Array.Empty<int>(),
+                humanSkeletonReverseIndexArray = avatar.m_Avatar?.m_HumanSkeletonReverseIndexArray ?? Array.Empty<int>(),
+                skeleton = new
+                {
+                    nodeCount = skeleton.m_Node.Count,
+                    axesCount = skeleton.m_AxesArray.Count,
+                    humanSkeletonPoseCount = human.m_SkeletonPose?.m_X?.Length ?? 0,
+                    avatarDefaultPoseCount = avatar.m_Avatar?.m_DefaultPose?.m_X?.Length ?? 0,
+                    nodes = skeleton.m_Node.Select((node, index) =>
+                    {
+                        var path = TryGetAvatarSkeletonPath(avatar, skeleton, index);
+                        return new
+                        {
+                            index,
+                            parentId = node.m_ParentId,
+                            axesId = node.m_AxesId,
+                            // Humanoid/Muscle 离线求解必须知道 Unity Avatar 节点对应哪个 glTF 节点。
+                            // 这里使用 Avatar 自带的 TOS 路径表，不按骨骼数量或游戏命名猜。
+                            path,
+                            name = GetLastPathSegment(path),
+                        };
+                    }).ToArray(),
+                    axes = skeleton.m_AxesArray.Select((axes, index) => new
+                    {
+                        index,
+                        preQ = ToJsonVector4(axes.m_PreQ),
+                        postQ = ToJsonVector4(axes.m_PostQ),
+                        sign = ToJsonVector3Or4As3(axes.m_Sgn),
+                        limitMin = ToJsonVector3Or4As3(axes.m_Limit?.m_Min),
+                        limitMax = ToJsonVector3Or4As3(axes.m_Limit?.m_Max),
+                        length = axes.m_Length,
+                        type = axes.m_Type,
+                    }).ToArray(),
+                    // Unity Humanoid/Muscle 求解不只有 axes，还依赖 Avatar 序列化里的参考姿态。
+                    // 这些 pose 全部来自 AvatarConstant，不按骨骼名或游戏规则猜，后续内部 solver
+                    // 用它们和 Unity bake oracle 对齐，避免手脚反折时只能凭截图调公式。
+                    humanSkeletonPose = ToJsonXFormArray(human.m_SkeletonPose?.m_X, skeleton.m_Node.Count),
+                    avatarDefaultPose = ToJsonXFormArray(avatar.m_Avatar?.m_DefaultPose?.m_X, avatarSkeleton?.m_Node?.Count ?? 0),
+                },
+                avatarSkeleton = avatarSkeleton == null ? null : new
+                {
+                    nodeCount = avatarSkeleton.m_Node?.Count ?? 0,
+                    axesCount = avatarSkeleton.m_AxesArray?.Count ?? 0,
+                    poseCount = avatar.m_Avatar?.m_AvatarSkeletonPose?.m_X?.Length ?? 0,
+                    defaultPoseCount = avatar.m_Avatar?.m_DefaultPose?.m_X?.Length ?? 0,
+                    nodes = avatarSkeleton.m_Node?.Select((node, index) =>
+                    {
+                        var path = TryGetAvatarSkeletonPath(avatar, avatarSkeleton, index);
+                        return new
+                        {
+                            index,
+                            parentId = node.m_ParentId,
+                            axesId = node.m_AxesId,
+                            path,
+                            name = GetLastPathSegment(path),
+                        };
+                    }).ToArray() ?? Array.Empty<object>(),
+                    pose = ToJsonXFormArray(avatar.m_Avatar?.m_AvatarSkeletonPose?.m_X, avatarSkeleton.m_Node?.Count ?? 0),
+                    defaultPose = ToJsonXFormArray(avatar.m_Avatar?.m_DefaultPose?.m_X, avatarSkeleton.m_Node?.Count ?? 0),
+                },
+                rootMotion = new
+                {
+                    boneIndex = avatar.m_Avatar?.m_RootMotionBoneIndex ?? -1,
+                    boneX = ToJsonXForm(avatar.m_Avatar?.m_RootMotionBoneX ?? XForm.Zero),
+                    skeletonNodeCount = avatar.m_Avatar?.m_RootMotionSkeleton?.m_Node?.Count ?? 0,
+                    skeletonPoseCount = avatar.m_Avatar?.m_RootMotionSkeletonPose?.m_X?.Length ?? 0,
+                    skeletonIndexArray = avatar.m_Avatar?.m_RootMotionSkeletonIndexArray ?? Array.Empty<int>(),
+                },
+            };
+        }
+
+        private static object[] BuildHumanBoneDetails(HumanDescription humanDescription)
+        {
+            if (humanDescription?.m_Human == null || humanDescription.m_Human.Count == 0)
+            {
+                return Array.Empty<object>();
+            }
+
+            return humanDescription.m_Human
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_HumanName) || !string.IsNullOrWhiteSpace(x.m_BoneName))
+                .Select(x => new
+                {
+                    humanName = x.m_HumanName,
+                    boneName = x.m_BoneName,
+                    // HumanDescription 里的 per-bone limit 是 Unity Avatar 复建和 muscle 公式诊断的原始输入。
+                    // 保留原字段，不按游戏或骨骼名称推断含义。
+                    limit = ToJsonSkeletonBoneLimit(x.m_Limit),
+                })
+                .ToArray();
+        }
+
+        private static object BuildHumanBoneLimitsByName(HumanDescription humanDescription)
+        {
+            if (humanDescription?.m_Human == null || humanDescription.m_Human.Count == 0)
+            {
+                return null;
+            }
+
+            var result = new JObject();
+            foreach (var bone in humanDescription.m_Human
+                .Where(x => !string.IsNullOrWhiteSpace(x.m_HumanName))
+                .OrderBy(x => x.m_HumanName, StringComparer.OrdinalIgnoreCase))
+            {
+                result[bone.m_HumanName] = JObject.FromObject(new
+                {
+                    boneName = bone.m_BoneName,
+                    limit = ToJsonSkeletonBoneLimit(bone.m_Limit),
+                });
+            }
+
+            return result.HasValues ? result : null;
+        }
+
+        private static object ToJsonSkeletonBoneLimit(SkeletonBoneLimit limit)
+        {
+            if (limit == null)
+            {
+                return null;
+            }
+
+            return new
+            {
+                min = ToJsonVector3(limit.m_Min),
+                max = ToJsonVector3(limit.m_Max),
+                value = ToJsonVector3(limit.m_Value),
+                length = limit.m_Length,
+                modified = limit.m_Modified,
+            };
+        }
+
+        private static string TryGetAvatarSkeletonPath(Avatar avatar, Skeleton skeleton, int index)
+        {
+            if (avatar?.m_TOS == null || skeleton?.m_ID == null || index < 0 || index >= skeleton.m_ID.Length)
+            {
+                return null;
+            }
+
+            return avatar.m_TOS.TryGetValue(skeleton.m_ID[index], out var path) && !string.IsNullOrWhiteSpace(path)
+                ? path.Replace('\\', '/')
+                : null;
+        }
+
+        private static string GetLastPathSegment(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return null;
+            }
+
+            path = path.Replace('\\', '/').Trim('/');
+            var separator = path.LastIndexOf('/');
+            return separator >= 0 ? path[(separator + 1)..] : path;
         }
 
         private static JObject BuildSkeletonInfo(IImported imported, string[] bonePaths, JObject avatarInfo)
@@ -3206,24 +3421,83 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 },
                 transformBindingPaths = animationInfo.transformBindingPaths,
                 humanoid = BuildHumanoidAnimationAsset(clip, animationInfo, muscleBindings),
-                decoded = BuildDecodedAnimationCurves(clip),
+                decoded = BuildDecodedAnimationCurves(clip, animationInfo),
                 bindings = bindingAssets.Take(1024).ToArray(),
                 truncatedBindings = bindings.Count > 1024,
             };
         }
 
-        private static object BuildDecodedAnimationCurves(AnimationClip clip)
+        private static object BuildDecodedAnimationCurves(AnimationClip clip, AnimationClipInfo animationInfo)
         {
+            var hasHumanoidMuscle = animationInfo.humanoidBindingCount > 0 || clip.m_MuscleClip != null;
+            var hasTransformTrs =
+                animationInfo.transformBindingCount > 0
+                || (clip.m_PositionCurves?.Count ?? 0) > 0
+                || (clip.m_RotationCurves?.Count ?? 0) > 0
+                || (clip.m_ScaleCurves?.Count ?? 0) > 0;
+            var playbackKind = hasHumanoidMuscle
+                ? "HumanoidMuscleNeedsInternalSolver"
+                : hasTransformTrs
+                    ? "TransformTrsDirect"
+                    : "NonTrsOrMetadataOnly";
+            var decoderInput = BuildAnimationDecoderInputDiagnostics(clip);
+
+            if (!CliExportOptions.ExportFullDecodedAnimationCurves && Studio.WorkMode == WorkMode.Library)
+            {
+                return new
+                {
+                    status = "skipped",
+                    coordinateSpace = "UnitySerialized",
+                    playbackKind,
+                    directGltfReady = false,
+                    requiresInternalHumanoidSolve = hasHumanoidMuscle,
+                    note = "Full decoded keyframes are skipped by default during full Library export to keep large games resumable and memory-stable. Use targeted preview/export and AnimeStudio's internal solver path for playable animation output.",
+                    decoderInput,
+                    curveCounts = new
+                    {
+                        translations = clip.m_PositionCurves?.Count ?? 0,
+                        rotations = clip.m_RotationCurves?.Count ?? 0,
+                        scales = clip.m_ScaleCurves?.Count ?? 0,
+                        eulers = clip.m_EulerCurves?.Count ?? 0,
+                        floats = clip.m_FloatCurves?.Count ?? 0,
+                        pptrs = clip.m_PPtrCurves?.Count ?? 0,
+                        transformBindings = animationInfo.transformBindingCount,
+                        humanoidBindings = animationInfo.humanoidBindingCount,
+                        blendShapeBindings = animationInfo.blendShapeBindingCount,
+                    },
+                };
+            }
+
             try
             {
                 if (!clip.m_Legacy && clip.m_MuscleClip != null)
                 {
                     var decoded = AnimationClipConverter.Process(clip);
+                    var keyframeCount =
+                        CountVector3Keyframes(decoded.Translations)
+                        + CountQuaternionKeyframes(decoded.Rotations)
+                        + CountVector3Keyframes(decoded.Scales)
+                        + CountVector3Keyframes(decoded.Eulers)
+                        + CountFloatKeyframes(decoded.Floats)
+                        + CountPPtrKeyframes(decoded.PPtrs);
+                    // 不能把“解码器跑完但没有任何曲线”标成 ok。否则后续预览会误以为动画可用。
+                    var hasDecodedKeyframes = keyframeCount > 0;
+                    var isEmptyHumanoidClip = !hasDecodedKeyframes && IsEmptyHumanoidClipPayload(clip, animationInfo);
                     return new
                     {
-                        status = "ok",
+                        status = hasDecodedKeyframes ? "ok" : isEmptyHumanoidClip ? "empty_humanoid_clip" : "no_decoded_keyframes",
                         coordinateSpace = "UnitySerialized",
-                        note = "Decoded from Unity ACL/streamed/dense/constant clip data before model-space export conversion.",
+                        playbackKind,
+                        directGltfReady = hasDecodedKeyframes && !hasHumanoidMuscle && hasTransformTrs,
+                        requiresInternalHumanoidSolve = hasHumanoidMuscle,
+                        bindingSource = decoded.BindingSource,
+                        decodedBindingCount = decoded.BindingCount,
+                        decoderInput,
+                        note = hasDecodedKeyframes
+                            ? "Decoded from Unity ACL/streamed/dense/constant clip data before model-space export conversion."
+                            : isEmptyHumanoidClip
+                                ? "Unity Humanoid/Muscle clip has duration metadata but no serialized curve payload, binding, ACL, streamed, dense, constant, delta, or reference-pose data. Treat it as an empty/sync/marker clip, not a playable body animation."
+                            : "Unity clip has Humanoid/Muscle or compressed animation data, but AnimeStudio decoded no keyframes. Keep this as a decoder gap; do not treat it as playable.",
                         curveCounts = new
                         {
                             translations = decoded.Translations?.Count ?? 0,
@@ -3232,13 +3506,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                             eulers = decoded.Eulers?.Count ?? 0,
                             floats = decoded.Floats?.Count ?? 0,
                             pptrs = decoded.PPtrs?.Count ?? 0,
-                            keyframes =
-                                CountVector3Keyframes(decoded.Translations)
-                                + CountQuaternionKeyframes(decoded.Rotations)
-                                + CountVector3Keyframes(decoded.Scales)
-                                + CountVector3Keyframes(decoded.Eulers)
-                                + CountFloatKeyframes(decoded.Floats)
-                                + CountPPtrKeyframes(decoded.PPtrs),
+                            keyframes = keyframeCount,
                         },
                         translations = ToVector3CurveAssets(decoded.Translations),
                         rotations = ToQuaternionCurveAssets(decoded.Rotations),
@@ -3249,11 +3517,25 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     };
                 }
 
+                var legacyKeyframeCount =
+                    CountVector3Keyframes(clip.m_PositionCurves)
+                    + CountQuaternionKeyframes(clip.m_RotationCurves)
+                    + CountVector3Keyframes(clip.m_ScaleCurves)
+                    + CountVector3Keyframes(clip.m_EulerCurves)
+                    + CountFloatKeyframes(clip.m_FloatCurves)
+                    + CountPPtrKeyframes(clip.m_PPtrCurves);
+                var hasLegacyKeyframes = legacyKeyframeCount > 0;
                 return new
                 {
-                    status = "ok",
+                    status = hasLegacyKeyframes ? "ok" : "no_decoded_keyframes",
                     coordinateSpace = "UnitySerialized",
-                    note = "Decoded from legacy AnimationClip curve containers.",
+                    playbackKind,
+                    directGltfReady = hasLegacyKeyframes && !hasHumanoidMuscle && hasTransformTrs,
+                    requiresInternalHumanoidSolve = hasHumanoidMuscle,
+                    decoderInput,
+                    note = hasLegacyKeyframes
+                        ? "Decoded from legacy AnimationClip curve containers."
+                        : "AnimationClip exported, but AnimeStudio found no keyframes in legacy curve containers. Keep this as a decoder/data gap; do not treat it as playable.",
                     curveCounts = new
                     {
                         translations = clip.m_PositionCurves?.Count ?? 0,
@@ -3262,13 +3544,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                         eulers = clip.m_EulerCurves?.Count ?? 0,
                         floats = clip.m_FloatCurves?.Count ?? 0,
                         pptrs = clip.m_PPtrCurves?.Count ?? 0,
-                        keyframes =
-                            CountVector3Keyframes(clip.m_PositionCurves)
-                            + CountQuaternionKeyframes(clip.m_RotationCurves)
-                            + CountVector3Keyframes(clip.m_ScaleCurves)
-                            + CountVector3Keyframes(clip.m_EulerCurves)
-                            + CountFloatKeyframes(clip.m_FloatCurves)
-                            + CountPPtrKeyframes(clip.m_PPtrCurves),
+                        keyframes = legacyKeyframeCount,
                     },
                     translations = ToVector3CurveAssets(clip.m_PositionCurves),
                     rotations = ToQuaternionCurveAssets(clip.m_RotationCurves),
@@ -3284,10 +3560,72 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 {
                     status = "error",
                     coordinateSpace = "UnitySerialized",
+                    playbackKind,
+                    directGltfReady = false,
+                    requiresInternalHumanoidSolve = hasHumanoidMuscle,
                     error = ex.Message,
+                    decoderInput,
                     note = "The raw .anim file and binding metadata were still exported; only decoded JSON curves failed.",
                 };
             }
+        }
+
+        private static object BuildAnimationDecoderInputDiagnostics(AnimationClip clip)
+        {
+            var muscleClip = clip?.m_MuscleClip;
+            var innerClip = muscleClip?.m_Clip;
+            return new
+            {
+                clipBindingCount = clip?.m_ClipBindingConstant?.genericBindings?.Count ?? 0,
+                pptrCurveMappingCount = clip?.m_ClipBindingConstant?.pptrCurveMapping?.Count ?? 0,
+                muscleClipPresent = muscleClip != null,
+                valueBindingCount = innerClip?.m_Binding?.m_ValueArray?.Count ?? 0,
+                streamedCurveCount = innerClip?.m_StreamedClip?.curveCount ?? 0,
+                streamedDataCount = innerClip?.m_StreamedClip?.data?.Length ?? 0,
+                denseCurveCount = innerClip?.m_DenseClip?.m_CurveCount ?? 0,
+                denseFrameCount = innerClip?.m_DenseClip?.m_FrameCount ?? 0,
+                denseSampleCount = innerClip?.m_DenseClip?.m_SampleArray?.Length ?? 0,
+                constantValueCount = innerClip?.m_ConstantClip?.data?.Length ?? 0,
+                aclIsSet = innerClip?.m_ACLClip?.IsSet ?? false,
+                aclCurveCount = innerClip?.m_ACLClip?.CurveCount ?? 0,
+                muscleClipSize = clip?.m_MuscleClipSize ?? 0,
+                streamDataPath = clip?.m_StreamData?.path,
+                streamDataOffset = clip?.m_StreamData?.offset ?? 0,
+                streamDataSize = clip?.m_StreamData?.size ?? 0,
+                muscleValueDeltaCount = muscleClip?.m_ValueArrayDelta?.Count ?? 0,
+                muscleValueReferencePoseCount = muscleClip?.m_ValueArrayReferencePose?.Length ?? 0,
+            };
+        }
+
+        private static bool IsEmptyHumanoidClipPayload(AnimationClip clip, AnimationClipInfo animationInfo)
+        {
+            var muscleClip = clip?.m_MuscleClip;
+            var innerClip = muscleClip?.m_Clip;
+            if (muscleClip == null)
+            {
+                return false;
+            }
+
+            var directCurveCount = GetAnimationCurveCount(clip);
+            var hasAnyPayload =
+                directCurveCount > 0
+                || (clip.m_ClipBindingConstant?.genericBindings?.Count ?? 0) > 0
+                || (innerClip?.m_Binding?.m_ValueArray?.Count ?? 0) > 0
+                || (innerClip?.m_StreamedClip?.curveCount ?? 0) > 0
+                || (innerClip?.m_DenseClip?.m_CurveCount ?? 0) > 0
+                || (innerClip?.m_DenseClip?.m_SampleArray?.Length ?? 0) > 0
+                || (innerClip?.m_ConstantClip?.data?.Length ?? 0) > 0
+                || (innerClip?.m_ACLClip?.IsSet ?? false)
+                || (muscleClip.m_ValueArrayDelta?.Count ?? 0) > 0
+                || (muscleClip.m_ValueArrayReferencePose?.Length ?? 0) > 0;
+            if (hasAnyPayload)
+            {
+                return false;
+            }
+
+            return (animationInfo?.transformBindingCount ?? 0) == 0
+                && (animationInfo?.humanoidBindingCount ?? 0) == 0
+                && (animationInfo?.trueBlendShapeBindingCount ?? 0) == 0;
         }
 
         private static object[] ToVector3CurveAssets(IEnumerable<Vector3Curve> curves)
@@ -3327,12 +3665,37 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     attribute = x.attribute,
                     classID = x.classID.ToString(),
                     flags = x.flags,
-                    category = x.classID == ClassIDType.Animator ? "HumanoidMuscleOrAnimator" :
-                        x.classID == ClassIDType.SkinnedMeshRenderer ? "BlendShapeOrRenderer" : "Float",
+                    category = ClassifyFloatCurveCategory(x),
                     keyframes = x.curve?.m_Curve?.Select(ToFloatKeyframeAsset).ToArray() ?? Array.Empty<object>(),
                 })
                 .Cast<object>()
                 .ToArray() ?? Array.Empty<object>();
+        }
+
+        private static string ClassifyFloatCurveCategory(FloatCurve curve)
+        {
+            var attribute = curve?.attribute ?? string.Empty;
+            if (curve?.classID == ClassIDType.Animator)
+            {
+                return "HumanoidMuscleOrAnimator";
+            }
+            if (attribute.StartsWith("blendShape.", StringComparison.OrdinalIgnoreCase))
+            {
+                return "BlendShape";
+            }
+            if (attribute.StartsWith("material.", StringComparison.OrdinalIgnoreCase))
+            {
+                return "RendererMaterial";
+            }
+            if (string.Equals(attribute, "m_IsActive", StringComparison.OrdinalIgnoreCase))
+            {
+                return "ActiveState";
+            }
+            if (curve?.classID == ClassIDType.SkinnedMeshRenderer)
+            {
+                return "SkinnedMeshRendererProperty";
+            }
+            return "Float";
         }
 
         private static object[] ToPPtrCurveAssets(IEnumerable<PPtrCurve> curves)
@@ -3479,8 +3842,13 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                         motionStartX = ToJsonXForm(muscleClip.m_MotionStartX),
                         motionStopX = ToJsonXForm(muscleClip.m_MotionStopX),
                         indexArrayCount = muscleClip.m_IndexArray?.Length ?? 0,
+                        // 这些是 Humanoid 曲线还原的原始 Unity 数据。
+                        // 默认只写有限长度，方便诊断 decoder 和 Unity HumanPose 的差异，不参与默认匹配。
+                        indexArray = ToBoundedJsonArray(muscleClip.m_IndexArray, 512),
                         valueArrayDeltaCount = muscleClip.m_ValueArrayDelta?.Count ?? 0,
+                        valueArrayDelta = ToBoundedValueDeltaArray(muscleClip.m_ValueArrayDelta, 512),
                         valueArrayReferencePoseCount = muscleClip.m_ValueArrayReferencePose?.Length ?? 0,
+                        valueArrayReferencePose = ToBoundedJsonArray(muscleClip.m_ValueArrayReferencePose, 512),
                         flags = new
                         {
                             mirror = muscleClip.m_Mirror,
@@ -3500,6 +3868,35 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             };
         }
 
+        private static int[] ToBoundedJsonArray(int[] values, int maxCount)
+        {
+            return values == null
+                ? Array.Empty<int>()
+                : values.Take(Math.Max(0, maxCount)).ToArray();
+        }
+
+        private static float[] ToBoundedJsonArray(float[] values, int maxCount)
+        {
+            return values == null
+                ? Array.Empty<float>()
+                : values.Take(Math.Max(0, maxCount)).ToArray();
+        }
+
+        private static object[] ToBoundedValueDeltaArray(IReadOnlyList<ValueDelta> values, int maxCount)
+        {
+            return values == null
+                ? Array.Empty<object>()
+                : values
+                    .Take(Math.Max(0, maxCount))
+                    .Select(x => new
+                    {
+                        start = x.m_Start,
+                        stop = x.m_Stop,
+                    })
+                    .Cast<object>()
+                    .ToArray();
+        }
+
         private static string ResolveAnimationBindingCategory(GenericBinding binding)
         {
             if (binding == null)
@@ -3510,10 +3907,17 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             {
                 return "HumanoidMuscle";
             }
-            if ((BindingCustomType)binding.customType == BindingCustomType.BlendShape
-                || binding.typeID == ClassIDType.SkinnedMeshRenderer)
+            if ((BindingCustomType)binding.customType == BindingCustomType.BlendShape)
             {
-                return "BlendShapeOrRenderer";
+                return "BlendShape";
+            }
+            if ((BindingCustomType)binding.customType == BindingCustomType.RendererMaterial)
+            {
+                return "RendererMaterial";
+            }
+            if (IsRendererPropertyBinding(binding))
+            {
+                return "RendererProperty";
             }
             if (binding.typeID == ClassIDType.Transform)
             {
@@ -3556,11 +3960,19 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 };
             }
 
-            if (string.Equals(category, "BlendShapeOrRenderer", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(category, "BlendShape", StringComparison.OrdinalIgnoreCase))
             {
-                return ((BindingCustomType)binding.customType) == BindingCustomType.BlendShape
-                    ? $"blendShape_{binding.attribute}"
-                    : $"rendererOrSkinnedMeshAttribute_{binding.attribute}";
+                return $"blendShape_{binding.attribute}";
+            }
+
+            if (string.Equals(category, "RendererMaterial", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"rendererMaterialAttribute_{binding.attribute}";
+            }
+
+            if (string.Equals(category, "RendererProperty", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"rendererPropertyAttribute_{binding.attribute}";
             }
 
             return $"attribute_{binding.attribute}";
@@ -3569,6 +3981,21 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
         private static object ToJsonVector3(Vector3 value)
         {
             return new[] { value.X, value.Y, value.Z };
+        }
+
+        private static object ToJsonVector4(Vector4 value)
+        {
+            return new[] { value.X, value.Y, value.Z, value.W };
+        }
+
+        private static object ToJsonVector3Or4As3(object value)
+        {
+            return value switch
+            {
+                Vector3 v => new[] { v.X, v.Y, v.Z },
+                Vector4 v => new[] { v.X, v.Y, v.Z },
+                _ => null,
+            };
         }
 
         private static object ToJsonQuaternion(Quaternion value)
@@ -3584,6 +4011,19 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 q = ToJsonQuaternion(value.q),
                 s = ToJsonVector3(value.s),
             };
+        }
+
+        private static object[] ToJsonXFormArray(XForm[] values, int expectedCount)
+        {
+            if (values == null || values.Length == 0)
+            {
+                return Array.Empty<object>();
+            }
+
+            return values
+                .Take(expectedCount > 0 ? Math.Min(values.Length, expectedCount) : values.Length)
+                .Select(ToJsonXForm)
+                .ToArray();
         }
 
         private static void AppendAssetCatalog(AssetItem item, string outputPath, string kind, string animationAssetPath = null)
@@ -3621,6 +4061,10 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 coreTransformBindingCount = animationInfo?.coreTransformBindingCount,
                 humanoidBindingCount = animationInfo?.humanoidBindingCount,
                 blendShapeBindingCount = animationInfo?.blendShapeBindingCount,
+                trueBlendShapeBindingCount = animationInfo?.trueBlendShapeBindingCount,
+                rendererMaterialBindingCount = animationInfo?.rendererMaterialBindingCount,
+                rendererPropertyBindingCount = animationInfo?.rendererPropertyBindingCount,
+                activeStateBindingCount = animationInfo?.activeStateBindingCount,
                 auxiliaryBindingCount = animationInfo?.auxiliaryBindingCount,
                 unknownBindingCount = animationInfo?.unknownBindingCount,
                 transformBindingPaths = animationInfo?.transformBindingPaths,
@@ -3654,7 +4098,15 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 + (clip.m_PositionCurves?.Count ?? 0)
                 + (clip.m_ScaleCurves?.Count ?? 0)
                 + (clip.m_EulerCurves?.Count ?? 0);
-            var blendShapeBindingCount = bindings.Count(x => x.typeID == ClassIDType.SkinnedMeshRenderer);
+            var trueBlendShapeBindingCount = bindings.Count(IsBlendShapeBinding)
+                + (clip.m_FloatCurves?.Count(IsBlendShapeFloatCurve) ?? 0);
+            var rendererMaterialBindingCount = bindings.Count(IsRendererMaterialBinding)
+                + (clip.m_FloatCurves?.Count(IsRendererMaterialFloatCurve) ?? 0);
+            var activeStateBindingCount = clip.m_FloatCurves?.Count(IsActiveStateFloatCurve) ?? 0;
+            var rendererPropertyBindingCount = bindings.Count(IsRendererPropertyBinding)
+                + (clip.m_FloatCurves?.Count(IsRendererPropertyFloatCurve) ?? 0);
+            var blendShapeBindingCount = bindings.Count(x => x.typeID == ClassIDType.SkinnedMeshRenderer)
+                + (clip.m_FloatCurves?.Count(x => x.classID == ClassIDType.SkinnedMeshRenderer) ?? 0);
             var humanoidBindingCount = bindings.Count(x => x.typeID == ClassIDType.Animator);
             var unknownBindingCount = bindings.Count(x => x.typeID != ClassIDType.Transform && x.typeID != ClassIDType.SkinnedMeshRenderer && x.typeID != ClassIDType.Animator);
             var hasMuscleClip = clip.m_MuscleClip != null;
@@ -3675,9 +4127,24 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 animationType = "AuxiliaryAnimation";
                 notes.Add("Transform bindings mainly target helper, socket, point, or twist nodes.");
             }
-            else if (blendShapeBindingCount > 0 && transformBindingCount == 0)
+            else if (trueBlendShapeBindingCount > 0 && transformBindingCount == 0)
             {
                 animationType = "BlendShapeAnimation";
+            }
+            else if (rendererMaterialBindingCount > 0 && transformBindingCount == 0)
+            {
+                animationType = "MaterialAnimation";
+                notes.Add("Renderer material curves are present; they are not glTF morph target weights.");
+            }
+            else if (activeStateBindingCount > 0 && transformBindingCount == 0)
+            {
+                animationType = "ActiveStateAnimation";
+                notes.Add("GameObject active-state curves are present; glTF playback needs a separate visibility mapping.");
+            }
+            else if (rendererPropertyBindingCount > 0 && transformBindingCount == 0)
+            {
+                animationType = "RendererPropertyAnimation";
+                notes.Add("Renderer or SkinnedMeshRenderer property curves are present; inspect before treating them as playable glTF animation.");
             }
             else if (transformBindingCount > 0)
             {
@@ -3701,11 +4168,62 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 coreTransformCount,
                 humanoidBindingCount,
                 blendShapeBindingCount,
+                trueBlendShapeBindingCount,
+                rendererMaterialBindingCount,
+                rendererPropertyBindingCount,
+                activeStateBindingCount,
                 auxiliaryCount,
                 unknownBindingCount,
                 transformPaths.Take(64).ToArray(),
                 notes.ToArray()
             );
+        }
+
+        private static bool IsBlendShapeBinding(GenericBinding binding)
+        {
+            return binding != null && (BindingCustomType)binding.customType == BindingCustomType.BlendShape;
+        }
+
+        private static bool IsRendererMaterialBinding(GenericBinding binding)
+        {
+            return binding != null && (BindingCustomType)binding.customType == BindingCustomType.RendererMaterial;
+        }
+
+        private static bool IsRendererPropertyBinding(GenericBinding binding)
+        {
+            if (binding == null)
+            {
+                return false;
+            }
+            var customType = (BindingCustomType)binding.customType;
+            return customType == BindingCustomType.Renderer
+                || customType == BindingCustomType.RendererShadows
+                || customType == BindingCustomType.SpriteRenderer
+                || customType == BindingCustomType.LineRenderer
+                || customType == BindingCustomType.TrailRenderer
+                || (binding.typeID == ClassIDType.SkinnedMeshRenderer && customType != BindingCustomType.BlendShape && customType != BindingCustomType.RendererMaterial);
+        }
+
+        private static bool IsBlendShapeFloatCurve(FloatCurve curve)
+        {
+            return (curve?.attribute ?? string.Empty).StartsWith("blendShape.", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsRendererMaterialFloatCurve(FloatCurve curve)
+        {
+            return (curve?.attribute ?? string.Empty).StartsWith("material.", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsActiveStateFloatCurve(FloatCurve curve)
+        {
+            return string.Equals(curve?.attribute, "m_IsActive", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsRendererPropertyFloatCurve(FloatCurve curve)
+        {
+            return curve?.classID == ClassIDType.SkinnedMeshRenderer
+                && !IsBlendShapeFloatCurve(curve)
+                && !IsRendererMaterialFloatCurve(curve);
         }
 
         private static string ResolveAnimationBindingPath(GenericBinding binding, Dictionary<uint, string> tos)
@@ -3764,6 +4282,10 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             int coreTransformBindingCount,
             int humanoidBindingCount,
             int blendShapeBindingCount,
+            int trueBlendShapeBindingCount,
+            int rendererMaterialBindingCount,
+            int rendererPropertyBindingCount,
+            int activeStateBindingCount,
             int auxiliaryBindingCount,
             int unknownBindingCount,
             string[] transformBindingPaths,
@@ -3973,6 +4495,39 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             if (materialCount.HasValue)
             {
                 data["materialCount"] = materialCount.Value;
+            }
+            return data;
+        }
+
+        private static Dictionary<string, object> GetAnimationProfileData(
+            AssetItem item,
+            string exportPath,
+            int? yamlLength = null
+        )
+        {
+            var clip = item.Asset as AnimationClip;
+            var data = new Dictionary<string, object>
+            {
+                ["type"] = item.TypeString,
+                ["name"] = item.Text,
+                ["container"] = item.Container,
+                ["source"] = item.SourceFile?.originalPath ?? item.SourceFile?.fileName,
+                ["pathId"] = item.m_PathID,
+                ["output"] = exportPath,
+                ["sampleRate"] = clip?.m_SampleRate ?? 0,
+                ["legacy"] = clip?.m_Legacy ?? false,
+                ["compressed"] = clip?.m_Compressed ?? false,
+                ["genericBindingCount"] = clip?.m_ClipBindingConstant?.genericBindings?.Count ?? 0,
+                ["positionCurveCount"] = clip?.m_PositionCurves?.Count ?? 0,
+                ["rotationCurveCount"] = clip?.m_RotationCurves?.Count ?? 0,
+                ["scaleCurveCount"] = clip?.m_ScaleCurves?.Count ?? 0,
+                ["floatCurveCount"] = clip?.m_FloatCurves?.Count ?? 0,
+                ["pptrCurveCount"] = clip?.m_PPtrCurves?.Count ?? 0,
+                ["hasMuscleClip"] = clip?.m_MuscleClip != null,
+            };
+            if (yamlLength.HasValue)
+            {
+                data["yamlLength"] = yamlLength.Value;
             }
             return data;
         }

@@ -10,6 +10,8 @@ namespace AnimeStudio.LibraryBrowser
         public string Format { get; init; } = "";
         public string AnimationType { get; init; } = "";
         public string Capability { get; init; } = "";
+        public string NextAction { get; init; } = "";
+        public string ProductionAnimationPath { get; init; } = "";
         public string Relation { get; init; } = "";
         public string RelationSource { get; init; } = "";
         public string Confidence { get; init; } = "";
@@ -27,6 +29,12 @@ namespace AnimeStudio.LibraryBrowser
         public string ValidationCategory { get; init; } = "";
         public string ValidationReason { get; init; } = "";
         public bool RequiresHumanoidBake { get; init; }
+        public bool RequiresUnityBake { get; init; }
+        public bool RequiresInternalHumanoidSolve { get; init; }
+        public bool ProductionUnityBakeReady { get; init; }
+        public bool ProductionUnityBakeBlocked { get; init; }
+        public string ProductionUnityBakeBlockedReason { get; init; } = "";
+        public bool HasAvatarOracle { get; init; }
         public bool NeedsValidation { get; init; }
         public bool IsContainerAnimation { get; init; }
         public string[] BindingPaths { get; init; } = System.Array.Empty<string>();
@@ -51,12 +59,17 @@ namespace AnimeStudio.LibraryBrowser
         public bool IsMetadataOnly => string.Equals(ExportStatus, "metadata", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Format, "json", System.StringComparison.OrdinalIgnoreCase)
             || BestPath.EndsWith(".metadata.json", System.StringComparison.OrdinalIgnoreCase);
-        public bool IsUsableCandidate => !IsUnreal ||
-            ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&
-             !IsMetadataOnly &&
-             TrackCount > 0 &&
-             BestPath.EndsWith(".ueanim", System.StringComparison.OrdinalIgnoreCase) &&
-             System.IO.File.Exists(BestPath) &&
-             !string.Equals(ValidationStatus, "error", System.StringComparison.OrdinalIgnoreCase));
+        public bool NeedsProductionAvatarRefresh => ProductionUnityBakeBlocked
+            || string.Equals(NextAction, "refresh_avatar_human_description", System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ProductionUnityBakeBlockedReason, "missing_human_description_human_bones", System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ProductionUnityBakeBlockedReason, "avatar_constant_oracle_diagnostic_only", System.StringComparison.OrdinalIgnoreCase);
+        public bool IsUsableCandidate => !NeedsProductionAvatarRefresh &&
+            (!IsUnreal ||
+             ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&
+              !IsMetadataOnly &&
+              TrackCount > 0 &&
+              BestPath.EndsWith(".ueanim", System.StringComparison.OrdinalIgnoreCase) &&
+              System.IO.File.Exists(BestPath) &&
+              !string.Equals(ValidationStatus, "error", System.StringComparison.OrdinalIgnoreCase)));
     }
 }

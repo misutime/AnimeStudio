@@ -349,3 +349,6 @@ ASALocalRun/
 
 # BeatPulse healthcheck temp database
 healthchecksdb
+
+UE_Acceptance_Preview/
+Temp/

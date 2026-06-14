@@ -72,7 +72,8 @@ namespace AnimeStudio.GUI
                             if (maxComponent < 1e-32f)
                             {
                                 rgbe[0] = rgbe[1] = rgbe[2] = rgbe[3] = 0;
-                            } else
+                            }
+                            else
                             {
                                 int exponent;
                                 float mantissa = (float)Double.Frexp((double)maxComponent, out exponent);
@@ -94,7 +95,8 @@ namespace AnimeStudio.GUI
                     }
 
                     return true;
-                } else
+                }
+                else
                 {
                     var image = m_Texture2D.ConvertToImage(true);
 
@@ -199,7 +201,7 @@ namespace AnimeStudio.GUI
                 switch (m_MiHoYoBinData.Type)
                 {
                     case MiHoYoBinDataType.JSON:
-                        
+
                         if (!TryExportFile(exportPath, item, ".json", out exportFullPath))
                             return false;
                         var json = m_MiHoYoBinData.Dump() as string;
@@ -471,7 +473,7 @@ namespace AnimeStudio.GUI
             return true;
         }
 
-        public static bool ExportGameObject(AssetItem item, string exportPath, List <AssetItem> animationList = null)
+        public static bool ExportGameObject(AssetItem item, string exportPath, List<AssetItem> animationList = null)
         {
             if (!TryExportFolder(exportPath, item, out var exportFullPath))
                 return false;

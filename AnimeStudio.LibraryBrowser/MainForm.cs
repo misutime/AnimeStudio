@@ -59,8 +59,12 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripButton _clearModelAnimationFilterButton = new("清除");
         private readonly ToolStripButton _showFavoriteModelAnimationsButton = new("收藏");
         private readonly ToolStrip _libraryAnimationStrip = new();
+        private readonly ToolStripTextBox _animationModelFilterBox = new();
+        private readonly ToolStripButton _clearAnimationModelSearchButton = new("清除");
         private readonly ToolStripButton _clearAnimationModelFilterButton = new("全部模型");
         private readonly ToolStripButton _showFavoriteLibraryAnimationsButton = new("收藏");
+        private readonly ToolStripButton _bakeSelectedAnimationModelsButton = new("烘焙选中模型");
+        private readonly ToolStripButton _bakeVisibleAnimationModelsButton = new("烘焙可见模型");
         private readonly ListView _libraryAnimationList = new();
         private readonly ListView _animationModelList = new();
         private readonly TextBox _animationDetailBox = new();
@@ -99,9 +103,11 @@ namespace AnimeStudio.LibraryBrowser
         private ThumbnailCache _thumbnailCache;
         private LibraryCurationStore _curationStore;
         private LibraryAnimationIndex _animationIndex = LibraryAnimationIndex.Empty;
+        private LibrarySourceIndexHealth _sourceIndexHealth = LibrarySourceIndexHealth.Empty;
         private AnimationPreviewCache _previewCache;
         private LibraryModelItem _detailModel;
         private List<LibraryAnimationCandidate> _detailAnimations = new();
+        private List<LibraryAnimationCandidate> _visibleDetailAnimations = new();
         private List<LibraryAnimationUsage> _allLibraryAnimations = new();
         private List<LibraryAnimationUsage> _visibleLibraryAnimations = new();
         private LibraryAnimationUsage _selectedLibraryAnimation;
@@ -291,13 +297,29 @@ namespace AnimeStudio.LibraryBrowser
             });
 
             ConfigureToolStrip(_libraryAnimationStrip);
+            _animationModelFilterBox.AutoSize = false;
+            _animationModelFilterBox.Width = 240;
+            _animationModelFilterBox.ToolTipText = "过滤右侧关联模型，支持模型名、路径、分类和预览/烘焙状态。";
+            _animationModelFilterBox.TextBox.PlaceholderText = "过滤模型，例如 Charlotte 或 可播放";
+            _clearAnimationModelSearchButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _clearAnimationModelFilterButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _showFavoriteLibraryAnimationsButton.CheckOnClick = true;
             _showFavoriteLibraryAnimationsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            _bakeSelectedAnimationModelsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            _bakeSelectedAnimationModelsButton.ToolTipText = "对当前选中的动画，Unity 烘焙右侧选中的模型。只处理显式关系里的 Humanoid/Muscle 候选。";
+            _bakeVisibleAnimationModelsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            _bakeVisibleAnimationModelsButton.ToolTipText = "对当前选中的动画，Unity 烘焙右侧当前可见的模型。适合先用搜索缩小范围。";
             _libraryAnimationStrip.Items.AddRange(new ToolStripItem[]
             {
+                new ToolStripLabel("模型过滤"),
+                _animationModelFilterBox,
+                _clearAnimationModelSearchButton,
+                new ToolStripSeparator(),
                 _showFavoriteLibraryAnimationsButton,
-                _clearAnimationModelFilterButton
+                _clearAnimationModelFilterButton,
+                new ToolStripSeparator(),
+                _bakeSelectedAnimationModelsButton,
+                _bakeVisibleAnimationModelsButton
             });
 
             _libraryAnimationList.Dock = DockStyle.Fill;
@@ -320,6 +342,7 @@ namespace AnimeStudio.LibraryBrowser
             _animationModelList.Columns.Add("类型", 72);
             _animationModelList.Columns.Add("分类", 120);
             _animationModelList.Columns.Add("骨骼", 64);
+            _animationModelList.Columns.Add("预览/烘焙", 110);
             _animationModelList.Columns.Add("路径", 520);
             _animationModelList.DoubleClick += async (_, _) => await GenerateSelectedLibraryAnimationPreviewAsync(openAfterGenerate: true);
 
@@ -457,6 +480,8 @@ namespace AnimeStudio.LibraryBrowser
             _animationMenu.Items.Add(new ToolStripSeparator());
             _animationMenu.Items.Add("打开动画目录", null, (_, _) => OpenSelectedAnimationFolder());
             _animationMenu.Items.Add("生成并打开动画预览/Unity烘焙", null, async (_, _) => await GenerateSelectedAnimationPreviewAsync(openAfterGenerate: true));
+            _animationMenu.Items.Add("批量烘焙选中动画", null, async (_, _) => await BakeSelectedModelAnimationsAsync());
+            _animationMenu.Items.Add("批量烘焙当前可见动画", null, async (_, _) => await BakeVisibleModelAnimationsAsync());
             _animationList.ContextMenuStrip = _animationMenu;
 
             _libraryAnimationMenu.Items.Add("复制动画名", null, (_, _) => CopySelectedLibraryAnimationNames());
@@ -510,7 +535,11 @@ namespace AnimeStudio.LibraryBrowser
             _searchBox.KeyDown += SearchBox_KeyDown;
             _clearSearchButton.Click += (_, _) => ClearSearch();
             _clearAnimationModelFilterButton.Click += (_, _) => ClearSelectedLibraryAnimation();
+            _animationModelFilterBox.TextChanged += (_, _) => RebuildAnimationModelList();
+            _clearAnimationModelSearchButton.Click += (_, _) => _animationModelFilterBox.Clear();
             _libraryAnimationList.SelectedIndexChanged += (_, _) => SelectLibraryAnimationFilter();
+            _bakeSelectedAnimationModelsButton.Click += async (_, _) => await BakeSelectedLibraryAnimationModelsAsync();
+            _bakeVisibleAnimationModelsButton.Click += async (_, _) => await BakeVisibleLibraryAnimationModelsAsync();
             _modelAnimationFilterBox.TextChanged += (_, _) => RebuildAnimationList();
             _clearModelAnimationFilterButton.Click += (_, _) => _modelAnimationFilterBox.Clear();
             _kindBox.SelectedIndexChanged += (_, _) => ApplyFilter();
@@ -874,6 +903,7 @@ namespace AnimeStudio.LibraryBrowser
                 _thumbnailCache = new ThumbnailCache(root, GetThumbnailConcurrency());
                 _curationStore = new LibraryCurationStore(root);
                 _animationIndex = await Task.Run(() => LibraryAnimationIndex.Load(root));
+                _sourceIndexHealth = await Task.Run(() => LibrarySourceIndexHealth.Load(root));
                 _allLibraryAnimations = _animationIndex.FindAllAnimations().ToList();
                 _selectedLibraryAnimation = null;
                 _previewCache = new AnimationPreviewCache(root);
@@ -903,7 +933,7 @@ namespace AnimeStudio.LibraryBrowser
             var source = string.IsNullOrWhiteSpace(_animationIndex.LoadSource)
                 ? "未加载"
                 : _animationIndex.LoadSource;
-            return $"动画索引: {source}，动画 {_allLibraryAnimations.Count}，预建候选 {_animationIndex.IndexedCandidateCount} / 模型 {_animationIndex.IndexedModelCount}";
+            return $"动画索引: {source}，动画 {_allLibraryAnimations.Count}，预建候选 {_animationIndex.IndexedCandidateCount} / 模型 {_animationIndex.IndexedModelCount}，{_sourceIndexHealth.ShortLabel()}";
         }
 
         private void RebuildRecentMenu()
@@ -1430,19 +1460,22 @@ namespace AnimeStudio.LibraryBrowser
         {
             var item = _visibleModels[e.ItemIndex];
             var imageIndex = GetImageIndex(item);
-            var animationCount = _animationIndex.CountForModel(item);
-            var allAnimationCount = _animationIndex.CountAllForModel(item);
-            var explicitCount = _animationIndex.CountExplicitForModel(item);
-            e.Item = new ListViewItem(ShortLabel(item, animationCount, item.AnimationCandidateCount, explicitCount, _curationStore?.IsFavoriteModel(item) == true))
+            var animations = _animationIndex.FindForModel(item);
+            var animationCount = animations.Count(x => x.IsUsableCandidate);
+            var allAnimationCount = animations.Count;
+            var explicitCount = animations.Count(x => x.IsExplicit);
+            var bakeStats = BuildModelAnimationBakeStats(item, animations);
+            e.Item = new ListViewItem(ShortLabel(item, animationCount, item.AnimationCandidateCount, explicitCount, bakeStats, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = imageIndex,
                 ToolTipText =
                     $"{item.OutputPath}{Environment.NewLine}" +
                     $"类型: {item.ModelSourceLabel}{Environment.NewLine}" +
-                    $"可播放动画: {animationCount}{Environment.NewLine}" +
+                    $"动画数量: {animationCount}{Environment.NewLine}" +
                     $"关系动画总数: {allAnimationCount}{Environment.NewLine}" +
                     $"覆盖报告候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
                     $"显式关系动画: {explicitCount}{Environment.NewLine}" +
+                    bakeStats.ToTooltipText() +
                     $"质量复查: {(item.NeedsReview ? FormatReasonList(item.ReviewReasons) : "否")}{Environment.NewLine}" +
                     $"关系待补: {(item.RelationNeedsReview ? FormatReasonList(item.RelationReviewReasons) : "否")}"
             };
@@ -1451,7 +1484,7 @@ namespace AnimeStudio.LibraryBrowser
         private void VfxList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleVfx[e.ItemIndex];
-            e.Item = new ListViewItem(ShortLabel(item, 0, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, 0, 0, 0, null, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = GetImageIndex(item),
                 ToolTipText = $"{item.OutputPath}{Environment.NewLine}类型: VFX/{item.VfxCategory}{Environment.NewLine}组件: {item.ComponentCount} | 材质: {item.MaterialRefCount} | 贴图: {item.TextureRefCount} | Mesh: {item.MeshRefCount} | 出现: {item.OccurrenceCount}"
@@ -1461,7 +1494,7 @@ namespace AnimeStudio.LibraryBrowser
         private void TextureList_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
             var item = _visibleTextures[e.ItemIndex];
-            e.Item = new ListViewItem(ShortLabel(item, 0, 0, 0, _curationStore?.IsFavoriteModel(item) == true))
+            e.Item = new ListViewItem(ShortLabel(item, 0, 0, 0, null, _curationStore?.IsFavoriteModel(item) == true))
             {
                 ImageIndex = GetTextureImageIndex(item),
                 ToolTipText = $"{item.OutputPath}{Environment.NewLine}类型: {item.ResourceKind}/{item.SourceType}"
@@ -1750,10 +1783,10 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private static string ShortLabel(LibraryModelItem item, int usableAnimationCount, int reportedAnimationCount, int explicitAnimationCount, bool favorite)
+        private static string ShortLabel(LibraryModelItem item, int usableAnimationCount, int reportedAnimationCount, int explicitAnimationCount, ModelAnimationBakeStats bakeStats, bool favorite)
         {
             var name = string.IsNullOrWhiteSpace(item.Name) ? item.FileName : item.Name;
-            var animationBadge = BuildAnimationBadge(usableAnimationCount, reportedAnimationCount, explicitAnimationCount);
+            var animationBadge = BuildAnimationBadge(usableAnimationCount, reportedAnimationCount, explicitAnimationCount, bakeStats);
             var suffix = item.IsVfx
                 ? $" [{(string.IsNullOrWhiteSpace(item.VfxCategory) ? "VFX" : item.VfxCategory)}]"
                 : string.IsNullOrWhiteSpace(animationBadge) ? "" : $" [{animationBadge}]";
@@ -1763,7 +1796,7 @@ namespace AnimeStudio.LibraryBrowser
             return shortName + suffix + favoriteBadge;
         }
 
-        private static string BuildAnimationBadge(int usableAnimationCount, int reportedAnimationCount, int explicitAnimationCount)
+        private static string BuildAnimationBadge(int usableAnimationCount, int reportedAnimationCount, int explicitAnimationCount, ModelAnimationBakeStats bakeStats)
         {
             if (usableAnimationCount <= 0 && reportedAnimationCount <= 0)
             {
@@ -1771,12 +1804,70 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var explicitText = explicitAnimationCount > 0 ? $" 显式{explicitAnimationCount}" : "";
+            var bakeText = bakeStats?.UnityBakeRequired > 0
+                ? $" 烘焙{bakeStats.UnityBaked}/{bakeStats.UnityBakeRequired}"
+                : "";
             if (reportedAnimationCount > 0 && reportedAnimationCount != usableAnimationCount)
             {
-                return $"可播{usableAnimationCount}/候选{reportedAnimationCount}{explicitText}";
+                return $"动画{usableAnimationCount}/候选{reportedAnimationCount}{explicitText}{bakeText}";
             }
 
-            return $"可播{usableAnimationCount}{explicitText}";
+            return $"动画{usableAnimationCount}{explicitText}{bakeText}";
+        }
+
+        private sealed class ModelAnimationBakeStats
+        {
+            public int UnityBakeRequired { get; set; }
+            public int UnityBaked { get; set; }
+            public int UnityBakePending { get; set; }
+            public int DirectPreview { get; set; }
+            public int OldLocalPreview { get; set; }
+            public int StaticPose { get; set; }
+            public int NeedRebuild { get; set; }
+            public int Failed { get; set; }
+
+            public string ToDetailText()
+            {
+                if (UnityBakeRequired == 0 && DirectPreview == 0)
+                {
+                    return "";
+                }
+
+                return
+                    $"主线 Unity 烘焙需求: {UnityBakeRequired}{Environment.NewLine}" +
+                    $"主线已 Unity 烘焙: {UnityBaked}{Environment.NewLine}" +
+                    $"主线待 Unity 烘焙: {UnityBakePending}{Environment.NewLine}" +
+                    $"Unity 烘焙静态姿态: {StaticPose}{Environment.NewLine}" +
+                    $"Unity 烘焙需重建: {NeedRebuild}{Environment.NewLine}" +
+                    $"Unity 烘焙失败: {Failed}{Environment.NewLine}" +
+                    $"可直接 glTF 预览: {DirectPreview}{Environment.NewLine}" +
+                    $"旧内部求解/局部预览: {OldLocalPreview}{Environment.NewLine}";
+            }
+
+            public string ToTooltipText()
+            {
+                if (UnityBakeRequired == 0 && DirectPreview == 0)
+                {
+                    return "";
+                }
+
+                return
+                    $"主线 Unity 烘焙: {UnityBaked}/{UnityBakeRequired}{Environment.NewLine}" +
+                    $"待烘焙: {UnityBakePending} | 静态姿态: {StaticPose} | 需重建: {NeedRebuild} | 失败: {Failed}{Environment.NewLine}" +
+                    $"可直接 glTF 预览: {DirectPreview}{Environment.NewLine}";
+            }
+        }
+
+        private sealed class AnimationModelPreviewStatus
+        {
+            public AnimationModelPreviewStatus(string label, string tooltip)
+            {
+                Label = label ?? "";
+                Tooltip = tooltip ?? "";
+            }
+
+            public string Label { get; }
+            public string Tooltip { get; }
         }
 
         private static void SetLargeIconSpacing(ListView list)
@@ -2010,10 +2101,19 @@ namespace AnimeStudio.LibraryBrowser
             _detailModel = item;
             _detailAnimations = animations.ToList();
             RebuildAnimationList();
+            WriteModelDetailText(item, animations);
+
+            // 默认动画列表只展示 Unity/引擎索引里的确定性关系。
+            // 结构 targeted 匹配只能作为显式诊断入口，不能自动混进用户看到的候选动画。
+        }
+
+        private void WriteModelDetailText(LibraryModelItem item, IReadOnlyList<LibraryAnimationCandidate> animations)
+        {
             var usableCount = animations.Count(x => x.IsUsableCandidate);
             var allAnimationCount = animations.Count;
             var explicitCount = animations.Count(x => x.IsExplicit);
             var animationIndexNote = BuildModelAnimationIndexNote(item, usableCount, allAnimationCount, explicitCount);
+            var animationBakeSummary = BuildModelAnimationBakeSummary(item, animations);
             _detailBox.Text =
                 $"名称: {item.Name}{Environment.NewLine}" +
                 $"模型来源: {item.ModelSourceLabel}{Environment.NewLine}" +
@@ -2039,9 +2139,11 @@ namespace AnimeStudio.LibraryBrowser
                 $"UE缺材质: {(item.MissingMaterials ? "是" : "否")}{Environment.NewLine}" +
                 $"UE缺外部贴图槽: {(item.NoExternalTextureSlots ? "是" : "否")}{Environment.NewLine}" +
                 $"动画索引来源: {EmptyAsUnknown(_animationIndex.LoadSource)}{Environment.NewLine}" +
-                $"可播放动画: {usableCount}{Environment.NewLine}" +
+                _sourceIndexHealth.DetailText() +
+                $"动画数量: {usableCount}{Environment.NewLine}" +
                 $"关系动画总数: {allAnimationCount}{Environment.NewLine}" +
                 $"显式关系动画: {explicitCount}{Environment.NewLine}" +
+                animationBakeSummary +
                 $"覆盖报告动画候选: {item.AnimationCandidateCount}{Environment.NewLine}" +
                 animationIndexNote +
                 $"任务/交互信号: {FormatSignalList(item.TaskSignals)}{Environment.NewLine}" +
@@ -2050,12 +2152,83 @@ namespace AnimeStudio.LibraryBrowser
                 $"文件:{Environment.NewLine}{item.OutputPath}{Environment.NewLine}{Environment.NewLine}" +
                 $"动画提示: 上方列表是当前模型匹配到的动画；双击动画可生成模型+动画的可播放 glTF 预览。动画页则用于从动画反查可匹配模型。{Environment.NewLine}{Environment.NewLine}" +
                 BuildAnimationDetails(animations);
+        }
 
-            if (explicitCount == 0)
+        private string BuildModelAnimationBakeSummary(
+            LibraryModelItem item,
+            IReadOnlyList<LibraryAnimationCandidate> animations)
+        {
+            return BuildModelAnimationBakeStats(item, animations).ToDetailText();
+        }
+
+        private ModelAnimationBakeStats BuildModelAnimationBakeStats(
+            LibraryModelItem item,
+            IReadOnlyList<LibraryAnimationCandidate> animations)
+        {
+            var stats = new ModelAnimationBakeStats();
+            if (item == null || animations == null || animations.Count == 0)
             {
-                _detailBox.AppendText($"{Environment.NewLine}{Environment.NewLine}定向匹配: 正在扫描 animation_bindings.jsonl ...");
-                _ = LoadTargetedAnimationDetailsAsync(item, requestId);
+                return stats;
             }
+
+            foreach (var animation in animations)
+            {
+                if (animation.IsUnreal || !animation.IsUsableCandidate)
+                {
+                    continue;
+                }
+
+                var status = _previewCache?.GetStatus(item, animation);
+                var playable = string.Equals(status?.Status, "可播放", StringComparison.OrdinalIgnoreCase);
+                if (RequiresUnityBake(animation))
+                {
+                    stats.UnityBakeRequired++;
+                    if (playable)
+                    {
+                        stats.UnityBaked++;
+                    }
+                    else if (string.Equals(status?.Status, "静态姿态", StringComparison.OrdinalIgnoreCase))
+                    {
+                        stats.StaticPose++;
+                    }
+                    else if (string.Equals(status?.Status, "已烘焙但需重建", StringComparison.OrdinalIgnoreCase))
+                    {
+                        stats.NeedRebuild++;
+                    }
+                    else if (string.Equals(status?.Status, "烘焙失败", StringComparison.OrdinalIgnoreCase))
+                    {
+                        stats.Failed++;
+                    }
+                    else
+                    {
+                        stats.UnityBakePending++;
+                        if (string.Equals(status?.Status, "局部预览", StringComparison.OrdinalIgnoreCase))
+                        {
+                            stats.OldLocalPreview++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                // 非 Humanoid/Muscle 的 Transform/BlendShape 动画仍可走直接 glTF 预览。
+                if (animation.MatchedPathCount > 0 || playable)
+                {
+                    stats.DirectPreview++;
+                }
+            }
+
+            return stats;
+        }
+
+        private void RefreshCurrentModelDetailText()
+        {
+            if (_detailModel == null || _detailAnimations.Count == 0)
+            {
+                return;
+            }
+
+            WriteModelDetailText(_detailModel, _detailAnimations);
         }
 
         private static string BuildAnimationDetails(IReadOnlyList<LibraryAnimationCandidate> animations)
@@ -2077,7 +2250,7 @@ namespace AnimeStudio.LibraryBrowser
                 var score = animation.Score > 0 ? $" score={animation.Score:0.###}" : "";
                 var confidence = string.IsNullOrWhiteSpace(animation.Confidence) ? "" : $" {animation.Confidence}";
                 var capability = string.IsNullOrWhiteSpace(animation.Capability) ? "" : $" {animation.Capability}";
-                var bake = animation.RequiresHumanoidBake ? " 需要Humanoid烘焙" : "";
+                var bake = RequiresUnityBake(animation) ? " 需要Unity烘焙" : "";
                 var validation = FormatAnimationValidation(animation);
                 var source = animation.IsExplicit ? "显式关系" : "结构关系";
                 lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}");
@@ -2256,15 +2429,22 @@ namespace AnimeStudio.LibraryBrowser
                         .Where(x => _curationStore.IsFavoriteAnimation(x))
                         .ToList();
                 }
+                _visibleDetailAnimations = animations.Take(512).ToList();
 
-                foreach (var animation in animations.Take(512))
+                foreach (var animation in _visibleDetailAnimations)
                 {
                     var preview = _previewCache?.GetStatus(_detailModel, animation);
                     var status = animation.IsUnreal
                         ? animation.IsUsableCandidate ? "UE可预览" : animation.IsMetadataOnly ? "UE元数据" : "UE诊断"
                         : preview?.Status ?? "未生成";
                     if (!animation.IsUnreal
-                        && animation.RequiresHumanoidBake
+                        && NeedsAvatarHumanDescriptionRefresh(animation)
+                        && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
+                    {
+                        status = "需 Avatar 元数据";
+                    }
+                    else if (!animation.IsUnreal
+                        && RequiresUnityBake(animation)
                         && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
                     {
                         status = "需 Unity 烘焙";
@@ -2386,6 +2566,21 @@ namespace AnimeStudio.LibraryBrowser
                 }
             }
 
+            var modelFilter = _animationModelFilterBox.Text?.Trim() ?? "";
+            if (!string.IsNullOrWhiteSpace(modelFilter))
+            {
+                var animation = _selectedLibraryAnimation?.Animation;
+                query = query.Where(model =>
+                {
+                    var previewStatus = BuildAnimationModelPreviewStatus(model, animation);
+                    return Contains(model.Name, modelFilter)
+                        || Contains(model.OutputPath, modelFilter)
+                        || Contains(model.ModelSourceLabel, modelFilter)
+                        || Contains(model.ResourceKind, modelFilter)
+                        || Contains(previewStatus.Label, modelFilter);
+                });
+            }
+
             _visibleAnimationModels = query
                 .OrderBy(x => x.ModelSourceLabel, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
@@ -2397,14 +2592,18 @@ namespace AnimeStudio.LibraryBrowser
                 _animationModelList.Items.Clear();
                 foreach (var model in _visibleAnimationModels)
                 {
+                    var previewStatus = BuildAnimationModelPreviewStatus(model, _selectedLibraryAnimation.Animation);
                     var item = new ListViewItem(model.Name)
                     {
                         Tag = model,
-                        ToolTipText = model.OutputPath
+                        ToolTipText = string.IsNullOrWhiteSpace(previewStatus.Tooltip)
+                            ? model.OutputPath
+                            : previewStatus.Tooltip + Environment.NewLine + model.OutputPath
                     };
                     item.SubItems.Add(model.ModelSourceLabel);
                     item.SubItems.Add(model.ResourceKind);
                     item.SubItems.Add(model.BoneCount > 0 ? model.BoneCount.ToString() : "");
+                    item.SubItems.Add(previewStatus.Label);
                     item.SubItems.Add(model.OutputPath);
                     _animationModelList.Items.Add(item);
                 }
@@ -2415,6 +2614,42 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             UpdateAnimationPageDetails();
+        }
+
+        private AnimationModelPreviewStatus BuildAnimationModelPreviewStatus(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            if (model == null || animation == null)
+            {
+                return new AnimationModelPreviewStatus("", "");
+            }
+
+            if (animation.IsUnreal)
+            {
+                return new AnimationModelPreviewStatus(animation.IsUsableCandidate ? "UE可预览" : "UE元数据", "UE 动画关系来自索引；双击模型会尝试生成 UE 预览。");
+            }
+
+            var cached = _previewCache?.GetStatus(model, animation);
+            if (cached != null && !string.IsNullOrWhiteSpace(cached.Status) && !string.Equals(cached.Status, "未生成", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AnimationModelPreviewStatus(cached.Status, cached.Message ?? cached.GltfPath ?? cached.ValidationPath ?? "");
+            }
+
+            if (IsDirectGltfTransformOnly(animation))
+            {
+                return new AnimationModelPreviewStatus("Transform 预览", "该显式 Unity 关系可先生成 Transform 曲线 glTF；完整 Humanoid/Muscle 生产结果仍需补齐 Avatar 后再 Unity bake。");
+            }
+
+            if (NeedsAvatarHumanDescriptionRefresh(animation))
+            {
+                return new AnimationModelPreviewStatus("需 Avatar 元数据", "该模型-动画关系来自显式 Unity 索引，但缺少生产 Unity bake 需要的 HumanDescription。请先刷新模型 Avatar 元数据。");
+            }
+
+            if (RequiresUnityBake(animation))
+            {
+                return new AnimationModelPreviewStatus("需 Unity 烘焙", "该模型-动画关系来自显式 Unity 索引，Humanoid/Muscle 身体动画需双击后由 Unity bake 生成可信 glTF。");
+            }
+
+            return new AnimationModelPreviewStatus("可生成", "双击模型会生成模型+动画 glTF 预览。");
         }
 
         private void UpdateAnimationPageDetails()
@@ -2475,10 +2710,25 @@ namespace AnimeStudio.LibraryBrowser
 
             if (!string.IsNullOrWhiteSpace(animation.Capability))
             {
+                if (IsDirectGltfTransformOnly(animation))
+                {
+                    return "Transform 预览";
+                }
+
+                if (NeedsAvatarHumanDescriptionRefresh(animation))
+                {
+                    return "需 Avatar 元数据";
+                }
+                if (RequiresUnityBake(animation))
+                {
+                    return "需 Unity 烘焙";
+                }
+
                 return animation.Capability switch
                 {
                     "TransformBodyPreviewReady" => "快速预览",
                     "HumanoidBodyBakeReady" => "需 Unity 烘焙",
+                    "HumanoidBodyNeedsUnityBake" => "需 Unity 烘焙",
                     "BlendShapePreviewReady" => "BlendShape",
                     "NonCharacterTransformPreviewReady" => "Transform 预览",
                     _ => animation.Capability,
@@ -2490,7 +2740,11 @@ namespace AnimeStudio.LibraryBrowser
                 return animation.ValidationCategory;
             }
 
-            if (animation.RequiresHumanoidBake)
+            if (NeedsAvatarHumanDescriptionRefresh(animation))
+            {
+                return "需 Avatar 元数据";
+            }
+            if (RequiresUnityBake(animation))
             {
                 return "需 Unity 烘焙";
             }
@@ -2501,6 +2755,32 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return "未知";
+        }
+
+        private static bool RequiresUnityBake(LibraryAnimationCandidate animation)
+        {
+            return animation?.RequiresUnityBake == true
+                || animation?.RequiresInternalHumanoidSolve == true
+                || animation?.ProductionUnityBakeReady == true
+                || string.Equals(animation?.NextAction, "generate_unity_baked_gltf", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(animation?.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool NeedsAvatarHumanDescriptionRefresh(LibraryAnimationCandidate animation)
+        {
+            if (animation == null || animation.ProductionUnityBakeReady)
+            {
+                return false;
+            }
+
+            return string.Equals(animation.NextAction, "refresh_avatar_human_description", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(animation.ProductionAnimationPath, "NeedsUnityAvatarMetadata", StringComparison.OrdinalIgnoreCase)
+                || animation.ProductionUnityBakeBlocked;
+        }
+
+        private static bool IsDirectGltfTransformOnly(LibraryAnimationCandidate animation)
+        {
+            return string.Equals(animation?.ProductionAnimationPath, "DirectGltfTransformOnly", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string DescribeUnrealRelationSource(string relationSource)
@@ -2574,7 +2854,7 @@ namespace AnimeStudio.LibraryBrowser
             foreach (var animation in animations.Take(24))
             {
                 var matched = animation.MatchedPathCount > 0 ? $" matched={animation.MatchedPathCount}" : "";
-                var bake = animation.RequiresHumanoidBake ? " 需要Humanoid烘焙" : "";
+                var bake = RequiresUnityBake(animation) ? " 需要Unity烘焙" : "";
                 lines.Add($"- [需验证] {animation.Name}{matched} score={animation.Score:0.###}{bake}");
                 if (!string.IsNullOrWhiteSpace(animation.BestPath))
                 {
@@ -2630,6 +2910,17 @@ namespace AnimeStudio.LibraryBrowser
                 : _visibleAnimationModels.FirstOrDefault();
         }
 
+        private IEnumerable<LibraryModelItem> SelectedAnimationModels()
+        {
+            foreach (ListViewItem item in _animationModelList.SelectedItems)
+            {
+                if (item.Tag is LibraryModelItem model)
+                {
+                    yield return model;
+                }
+            }
+        }
+
         private void OpenSelectedWithF3d()
         {
             var item = SelectedItems().FirstOrDefault();
@@ -2673,6 +2964,17 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
+            if (NeedsAvatarHumanDescriptionRefresh(animation))
+            {
+                MessageBox.Show(
+                    this,
+                    "该显式 Unity 动画关系缺少生产 Unity bake 所需的 Avatar HumanDescription。当前不能生成可信身体动画预览，请先刷新模型 Avatar 元数据。",
+                    "需要 Avatar 元数据",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
             var inputError = ValidateAnimationPreviewInputs(model, animation);
             if (!string.IsNullOrWhiteSpace(inputError))
             {
@@ -2680,8 +2982,7 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            var needsUnityBake = animation.RequiresHumanoidBake
-                || string.Equals(animation.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase);
+            var needsUnityBake = RequiresUnityBake(animation);
             UpdateSelectedAnimationStatus(needsUnityBake ? "Unity 烘焙中" : "生成中");
             UpdateStatus(needsUnityBake ? "正在执行 Unity Humanoid 烘焙" : "正在生成动画预览");
             AnimationPreviewStatus status;
@@ -2709,6 +3010,7 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             RebuildAnimationList();
+            RefreshCurrentModelDetailText();
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
             {
@@ -2725,6 +3027,251 @@ namespace AnimeStudio.LibraryBrowser
             {
                 OpenPathWithF3d(status.GltfPath);
             }
+        }
+
+        private async Task BakeSelectedModelAnimationsAsync()
+        {
+            var model = _detailModel ?? SelectedItems().FirstOrDefault();
+            if (model == null || _previewCache == null)
+            {
+                return;
+            }
+
+            var animations = SelectedAnimationCandidates()
+                .Where(x => !x.IsUnreal && RequiresUnityBake(x))
+                .ToList();
+            if (animations.Count == 0)
+            {
+                MessageBox.Show(this, "请先在当前模型动画列表里选择需要 Unity 烘焙的动画。", "批量烘焙", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            await BakeModelAnimationsAsync(model, animations, "Unity 批量烘焙");
+        }
+
+        private async Task BakeVisibleModelAnimationsAsync()
+        {
+            var model = _detailModel ?? SelectedItems().FirstOrDefault();
+            if (model == null || _previewCache == null)
+            {
+                return;
+            }
+
+            var animations = _visibleDetailAnimations
+                .Where(x => !x.IsUnreal && RequiresUnityBake(x))
+                .ToList();
+            if (animations.Count == 0)
+            {
+                MessageBox.Show(this, "当前可见动画里没有需要 Unity 烘焙的动画。可以先用过滤框缩小范围。", "批量烘焙", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var pendingCount = CountPendingUnityBakeAnimations(model, animations);
+            var confirm = MessageBox.Show(
+                this,
+                $"当前可见动画里有 {animations.Count} 个 Unity Humanoid/Muscle 动画，其中 {pendingCount} 个仍需烘焙。这个过程可能会持续较久。是否继续？",
+                "批量烘焙当前可见动画",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+
+            await BakeModelAnimationsAsync(model, animations, "Unity 可见动画批量烘焙");
+        }
+
+        private async Task BakeModelAnimationsAsync(LibraryModelItem model, List<LibraryAnimationCandidate> animations, string label)
+        {
+            var requestedCount = animations.Count;
+            var pendingAnimations = animations
+                .Where(x => !IsUnityBakeAlreadyPlayable(model, x))
+                .ToList();
+            var skippedBaked = requestedCount - pendingAnimations.Count;
+            if (pendingAnimations.Count == 0)
+            {
+                RebuildAnimationList();
+                RefreshCurrentModelDetailText();
+                UpdateStatus($"{label}: 已跳过 {skippedBaked} 个已 Unity 烘焙动画，没有待处理项");
+                MessageBox.Show(this, "选中的 Unity 动画都已经有可信 baked glTF，不需要重复烘焙。", label, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var failures = new List<string>();
+            for (var i = 0; i < pendingAnimations.Count; i++)
+            {
+                var animation = pendingAnimations[i];
+                var inputError = ValidateAnimationPreviewInputs(model, animation);
+                if (!string.IsNullOrWhiteSpace(inputError))
+                {
+                    failures.Add($"{animation.Name}: {inputError}");
+                    continue;
+                }
+
+                UpdateStatus($"{label} {i + 1}/{pendingAnimations.Count}: {animation.Name}");
+                try
+                {
+                    var status = await _previewCache.EnsureUnityBakeAsync(
+                        model,
+                        animation,
+                        CancellationToken.None,
+                        message => BeginInvoke(() => UpdateStatus(message)));
+                    if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
+                    {
+                        failures.Add($"{animation.Name}: {status.Message ?? status.Status}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{animation.Name}: {ex.Message}");
+                }
+
+                RebuildAnimationList();
+                RefreshCurrentModelDetailText();
+            }
+
+            RebuildAnimationList();
+            RefreshCurrentModelDetailText();
+            if (failures.Count == 0)
+            {
+                UpdateStatus($"{label}完成: 成功 {pendingAnimations.Count}/{pendingAnimations.Count}，已跳过 {skippedBaked} 个已烘焙");
+                return;
+            }
+
+            UpdateStatus($"{label}完成: 成功 {pendingAnimations.Count - failures.Count}/{pendingAnimations.Count}，已跳过 {skippedBaked} 个已烘焙");
+            MessageBox.Show(
+                this,
+                string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12)),
+                "批量烘焙未全部完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+
+        private int CountPendingUnityBakeAnimations(LibraryModelItem model, IEnumerable<LibraryAnimationCandidate> animations)
+        {
+            return animations.Count(x => !IsUnityBakeAlreadyPlayable(model, x));
+        }
+
+        private bool IsUnityBakeAlreadyPlayable(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            var status = _previewCache?.GetStatus(model, animation);
+            return string.Equals(status?.Status, "可播放", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task BakeSelectedLibraryAnimationModelsAsync()
+        {
+            var models = SelectedAnimationModels().ToList();
+            if (models.Count == 0)
+            {
+                var fallback = SelectedAnimationModel();
+                if (fallback != null)
+                {
+                    models.Add(fallback);
+                }
+            }
+
+            await BakeLibraryAnimationModelsAsync(models, "Unity 烘焙选中模型");
+        }
+
+        private async Task BakeVisibleLibraryAnimationModelsAsync()
+        {
+            await BakeLibraryAnimationModelsAsync(_visibleAnimationModels.ToList(), "Unity 烘焙可见模型");
+        }
+
+        private async Task BakeLibraryAnimationModelsAsync(List<LibraryModelItem> models, string label)
+        {
+            var animation = _selectedLibraryAnimation?.Animation;
+            if (animation == null || _previewCache == null)
+            {
+                return;
+            }
+
+            if (animation.IsUnreal || !RequiresUnityBake(animation))
+            {
+                MessageBox.Show(this, "当前动画不需要 Unity Humanoid/Muscle 烘焙。", label, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            models = models
+                .Where(x => x != null)
+                .GroupBy(x => NormalizePathForCompare(x.OutputPath), StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .ToList();
+            if (models.Count == 0)
+            {
+                MessageBox.Show(this, "右侧没有可烘焙模型。", label, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var pendingModels = models
+                .Where(x => !IsUnityBakeAlreadyPlayable(x, animation))
+                .ToList();
+            var skippedBaked = models.Count - pendingModels.Count;
+            if (pendingModels.Count == 0)
+            {
+                RebuildAnimationModelList();
+                UpdateStatus($"{label}: 已跳过 {skippedBaked} 个已 Unity 烘焙模型，没有待处理项");
+                MessageBox.Show(this, "选中的模型都已经有可信 baked glTF，不需要重复烘焙。", label, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                this,
+                $"当前动画会对 {pendingModels.Count} 个模型执行 Unity bake，已跳过 {skippedBaked} 个可信 baked 模型。这个过程可能会持续较久。是否继续？",
+                label,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+
+            var failures = new List<string>();
+            for (var i = 0; i < pendingModels.Count; i++)
+            {
+                var model = pendingModels[i];
+                var inputError = ValidateAnimationPreviewInputs(model, animation);
+                if (!string.IsNullOrWhiteSpace(inputError))
+                {
+                    failures.Add($"{model.Name}: {inputError}");
+                    continue;
+                }
+
+                UpdateStatus($"{label} {i + 1}/{pendingModels.Count}: {model.Name}");
+                try
+                {
+                    var status = await _previewCache.EnsureUnityBakeAsync(
+                        model,
+                        animation,
+                        CancellationToken.None,
+                        message => BeginInvoke(() => UpdateStatus(message)));
+                    if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
+                    {
+                        failures.Add($"{model.Name}: {status.Message ?? status.Status}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{model.Name}: {ex.Message}");
+                }
+
+                RebuildAnimationModelList();
+            }
+
+            RebuildAnimationModelList();
+            if (failures.Count == 0)
+            {
+                UpdateStatus($"{label}完成: 成功 {pendingModels.Count}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙");
+                return;
+            }
+
+            UpdateStatus($"{label}完成: 成功 {pendingModels.Count - failures.Count}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙");
+            MessageBox.Show(
+                this,
+                string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12)),
+                "动画反查批量烘焙未全部完成",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
 
         private async Task GenerateSelectedLibraryAnimationPreviewAsync(bool openAfterGenerate)
@@ -2749,8 +3296,7 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            var needsUnityBake = animation.RequiresHumanoidBake
-                || string.Equals(animation.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase);
+            var needsUnityBake = RequiresUnityBake(animation);
             UpdateStatus(needsUnityBake ? "正在执行 Unity Humanoid 烘焙" : "正在生成动画预览");
             AnimationPreviewStatus status;
             try
@@ -2775,6 +3321,7 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             RebuildAnimationModelList();
+            RefreshCurrentModelDetailText();
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
             {

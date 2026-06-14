@@ -20,6 +20,38 @@ namespace AnimeStudio.CLI
         private const int SourceIndexMaxLightweightArrayCount = 100_000;
         private static readonly TimeSpan SourceIndexHeartbeatInterval = TimeSpan.FromSeconds(30);
 
+        public static string WriteAnimationRelationHealthReport(string sourceIndexPath, string outputPath = null, bool requireHealthy = false)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                throw new FileNotFoundException($"Unity source index not found: {sourceIndexPath}", sourceIndexPath);
+            }
+
+            SQLitePCL.Batteries_V2.Init();
+            var dbPath = Path.GetFullPath(sourceIndexPath);
+            using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+            connection.Open();
+            var report = BuildAnimationRelationHealthReport(connection, dbPath);
+            var reportPath = string.IsNullOrWhiteSpace(outputPath)
+                ? Path.Combine(Path.GetDirectoryName(dbPath) ?? Environment.CurrentDirectory, Path.GetFileNameWithoutExtension(dbPath) + ".animation_relation_health.json")
+                : Path.GetFullPath(outputPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(reportPath) ?? Environment.CurrentDirectory);
+            File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
+            Logger.Info($"Unity source animation relation health report written: {reportPath}");
+            var health = report["animationRelationHealth"] as JObject;
+            var status = health?["status"]?.ToString() ?? "unknown";
+            Logger.Info($"Unity source animation relation health status: {status}");
+            if (requireHealthy && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                var note = health?["note"]?.ToString() ?? "Source index animation relation health is not ok.";
+                throw new InvalidOperationException(
+                    "Unity source index animation relations are not fresh enough for production deterministic animation rebuild. " +
+                    note);
+            }
+
+            return reportPath;
+        }
+
         public static string Build(
             string inputPath,
             string outputPath,
@@ -114,6 +146,7 @@ namespace AnimeStudio.CLI
                 InsertMetadata(connection, transaction, "game", game.Name);
                 InsertMetadata(connection, transaction, "unityVersionOverride", unityVersion ?? string.Empty);
                 InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                InsertMetadata(connection, transaction, "animationRelationFeatures", "animatorController.clip,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip");
                 InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。This database indexes Unity source files, SerializedFiles, objects, PPtr relations, and animation bindings without exporting assets.");
                 using (ProfileLogger.Measure("source_index_insert_source_files", new Dictionary<string, object>
                 {
@@ -218,7 +251,7 @@ namespace AnimeStudio.CLI
                 ["sourceRelations"] = counts["sourceRelations"],
             }))
             {
-                WriteSummary(outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts);
+                WriteSummary(connection, outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts);
             }
 
             using (ProfileLogger.Measure("source_index_checkpoint", new Dictionary<string, object>
@@ -480,26 +513,13 @@ VALUES ($sourcePath, $serializedFile, $fileId, $fileName, $pathName, $guid, $ext
         private static void InsertSourceObject(SqliteConnection connection, SqliteTransaction transaction, string sourceRoot, SerializedFile assetsFile, ObjectInfo objectInfo, AnimeStudio.Object obj)
         {
             var type = obj?.type.ToString() ?? (Enum.IsDefined(typeof(ClassIDType), objectInfo.classID) ? ((ClassIDType)objectInfo.classID).ToString() : "UnknownType");
-            var raw = new
-            {
-                type,
-                name = obj?.Name,
-                source = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName),
-                file = assetsFile.fileName,
-                pathId = objectInfo.m_PathID,
-                objectInfo.classID,
-                objectInfo.typeID,
-                objectInfo.byteStart,
-                objectInfo.byteSize,
-                objectInfo.isDestroyed,
-                objectInfo.stripped,
-            };
+            var raw = BuildSourceObjectRawJson(sourceRoot, assetsFile, objectInfo, obj, type);
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
 INSERT INTO source_objects(source_path, serialized_file, path_id, type, class_id, name, byte_start, byte_size, raw_json)
 VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStart, $byteSize, $rawJson);";
-            command.Parameters.AddWithValue("$sourcePath", raw.source ?? string.Empty);
+            command.Parameters.AddWithValue("$sourcePath", (string)raw["source"] ?? string.Empty);
             command.Parameters.AddWithValue("$serializedFile", assetsFile.fileName ?? string.Empty);
             command.Parameters.AddWithValue("$pathId", objectInfo.m_PathID);
             command.Parameters.AddWithValue("$type", type);
@@ -507,8 +527,214 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             command.Parameters.AddWithValue("$name", obj?.Name ?? string.Empty);
             command.Parameters.AddWithValue("$byteStart", objectInfo.byteStart);
             command.Parameters.AddWithValue("$byteSize", objectInfo.byteSize);
-            command.Parameters.AddWithValue("$rawJson", JsonConvert.SerializeObject(raw));
+            command.Parameters.AddWithValue("$rawJson", raw.ToString(Formatting.None));
             command.ExecuteNonQuery();
+        }
+
+        private static JObject BuildSourceObjectRawJson(string sourceRoot, SerializedFile assetsFile, ObjectInfo objectInfo, AnimeStudio.Object obj, string type)
+        {
+            var raw = new JObject
+            {
+                ["type"] = type,
+                ["name"] = obj?.Name,
+                ["source"] = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName),
+                ["file"] = assetsFile.fileName,
+                ["pathId"] = objectInfo.m_PathID,
+                ["classID"] = objectInfo.classID,
+                ["typeID"] = objectInfo.typeID,
+                ["byteStart"] = objectInfo.byteStart,
+                ["byteSize"] = objectInfo.byteSize,
+                ["isDestroyed"] = objectInfo.isDestroyed,
+                ["stripped"] = objectInfo.stripped,
+            };
+
+            switch (obj)
+            {
+                case Animator animator:
+                    raw["animator"] = new JObject
+                    {
+                        ["avatar"] = BuildPPtrJson(animator.m_Avatar?.m_FileID ?? 0, animator.m_Avatar?.m_PathID ?? 0),
+                        ["controller"] = BuildPPtrJson(animator.m_Controller?.m_FileID ?? 0, animator.m_Controller?.m_PathID ?? 0),
+                        ["hasTransformHierarchy"] = animator.m_HasTransformHierarchy,
+                    };
+                    break;
+                case Avatar avatar:
+                    raw["avatar"] = new JObject
+                    {
+                        ["hasHumanDescription"] = avatar.m_HumanDescription != null,
+                        ["humanDescriptionReadRule"] = avatar.m_HumanDescriptionReadRule,
+                        ["humanDescriptionBytesRemainingBeforeRead"] = avatar.m_HumanDescriptionBytesRemainingBeforeRead,
+                        ["humanBoneCount"] = avatar.m_HumanDescription?.m_Human?.Count ?? 0,
+                        ["skeletonBoneCount"] = avatar.m_HumanDescription?.m_Skeleton?.Count ?? 0,
+                        ["avatarSize"] = avatar.m_AvatarSize,
+                        ["tosCount"] = avatar.m_TOS?.Count ?? 0,
+                        ["avatarSkeletonNodeCount"] = avatar.m_Avatar?.m_AvatarSkeleton?.m_Node?.Count ?? 0,
+                        ["avatarSkeletonPoseCount"] = avatar.m_Avatar?.m_AvatarSkeletonPose?.m_X?.Length ?? 0,
+                        ["avatarDefaultPoseCount"] = avatar.m_Avatar?.m_DefaultPose?.m_X?.Length ?? 0,
+                        ["humanSkeletonNodeCount"] = avatar.m_Avatar?.m_Human?.m_Skeleton?.m_Node?.Count ?? 0,
+                        ["humanSkeletonPoseCount"] = avatar.m_Avatar?.m_Human?.m_SkeletonPose?.m_X?.Length ?? 0,
+                        ["humanBoneIndexCount"] = avatar.m_Avatar?.m_Human?.m_HumanBoneIndex?.Length ?? 0,
+                        ["oracle"] = BuildAvatarOracleJson(avatar),
+                    };
+                    break;
+            }
+
+            return raw;
+        }
+
+        private static JObject BuildAvatarOracleJson(Avatar avatar)
+        {
+            var human = avatar?.m_Avatar?.m_Human;
+            var humanSkeleton = human?.m_Skeleton;
+            var avatarSkeleton = avatar?.m_Avatar?.m_AvatarSkeleton;
+            if (avatar == null || human == null || humanSkeleton?.m_Node == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["version"] = 1,
+                ["source"] = "Unity AvatarConstant",
+                ["rule"] = "Deterministic Avatar oracle metadata used to reconstruct a Unity bake prefab/avatar. It is not a HumanDescription and must not be treated as production bake readiness by itself.",
+                ["humanBoneIndex"] = ToJsonArray(human.m_HumanBoneIndex),
+                ["humanBoneMass"] = ToJsonArray(human.m_HumanBoneMass),
+                ["humanSkeletonIndexArray"] = ToJsonArray(avatar.m_Avatar?.m_HumanSkeletonIndexArray),
+                ["humanSkeletonReverseIndexArray"] = ToJsonArray(avatar.m_Avatar?.m_HumanSkeletonReverseIndexArray),
+                ["human"] = new JObject
+                {
+                    ["scale"] = human.m_Scale,
+                    ["armTwist"] = human.m_ArmTwist,
+                    ["foreArmTwist"] = human.m_ForeArmTwist,
+                    ["upperLegTwist"] = human.m_UpperLegTwist,
+                    ["legTwist"] = human.m_LegTwist,
+                    ["armStretch"] = human.m_ArmStretch,
+                    ["legStretch"] = human.m_LegStretch,
+                    ["feetSpacing"] = human.m_FeetSpacing,
+                    ["hasLeftHand"] = human.m_HasLeftHand,
+                    ["hasRightHand"] = human.m_HasRightHand,
+                    ["hasTDoF"] = human.m_HasTDoF,
+                    ["leftHandBoneIndex"] = ToJsonArray(human.m_LeftHand?.m_HandBoneIndex),
+                    ["rightHandBoneIndex"] = ToJsonArray(human.m_RightHand?.m_HandBoneIndex),
+                    ["root"] = ToJsonXForm(human.m_RootX),
+                },
+                ["humanSkeleton"] = BuildSkeletonOracleJson(avatar, humanSkeleton, human.m_SkeletonPose?.m_X),
+                ["avatarSkeleton"] = BuildSkeletonOracleJson(avatar, avatarSkeleton, avatar.m_Avatar?.m_AvatarSkeletonPose?.m_X, avatar.m_Avatar?.m_DefaultPose?.m_X),
+                ["rootMotion"] = new JObject
+                {
+                    ["boneIndex"] = avatar.m_Avatar?.m_RootMotionBoneIndex ?? -1,
+                    ["boneX"] = ToJsonXForm(avatar.m_Avatar?.m_RootMotionBoneX ?? XForm.Zero),
+                    ["skeletonIndexArray"] = ToJsonArray(avatar.m_Avatar?.m_RootMotionSkeletonIndexArray),
+                    ["skeletonPose"] = ToJsonXFormArray(avatar.m_Avatar?.m_RootMotionSkeletonPose?.m_X, avatar.m_Avatar?.m_RootMotionSkeleton?.m_Node?.Count ?? 0),
+                },
+            };
+        }
+
+        private static JObject BuildSkeletonOracleJson(Avatar avatar, Skeleton skeleton, XForm[] pose, XForm[] defaultPose = null)
+        {
+            if (skeleton?.m_Node == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["nodeCount"] = skeleton.m_Node.Count,
+                ["axesCount"] = skeleton.m_AxesArray?.Count ?? 0,
+                ["nodes"] = new JArray(skeleton.m_Node.Select((node, index) => new JObject
+                {
+                    ["index"] = index,
+                    ["parentId"] = node.m_ParentId,
+                    ["axesId"] = node.m_AxesId,
+                    ["path"] = TryGetAvatarSkeletonPath(avatar, skeleton, index),
+                })),
+                ["axes"] = new JArray((skeleton.m_AxesArray ?? new List<Axes>()).Select((axes, index) => new JObject
+                {
+                    ["index"] = index,
+                    ["preQ"] = ToJsonVector4(axes.m_PreQ),
+                    ["postQ"] = ToJsonVector4(axes.m_PostQ),
+                    ["sign"] = ToJsonVector3Or4As3(axes.m_Sgn),
+                    ["limitMin"] = ToJsonVector3Or4As3(axes.m_Limit?.m_Min),
+                    ["limitMax"] = ToJsonVector3Or4As3(axes.m_Limit?.m_Max),
+                    ["length"] = axes.m_Length,
+                    ["type"] = axes.m_Type,
+                })),
+                ["pose"] = ToJsonXFormArray(pose, skeleton.m_Node.Count),
+                ["defaultPose"] = ToJsonXFormArray(defaultPose, skeleton.m_Node.Count),
+            };
+        }
+
+        private static JObject BuildPPtrJson(int fileId, long pathId)
+        {
+            return new JObject
+            {
+                ["fileId"] = fileId,
+                ["pathId"] = pathId,
+                ["isNull"] = fileId == 0 && pathId == 0,
+            };
+        }
+
+        private static JArray ToJsonArray(int[] values)
+        {
+            return values == null ? new JArray() : new JArray(values);
+        }
+
+        private static JArray ToJsonArray(float[] values)
+        {
+            return values == null ? new JArray() : new JArray(values);
+        }
+
+        private static JArray ToJsonVector3(Vector3 value)
+        {
+            return new JArray(value.X, value.Y, value.Z);
+        }
+
+        private static JArray ToJsonVector4(Vector4 value)
+        {
+            return new JArray(value.X, value.Y, value.Z, value.W);
+        }
+
+        private static JArray ToJsonVector3Or4As3(object value)
+        {
+            return value switch
+            {
+                Vector3 v => new JArray(v.X, v.Y, v.Z),
+                Vector4 v => new JArray(v.X, v.Y, v.Z),
+                _ => null,
+            };
+        }
+
+        private static JObject ToJsonXForm(XForm value)
+        {
+            return new JObject
+            {
+                ["t"] = ToJsonVector3(value.t),
+                ["q"] = new JArray(value.q.X, value.q.Y, value.q.Z, value.q.W),
+                ["s"] = ToJsonVector3(value.s),
+            };
+        }
+
+        private static JArray ToJsonXFormArray(XForm[] values, int expectedCount)
+        {
+            if (values == null || values.Length == 0)
+            {
+                return new JArray();
+            }
+
+            var count = expectedCount > 0 ? Math.Min(values.Length, expectedCount) : values.Length;
+            return new JArray(values.Take(count).Select(ToJsonXForm));
+        }
+
+        private static string TryGetAvatarSkeletonPath(Avatar avatar, Skeleton skeleton, int index)
+        {
+            if (avatar?.m_TOS == null || skeleton?.m_ID == null || index < 0 || index >= skeleton.m_ID.Length)
+            {
+                return null;
+            }
+
+            return avatar.m_TOS.TryGetValue(skeleton.m_ID[index], out var path) && !string.IsNullOrWhiteSpace(path)
+                ? path.Replace('\\', '/')
+                : null;
         }
 
         private static void WriteObjectRelations(SqliteConnection connection, SqliteTransaction transaction, AnimeStudio.Object obj, Dictionary<string, long> counts)
@@ -552,10 +778,19 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     break;
                 case AnimatorOverrideController overrideController:
                     AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.baseController", overrideController, overrideController.m_Controller.m_FileID, overrideController.m_Controller.m_PathID, "RuntimeAnimatorController", null);
-                    foreach (var clip in overrideController.m_Clips ?? Enumerable.Empty<AnimationClipOverride>())
+                    var overrideClips = overrideController.m_Clips ?? new List<AnimationClipOverride>();
+                    // 空 OverrideController 是 Unity 的确定性关系：它没有替换任何 clip，
+                    // 因此应当安全继承 base controller 动画。旧索引没有这个标记时才视为不完整。
+                    AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.overrideSet", overrideController, 0, 0, "AnimationClipOverride", new { count = overrideClips.Count });
+                    foreach (var clip in overrideClips)
                     {
                         AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.originalClip", overrideController, clip.m_OriginalClip.m_FileID, clip.m_OriginalClip.m_PathID, "AnimationClip", null);
                         AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.overrideClip", overrideController, clip.m_OverrideClip.m_FileID, clip.m_OverrideClip.m_PathID, "AnimationClip", null);
+                        AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.clipPair", overrideController, 0, 0, "AnimationClipOverride", new
+                        {
+                            original = DescribePPtr(overrideController.assetsFile, clip.m_OriginalClip.m_FileID, clip.m_OriginalClip.m_PathID, "AnimationClip"),
+                            @override = DescribePPtr(overrideController.assetsFile, clip.m_OverrideClip.m_FileID, clip.m_OverrideClip.m_PathID, "AnimationClip"),
+                        });
                     }
                     break;
                 case SkinnedMeshRenderer skinned:
@@ -960,20 +1195,26 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             };
         }
 
-        private static void WriteSummary(string outputRoot, string dbPath, string sourceRoot, int fileCount, Dictionary<string, long> counts)
+        private static void WriteSummary(SqliteConnection connection, string outputRoot, string dbPath, string sourceRoot, int fileCount, Dictionary<string, long> counts)
         {
+            var summaryPath = GetSourceIndexSummaryPath(outputRoot, dbPath);
             var summary = new JObject
             {
                 ["schemaVersion"] = 1,
                 ["database"] = dbPath,
                 ["sourceRoot"] = sourceRoot,
                 ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["animationRelationFeatures"] = "animatorController.clip,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip",
+                ["animationRelationHealth"] = BuildAnimationRelationHealth(connection),
                 ["rule"] = "索引要全，导出要精。Source SQLite v1 stores Unity source files, SerializedFiles, Objects, externals, PPtr relations, and animation bindings.",
                 ["inputFileCount"] = fileCount,
                 ["counts"] = JObject.FromObject(counts),
             };
-            File.WriteAllText(Path.Combine(outputRoot, "unity_source_index_summary.json"), summary.ToString(Formatting.Indented));
-            File.WriteAllText(Path.Combine(outputRoot, "UNITY_SOURCE_INDEX_README.md"),
+            File.WriteAllText(summaryPath, summary.ToString(Formatting.Indented));
+            var readmePath = UsesDefaultSourceIndexPath(outputRoot, dbPath)
+                ? Path.Combine(outputRoot, "UNITY_SOURCE_INDEX_README.md")
+                : Path.Combine(Path.GetDirectoryName(summaryPath) ?? outputRoot, Path.GetFileNameWithoutExtension(dbPath) + ".README.md");
+            File.WriteAllText(readmePath,
                 "# Unity Source SQLite Index\n\n" +
                 "这是完整 Unity 源目录索引，不是导出结果索引。它用于一次性记录源文件、SerializedFile、Object、external CAB/PPtr、Animator/Animation/Renderer/Skin/AnimationClip binding 等关系。\n\n" +
                 "核心原则：索引要全，导出要精。源索引中出现的对象不代表默认素材库会导出，也不代表视觉验收通过。\n\n" +
@@ -982,6 +1223,155 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 "性能日志：启用 `--profile_log` 后，重点比较 `source_index_load_batch`、`source_index_write_batch`、`source_index_load_batch_heartbeat`、`source_index_write_batch_heartbeat`、`source_index_create_sql_indexes` 和 `source_index_total`。长时间大文件处理时，heartbeat 会持续记录当前文件、对象序号、关系计数和内存。\n\n" +
                 "统计项：`lightweightRendererObjects` 是索引阶段尝试补关系的 Renderer 数；`lightweightRendererRelations` 是成功补到的 mesh/material/bone/gameObject 关系数；`lightweightRendererFailures` 是单对象失败数，通常代表版本字段不兼容或对象数据异常。\n\n" +
                 "第二阶段当前重点是建好可查询底座；后续导出器可以逐步改为读取这个数据库来减少重复扫描。\n");
+        }
+
+        private static JObject BuildAnimationRelationHealthReport(SqliteConnection connection, string dbPath)
+        {
+            return new JObject
+            {
+                ["schemaVersion"] = 1,
+                ["database"] = dbPath,
+                ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["metadata"] = new JObject
+                {
+                    ["schemaVersion"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='schemaVersion' LIMIT 1;"),
+                    ["sourceRoot"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='sourceRoot' LIMIT 1;"),
+                    ["game"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='game' LIMIT 1;"),
+                    ["animationRelationFeatures"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='animationRelationFeatures' LIMIT 1;"),
+                    ["createdUtc"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='createdUtc' LIMIT 1;"),
+                },
+                ["animationRelationHealth"] = BuildAnimationRelationHealth(connection),
+                ["avatarOracleHealth"] = BuildAvatarOracleHealth(connection),
+            };
+        }
+
+        private static JObject BuildAnimationRelationHealth(SqliteConnection connection)
+        {
+            var overrideControllerObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='AnimatorOverrideController';");
+            var relationCounts = new JObject
+            {
+                ["animator.controller"] = SourceRelationCount(connection, "animator.controller"),
+                ["animatorController.clip"] = SourceRelationCount(connection, "animatorController.clip"),
+                ["animation.clip"] = SourceRelationCount(connection, "animation.clip"),
+                ["animatorOverrideController.baseController"] = SourceRelationCount(connection, "animatorOverrideController.baseController"),
+                ["animatorOverrideController.overrideSet"] = SourceRelationCount(connection, "animatorOverrideController.overrideSet"),
+                ["animatorOverrideController.originalClip"] = SourceRelationCount(connection, "animatorOverrideController.originalClip"),
+                ["animatorOverrideController.overrideClip"] = SourceRelationCount(connection, "animatorOverrideController.overrideClip"),
+                ["animatorOverrideController.clipPair"] = SourceRelationCount(connection, "animatorOverrideController.clipPair"),
+            };
+            var clipPairs = (long)relationCounts["animatorOverrideController.clipPair"];
+            var overrideSets = (long)relationCounts["animatorOverrideController.overrideSet"];
+            var nonEmptyOverrideSets = SourceRelationTargetCountPositive(connection, "animatorOverrideController.overrideSet");
+            var staleOverridePairs = overrideControllerObjects > 0
+                && (overrideSets == 0 || (nonEmptyOverrideSets > 0 && clipPairs == 0));
+            return new JObject
+            {
+                ["status"] = staleOverridePairs ? "warning" : "ok",
+                ["objectCounts"] = new JObject
+                {
+                    ["AnimatorOverrideController"] = overrideControllerObjects,
+                },
+                ["relationCounts"] = relationCounts,
+                ["nonEmptyOverrideSetCount"] = nonEmptyOverrideSets,
+                ["staleOverridePairIndex"] = staleOverridePairs,
+                ["note"] = staleOverridePairs
+                    ? "源目录存在 AnimatorOverrideController，但缺少当前工具写入的 animatorOverrideController.overrideSet/clipPair 精确标记。旧索引即使有分离的 originalClip/overrideClip，也不能可靠表达 original -> override 或空替换表；请用当前工具重建源索引。"
+                    : "源索引包含当前工具可检查的动画显式关系。Library 候选仍需结合 glTF 预览验证。"
+            };
+        }
+
+        private static JObject BuildAvatarOracleHealth(SqliteConnection connection)
+        {
+            var avatarObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='Avatar';");
+            var humanDescriptionAvatars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM source_objects
+WHERE type='Avatar'
+  AND COALESCE(json_extract(raw_json, '$.avatar.hasHumanDescription'), 0)=1;");
+            var avatarConstantOracleAvatars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM source_objects
+WHERE type='Avatar'
+  AND json_type(json_extract(raw_json, '$.avatar.oracle'))='object';");
+            var completeOracleAvatars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM source_objects
+WHERE type='Avatar'
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.oracle.humanBoneIndex')), 0) > 0
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.oracle.humanSkeleton.pose')), 0)
+      >= COALESCE(json_extract(raw_json, '$.avatar.oracle.humanSkeleton.nodeCount'), 1)
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.oracle.avatarSkeleton.defaultPose')), 0)
+      >= COALESCE(json_extract(raw_json, '$.avatar.oracle.avatarSkeleton.nodeCount'), 1);");
+
+            return new JObject
+            {
+                ["status"] = avatarObjects == 0
+                    ? "not_applicable"
+                    : completeOracleAvatars > 0 ? "ok" : "warning",
+                ["avatarObjects"] = avatarObjects,
+                ["humanDescriptionAvatars"] = humanDescriptionAvatars,
+                ["avatarConstantOracleAvatars"] = avatarConstantOracleAvatars,
+                ["completeAvatarConstantOracleAvatars"] = completeOracleAvatars,
+                ["humanDescriptionCoverage"] = Ratio(humanDescriptionAvatars, avatarObjects),
+                ["avatarConstantOracleCoverage"] = Ratio(avatarConstantOracleAvatars, avatarObjects),
+                ["completeAvatarConstantOracleCoverage"] = Ratio(completeOracleAvatars, avatarObjects),
+                ["note"] = completeOracleAvatars > 0
+                    ? "源索引包含 AvatarConstant oracle 元数据。它可用于后续恢复 Unity bake prefab/avatar，但不能单独标记为生产 bake ready。"
+                    : "源索引缺少完整 AvatarConstant oracle 元数据；Humanoid/Muscle bake 只能依赖完整 HumanDescription 或 Unity 工程内真实 prefab。"
+            };
+        }
+
+        private static double Ratio(long part, long total)
+        {
+            return total <= 0 ? 0.0 : Math.Round((double)part / total, 6);
+        }
+
+        private static long SourceRelationCount(SqliteConnection connection, string relation)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM source_relations WHERE relation=$relation;";
+            command.Parameters.AddWithValue("$relation", relation);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static long SourceRelationTargetCountPositive(SqliteConnection connection, string relation)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM source_relations WHERE relation=$relation AND COALESCE(target_count, 0) > 0;";
+            command.Parameters.AddWithValue("$relation", relation);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static long ScalarLong(SqliteConnection connection, string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static string ScalarString(SqliteConnection connection, string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return command.ExecuteScalar() as string;
+        }
+
+        private static string GetSourceIndexSummaryPath(string outputRoot, string dbPath)
+        {
+            if (UsesDefaultSourceIndexPath(outputRoot, dbPath))
+            {
+                return Path.Combine(outputRoot, "unity_source_index_summary.json");
+            }
+
+            var directory = Path.GetDirectoryName(dbPath) ?? outputRoot;
+            var name = Path.GetFileNameWithoutExtension(dbPath);
+            return Path.Combine(directory, name + ".summary.json");
+        }
+
+        private static bool UsesDefaultSourceIndexPath(string outputRoot, string dbPath)
+        {
+            var defaultPath = Path.GetFullPath(Path.Combine(outputRoot, "unity_source_index.db"));
+            return string.Equals(Path.GetFullPath(dbPath), defaultPath, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void InsertMetadata(SqliteConnection connection, SqliteTransaction transaction, string key, string value)
