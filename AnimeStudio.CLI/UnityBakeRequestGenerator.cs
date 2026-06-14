@@ -2380,6 +2380,14 @@ EXISTS (
 
         private static void UpsertBakeCache(SqliteConnection connection, SqliteTransaction transaction, JObject item, string libraryRoot)
         {
+            var modelOutput = CanonicalizeLibraryOutput((string)item["modelOutput"], libraryRoot);
+            var animationOutput = CanonicalizeLibraryOutput((string)item["animationOutput"], libraryRoot);
+            var preserveExistingTerminal = ShouldPreserveExistingBakeCache(
+                connection,
+                transaction,
+                modelOutput,
+                animationOutput,
+                libraryRoot);
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
@@ -2387,30 +2395,30 @@ INSERT INTO animation_bake_cache(model_output, animation_output, status, request
 VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bakedGltfPath, $bakedFbxPath, $message, $bakeMode, $updatedUtc)
 ON CONFLICT(model_output, animation_output) DO UPDATE SET
     status=CASE
-        WHEN animation_bake_cache.status IN ('baked', 'static_pose', 'needs_review') AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.status
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.status
         ELSE excluded.status
     END,
     request_path=COALESCE(excluded.request_path, animation_bake_cache.request_path),
     result_path=CASE
-        WHEN animation_bake_cache.status IN ('baked', 'static_pose', 'needs_review') AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.result_path
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.result_path
         ELSE excluded.result_path
     END,
     baked_gltf_path=CASE
-        WHEN animation_bake_cache.status IN ('baked', 'static_pose', 'needs_review') AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.baked_gltf_path
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.baked_gltf_path
         ELSE excluded.baked_gltf_path
     END,
     baked_fbx_path=CASE
-        WHEN animation_bake_cache.status IN ('baked', 'static_pose', 'needs_review') AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.baked_fbx_path
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.baked_fbx_path
         ELSE excluded.baked_fbx_path
     END,
     message=CASE
-        WHEN animation_bake_cache.status IN ('baked', 'static_pose', 'needs_review') AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.message
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.message
         ELSE excluded.message
     END,
     bake_mode=COALESCE(excluded.bake_mode, animation_bake_cache.bake_mode),
     updated_utc=excluded.updated_utc;";
-            command.Parameters.AddWithValue("$modelOutput", CanonicalizeLibraryOutput((string)item["modelOutput"], libraryRoot));
-            command.Parameters.AddWithValue("$animationOutput", CanonicalizeLibraryOutput((string)item["animationOutput"], libraryRoot));
+            command.Parameters.AddWithValue("$modelOutput", modelOutput);
+            command.Parameters.AddWithValue("$animationOutput", animationOutput);
             command.Parameters.AddWithValue("$status", (string)item["status"] ?? "failed");
             command.Parameters.AddWithValue("$requestPath", DbValue((string)item["request"]));
             command.Parameters.AddWithValue("$resultPath", DbValue((string)item["result"]));
@@ -2419,7 +2427,42 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
             command.Parameters.AddWithValue("$message", DbValue((string)item["message"]));
             command.Parameters.AddWithValue("$bakeMode", "UnityBakeToGltf");
             command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$preserveExistingTerminal", preserveExistingTerminal ? 1 : 0);
             command.ExecuteNonQuery();
+        }
+
+        private static bool ShouldPreserveExistingBakeCache(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string modelOutput,
+            string animationOutput,
+            string libraryRoot)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+SELECT status, baked_gltf_path
+FROM animation_bake_cache
+WHERE model_output=$modelOutput AND animation_output=$animationOutput
+LIMIT 1;";
+            command.Parameters.AddWithValue("$modelOutput", modelOutput);
+            command.Parameters.AddWithValue("$animationOutput", animationOutput);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return false;
+            }
+
+            var status = reader.IsDBNull(0) ? "" : reader.GetString(0);
+            var bakedGltfPath = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (string.Equals(status, "static_pose", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "needs_review", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase)
+                && IsTrustedBakedGltfPath(bakedGltfPath, libraryRoot);
         }
 
         private static object DbValue(string value)
