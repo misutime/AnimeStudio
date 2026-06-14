@@ -1,5 +1,4 @@
 param(
-    [Parameter(Mandatory = $true)]
     [Alias("LibraryRoot")]
     [string]$LibraryPath,
 
@@ -20,10 +19,19 @@ param(
 
     [switch]$GateOnly,
 
-    [switch]$FailOnWarning
+    [switch]$FailOnWarning,
+
+    [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $SelfTest -and [string]::IsNullOrWhiteSpace($LibraryPath)) {
+    throw "Missing -LibraryPath. Use -SelfTest to run built-in rule checks only."
+}
+if ($SelfTest -and [string]::IsNullOrWhiteSpace($LibraryPath)) {
+    $LibraryPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+}
 
 if ([string]::IsNullOrWhiteSpace($LibraryIndex)) {
     $LibraryIndex = Join-Path $LibraryPath "library_index.db"
@@ -59,8 +67,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $OutputDir = Join-Path $LibraryPath "AnimationRelationDiagnostics_$stamp"
 }
 
-if (-not (Test-Path -LiteralPath $LibraryIndex)) {
-    throw "找不到 library_index.db: $LibraryIndex"
+if (-not $SelfTest -and -not (Test-Path -LiteralPath $LibraryIndex)) {
+    throw "library_index.db not found: $LibraryIndex"
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -198,6 +206,8 @@ def unity_bake_apply_report_for_gltf(baked_gltf_path, library_root):
 
 
 def report_request_has_explicit_avatar_asset(report):
+    if bool((report or {}).get("_selfTestExplicitAvatarAsset")):
+        return True
     request_path = str((report or {}).get("request") or "").strip()
     if not request_path or not os.path.exists(request_path):
         return False
@@ -223,6 +233,46 @@ def report_has_imported_avatar_asset_proof(report):
     source = str((report or {}).get("unityBakeRigRestPoseSource") or "").strip().lower()
     applied = bool((report or {}).get("unityBakeRigRestPoseApplied"))
     return source == "imported_unity_avatar_asset" and applied
+
+
+def run_self_test():
+    cases = [
+        (
+            "explicit_avatar_new_helper_valid",
+            {"unityBakeImportedAvatarAssetValid": True},
+            {"Source": "imported_unity_avatar_asset"},
+            True,
+        ),
+        (
+            "explicit_avatar_old_helper_rest_pose_valid",
+            {"unityBakeRigRestPoseSource": "imported_unity_avatar_asset", "unityBakeRigRestPoseApplied": True},
+            {"Source": "imported_unity_avatar_asset"},
+            True,
+        ),
+        (
+            "explicit_avatar_source_only_rejected",
+            {},
+            {"Source": "imported_unity_avatar_asset"},
+            False,
+        ),
+        (
+            "explicit_avatar_wrong_source_rejected",
+            {"unityBakeImportedAvatarAssetValid": True},
+            {"Source": "human_description_skeleton_bones"},
+            False,
+        ),
+    ]
+    failures = []
+    for name, report_patch, avatar_trust, expected in cases:
+        report = dict(report_patch)
+        report["_selfTestExplicitAvatarAsset"] = True
+        actual = avatar_trust_matches_explicit_request(report, avatar_trust)
+        if actual != expected:
+            failures.append({"case": name, "expected": expected, "actual": actual})
+    if failures:
+        print(json.dumps({"status": "failed", "failures": failures}, ensure_ascii=False), file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps({"status": "ok", "caseCount": len(cases), "rule": "explicit avatar asset requires imported Avatar proof"}, ensure_ascii=False))
 
 
 def is_trusted_baked_gltf_path(baked_gltf_path, library_root):
@@ -963,17 +1013,21 @@ LIMIT ?;
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--library-path", required=True)
-    parser.add_argument("--library-index", required=True)
-    parser.add_argument("--source-index", required=True)
+    parser.add_argument("--library-path", required=False)
+    parser.add_argument("--library-index", required=False)
+    parser.add_argument("--source-index", required=False)
     parser.add_argument("--unity-project", required=False)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir", required=False)
     parser.add_argument("--animated-category", action="append", default=[])
     parser.add_argument("--top-category-limit", type=int, default=24)
     parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--gate-only", action="store_true")
     parser.add_argument("--fail-on-warning", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        run_self_test()
+        return
 
     con = sqlite3.connect(args.library_index)
     con.row_factory = sqlite3.Row
@@ -1365,14 +1419,19 @@ if __name__ == "__main__":
 $scriptPath = Join-Path $OutputDir "_measure_deterministic_animation_coverage.py"
 $python | Set-Content -LiteralPath $scriptPath -Encoding UTF8
 
-$argsList = @(
-    $scriptPath,
-    "--library-path", (Resolve-Path -LiteralPath $LibraryPath).Path,
-    "--library-index", (Resolve-Path -LiteralPath $LibraryIndex).Path,
-    "--source-index", $SourceIndex,
-    "--output-dir", (Resolve-Path -LiteralPath $OutputDir).Path,
-    "--top-category-limit", $TopCategoryLimit
-)
+$argsList = @($scriptPath)
+if ($SelfTest) {
+    $argsList += "--self-test"
+}
+else {
+    $argsList += @(
+        "--library-path", (Resolve-Path -LiteralPath $LibraryPath).Path,
+        "--library-index", (Resolve-Path -LiteralPath $LibraryIndex).Path,
+        "--source-index", $SourceIndex,
+        "--output-dir", (Resolve-Path -LiteralPath $OutputDir).Path
+    )
+}
+$argsList += @("--top-category-limit", $TopCategoryLimit)
 foreach ($category in $AnimatedCategory) {
     $argsList += @("--animated-category", $category)
 }
