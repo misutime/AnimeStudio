@@ -52,7 +52,7 @@ namespace AnimeStudio.LibraryBrowser
                 UnityProject = unityProject,
                 UnityEditor = unityEditor,
                 UnityAvatarAssets = MergeAvatarAssets(
-                    DiscoverImportedAvatarAssets(unityProject),
+                    DiscoverImportedAvatarAssets(unityProject, root),
                     global?.UnityAvatarAssets,
                     local?.UnityAvatarAssets),
             };
@@ -333,7 +333,7 @@ namespace AnimeStudio.LibraryBrowser
                 .Distinct(StringComparer.OrdinalIgnoreCase);
         }
 
-        private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject)
+        private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject, string libraryRoot)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(unityProject))
@@ -347,16 +347,28 @@ namespace AnimeStudio.LibraryBrowser
                 return result;
             }
 
-            foreach (var path in Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly))
+            var assetFiles = Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .ToArray();
+            var validProbeKeys = LoadFreshImportedAvatarProbeKeys(libraryRoot, assetFiles);
+            foreach (var file in assetFiles)
             {
-                var name = Path.GetFileNameWithoutExtension(path);
+                var name = Path.GetFileNameWithoutExtension(file.FullName);
                 if (string.IsNullOrWhiteSpace(name))
                 {
                     continue;
                 }
 
-                var unityPath = Path.GetRelativePath(unityProject, path).Replace('\\', '/');
+                var unityPath = Path.GetRelativePath(unityProject, file.FullName).Replace('\\', '/');
                 if (!unityPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (validProbeKeys != null
+                    && !validProbeKeys.Contains(name)
+                    && !(name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase)
+                        && validProbeKeys.Contains(name[..^"_ModelAvatar".Length])))
                 {
                     continue;
                 }
@@ -370,6 +382,109 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return result;
+        }
+
+        private static HashSet<string> LoadFreshImportedAvatarProbeKeys(string libraryRoot, FileInfo[] assetFiles)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                return null;
+            }
+
+            FileInfo reportFile;
+            try
+            {
+                reportFile = Directory.EnumerateDirectories(libraryRoot, "ImportedAvatarProbe*", SearchOption.TopDirectoryOnly)
+                    .Select(dir => Path.Combine(dir, "imported_avatar_probe_batch.json"))
+                    .Where(File.Exists)
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (reportFile == null)
+            {
+                return null;
+            }
+
+            var newestAssetTime = assetFiles.Length == 0
+                ? DateTime.MinValue
+                : assetFiles.Max(file => file.LastWriteTimeUtc);
+            if (reportFile.LastWriteTimeUtc < newestAssetTime)
+            {
+                return null;
+            }
+
+            try
+            {
+                var root = JsonNode.Parse(File.ReadAllText(reportFile.FullName)) as JsonObject;
+                if (root == null || ReadNodeInt(root, "totalAssets") != assetFiles.Length)
+                {
+                    return null;
+                }
+
+                var items = root["items"] as JsonArray;
+                if (items == null)
+                {
+                    return null;
+                }
+
+                var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var itemNode in items.OfType<JsonObject>())
+                {
+                    if (!string.Equals(ReadNodeString(itemNode, "status"), "ok", StringComparison.OrdinalIgnoreCase)
+                        || !ReadNodeBool(itemNode, "isValid")
+                        || !ReadNodeBool(itemNode, "isHuman"))
+                    {
+                        continue;
+                    }
+
+                    var avatarAssetPath = ReadNodeString(itemNode, "avatarAssetPath");
+                    var name = Path.GetFileNameWithoutExtension((avatarAssetPath ?? "").Replace('/', Path.DirectorySeparatorChar));
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = ReadNodeString(itemNode, "avatarName");
+                    }
+
+                    AddImportedAvatarKey(result, name);
+                }
+
+                return result;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void AddImportedAvatarKey(HashSet<string> target, string name)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            target.Add(name);
+            if (name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase))
+            {
+                target.Add(name[..^"_ModelAvatar".Length]);
+            }
+        }
+
+        private static int ReadNodeInt(JsonObject node, string name)
+        {
+            return node != null && node.TryGetPropertyValue(name, out var value) && value != null
+                ? value.GetValue<int>()
+                : 0;
+        }
+
+        private static bool ReadNodeBool(JsonObject node, string name)
+        {
+            return node != null && node.TryGetPropertyValue(name, out var value) && value != null && value.GetValue<bool>();
         }
 
         private static IReadOnlyDictionary<string, string> MergeAvatarAssets(
