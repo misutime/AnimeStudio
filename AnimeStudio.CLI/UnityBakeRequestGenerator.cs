@@ -1061,11 +1061,7 @@ JOIN model_animation_candidates c INDEXED BY idx_model_animation_candidates_sour
   ON c.relation_source='explicit' AND c.model_output=m.output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 WHERE (
-    COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0) = 1
-    OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0) = 1
-    OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 1
-    OR COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0) = 1
-    OR COALESCE(json_extract(c.raw_json, '$.productionUnityBakeReady'), 0) = 1
+    " + HumanoidBakeCandidateSql("c") + @"
   )
   AND ($hasAnimationFilter = 0 OR c.animation_output IN (SELECT output FROM temp_unity_bake_animations))
 " + skipBakedCacheSql + @"
@@ -1497,7 +1493,7 @@ WHERE bc.status='baked'
                 var untrustedBakedCandidates = CountUntrustedBakedCacheRows(connection, libraryRoot);
                 var bakedMissingGltfCandidates = untrustedBakedCandidates;
                 var failedCandidates = CountUntrustedFailedCacheRows(connection, libraryRoot);
-                var uniqueCounts = BuildUniqueBakeCacheCounts(connection, libraryRoot, bakeReadyExplicitUnityBakeCandidates, uniqueBakeReadyExplicitUnityBakeCandidates);
+                var uniqueCounts = BuildUniqueBakeCacheCounts(connection, libraryRoot, effectiveBakeReadyExplicitUnityBakeCandidates, uniqueEffectiveBakeReadyExplicitUnityBakeCandidates);
                 var summary = new JObject
                 {
                     ["generatedAt"] = DateTime.UtcNow.ToString("O"),
@@ -1534,12 +1530,12 @@ WHERE bc.status='baked'
                     ["untrustedBakedCandidates"] = untrustedBakedCandidates,
                     ["bakedMissingGltfCandidates"] = bakedMissingGltfCandidates,
                     ["failedCandidates"] = failedCandidates,
-                    ["cacheCoverage"] = Ratio(cachedCandidates, bakeReadyExplicitUnityBakeCandidates),
-                    ["bakedCoverage"] = Ratio(bakedCandidates, bakeReadyExplicitUnityBakeCandidates),
-                    ["trustedBakedCoverage"] = Ratio(trustedBakedCandidates, bakeReadyExplicitUnityBakeCandidates),
-                    ["cacheCoveragePercent"] = Percent(cachedCandidates, bakeReadyExplicitUnityBakeCandidates),
-                    ["bakedCoveragePercent"] = Percent(bakedCandidates, bakeReadyExplicitUnityBakeCandidates),
-                    ["trustedBakedCoveragePercent"] = Percent(trustedBakedCandidates, bakeReadyExplicitUnityBakeCandidates),
+                    ["cacheCoverage"] = Ratio(cachedCandidates, effectiveBakeReadyExplicitUnityBakeCandidates),
+                    ["bakedCoverage"] = Ratio(bakedCandidates, effectiveBakeReadyExplicitUnityBakeCandidates),
+                    ["trustedBakedCoverage"] = Ratio(trustedBakedCandidates, effectiveBakeReadyExplicitUnityBakeCandidates),
+                    ["cacheCoveragePercent"] = Percent(cachedCandidates, effectiveBakeReadyExplicitUnityBakeCandidates),
+                    ["bakedCoveragePercent"] = Percent(bakedCandidates, effectiveBakeReadyExplicitUnityBakeCandidates),
+                    ["trustedBakedCoveragePercent"] = Percent(trustedBakedCandidates, effectiveBakeReadyExplicitUnityBakeCandidates),
                     ["statusCounts"] = QueryGroupedCounts(connection, $@"
 SELECT COALESCE(status, '<null>') AS key, COUNT(*) AS count
 FROM animation_bake_cache bc
@@ -2123,8 +2119,7 @@ SELECT m.output AS output
 FROM assets m
 WHERE m.kind='Model'
   AND (
-    " + BakeReadyAvatarSql("m") + @"
-    OR " + ImportedAvatarAssetMatchSql("m") + @"
+    " + EffectiveBakeReadyAvatarSql("m") + @"
   );";
                 create.ExecuteNonQuery();
             }
@@ -2159,9 +2154,7 @@ FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 WHERE c.relation_source='explicit'
   AND (
-    COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
-    OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0)=1
-    OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+    " + HumanoidBakeCandidateSql("c") + @"
   );";
                 create.ExecuteNonQuery();
             }
@@ -2311,6 +2304,26 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
   )";
         }
 
+        private static string EffectiveBakeReadyAvatarSql(string modelAlias)
+        {
+            return $@"(
+    {BakeReadyAvatarSql(modelAlias)}
+    OR {ImportedAvatarAssetMatchSql(modelAlias)}
+  )";
+        }
+
+        private static string HumanoidBakeCandidateSql(string candidateAlias)
+        {
+            var raw = $"{candidateAlias}.raw_json";
+            return $@"(
+    COALESCE(json_extract({raw}, '$.requiresUnityBake'), 0)=1
+    OR COALESCE(json_extract({raw}, '$.legacyUnityBakeSupported'), 0)=1
+    OR COALESCE(json_extract({raw}, '$.requiresInternalHumanoidSolve'), 0)=1
+    OR COALESCE(json_extract({raw}, '$.fullHumanoidBakeRequired'), 0)=1
+    OR COALESCE(json_extract({raw}, '$.productionUnityBakeReady'), 0)=1
+  )";
+        }
+
         private static string BuildBakeReadyCacheWhere(string cacheAlias)
         {
             return $@"
@@ -2322,11 +2335,9 @@ EXISTS (
     AND c.animation_output={cacheAlias}.animation_output
     AND c.relation_source='explicit'
     AND (
-      COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
-      OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0)=1
-      OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+      {HumanoidBakeCandidateSql("c")}
     )
-    AND {BakeReadyAvatarSql("m")}
+    AND {EffectiveBakeReadyAvatarSql("m")}
 )";
         }
 
