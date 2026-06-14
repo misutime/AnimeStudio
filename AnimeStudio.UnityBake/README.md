@@ -40,6 +40,19 @@ Unity batchmode 会调用：
 AnimeStudio.UnityBake.AnimeStudioBakeCli.Run
 ```
 
+## 验证导入的 Avatar asset
+
+原神这类库从打包对象恢复出的 `UnityEngine.Avatar` asset 放入 `Assets/AnimeStudioBake/ImportedAvatar` 后，可以先跑批量探针确认 Unity 真的能把它们加载成有效 Humanoid Avatar：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\Test-UnityImportedAvatarAssets.ps1 `
+  -UnityProject "D:\misutime\AnimeStudioUnityProject" `
+  -UnityEditor "C:\Program Files\Unity\Hub\Editor\6000.4.11f1\Editor\Unity.exe" `
+  -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\ImportedAvatarProbe"
+```
+
+这个探针只检查 `Assets/AnimeStudioBake/ImportedAvatar/*.asset` 是否能通过 `AssetDatabase.LoadAssetAtPath<Avatar>` 加载，且 `avatar.isValid && avatar.isHuman`。它不会新增模型-动画关系，也不会触发动画 bake。
+
 ## 当前边界
 
 如果 request 里没有 Unity prefab/clip 路径，helper 会从 AnimeStudio glTF 重建骨架，并把 `.anim` 导入 Unity 工程。request 可以通过 `unityAssetPaths.avatarAsset` 指向一个已经导入 bake 工程的原始 `UnityEngine.Avatar` asset；这类 Avatar 来自 Unity 打包对象恢复，属于可验收的 Unity oracle。只要 request 显式带了 `unityAssetPaths.avatarAsset`，这个 Avatar 就是强约束：路径缺失、加载失败或不是有效 Humanoid 时直接写入失败结果，不能静默退回 `BuildHumanAvatar`。
