@@ -574,8 +574,9 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
 
         private static bool IsExplicitModelAnimationRelation(string relationSource, string confidence)
         {
-            return string.Equals(relationSource, "explicit", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(confidence, "explicit_unity_reference", StringComparison.OrdinalIgnoreCase);
+            // 默认候选表只接受关系来源本身就是 explicit 的记录。
+            // confidence 只能说明这条显式关系的质量，不能单独把 fallback/diagnostic 提升为默认绑定。
+            return string.Equals(relationSource, "explicit", StringComparison.OrdinalIgnoreCase);
         }
 
         private static long ImportExplicitModelAnimationCandidatesFromSourceIndex(SqliteConnection connection, SqliteTransaction transaction, string root, string sourceIndexPath)
