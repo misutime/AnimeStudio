@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -210,7 +211,8 @@ namespace AnimeStudio.LibraryBrowser
 
             return
                 $"最近Browser批量烘焙报告: {LatestBatch.ReportPath}{Environment.NewLine}" +
-                $"最近Browser批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}";
+                $"最近Browser批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}" +
+                LatestBatchAvatarSourceText();
         }
 
         private static LatestBatchReport LoadLatestBatchReport(string libraryRoot)
@@ -233,6 +235,12 @@ namespace AnimeStudio.LibraryBrowser
 
                 using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
                 var root = document.RootElement;
+                var avatarSourceCounts = ReadCountMap(root, "AvatarSourceCounts", "avatarSourceCounts");
+                if (avatarSourceCounts.Count == 0)
+                {
+                    avatarSourceCounts = CountItemsByString(root, "AvatarSource", "avatarSource");
+                }
+
                 return new LatestBatchReport(
                     true,
                     reportPath,
@@ -242,7 +250,8 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(root, "FailureCount", "failureCount"),
                     ReadInt64(root, "PendingCount", "pendingCount"),
                     ReadInt64(root, "SkippedAlreadyBaked", "skippedAlreadyBaked"),
-                    ReadInt64(root, "SkippedMissingAvatarOracle", "skippedMissingAvatarOracle"));
+                    ReadInt64(root, "SkippedMissingAvatarOracle", "skippedMissingAvatarOracle"),
+                    FormatAvatarSourceCounts(avatarSourceCounts));
             }
             catch
             {
@@ -316,6 +325,100 @@ namespace AnimeStudio.LibraryBrowser
                 && parsed;
         }
 
+        private static Dictionary<string, long> ReadCountMap(JsonElement element, params string[] properties)
+        {
+            var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                return result;
+            }
+
+            foreach (var property in properties)
+            {
+                if (string.IsNullOrWhiteSpace(property) || !element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                foreach (var item in value.EnumerateObject())
+                {
+                    var count = item.Value.ValueKind == JsonValueKind.Number && item.Value.TryGetInt64(out var number)
+                        ? number
+                        : 0;
+                    if (count <= 0)
+                    {
+                        continue;
+                    }
+
+                    AddCount(result, item.Name, count);
+                }
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, long> CountItemsByString(JsonElement element, params string[] propertyNames)
+        {
+            var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty("Items", out var items))
+            {
+                element.TryGetProperty("items", out items);
+            }
+
+            if (items.ValueKind != JsonValueKind.Array)
+            {
+                return result;
+            }
+
+            foreach (var item in items.EnumerateArray())
+            {
+                foreach (var propertyName in propertyNames)
+                {
+                    var value = ReadString(item, propertyName);
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        AddCount(result, value, 1);
+                        break;
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static void AddCount(Dictionary<string, long> counts, string key, long count)
+        {
+            key = string.IsNullOrWhiteSpace(key) ? "未记录" : key.Trim();
+            counts[key] = counts.TryGetValue(key, out var oldCount) ? oldCount + count : count;
+        }
+
+        private static string FormatAvatarSourceCounts(IReadOnlyDictionary<string, long> counts)
+        {
+            if (counts == null || counts.Count == 0)
+            {
+                return "";
+            }
+
+            return string.Join(" / ", counts
+                .OrderByDescending(x => x.Value)
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .Select(x => $"{FormatBatchAvatarSource(x.Key)} {x.Value:N0}"));
+        }
+
+        private static string FormatBatchAvatarSource(string source)
+        {
+            return source switch
+            {
+                "imported_unity_avatar_asset" => "导入AvatarAsset",
+                "model_human_description" => "原始模型Avatar/HumanDescription",
+                "candidate_production_avatar" => "候选生产Avatar",
+                "" => "未记录",
+                null => "未记录",
+                _ => source
+            };
+        }
+
         private static double ReadDouble(JsonElement element, string property)
         {
             if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
@@ -336,7 +439,7 @@ namespace AnimeStudio.LibraryBrowser
 
         internal sealed class LatestBatchReport
         {
-            public static LatestBatchReport Empty { get; } = new(false, "", "", "", 0, 0, 0, 0, 0);
+            public static LatestBatchReport Empty { get; } = new(false, "", "", "", 0, 0, 0, 0, 0, "");
 
             public LatestBatchReport(
                 bool exists,
@@ -347,7 +450,8 @@ namespace AnimeStudio.LibraryBrowser
                 long failureCount,
                 long pendingCount,
                 long skippedAlreadyBaked,
-                long skippedMissingAvatarOracle)
+                long skippedMissingAvatarOracle,
+                string avatarSourceCountsText)
             {
                 Exists = exists;
                 ReportPath = reportPath ?? "";
@@ -358,6 +462,7 @@ namespace AnimeStudio.LibraryBrowser
                 PendingCount = pendingCount;
                 SkippedAlreadyBaked = skippedAlreadyBaked;
                 SkippedMissingAvatarOracle = skippedMissingAvatarOracle;
+                AvatarSourceCountsText = avatarSourceCountsText ?? "";
             }
 
             public bool Exists { get; }
@@ -369,6 +474,14 @@ namespace AnimeStudio.LibraryBrowser
             public long PendingCount { get; }
             public long SkippedAlreadyBaked { get; }
             public long SkippedMissingAvatarOracle { get; }
+            public string AvatarSourceCountsText { get; }
+        }
+
+        private string LatestBatchAvatarSourceText()
+        {
+            return string.IsNullOrWhiteSpace(LatestBatch.AvatarSourceCountsText)
+                ? ""
+                : $"最近批次Avatar来源: {LatestBatch.AvatarSourceCountsText}{Environment.NewLine}";
         }
     }
 }
