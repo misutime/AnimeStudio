@@ -42,6 +42,8 @@ AnimeStudio.UnityBake.AnimeStudioBakeCli.Run
 
 ## 当前边界
 
-如果 request 里没有 Unity prefab/clip 路径，helper 会从 AnimeStudio glTF 重建骨架，并把 `.anim` 导入 Unity 工程。request 可以通过 `unityAssetPaths.avatarAsset` 指向一个已经导入 bake 工程的原始 `UnityEngine.Avatar` asset；这类 Avatar 来自 Unity 打包对象恢复，属于可验收的 Unity oracle。只有缺少原始 Avatar asset 时，helper 才会尝试用 HumanDescription 临时构建 Avatar，这个 fallback 只用于诊断采样，不等于完整 Unity prefab 复原。
+如果 request 里没有 Unity prefab/clip 路径，helper 会从 AnimeStudio glTF 重建骨架，并把 `.anim` 导入 Unity 工程。request 可以通过 `unityAssetPaths.avatarAsset` 指向一个已经导入 bake 工程的原始 `UnityEngine.Avatar` asset；这类 Avatar 来自 Unity 打包对象恢复，属于可验收的 Unity oracle。只要 request 显式带了 `unityAssetPaths.avatarAsset`，这个 Avatar 就是强约束：路径缺失、加载失败或不是有效 Humanoid 时直接写入失败结果，不能静默退回 `BuildHumanAvatar`。
+
+没有显式 Avatar asset 时，helper 才允许使用原始 prefab 的 `Animator.avatar`，或用完整 `HumanDescription.humanBones + skeletonBones` 构建 Avatar。旧库里只有 `AvatarConstant/internalSolver` 或 glTF rest pose 的路径只能作为诊断/恢复输入，不能当成可信生产 bake。
 
 Humanoid/Muscle 的生产验收必须使用原始 Unity prefab 的 `Animator.avatar`、导出索引里完整保留的 `HumanDescription.humanBones` + `HumanDescription.skeletonBones`，或从打包 Unity 对象恢复出的原始 `UnityEngine.Avatar` asset。只有 `AvatarConstant/internalSolver` 或 glTF rest pose 时，输出必须标记为诊断结果，不能算作可信动画。

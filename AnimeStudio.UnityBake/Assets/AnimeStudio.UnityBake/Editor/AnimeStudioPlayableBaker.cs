@@ -29,6 +29,15 @@ namespace AnimeStudio.UnityBake
                 return Error(request, $"AnimationClip not found or could not be imported: {request.unityAssetPaths.animationClip}");
             }
             var clipFilterStats = ApplyDiagnosticClipFilter(ref clip);
+            Avatar explicitAvatar;
+            try
+            {
+                explicitAvatar = AnimeStudioGltfSkeletonBuilder.LoadImportedAvatarAsset(request);
+            }
+            catch (Exception ex)
+            {
+                return Error(request, ex.Message);
+            }
 
             var instance = CreateBakeTarget(request, prefab);
             if (instance == null)
@@ -46,7 +55,6 @@ namespace AnimeStudio.UnityBake
                 animator.applyRootMotion = true;
                 animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
 
-                var explicitAvatar = AnimeStudioGltfSkeletonBuilder.LoadImportedAvatarAsset(request);
                 if (explicitAvatar != null)
                 {
                     // request 显式指定 Avatar asset 时，它是强约束。
