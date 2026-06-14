@@ -1023,6 +1023,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 ```
 
 Unity helper 脚本在 `AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor`。把这个目录复制进 Unity 工程的 `Assets` 后，batchmode 会调用 `AnimeStudio.UnityBake.AnimeStudioBakeCli.Run`。
+CLI 在 `--run_unity_bake` 前会检查 bake 工程里的 helper 是否包含导入 Avatar asset 强校验和 `importedAvatarAssetValid` 证明字段。若提示 helper 过旧，先重新复制仓库里的 `AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake` 到 Unity 工程 `Assets`，再重跑烘焙；不要继续使用旧 helper 生成原神 Avatar oracle 样本。
 
 如果 `--unity_model_prefab` 或 `--unity_animation_clip` 为空，helper 会优先使用 request 里的 AnimeStudio 资产：
 

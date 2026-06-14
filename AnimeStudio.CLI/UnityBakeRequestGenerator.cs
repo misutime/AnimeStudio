@@ -676,6 +676,12 @@ namespace AnimeStudio.CLI
                 Logger.Error("--unity_editor must point to Unity.exe when --run_unity_bake is used.");
                 return false;
             }
+            var helperError = ValidateUnityBakeHelperVersion(unityProject);
+            if (!string.IsNullOrWhiteSpace(helperError))
+            {
+                Logger.Error(helperError);
+                return false;
+            }
 
             if (!string.IsNullOrWhiteSpace(unityBakeWorkerQueue))
             {
@@ -714,6 +720,32 @@ namespace AnimeStudio.CLI
                 return false;
             }
             return true;
+        }
+
+        private static string ValidateUnityBakeHelperVersion(string unityProject)
+        {
+            var helperRoot = Path.Combine(unityProject, "Assets", "AnimeStudio.UnityBake", "Editor");
+            var cliPath = Path.Combine(helperRoot, "AnimeStudioBakeCli.cs");
+            var modelPath = Path.Combine(helperRoot, "AnimeStudioBakeModels.cs");
+            var bakerPath = Path.Combine(helperRoot, "AnimeStudioPlayableBaker.cs");
+            var skeletonPath = Path.Combine(helperRoot, "AnimeStudioGltfSkeletonBuilder.cs");
+            if (!File.Exists(cliPath) || !File.Exists(modelPath) || !File.Exists(bakerPath) || !File.Exists(skeletonPath))
+            {
+                return "Unity project does not contain a complete AnimeStudio.UnityBake helper. Copy AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake into the Unity project's Assets directory: " + helperRoot;
+            }
+
+            var modelText = File.ReadAllText(modelPath);
+            var bakerText = File.ReadAllText(bakerPath);
+            var skeletonText = File.ReadAllText(skeletonPath);
+            if (!modelText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
+                || !bakerText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
+                || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
+                || !skeletonText.Contains("Request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.Ordinal))
+            {
+                return "Unity project has an outdated AnimeStudio.UnityBake helper. Copy AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake into the Unity project's Assets directory so imported Avatar asset proof is written before trusted bake statistics are accepted: " + helperRoot;
+            }
+
+            return null;
         }
 
         private static bool RunUnityWorker(string requestPath, string resultPath, string unityProject, string unityEditor, string logPath, string queuePath)
