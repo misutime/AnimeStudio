@@ -7,7 +7,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class LibraryBakeCacheSummary
     {
-        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "");
+        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "");
 
         public LibraryBakeCacheSummary(
             bool exists,
@@ -15,6 +15,8 @@ namespace AnimeStudio.LibraryBrowser
             long explicitUnityBakeCandidates,
             long effectiveBakeReadyCandidates,
             double effectiveCoveragePercent,
+            long importedAvatarAssetFileCount,
+            long importedAvatarAssetKeyCount,
             long cachedCandidates,
             long trustedBakedCandidates,
             long staticPoseCandidates,
@@ -29,6 +31,8 @@ namespace AnimeStudio.LibraryBrowser
             ExplicitUnityBakeCandidates = explicitUnityBakeCandidates;
             EffectiveBakeReadyCandidates = effectiveBakeReadyCandidates;
             EffectiveCoveragePercent = effectiveCoveragePercent;
+            ImportedAvatarAssetFileCount = importedAvatarAssetFileCount;
+            ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
             CachedCandidates = cachedCandidates;
             TrustedBakedCandidates = trustedBakedCandidates;
             StaticPoseCandidates = staticPoseCandidates;
@@ -44,6 +48,8 @@ namespace AnimeStudio.LibraryBrowser
         public long ExplicitUnityBakeCandidates { get; }
         public long EffectiveBakeReadyCandidates { get; }
         public double EffectiveCoveragePercent { get; }
+        public long ImportedAvatarAssetFileCount { get; }
+        public long ImportedAvatarAssetKeyCount { get; }
         public long CachedCandidates { get; }
         public long TrustedBakedCandidates { get; }
         public long StaticPoseCandidates { get; }
@@ -75,6 +81,7 @@ namespace AnimeStudio.LibraryBrowser
                 $"Unity烘焙摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
                 $"显式Humanoid/Muscle候选: {ExplicitUnityBakeCandidates:N0}{Environment.NewLine}" +
                 $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveCoveragePercent)}){Environment.NewLine}" +
+                $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
                 $"已缓存烘焙记录: {CachedCandidates:N0} ({FormatPercent(CacheCoveragePercent)}){Environment.NewLine}" +
                 $"可信baked glTF: {TrustedBakedCandidates:N0} ({FormatPercent(TrustedBakedCoveragePercent)}){Environment.NewLine}" +
                 $"静态姿态/需复查/不可信: {StaticPoseCandidates:N0} / {NeedsReviewCandidates:N0} / {UntrustedBakedCandidates:N0}{Environment.NewLine}";
@@ -103,6 +110,8 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(root, "explicitUnityBakeCandidates"),
                     ReadInt64(root, "effectiveBakeReadyExplicitUnityBakeCandidates"),
                     ReadDouble(root, "effectiveBakeReadyExplicitUnityBakeCoveragePercent"),
+                    ReadInt64(root, "importedAvatarAssetFileCount"),
+                    ReadInt64(root, "importedAvatarAssetKeyCount"),
                     ReadInt64(root, "cachedCandidates"),
                     ReadInt64(root, "trustedBakedCandidates"),
                     ReadInt64(root, "staticPoseCandidates"),
