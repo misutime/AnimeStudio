@@ -310,7 +310,7 @@ namespace AnimeStudio.LibraryBrowser
             return
                 $"最近{LatestBatch.SourceLabel}批量烘焙报告: {LatestBatch.ReportPath}{Environment.NewLine}" +
                 LatestBatchRunModeText() +
-                $"最近{LatestBatch.SourceLabel}批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}" +
+                $"最近{LatestBatch.SourceLabel}批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已处理终态/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}" +
                 LatestBatchAvatarSourceText();
         }
 

@@ -78,6 +78,8 @@ function Get-MethodBodyText {
 
 $requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
 $libraryIndexBuilder = Read-RepoFile "AnimeStudio.CLI\SQLiteLibraryIndexBuilder.cs"
+$libraryBrowserMainForm = Read-RepoFile "AnimeStudio.LibraryBrowser\MainForm.cs"
+$libraryBrowserPreviewCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
 $cliUsage = Read-RepoFile "docs\CLI_USAGE.md"
 
 $skipSelector = Get-MethodBodyText $requestGenerator "private static IEnumerable<PreviewSelection> SelectExplicitBakeCandidatesFromLibraryDb"
@@ -130,6 +132,15 @@ Assert-Contains $uniqueIndex "uniqueNeedsReviewCandidates" "SQLite summary must 
 Assert-Contains $uniqueIndex "terminalDiagnosticCandidates" "SQLite summary pending count must subtract terminal diagnostics."
 Assert-Contains $uniqueIndex "uniquePendingUnityBakeCandidates" "SQLite summary must keep untrusted baked rows pending."
 Assert-Contains $uniqueIndex "uniqueTrustedBakedCandidates" "SQLite summary must separate trusted baked from raw baked."
+
+$browserProcessed = Get-MethodBodyText $libraryBrowserMainForm "private bool IsUnityBakeAlreadyProcessedTerminal"
+Assert-Contains $browserProcessed '"可播放"' "Browser batch bake must skip trusted playable baked previews."
+Assert-Contains $browserProcessed '"静态姿态"' "Browser batch bake must skip static_pose terminal diagnostics."
+Assert-Contains $browserProcessed '"需人工验收"' "Browser batch bake must skip needs_review terminal diagnostics."
+
+$browserPreviewPriority = Get-MethodBodyText $libraryBrowserPreviewCache "private static int BakeCacheStatusPriority"
+Assert-Contains $browserPreviewPriority '"需人工验收" => 45' "Browser preview status must keep needs_review above request_written rows."
+Assert-Contains $browserPreviewPriority '"静态姿态" => 44' "Browser preview status must keep static_pose above request_written rows."
 
 Assert-Contains $cliUsage "untrusted_baked" "CLI docs must explain that untrusted baked rows re-enter the queue."
 Assert-Contains $cliUsage "cacheTrustGate=untrusted_requeue_overwriteable" "CLI docs must explain that untrusted baked rows are not protected terminal cache."
