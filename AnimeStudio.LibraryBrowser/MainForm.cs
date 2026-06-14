@@ -155,7 +155,7 @@ namespace AnimeStudio.LibraryBrowser
             _refreshListButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _reloadButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _refreshAnimationGateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
-            _refreshAnimationGateButton.ToolTipText = "只运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系。";
+            _refreshAnimationGateButton.ToolTipText = "只运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
             _unitySettingsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _unitySettingsButton.ToolTipText = "设置 LibraryBrowser 全局 Unity Editor 和 Unity Bake Project。素材库本地配置仍可覆盖全局配置。";
             _unityWorkerButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
