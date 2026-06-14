@@ -23,6 +23,12 @@ namespace AnimeStudio.LibraryBrowser
             0,
             0,
             0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             "");
 
         public LibraryDeterministicAnimationSummary(
@@ -40,6 +46,12 @@ namespace AnimeStudio.LibraryBrowser
             long nonExplicitCandidates,
             long modelsWithExplicitCandidates,
             long animationsWithExplicitCandidates,
+            long explicitUnityBakeCandidates,
+            long effectiveBakeReadyCandidates,
+            double effectiveBakeReadyCoveragePercent,
+            long importedAvatarAssetFileCount,
+            long importedAvatarAssetKeyCount,
+            long importedAvatarAssetBakeReadyCandidates,
             string generatedAt)
         {
             Exists = exists;
@@ -56,6 +68,12 @@ namespace AnimeStudio.LibraryBrowser
             NonExplicitCandidates = nonExplicitCandidates;
             ModelsWithExplicitCandidates = modelsWithExplicitCandidates;
             AnimationsWithExplicitCandidates = animationsWithExplicitCandidates;
+            ExplicitUnityBakeCandidates = explicitUnityBakeCandidates;
+            EffectiveBakeReadyCandidates = effectiveBakeReadyCandidates;
+            EffectiveBakeReadyCoveragePercent = effectiveBakeReadyCoveragePercent;
+            ImportedAvatarAssetFileCount = importedAvatarAssetFileCount;
+            ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
+            ImportedAvatarAssetBakeReadyCandidates = importedAvatarAssetBakeReadyCandidates;
             GeneratedAt = generatedAt ?? "";
         }
 
@@ -73,6 +91,12 @@ namespace AnimeStudio.LibraryBrowser
         public long NonExplicitCandidates { get; }
         public long ModelsWithExplicitCandidates { get; }
         public long AnimationsWithExplicitCandidates { get; }
+        public long ExplicitUnityBakeCandidates { get; }
+        public long EffectiveBakeReadyCandidates { get; }
+        public double EffectiveBakeReadyCoveragePercent { get; }
+        public long ImportedAvatarAssetFileCount { get; }
+        public long ImportedAvatarAssetKeyCount { get; }
+        public long ImportedAvatarAssetBakeReadyCandidates { get; }
         public string GeneratedAt { get; }
 
         public string ShortLabel()
@@ -89,7 +113,10 @@ namespace AnimeStudio.LibraryBrowser
 
             if (string.Equals(GateStatus, "ok", StringComparison.OrdinalIgnoreCase))
             {
-                return $"动画关系门禁 OK，显式 {ExplicitCandidates:N0}";
+                var bakeText = EffectiveBakeReadyCandidates > 0
+                    ? $"，oracle {FormatPercent(EffectiveBakeReadyCoveragePercent)}"
+                    : "";
+                return $"动画关系门禁 OK，显式 {ExplicitCandidates:N0}{bakeText}";
             }
 
             if (!string.Equals(CandidateTableSchemaStatus, "ok", StringComparison.OrdinalIgnoreCase)
@@ -116,7 +143,8 @@ namespace AnimeStudio.LibraryBrowser
                 $"动画关系门禁状态: {EmptyAsUnknown(GateStatus)}，源索引: {EmptyAsUnknown(SourceIndexStatus)}{Environment.NewLine}" +
                 $"候选表约束: {EmptyAsUnknown(CandidateTableSchemaStatus)}{FormatSchemaNote()}{Environment.NewLine}" +
                 $"默认候选: {Candidates:N0}，显式: {ExplicitCandidates:N0}，非显式: {NonExplicitCandidates:N0}{Environment.NewLine}" +
-                $"有显式动画的模型/动画: {ModelsWithExplicitCandidates:N0} / {AnimationsWithExplicitCandidates:N0}{Environment.NewLine}";
+                $"有显式动画的模型/动画: {ModelsWithExplicitCandidates:N0} / {AnimationsWithExplicitCandidates:N0}{Environment.NewLine}" +
+                FormatUnityBakeOracleText();
         }
 
         public static LibraryDeterministicAnimationSummary Load(string libraryRoot)
@@ -148,6 +176,15 @@ namespace AnimeStudio.LibraryBrowser
                     && candidateSchemaElement.ValueKind == JsonValueKind.Object
                         ? candidateSchemaElement
                         : default;
+                var bake = root.TryGetProperty("unityBakeProduction", out var bakeElement)
+                    && bakeElement.ValueKind == JsonValueKind.Object
+                        ? bakeElement
+                        : default;
+                var importedAvatarReadiness = bake.ValueKind == JsonValueKind.Object
+                    && bake.TryGetProperty("importedAvatarAssetReadiness", out var importedAvatarReadinessElement)
+                    && importedAvatarReadinessElement.ValueKind == JsonValueKind.Object
+                        ? importedAvatarReadinessElement
+                        : default;
                 var libraryIndex = ReadString(root, "libraryIndex");
                 var usesDefaultIndex = string.IsNullOrWhiteSpace(libraryIndex)
                     || PathsEqual(libraryIndex, defaultIndex);
@@ -166,6 +203,12 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(totals, "nonExplicitCandidates"),
                     ReadInt64(totals, "modelsWithExplicitCandidates"),
                     ReadInt64(totals, "animationsWithExplicitCandidates"),
+                    ReadInt64(bake, "explicitUnityBakeCandidates"),
+                    ReadInt64(bake, "bakeReadyExplicitUnityBakeCandidates"),
+                    ReadDouble(bake, "bakeReadyExplicitUnityBakeCoveragePercent"),
+                    ReadInt64(importedAvatarReadiness, "fileCount"),
+                    ReadInt64(importedAvatarReadiness, "keyCount"),
+                    ReadInt64(bake, "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
                     ReadString(root, "generatedAt"));
             }
             catch
@@ -218,6 +261,25 @@ namespace AnimeStudio.LibraryBrowser
             return UsesDefaultLibraryIndex
                 ? ""
                 : "，旁路报告，不代表当前正式 library_index.db";
+        }
+
+        private string FormatUnityBakeOracleText()
+        {
+            if (ExplicitUnityBakeCandidates <= 0)
+            {
+                return "";
+            }
+
+            return
+                $"显式Humanoid/Muscle候选: {ExplicitUnityBakeCandidates:N0}{Environment.NewLine}" +
+                $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveBakeReadyCoveragePercent)}){Environment.NewLine}" +
+                $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
+                $"导入Avatar oracle候选: {ImportedAvatarAssetBakeReadyCandidates:N0}{Environment.NewLine}";
+        }
+
+        private static string FormatPercent(double value)
+        {
+            return value.ToString("0.###", CultureInfo.InvariantCulture) + "%";
         }
 
         private static bool ReportUsesDefaultIndex(string reportPath, string defaultIndex)
@@ -283,6 +345,24 @@ namespace AnimeStudio.LibraryBrowser
 
             return value.ValueKind == JsonValueKind.String
                 && long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out number)
+                    ? number
+                    : 0;
+        }
+
+        private static double ReadDouble(JsonElement element, string property)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            {
+                return 0;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+            {
+                return number;
+            }
+
+            return value.ValueKind == JsonValueKind.String
+                && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number)
                     ? number
                     : 0;
         }
