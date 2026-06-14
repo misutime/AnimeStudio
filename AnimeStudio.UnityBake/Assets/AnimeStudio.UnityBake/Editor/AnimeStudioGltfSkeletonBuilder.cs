@@ -83,13 +83,15 @@ namespace AnimeStudio.UnityBake
             var avatar = AssetDatabase.LoadAssetAtPath<Avatar>(normalized);
             if (avatar == null)
             {
-                Debug.LogError($"Imported Avatar asset not found: {normalized}");
-                return null;
+                throw new InvalidOperationException(
+                    $"Imported Avatar asset not found: {normalized}. "
+                    + "The request explicitly supplied unityAssetPaths.avatarAsset, so Unity bake must fail instead of falling back to a rebuilt Avatar.");
             }
             if (!avatar.isValid || !avatar.isHuman)
             {
-                Debug.LogError($"Imported Avatar asset is not a valid Humanoid Avatar: {normalized}, isValid={avatar.isValid}, isHuman={avatar.isHuman}");
-                return null;
+                throw new InvalidOperationException(
+                    $"Imported Avatar asset is not a valid Humanoid Avatar: {normalized}, isValid={avatar.isValid}, isHuman={avatar.isHuman}. "
+                    + "The request explicitly supplied unityAssetPaths.avatarAsset, so Unity bake must fail instead of falling back to a rebuilt Avatar.");
             }
 
             return avatar;

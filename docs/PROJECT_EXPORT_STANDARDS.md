@@ -194,6 +194,7 @@ SQLite 源索引规则：
 Unity bake 的可信 Avatar 来源固定为三类：原始 prefab / Animator 上的 `Animator.avatar`；完整、可复建的 `HumanDescription.humanBones` + `HumanDescription.skeletonBones`；或从打包 Unity 对象恢复并导入 bake 工程的原始 `UnityEngine.Avatar` asset。原神这类游戏如果索引里只有 `AvatarConstant/internalSolver`，必须优先恢复原始 Avatar asset，并通过 request 的 `unityAssetPaths.avatarAsset` 显式传给 bake helper。`AvatarConstant/internalSolver` 本身只能作为定位和诊断输入，不能单独标记为可信生产 Avatar。
 
 不同游戏可以走不同 Avatar 获取路径，但都必须是 Unity 确定性数据：VRising、Freedunk 这类普通 Unity 项目优先直接使用源索引或 request 里的原始 `Animator.avatar` / `UnityEngine.Avatar` asset；原神这类需要额外恢复 Avatar 的项目，走导入到 bake 工程后的原始 Avatar asset oracle。只有 request 明确带 `unityAssetPaths.avatarAsset` 时，bake helper 才能把它作为生产 Avatar；没有这个字段时，才能进入受限的复建/诊断分支，并在报告里写清来源，不能退回骨骼数量、名称或当前姿态猜测。
+`unityAssetPaths.avatarAsset` 是强约束，不是提示。只要 request 显式指定了它，Unity helper 必须加载到有效 Humanoid `Avatar` 才能继续；路径缺失、加载失败或 Avatar 无效时应直接失败，不能静默退回 `BuildHumanAvatar` / `AvatarConstant` / glTF rest pose 复建。
 
 Unity bake 只能作用在已经来自 Unity 显式关系的候选上，不能用来新增或猜测模型-动画绑定。报告必须保留 `relation_source=explicit`、`baked=true` / `bakeMode`、request/result 路径和 glTF 验证状态。内部 Humanoid/Muscle 求解器保留现有代码和文档作为后续研究基础，但默认流程不得把近似 muscle 求解、骨架数量兼容或名称匹配伪装成已验证可复用身体动画。
 

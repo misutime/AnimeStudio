@@ -91,6 +91,7 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 3. 原神这类只靠 `AvatarConstant` / `internalSolver` 会出现肢体扭曲的库，必须先从打包 Unity 对象恢复原始 `UnityEngine.Avatar` asset，导入 bake 工程，并在 request 的 `unityAssetPaths.avatarAsset` 里显式指定。导入后仍由 Unity 自身加载 Avatar，因此它也是确定性生产来源，不是名称或骨骼数量猜测。
 
 Library Browser 和 CLI 批量 Unity bake 会自动扫描 `UnityBakeProject/Assets/AnimeStudioBake/ImportedAvatar/*.asset`，按文件名把已导入的 Avatar asset 加入候选映射；全局或素材库本地 `unityAvatarAssets` 仍可显式覆盖。自动匹配只接受模型 `avatar.name`、模型名和模型文件名这些 key 的精确命中，不做 contains 模糊匹配。这样原神恢复新的 Avatar asset 后，通常只需要把 `.asset` 放进固定目录并让 Unity 导入，不需要每次手写 JSON 或给每个批量命令传同一个 `--unity_avatar_asset`。Browser 候选详情要显示 Avatar asset 和命中的 key，方便发现配置错配。CLI 的 `--unity_avatar_asset` 只保留给明确 `--preview_model` 的单模型定向预览；未指定模型或一次命中多个模型时必须拒绝，避免把同一个 Avatar 当成全局 fallback。
+显式指定或精确命中的 `unityAssetPaths.avatarAsset` 必须加载到有效 Humanoid `Avatar`。加载失败、路径写错或 Avatar 无效时，Unity bake 应直接失败并写错误结果，不能继续退回临时 `BuildHumanAvatar`，否则会把 Avatar oracle 主线伪装成旧诊断路径。
 
 CLI 全量摘要也会把这条路径单独统计出来。`--bake_animation_previews_from_library ... --preview_validation_limit 0` 会写出 `importedAvatarAssetBakeReadyExplicitUnityBakeCandidates` 和 `effectiveBakeReadyExplicitUnityBakeCandidates`：前者只看导入 Avatar asset 命中的显式候选，后者是 HumanDescription / 原始 prefab Avatar 与导入 Avatar asset 的联合覆盖。这个数字只说明“已经具备确定性 Unity bake oracle”，不新增模型-动画关系，也不代表视觉已经人工验收。
 
