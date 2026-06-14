@@ -93,6 +93,19 @@ function Try-Read-DateTimeOffset($Value) {
         return $null
     }
 
+    if ($Value -is [DateTimeOffset]) {
+        return $Value
+    }
+
+    if ($Value -is [DateTime]) {
+        $dateTime = [DateTime]$Value
+        if ($dateTime.Kind -eq [DateTimeKind]::Unspecified) {
+            return [DateTimeOffset]::new([DateTime]::SpecifyKind($dateTime, [DateTimeKind]::Utc))
+        }
+
+        return [DateTimeOffset]$dateTime
+    }
+
     $text = [string]$Value
     if ([string]::IsNullOrWhiteSpace($text)) {
         return $null
