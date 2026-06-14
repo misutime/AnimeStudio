@@ -342,6 +342,9 @@ namespace AnimeStudio.CLI
                 ["bakedCompleted"] = bakedCompleted,
                 ["skipBakedCache"] = !force,
                 ["runUnityBake"] = runUnityBake,
+                ["avatarAssetCounts"] = CountReportItemsByString(items, "unityAvatarAsset"),
+                ["avatarSourceCounts"] = CountReportItemsByString(items, "avatarSource"),
+                ["avatarMatchKeyCounts"] = CountReportItemsByString(items, "avatarMatchKey"),
                 ["items"] = items,
             };
             var reportPath = Path.Combine(output, "unity_bake_batch_report.json");
@@ -412,6 +415,29 @@ namespace AnimeStudio.CLI
             var reportPath = Path.Combine(output, "unity_bake_batch_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Unity bake batch report: {reportPath}");
+        }
+
+        private static JObject CountReportItemsByString(JArray items, string propertyName)
+        {
+            var counts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in items?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var value = ((string)item[propertyName])?.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    value = "(none)";
+                }
+
+                counts[value] = counts.TryGetValue(value, out var count) ? count + 1 : 1;
+            }
+
+            var result = new JObject();
+            foreach (var pair in counts)
+            {
+                result[pair.Key] = pair.Value;
+            }
+
+            return result;
         }
 
         private static string GenerateSelection(
