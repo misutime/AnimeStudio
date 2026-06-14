@@ -112,6 +112,9 @@ Assert-Contains $trustedGenerator "UsesFirstSampleHumanoidDelta(report)" "Unity 
 
 $uniqueGenerator = Get-MethodBodyText $requestGenerator "private static JObject BuildUniqueBakeCacheCounts"
 Assert-Contains $uniqueGenerator "IsTrustedBakedGltfPath(bakedGltf, libraryRoot)" "Unity bake request summary unique counts must recompute trusted baked proof."
+Assert-Contains $uniqueGenerator "IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)" "Unity bake request summary must treat needs_review as terminal diagnostics."
+Assert-Contains $uniqueGenerator "uniqueNeedsReviewCandidates" "Unity bake request summary must expose needs_review terminal counts."
+Assert-Contains $uniqueGenerator "terminalDiagnosticCandidates" "Unity bake request summary pending count must subtract terminal diagnostics."
 Assert-Contains $uniqueGenerator "uniquePendingUnityBakeCandidates" "Unity bake request summary must keep pending counts visible."
 Assert-Contains $uniqueGenerator "uniqueTrustedBakedCandidates" "Unity bake request summary must separate trusted baked from raw baked."
 
@@ -122,6 +125,9 @@ Assert-Contains $trustedIndex "UsesFirstSampleHumanoidDelta(report)" "SQLite sum
 
 $uniqueIndex = Get-MethodBodyText $libraryIndexBuilder "private static JObject BuildUniqueBakeCacheCounts"
 Assert-Contains $uniqueIndex "IsTrustedBakedGltfPath(bakedGltf, libraryRoot)" "SQLite summary unique counts must recompute trusted baked proof."
+Assert-Contains $uniqueIndex "IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)" "SQLite summary must treat needs_review as terminal diagnostics."
+Assert-Contains $uniqueIndex "uniqueNeedsReviewCandidates" "SQLite summary must expose needs_review terminal counts."
+Assert-Contains $uniqueIndex "terminalDiagnosticCandidates" "SQLite summary pending count must subtract terminal diagnostics."
 Assert-Contains $uniqueIndex "uniquePendingUnityBakeCandidates" "SQLite summary must keep untrusted baked rows pending."
 Assert-Contains $uniqueIndex "uniqueTrustedBakedCandidates" "SQLite summary must separate trusted baked from raw baked."
 

@@ -1800,6 +1800,7 @@ FROM (
                     ["uniqueBakedCandidates"] = 0,
                     ["uniqueTrustedBakedCandidates"] = 0,
                     ["uniqueBakedMissingGltfCandidates"] = 0,
+                    ["uniqueNeedsReviewCandidates"] = 0,
                     ["uniqueFailedCandidates"] = 0,
                     ["duplicateCacheRows"] = 0,
                     ["pendingUnityBakeCandidates"] = bakeReadyExplicitUnityBakeCandidates,
@@ -1829,6 +1830,7 @@ WHERE bc.status='baked'
             var libraryRoot = GetLibraryRootFromConnection(connection);
             var trustedBakedCandidates = CountTrustedBakedCacheRows(connection, libraryRoot);
             var staticPoseCandidates = CountStaticPoseCacheRows(connection, libraryRoot);
+            var needsReviewCandidates = CountNeedsReviewCacheRows(connection, libraryRoot);
             var bakedMissingGltfCandidates = CountBakedMissingGltfCacheRows(connection, libraryRoot);
             var failedCandidates = CountUntrustedFailedCacheRows(connection, libraryRoot);
             var summary = new JObject
@@ -1850,6 +1852,7 @@ WHERE bc.status='baked'
                 ["bakedCandidates"] = bakedCandidates,
                 ["trustedBakedCandidates"] = trustedBakedCandidates,
                 ["staticPoseCandidates"] = staticPoseCandidates,
+                ["needsReviewCandidates"] = needsReviewCandidates,
                 ["bakedMissingGltfCandidates"] = bakedMissingGltfCandidates,
                 ["failedCandidates"] = failedCandidates,
                 ["cacheCoverage"] = Ratio(cachedCandidates, bakeReadyExplicitUnityBakeCandidates),
@@ -1907,7 +1910,11 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                     ? "trusted_baked"
                     : IsStaticPoseBakedGltfPath(bakedGltfPath, libraryRoot)
                         ? "static_pose"
-                        : string.IsNullOrWhiteSpace(status) ? "<null>" : status;
+                        : IsNeedsReviewBakedGltfPath(bakedGltfPath, libraryRoot)
+                            ? "needs_review"
+                            : string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase)
+                                ? "untrusted_baked"
+                                : string.IsNullOrWhiteSpace(status) ? "<null>" : status;
                 counts[key] = counts.TryGetValue(key, out var current) ? current + 1 : 1;
             }
 
@@ -1935,7 +1942,8 @@ WHERE bc.status='failed'
             {
                 var bakedGltfPath = reader.IsDBNull(0) ? null : reader.GetString(0);
                 if (!IsTrustedBakedGltfPath(bakedGltfPath, libraryRoot)
-                    && !IsStaticPoseBakedGltfPath(bakedGltfPath, libraryRoot))
+                    && !IsStaticPoseBakedGltfPath(bakedGltfPath, libraryRoot)
+                    && !IsNeedsReviewBakedGltfPath(bakedGltfPath, libraryRoot))
                 {
                     count++;
                 }
@@ -1978,6 +1986,26 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             while (reader.Read())
             {
                 if (IsStaticPoseBakedGltfPath(reader.IsDBNull(0) ? null : reader.GetString(0), libraryRoot))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private static long CountNeedsReviewCacheRows(SqliteConnection connection, string libraryRoot)
+        {
+            var count = 0L;
+            using var command = connection.CreateCommand();
+            command.CommandText = $@"
+SELECT bc.baked_gltf_path
+FROM animation_bake_cache bc
+WHERE COALESCE(bc.baked_gltf_path, '')<>''
+  AND {BuildBakeReadyCacheWhere("bc")};";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (IsNeedsReviewBakedGltfPath(reader.IsDBNull(0) ? null : reader.GetString(0), libraryRoot))
                 {
                     count++;
                 }
@@ -2029,6 +2057,10 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 {
                     entry.HasStaticPose = true;
                 }
+                else if (IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot))
+                {
+                    entry.HasNeedsReview = true;
+                }
                 else if (string.Equals(status, "request_written", StringComparison.OrdinalIgnoreCase))
                 {
                     entry.HasRequestWritten = true;
@@ -2048,9 +2080,11 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             var uniqueBakedCandidates = groups.Values.Count(x => x.HasBaked);
             var uniqueBakedMissingGltfCandidates = groups.Values.Count(x => x.HasBaked && !x.HasTrustedBaked);
             var uniqueStaticPoseCandidates = groups.Values.Count(x => !x.HasTrustedBaked && x.HasStaticPose);
-            var uniqueFailedCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && x.HasFailed);
-            var uniqueRequestWrittenCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasFailed && x.HasRequestWritten);
+            var uniqueNeedsReviewCandidates = groups.Values.Count(x => !x.HasTrustedBaked && !x.HasStaticPose && x.HasNeedsReview);
+            var uniqueFailedCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && x.HasFailed);
+            var uniqueRequestWrittenCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasFailed && x.HasRequestWritten);
             var duplicateCacheRows = groups.Values.Sum(x => Math.Max(0, x.RowCount - 1));
+            var terminalDiagnosticCandidates = uniqueStaticPoseCandidates + uniqueNeedsReviewCandidates;
 
             return new JObject
             {
@@ -2059,11 +2093,12 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 ["uniqueBakedCandidates"] = uniqueBakedCandidates,
                 ["uniqueTrustedBakedCandidates"] = uniqueTrustedBakedCandidates,
                 ["uniqueStaticPoseCandidates"] = uniqueStaticPoseCandidates,
+                ["uniqueNeedsReviewCandidates"] = uniqueNeedsReviewCandidates,
                 ["uniqueBakedMissingGltfCandidates"] = uniqueBakedMissingGltfCandidates,
                 ["uniqueFailedCandidates"] = uniqueFailedCandidates,
                 ["duplicateCacheRows"] = duplicateCacheRows,
-                ["pendingUnityBakeCandidates"] = Math.Max(0, bakeReadyExplicitUnityBakeCandidates - uniqueTrustedBakedCandidates - uniqueStaticPoseCandidates),
-                ["uniquePendingUnityBakeCandidates"] = Math.Max(0, uniqueBakeReadyExplicitUnityBakeCandidates - uniqueTrustedBakedCandidates - uniqueStaticPoseCandidates),
+                ["pendingUnityBakeCandidates"] = Math.Max(0, bakeReadyExplicitUnityBakeCandidates - uniqueTrustedBakedCandidates - terminalDiagnosticCandidates),
+                ["uniquePendingUnityBakeCandidates"] = Math.Max(0, uniqueBakeReadyExplicitUnityBakeCandidates - uniqueTrustedBakedCandidates - terminalDiagnosticCandidates),
                 ["uniqueCacheCoverage"] = Ratio(uniqueCachedCandidates, uniqueBakeReadyExplicitUnityBakeCandidates),
                 ["uniqueTrustedBakedCoverage"] = Ratio(uniqueTrustedBakedCandidates, uniqueBakeReadyExplicitUnityBakeCandidates),
                 ["uniqueCacheCoveragePercent"] = Percent(uniqueCachedCandidates, uniqueBakeReadyExplicitUnityBakeCandidates),
@@ -2124,6 +2159,31 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 var report = JObject.Parse(File.ReadAllText(reportPath));
                 return string.Equals((string)report["status"], "static_pose", StringComparison.OrdinalIgnoreCase)
                     && ((int?)report["frameVaryingTracks"] ?? 0) == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsNeedsReviewBakedGltfPath(string bakedGltfPath, string libraryRoot)
+        {
+            var bakedGltf = ResolveLibraryPath(libraryRoot, bakedGltfPath);
+            if (string.IsNullOrWhiteSpace(bakedGltf) || !File.Exists(bakedGltf))
+            {
+                return false;
+            }
+
+            var reportPath = Path.Combine(Path.GetDirectoryName(bakedGltf) ?? string.Empty, "unity_bake_apply_report.json");
+            if (!File.Exists(reportPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var report = JObject.Parse(File.ReadAllText(reportPath));
+                return string.Equals((string)report["status"], "needs_review", StringComparison.OrdinalIgnoreCase);
             }
             catch
             {
@@ -2322,6 +2382,7 @@ EXISTS (
             public bool HasBaked { get; set; }
             public bool HasTrustedBaked { get; set; }
             public bool HasStaticPose { get; set; }
+            public bool HasNeedsReview { get; set; }
             public bool HasFailed { get; set; }
         }
 
