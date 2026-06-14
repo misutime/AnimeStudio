@@ -107,6 +107,10 @@ namespace AnimeStudio.CLI
                 Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
                 return;
             }
+            if (!ValidateSuppliedUnityAvatarAssetScope(modelSelector, unityAvatarAsset))
+            {
+                return;
+            }
             var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
             var selection = SelectExplicitCandidateFromLibraryDb(
                 dbPath,
@@ -192,6 +196,10 @@ namespace AnimeStudio.CLI
             }
 
             limit = Math.Max(1, limit);
+            if (!ValidateSuppliedUnityAvatarAssetScope(modelSelector, unityAvatarAsset))
+            {
+                return;
+            }
             var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
 
             var selections = SelectExplicitBakeCandidatesFromLibraryDb(
@@ -228,6 +236,10 @@ namespace AnimeStudio.CLI
                 }
 
                 Logger.Error("No explicit Humanoid/Muscle model-animation candidate matched the Unity bake batch selectors.");
+                return;
+            }
+            if (!ValidateSuppliedUnityAvatarAssetSelections(unityAvatarAsset, selections))
+            {
                 return;
             }
 
@@ -2111,6 +2123,56 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             }
 
             return ResolveUnityAvatarAsset(selection?.Model?["model"] as JObject, importedAvatarAssets);
+        }
+
+        private static bool ValidateSuppliedUnityAvatarAssetScope(string modelSelector, string suppliedUnityAvatarAsset)
+        {
+            if (string.IsNullOrWhiteSpace(suppliedUnityAvatarAsset))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(modelSelector))
+            {
+                return true;
+            }
+
+            Logger.Error(
+                "--unity_avatar_asset 是单模型诊断/定向预览入口，不能在未指定 --preview_model 时参与批量选择。"
+                + " 多模型生产 bake 请把恢复出的 Avatar 放入 Unity Bake Project/Assets/AnimeStudioBake/ImportedAvatar，"
+                + "让工具按模型 Avatar 名/模型名精确匹配。");
+            return false;
+        }
+
+        private static bool ValidateSuppliedUnityAvatarAssetSelections(
+            string suppliedUnityAvatarAsset,
+            IReadOnlyCollection<PreviewSelection> selections)
+        {
+            if (string.IsNullOrWhiteSpace(suppliedUnityAvatarAsset) || selections == null || selections.Count <= 1)
+            {
+                return true;
+            }
+
+            var modelKeys = selections
+                .Select(x =>
+                {
+                    var model = x?.Model?["model"] as JObject;
+                    return (string)model?["output"] ?? (string)model?["name"] ?? "";
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(2)
+                .ToArray();
+            if (modelKeys.Length <= 1)
+            {
+                return true;
+            }
+
+            Logger.Error(
+                "--unity_avatar_asset 只允许用于单个模型的定向 bake。当前选择命中了多个模型，"
+                + "继续执行会把同一个 Avatar 强行套到不同模型上，违背 Unity 确定性关系规则。"
+                + " 请收紧 --preview_model，或使用 ImportedAvatar 目录/配置让每个模型精确匹配自己的 Avatar asset。");
+            return false;
         }
 
         private static string ResolveUnityAvatarAsset(JObject model, IReadOnlyDictionary<string, string> importedAvatarAssets)
