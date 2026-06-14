@@ -2825,6 +2825,7 @@ namespace AnimeStudio.LibraryBrowser
 
             var animation = _selectedLibraryAnimation.Animation;
             var missingOrNotExported = Math.Max(0, _selectedAnimationIndexedModelCount - _selectedAnimationAvailableModelCount);
+            var visibleModelStateSummary = BuildAnimationModelStateSummary(animation);
             _animationDetailBox.Text =
                 $"动画: {animation.Name}{Environment.NewLine}" +
                 $"时长: {(animation.Duration > 0 ? $"{animation.Duration:0.##}s" : "Unknown")}{Environment.NewLine}" +
@@ -2832,10 +2833,64 @@ namespace AnimeStudio.LibraryBrowser
                 $"验证: {FormatAnimationValidation(animation)}{Environment.NewLine}" +
                 $"帧/轨道/片段: {FormatAnimationCounts(animation)}{Environment.NewLine}" +
                 $"关联模型: 当前筛选 {_visibleAnimationModels.Count} / 当前库可见 {_selectedAnimationAvailableModelCount} / 索引记录 {_selectedAnimationIndexedModelCount}{Environment.NewLine}" +
+                visibleModelStateSummary +
                 $"缺失或未导出模型: {missingOrNotExported}{Environment.NewLine}" +
                 $"来源: {animation.Source}{Environment.NewLine}" +
                 $"路径: {animation.BestPath}{Environment.NewLine}{Environment.NewLine}" +
                 "操作: 在右侧模型列表双击模型，生成模型+动画的可播放 glTF 预览。";
+        }
+
+        private string BuildAnimationModelStateSummary(LibraryAnimationCandidate animation)
+        {
+            if (animation == null || _visibleAnimationModels.Count == 0)
+            {
+                return "";
+            }
+
+            var playable = 0;
+            var pendingBake = 0;
+            var importedAvatar = 0;
+            var needsAvatar = 0;
+            var failedOrReview = 0;
+            foreach (var model in _visibleAnimationModels)
+            {
+                var modelAnimation = ResolveAnimationForModel(model, animation);
+                var status = BuildAnimationModelPreviewStatus(model, modelAnimation).Label;
+                if (string.Equals(status, "可播放", StringComparison.OrdinalIgnoreCase))
+                {
+                    playable++;
+                }
+                if (modelAnimation != null
+                    && !modelAnimation.IsUnreal
+                    && RequiresUnityBake(modelAnimation)
+                    && !NeedsAvatarHumanDescriptionRefresh(modelAnimation)
+                    && !IsUnityBakeAlreadyPlayable(model, modelAnimation))
+                {
+                    pendingBake++;
+                }
+                if (modelAnimation != null
+                    && !modelAnimation.IsUnreal
+                    && RequiresUnityBake(modelAnimation)
+                    && !string.IsNullOrWhiteSpace(modelAnimation.ProductionUnityBakeAvatarAsset))
+                {
+                    importedAvatar++;
+                }
+                if (modelAnimation != null
+                    && !modelAnimation.IsUnreal
+                    && NeedsAvatarHumanDescriptionRefresh(modelAnimation))
+                {
+                    needsAvatar++;
+                }
+                if (Contains(status, "失败")
+                    || Contains(status, "复查")
+                    || Contains(status, "静态姿态")
+                    || Contains(status, "需重建"))
+                {
+                    failedOrReview++;
+                }
+            }
+
+            return $"当前可见模型状态: 可播放 {playable} / 待可信烘焙 {pendingBake} / 导入Avatar {importedAvatar} / 需Avatar元数据 {needsAvatar} / 失败或复查 {failedOrReview}{Environment.NewLine}";
         }
 
         private static string DescribeAnimationCapability(LibraryAnimationCandidate animation)
