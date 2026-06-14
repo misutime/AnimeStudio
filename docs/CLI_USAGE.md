@@ -364,6 +364,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 
 - `gate.status`：默认应为 `ok`。
 - `totals.nonExplicitCandidates`：必须为 `0`，否则说明默认候选表混入了非 Unity 显式关系，需要追查是否退回骨骼数量、名称或路径 fallback。
+- `candidateTableSchema.status`：默认应为 `ok`。它检查 `model_animation_candidates.relation_source` 是否同时有 `NOT NULL` 和 `CHECK(relation_source='explicit')` 约束；如果旧库数据已经全是 explicit、但 schema 还没约束住，也要重建 `library_index.db`，不能让后续流程重新写入猜测关系。
 - `totals.animatedCategoryExplicitCoverage`：按 `NPC`、`Avatar`、`Monster`、`Animal`、`Partner`、`Vehicle` 这类明显动画模型目录粗看显式覆盖；它比全库模型覆盖更接近角色/怪物/动物动画绑定进度。
 - `sourceIndexAnimationRelationHealth.staleOverridePairIndex`：为 `true` 时说明源索引是旧版或不完整版本，应先重建 `unity_source_index.db`，再重建 `library_index.db`。这不是让工具回退猜测关系的理由。
 

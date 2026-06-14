@@ -61,6 +61,47 @@ def table_exists(cur, name):
     return scalar(cur, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?;", (name,)) > 0
 
 
+def candidate_table_schema_health(cur):
+    row = cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_animation_candidates' LIMIT 1;"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return {
+            "status": "missing",
+            "hasRelationSourceNotNull": False,
+            "hasExplicitRelationSourceCheck": False,
+            "note": "model_animation_candidates table is missing.",
+        }
+
+    sql = row[0]
+    normalized = re.sub(r"\s+", " ", sql).strip().lower()
+    has_not_null = re.search(r"\brelation_source\b\s+\w+\s+not\s+null\b", normalized) is not None
+    has_explicit_check = re.search(
+        r"\bcheck\s*\([^)]*\brelation_source\b[^)]*=[^)]*['\"]explicit['\"][^)]*\)",
+        normalized,
+    ) is not None
+    status = "ok" if has_not_null and has_explicit_check else "warning"
+    missing = []
+    if not has_not_null:
+        missing.append("relation_source NOT NULL")
+    if not has_explicit_check:
+        missing.append("CHECK(relation_source='explicit')")
+
+    return {
+        "status": status,
+        "hasRelationSourceNotNull": has_not_null,
+        "hasExplicitRelationSourceCheck": has_explicit_check,
+        "missingRules": missing,
+        "note": (
+            "model_animation_candidates.relation_source is constrained to explicit."
+            if status == "ok"
+            else "model_animation_candidates schema is missing deterministic relation constraints: "
+                 + ", ".join(missing)
+                 + ". Rebuild library_index.db with the current tool."
+        ),
+    }
+
+
 def safe_query(default, func):
     try:
         return func()
@@ -729,6 +770,7 @@ def main():
         candidates = int(scalar(cur, "SELECT COUNT(*) FROM model_animation_candidates;"))
         explicit_candidates = int(scalar(cur, "SELECT COUNT(*) FROM model_animation_candidates WHERE relation_source='explicit';"))
         non_explicit_candidates = int(scalar(cur, "SELECT COUNT(*) FROM model_animation_candidates WHERE COALESCE(relation_source, '') <> 'explicit';"))
+        candidate_schema = candidate_table_schema_health(cur)
         candidate_models = int(scalar(cur, "SELECT COUNT(DISTINCT model_output) FROM model_animation_candidates;"))
         explicit_candidate_models = int(scalar(cur, "SELECT COUNT(DISTINCT model_output) FROM model_animation_candidates WHERE relation_source='explicit';"))
         candidate_animations = int(scalar(cur, "SELECT COUNT(DISTINCT animation_output) FROM model_animation_candidates;"))
@@ -820,6 +862,12 @@ def main():
             avatar_gate_summary = avatar_production_gate(cur)
             avatar_blockers = model_avatar_refresh_blockers(cur, args.top_category_limit)
 
+        gate_reasons = []
+        if non_explicit_candidates != 0:
+            gate_reasons.append("Default candidate table contains non-explicit relations; verify they are not bone-count, name, or path fallback.")
+        if candidate_schema.get("status") != "ok":
+            gate_reasons.append(candidate_schema.get("note") or "model_animation_candidates schema is not constrained to explicit relations.")
+
         summary = {
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
             "mode": "gateOnly" if args.gate_only else "full",
@@ -844,14 +892,16 @@ def main():
                 "animatedCategoryExplicitCoverage": ratio(animated_linked, animated_total),
             },
             "gate": {
-                "status": "ok" if non_explicit_candidates == 0 else "warning",
+                "status": "ok" if not gate_reasons else "warning",
                 "requiresNoNonExplicitCandidates": True,
+                "requiresExplicitRelationSourceSchema": True,
                 "note": (
-                    "Default candidate table contains no non-explicit relation."
-                    if non_explicit_candidates == 0 else
-                    "Default candidate table contains non-explicit relations; verify they are not bone-count, name, or path fallback."
+                    "Default candidate table contains no non-explicit relation and schema rejects future non-explicit inserts."
+                    if not gate_reasons else
+                    " ".join(gate_reasons)
                 ),
             },
+            "candidateTableSchema": candidate_schema,
             "relationSources": relation_sources,
             "confidences": confidences,
             "statuses": statuses,
@@ -887,6 +937,13 @@ def main():
     md.append(f"- Source index: `{args.source_index}`")
     md.append(f"- Mode: `{summary.get('mode')}`")
     md.append(f"- Gate: `{summary['gate']['status']}` - {summary['gate']['note']}")
+    md.append("")
+    schema = summary.get("candidateTableSchema") or {}
+    md.append("## Candidate Table Schema")
+    md.append(f"- Status: `{schema.get('status')}`")
+    md.append(f"- relation_source NOT NULL: `{schema.get('hasRelationSourceNotNull')}`")
+    md.append(f"- CHECK relation_source explicit: `{schema.get('hasExplicitRelationSourceCheck')}`")
+    md.append(f"- Note: {schema.get('note')}")
     md.append("")
     md.extend(table([summary["totals"]], [
         "models",
@@ -1028,6 +1085,7 @@ def main():
     console_summary = {
         "gate": summary["gate"],
         "totals": summary["totals"],
+        "candidateTableSchema": summary["candidateTableSchema"],
         "unityBakeProduction": summary["unityBakeProduction"],
         "avatarProductionGate": summary["avatarProductionGate"],
         "sourceIndexStatus": summary["sourceIndexAnimationRelationHealth"].get("status"),
