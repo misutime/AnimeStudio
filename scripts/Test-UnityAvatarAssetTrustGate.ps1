@@ -128,6 +128,18 @@ Assert-Contains $browserTrust "ReportRequestHasExplicitAvatarAsset(root)" "Brows
 Assert-Contains $browserTrust '"imported_unity_avatar_asset"' "Browser explicit Avatar request must require imported_unity_avatar_asset source."
 Assert-Contains $browserTrust "ReportHasImportedAvatarAssetProof(root)" "Browser explicit Avatar request must require imported Avatar proof."
 
+$browserTrustedReport = Get-MethodBodyText $browserCache "private static bool HasTrustedUnityBakeReport"
+Assert-Contains $browserTrustedReport '"ok"' "Browser trusted Unity bake report must require ok/warning apply status."
+Assert-Contains $browserTrustedReport '"warning"' "Browser trusted Unity bake report must allow warning only after other proof."
+Assert-Contains $browserTrustedReport '"frameVaryingTracks"' "Browser trusted Unity bake report must require frame-varying tracks."
+Assert-Contains $browserTrustedReport "frameVaryingTracks > 0" "Browser must not mark static-pose Unity bake as playable."
+Assert-Contains $browserTrustedReport "HasTrustedAvatarBake" "Browser trusted Unity bake report must require Avatar trust."
+
+$browserBakeCache = Get-MethodBodyText $browserCache "private Dictionary<string, AnimationPreviewStatus> LoadSqliteBakeCacheCore"
+Assert-Contains $browserBakeCache "HasTrustedUnityBakeReport(applyReport)" "Browser SQLite bake cache must require trusted apply report before playable."
+Assert-Contains $browserBakeCache "IsUnityBakedGltf(bakedGltf)" "Browser SQLite bake cache must require glTF Unity bake marker before playable."
+Assert-Contains $browserBakeCache 'new AnimationPreviewStatus("可播放"' "Browser SQLite bake cache may mark playable only after trusted proof."
+
 $productionSource = Get-MethodBodyText $browserCache "private static bool IsProductionAvatarTrustSource"
 Assert-Contains $productionSource '"internal_solver"' "Browser must reject internal_solver trust sources."
 Assert-Contains $productionSource '"avatar_constant"' "Browser must reject avatar_constant trust sources."
