@@ -42,6 +42,12 @@ namespace AnimeStudio.LibraryBrowser
             var text =
                 $"源索引动画关系状态: {status}{Environment.NewLine}" +
                 $"OverrideController关系过旧: {(StaleOverridePairIndex ? "是" : "否")}{Environment.NewLine}";
+            if (StaleOverridePairIndex)
+            {
+                text += "处理建议: 当前工具会跳过缺少 clipPair 的 OverrideController 动画候选；请先重建 unity_source_index.db，再重建 library_index.db，不要用旧 original/override 分离关系兜底。"
+                    + Environment.NewLine;
+            }
+
             if (!string.IsNullOrWhiteSpace(SourceRoot))
             {
                 text += $"源索引记录源目录: {SourceRoot}{Environment.NewLine}";

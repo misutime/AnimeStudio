@@ -528,7 +528,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --verify_source_index "D:\Assets\AS-Assets\YuanShen-Assets\unity_source_index.db"
 ```
 
-默认会在同目录写 `<dbName>.animation_relation_health.json`。如果报告里 `animationRelationHealth.staleOverridePairIndex=true`，说明源索引仍缺当前工具写入的 `AnimatorOverrideController.overrideSet` / `clipPair` 精确标记。旧索引即使有分离的 `originalClip` / `overrideClip`，也只能兼容粗略恢复，不能可靠表达 `original -> override` 或“空替换表继承 base controller”的确定性关系。
+默认会在同目录写 `<dbName>.animation_relation_health.json`。如果报告里 `animationRelationHealth.staleOverridePairIndex=true`，说明源索引仍缺当前工具写入的 `AnimatorOverrideController.overrideSet` / `clipPair` 精确标记。旧索引即使有分离的 `originalClip` / `overrideClip`，也不能可靠表达 `original -> override` 或“空替换表继承 base controller”的确定性关系；当前生产候选会跳过这类 OverrideController，不再做粗略恢复。
 
 生产重建前建议开启严格门槛；只要源索引缺这些当前工具需要的精确关系，命令会直接失败，避免继续生成一份看似正常但少掉 OverrideController 显式动画的 `library_index.db`：
 
@@ -538,7 +538,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --require_fresh_source_animation_relations
 ```
 
-修改 `AnimatorOverrideController` 源索引或 Library 候选展开逻辑后，先跑最小回归脚本。它会构造四个合成库：完整 `clipPair` 场景验证 base controller 含 `OriginalClip + KeepClip`、OverrideController 将 `OriginalClip -> OverrideClip` 时，最终候选只有 `OverrideClip + KeepClip` 且健康状态为 `ok`；空 `overrideSet(count=0)` 场景验证空替换表会确定性继承 base controller 的 `OriginalClip + KeepClip` 且健康状态为 `ok`；半旧 separated 场景验证只有分离的 `originalClip/overrideClip` 时可兼容恢复 `OverrideClip + KeepClip`，但健康状态仍是 `warning`；完全旧 base-only 场景验证只有 `baseController`、没有 `clipPair/original/override` 细节时，Library 不会把 base controller 的动画粗扩散成确定性候选。
+修改 `AnimatorOverrideController` 源索引或 Library 候选展开逻辑后，先跑最小回归脚本。它会构造四个合成库：完整 `clipPair` 场景验证 base controller 含 `OriginalClip + KeepClip`、OverrideController 将 `OriginalClip -> OverrideClip` 时，最终候选只有 `OverrideClip + KeepClip` 且健康状态为 `ok`；空 `overrideSet(count=0)` 场景验证空替换表会确定性继承 base controller 的 `OriginalClip + KeepClip` 且健康状态为 `ok`；半旧 separated 场景验证只有分离的 `originalClip/overrideClip` 时不会产出候选，健康状态为 `warning`，必须重建源索引拿到 `clipPair`；完全旧 base-only 场景验证只有 `baseController`、没有 `clipPair/original/override` 细节时，Library 不会把 base controller 的动画粗扩散成确定性候选。
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\Test-OverrideClipPairRegression.ps1

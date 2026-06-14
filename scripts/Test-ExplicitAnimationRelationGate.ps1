@@ -99,6 +99,7 @@ $browserCandidate = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationCa
 $browserIndex = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationIndex.cs"
 $browserDoc = Read-RepoFile "docs\LIBRARY_BROWSER_ANIMATION_PREVIEW_DESIGN.md"
 $standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
+$cliUsage = Read-RepoFile "docs\CLI_USAGE.md"
 
 $previewGate = Get-MethodBodyText $preview "private static bool IsExplicitPreviewRelation"
 Assert-Contains $previewGate '"relationSource"' "Preview gate must read relationSource."
@@ -129,5 +130,7 @@ Assert-Contains $browserDoc 'relationSource=explicit' "Browser animation preview
 Assert-Contains $standards 'model_animations.json' "Project standards must mention default model animation candidates."
 Assert-Contains $standards 'SQLite' "Project standards must mention SQLite animation candidates."
 Assert-Contains $standards 'unityAssetPaths.avatarAsset' "Project standards must keep imported Avatar asset oracle rules."
+Assert-Contains $cliUsage '半旧 separated 场景验证只有分离的 `originalClip/overrideClip` 时不会产出候选' "CLI docs must say separated legacy OverrideController relations are skipped."
+Assert-NotContains $cliUsage '半旧 separated 场景验证只有分离的 `originalClip/overrideClip` 时可兼容恢复' "CLI docs must not claim separated legacy OverrideController relations are production-compatible."
 
 Write-Output "OK: explicit animation relation gates have no confidence/structural fallback."
