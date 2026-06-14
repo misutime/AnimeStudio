@@ -196,6 +196,8 @@ Browser 也会读取最新的 `AnimationRelationDiagnostics*/deterministic_anima
 
 当 GateOnly 报告显示 `candidateTableSchema.status != ok`，但 `totals.nonExplicitCandidates == 0` 时，说明现有候选数据是干净的、只是旧 `library_index.db` schema 还没有硬约束。Browser 顶部“重建动画索引”按钮会运行 `--build_sqlite_index`，并默认带上 `--require_fresh_source_animation_relations --skip_sqlite_file_index --skip_sqlite_sidecar_scan --skip_sqlite_json_documents`，只刷新结构化索引、显式动画候选和候选表 schema，不重新导出模型、贴图或动画。这个按钮仍然只消费 `unity_source_index.db` 的 Unity 确定性关系；如果源索引缺少当前工具要求的 Animator/Animation/OverrideController 精确关系，应失败并要求先重建源索引，不能退回骨骼数量、名称或路径猜测。
 
+如果同一素材库目录里存在旁路验证 DB，例如 `library_index.schema_verify.db`，对应的 GateOnly 报告只用于人工对照。Browser 状态栏和模型详情优先读取 `libraryIndex` 指向正式 `<LibraryRoot>/library_index.db` 的报告，避免旁路报告通过后把仍未替换的正式库显示成已通过。
+
 旧 `model_animations.json` 入口也必须遵守同一条规则：`--generate_preview_gltf`、`--pack_model_animations` 和 `--generate_unity_bake_request` 只能处理显式 Unity 关系候选。SQLite 重建导入 `model_animations.compact.json` 时也必须要求 `relationSource=explicit`，`model_animation_candidates.relation_source` 本身有 `CHECK(relation_source='explicit')` 约束；`confidence=explicit_unity_reference` 只能作为显式关系的质量说明，不能单独把 fallback/diagnostic 提升成默认候选。嵌入 sidecar、结构匹配、名称匹配或手工选择可以保留为诊断数据，但不能进入默认可播放 glTF、动画包或生产 Unity bake 请求。
 
 模型页“质量”筛选也提供动画主线入口：`有导入Avatar候选` 只看已经匹配 ImportedAvatar oracle 的显式 Unity bake 候选；`待可信烘焙` 排除已有可信 `可播放` 缓存，用来找下一批需要 Unity bake 的模型；`需Avatar元数据` 用来定位仍缺生产 Avatar/HumanDescription 的显式候选。

@@ -12,6 +12,8 @@ namespace AnimeStudio.LibraryBrowser
             false,
             "",
             "",
+            true,
+            "",
             "",
             "",
             "",
@@ -26,6 +28,8 @@ namespace AnimeStudio.LibraryBrowser
         public LibraryDeterministicAnimationSummary(
             bool exists,
             string summaryPath,
+            string libraryIndex,
+            bool usesDefaultLibraryIndex,
             string mode,
             string gateStatus,
             string sourceIndexStatus,
@@ -40,6 +44,8 @@ namespace AnimeStudio.LibraryBrowser
         {
             Exists = exists;
             SummaryPath = summaryPath ?? "";
+            LibraryIndex = libraryIndex ?? "";
+            UsesDefaultLibraryIndex = usesDefaultLibraryIndex;
             Mode = mode ?? "";
             GateStatus = gateStatus ?? "";
             SourceIndexStatus = sourceIndexStatus ?? "";
@@ -55,6 +61,8 @@ namespace AnimeStudio.LibraryBrowser
 
         public bool Exists { get; }
         public string SummaryPath { get; }
+        public string LibraryIndex { get; }
+        public bool UsesDefaultLibraryIndex { get; }
         public string Mode { get; }
         public string GateStatus { get; }
         public string SourceIndexStatus { get; }
@@ -72,6 +80,11 @@ namespace AnimeStudio.LibraryBrowser
             if (!Exists)
             {
                 return "动画关系门禁: 未生成";
+            }
+
+            if (!UsesDefaultLibraryIndex)
+            {
+                return "动画关系门禁: 旁路报告";
             }
 
             if (string.Equals(GateStatus, "ok", StringComparison.OrdinalIgnoreCase))
@@ -97,6 +110,7 @@ namespace AnimeStudio.LibraryBrowser
 
             return
                 $"动画关系门禁: {SummaryPath}{Environment.NewLine}" +
+                $"动画关系门禁索引: {EmptyAsUnknown(LibraryIndex)}{FormatIndexScopeNote()}{Environment.NewLine}" +
                 $"动画关系门禁时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
                 $"动画关系门禁模式: {EmptyAsUnknown(Mode)}{Environment.NewLine}" +
                 $"动画关系门禁状态: {EmptyAsUnknown(GateStatus)}，源索引: {EmptyAsUnknown(SourceIndexStatus)}{Environment.NewLine}" +
@@ -107,7 +121,10 @@ namespace AnimeStudio.LibraryBrowser
 
         public static LibraryDeterministicAnimationSummary Load(string libraryRoot)
         {
-            var path = FindLatestReport(libraryRoot);
+            var defaultIndex = string.IsNullOrWhiteSpace(libraryRoot)
+                ? ""
+                : Path.GetFullPath(Path.Combine(libraryRoot, "library_index.db"));
+            var path = FindLatestReport(libraryRoot, defaultIndex);
             if (string.IsNullOrWhiteSpace(path))
             {
                 return Empty;
@@ -131,9 +148,14 @@ namespace AnimeStudio.LibraryBrowser
                     && candidateSchemaElement.ValueKind == JsonValueKind.Object
                         ? candidateSchemaElement
                         : default;
+                var libraryIndex = ReadString(root, "libraryIndex");
+                var usesDefaultIndex = string.IsNullOrWhiteSpace(libraryIndex)
+                    || PathsEqual(libraryIndex, defaultIndex);
                 return new LibraryDeterministicAnimationSummary(
                     true,
                     path,
+                    libraryIndex,
+                    usesDefaultIndex,
                     ReadString(root, "mode"),
                     ReadString(gate, "status"),
                     ReadString(sourceHealth, "status"),
@@ -152,7 +174,7 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private static string FindLatestReport(string libraryRoot)
+        private static string FindLatestReport(string libraryRoot, string defaultIndex)
         {
             if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
             {
@@ -167,7 +189,13 @@ namespace AnimeStudio.LibraryBrowser
                 .Select(x => new FileInfo(x))
                 .OrderByDescending(x => x.LastWriteTimeUtc)
                 .ToArray();
-            return candidates.Length == 0 ? "" : candidates[0].FullName;
+            if (candidates.Length == 0)
+            {
+                return "";
+            }
+
+            var defaultReport = candidates.FirstOrDefault(x => ReportUsesDefaultIndex(x.FullName, defaultIndex));
+            return defaultReport?.FullName ?? candidates[0].FullName;
         }
 
         private static string EmptyAsUnknown(string value)
@@ -183,6 +211,53 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return $"，{CandidateTableSchemaNote}";
+        }
+
+        private string FormatIndexScopeNote()
+        {
+            return UsesDefaultLibraryIndex
+                ? ""
+                : "，旁路报告，不代表当前正式 library_index.db";
+        }
+
+        private static bool ReportUsesDefaultIndex(string reportPath, string defaultIndex)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || string.IsNullOrWhiteSpace(defaultIndex))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                var libraryIndex = ReadString(document.RootElement, "libraryIndex");
+                return string.IsNullOrWhiteSpace(libraryIndex)
+                    || PathsEqual(libraryIndex, defaultIndex);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool PathsEqual(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            {
+                return false;
+            }
+
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         private static string ReadString(JsonElement element, string property)
