@@ -991,14 +991,33 @@ FROM animation_bake_cache;";
 
         private static bool AvatarTrustSourceMatchesExplicitRequest(JsonElement root, JsonElement avatarTrust)
         {
+            var source = ReadString(avatarTrust, "Source") ?? ReadString(avatarTrust, "source");
             if (!ReportRequestHasExplicitAvatarAsset(root))
             {
-                return true;
+                return IsProductionAvatarTrustSource(source);
             }
 
-            var source = ReadString(avatarTrust, "Source") ?? ReadString(avatarTrust, "source");
             return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
                 && ReportHasImportedAvatarAssetProof(root);
+        }
+
+        private static bool IsProductionAvatarTrustSource(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return false;
+            }
+
+            // AvatarConstant / internalSolver / oracle 是恢复原始 Avatar 的诊断输入。
+            // 旧报告可能把它们写成 TrustedProductionBake=true，Browser 仍要按当前主线规则拒绝。
+            if (source.Contains("internal_solver", StringComparison.OrdinalIgnoreCase)
+                || source.Contains("avatar_constant", StringComparison.OrdinalIgnoreCase)
+                || source.Contains("oracle", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private static bool ReportHasImportedAvatarAssetProof(JsonElement root)
@@ -1015,6 +1034,11 @@ FROM animation_bake_cache;";
 
         private static bool ReportRequestHasExplicitAvatarAsset(JsonElement root)
         {
+            if (!string.IsNullOrWhiteSpace(ReadString(root, "unityBakeRequestedAvatarAsset")))
+            {
+                return true;
+            }
+
             var requestPath = ReadString(root, "request");
             if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
             {

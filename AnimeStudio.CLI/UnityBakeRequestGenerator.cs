@@ -2093,11 +2093,16 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
                     && ReportHasImportedAvatarAssetProof(report);
             }
 
-            return !string.Equals(source, "avatar_constant_oracle_unity_validated", StringComparison.OrdinalIgnoreCase);
+            return IsProductionAvatarTrustSource(source);
         }
 
         private static bool ReportRequestHasExplicitAvatarAsset(JObject report)
         {
+            if (!string.IsNullOrWhiteSpace((string)report?["unityBakeRequestedAvatarAsset"]))
+            {
+                return true;
+            }
+
             var requestPath = (string)report?["request"];
             if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
             {
@@ -2113,6 +2118,23 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             {
                 return false;
             }
+        }
+
+        private static bool IsProductionAvatarTrustSource(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return false;
+            }
+
+            if (source.Contains("internal_solver", StringComparison.OrdinalIgnoreCase)
+                || source.Contains("avatar_constant", StringComparison.OrdinalIgnoreCase)
+                || source.Contains("oracle", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private static bool ReportHasImportedAvatarAssetProof(JObject report)

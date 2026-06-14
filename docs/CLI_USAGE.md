@@ -1026,6 +1026,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 `--preview_validation_limit 0` 写 `status=summary_only` 批次报告时，会复用刚刷新的 `animation_bake_cache_summary.json` 里的候选分母和 Avatar 来源字段，避免为了 Browser 状态再重复扫描几百万显式候选。
 
+读取旧 `unity_bake_apply_report.json` 时，Browser、CLI 摘要和覆盖率脚本会按当前规则重新判断 Avatar 信任来源：`internal_solver`、`avatar_constant`、`oracle` 这类来源即使旧报告写了 `TrustedProductionBake=true`，也只算诊断结果，不再计入可信可播放 baked 动画；显式 `unityAssetPaths.avatarAsset` 请求还必须看到 `imported_unity_avatar_asset` 来源和有效导入 Avatar 证明。
+
 先从 `model_animations.json` 生成请求：
 
 ```powershell

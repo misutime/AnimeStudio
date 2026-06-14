@@ -402,6 +402,8 @@ def unity_bake_apply_report_for_gltf(baked_gltf_path, library_root):
 def report_request_has_explicit_avatar_asset(report):
     if bool((report or {}).get("_selfTestExplicitAvatarAsset")):
         return True
+    if str((report or {}).get("unityBakeRequestedAvatarAsset") or "").strip():
+        return True
     request_path = str((report or {}).get("request") or "").strip()
     if not request_path or not os.path.exists(request_path):
         return False
@@ -411,14 +413,25 @@ def report_request_has_explicit_avatar_asset(report):
 
 
 def avatar_trust_matches_explicit_request(report, avatar_trust):
-    if not report_request_has_explicit_avatar_asset(report):
-        return True
     source = str(
         (avatar_trust or {}).get("Source")
         or (avatar_trust or {}).get("source")
         or ""
     ).strip().lower()
+    if not report_request_has_explicit_avatar_asset(report):
+        return is_production_avatar_trust_source(source)
     return source == "imported_unity_avatar_asset" and report_has_imported_avatar_asset_proof(report)
+
+
+def is_production_avatar_trust_source(source):
+    if not source:
+        return False
+    lowered = str(source).strip().lower()
+    return (
+        "internal_solver" not in lowered
+        and "avatar_constant" not in lowered
+        and "oracle" not in lowered
+    )
 
 
 def report_has_imported_avatar_asset_proof(report):
@@ -436,30 +449,56 @@ def run_self_test():
             {"unityBakeImportedAvatarAssetValid": True},
             {"Source": "imported_unity_avatar_asset"},
             True,
+            True,
         ),
         (
             "explicit_avatar_old_helper_rest_pose_valid",
             {"unityBakeRigRestPoseSource": "imported_unity_avatar_asset", "unityBakeRigRestPoseApplied": True},
             {"Source": "imported_unity_avatar_asset"},
             True,
+            True,
         ),
         (
             "explicit_avatar_source_only_rejected",
             {},
             {"Source": "imported_unity_avatar_asset"},
+            True,
             False,
         ),
         (
             "explicit_avatar_wrong_source_rejected",
             {"unityBakeImportedAvatarAssetValid": True},
             {"Source": "human_description_skeleton_bones"},
+            True,
             False,
+        ),
+        (
+            "implicit_internal_solver_rejected",
+            {},
+            {"Source": "internal_solver_avatar_default_pose"},
+            False,
+            False,
+        ),
+        (
+            "implicit_avatar_constant_rejected",
+            {},
+            {"Source": "avatar_constant_oracle_default_pose"},
+            False,
+            False,
+        ),
+        (
+            "implicit_human_description_allowed",
+            {},
+            {"Source": "human_description_skeleton_bones"},
+            False,
+            True,
         ),
     ]
     failures = []
-    for name, report_patch, avatar_trust, expected in cases:
+    for name, report_patch, avatar_trust, explicit_avatar_asset, expected in cases:
         report = dict(report_patch)
-        report["_selfTestExplicitAvatarAsset"] = True
+        if explicit_avatar_asset:
+            report["_selfTestExplicitAvatarAsset"] = True
         actual = avatar_trust_matches_explicit_request(report, avatar_trust)
         if actual != expected:
             failures.append({"case": name, "expected": expected, "actual": actual})
