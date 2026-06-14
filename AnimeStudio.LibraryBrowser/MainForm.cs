@@ -4588,6 +4588,9 @@ namespace AnimeStudio.LibraryBrowser
             public int SkippedMissingAvatarOracle { get; set; }
             public int SuccessCount { get; set; }
             public int FailureCount { get; set; }
+            public Dictionary<string, int> AvatarSourceCounts => CountItemsByString(x => x.AvatarSource);
+            public Dictionary<string, int> AvatarAssetCounts => CountItemsByString(x => x.AvatarAsset);
+            public Dictionary<string, int> AvatarMatchKeyCounts => CountItemsByString(x => x.AvatarMatchKey);
             public List<UnityBakeBatchUiReportItem> Items { get; } = new();
 
             public UnityBakeBatchUiReportItem StartItem(
@@ -4638,6 +4641,24 @@ namespace AnimeStudio.LibraryBrowser
                 CompletedAtUtc = DateTime.UtcNow;
                 SuccessCount = successCount;
                 FailureCount = failureCount;
+            }
+
+            private Dictionary<string, int> CountItemsByString(Func<UnityBakeBatchUiReportItem, string> selector)
+            {
+                var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in Items)
+                {
+                    var key = selector(item);
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        continue;
+                    }
+
+                    key = key.Trim();
+                    result[key] = result.TryGetValue(key, out var oldCount) ? oldCount + 1 : 1;
+                }
+
+                return result;
             }
         }
 
