@@ -88,6 +88,8 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 
 Library Browser 和 CLI 批量 Unity bake 会自动扫描 `UnityBakeProject/Assets/AnimeStudioBake/ImportedAvatar/*.asset`，按文件名把已导入的 Avatar asset 加入候选映射；全局或素材库本地 `unityAvatarAssets` 仍可显式覆盖。这样原神恢复新的 Avatar asset 后，通常只需要把 `.asset` 放进固定目录并让 Unity 导入，不需要每次手写 JSON 或给每个批量命令传同一个 `--unity_avatar_asset`。
 
+CLI 全量摘要也会把这条路径单独统计出来。`--bake_animation_previews_from_library ... --preview_validation_limit 0` 会写出 `importedAvatarAssetBakeReadyExplicitUnityBakeCandidates` 和 `effectiveBakeReadyExplicitUnityBakeCandidates`：前者只看导入 Avatar asset 命中的显式候选，后者是 HumanDescription / 原始 prefab Avatar 与导入 Avatar asset 的联合覆盖。这个数字只说明“已经具备确定性 Unity bake oracle”，不新增模型-动画关系，也不代表视觉已经人工验收。
+
 从打包 `AvatarConstant` 恢复出的 `avatar.oracle` / `internalSolver` 只能作为定位原始 Avatar asset 和后续公式研究的诊断输入，不能单独算生产 bake ready。只有 Unity 返回有效 Humanoid Avatar，且 apply 报告里 `avatarTrust.TrustedProductionBake=true`，Browser 才把 baked glTF 当作可播放生产预览。内部 `Avatar/Muscle -> glTF TRS` 求解保留为实验诊断入口，不作为默认预览或验收路径。
 
 Library Browser 不要求用户通过环境变量配置 Unity 路径。需要运行 Unity bake 生产预览时，配置优先级如下：

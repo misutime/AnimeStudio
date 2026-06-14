@@ -186,7 +186,7 @@ namespace AnimeStudio.CLI
             {
                 WriteSummaryOnlyBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, force);
                 TryCompactBakeCache(dbPath, libraryRoot);
-                TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: true);
+                TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: true, unityProject);
                 Logger.Info("Unity bake batch limit is 0; wrote reports only and skipped request generation.");
                 return;
             }
@@ -221,7 +221,7 @@ namespace AnimeStudio.CLI
                     {
                         WriteNoOpBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, cachedSelections.Length);
                         TryCompactBakeCache(dbPath, libraryRoot);
-                        TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: false);
+                        TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: false, unityProject);
                         Logger.Info($"Unity bake batch has no pending candidates because {cachedSelections.Length} matching candidate(s) in this batch window are already processed by trusted bake, static_pose, or needs_review. Use --preview_validation_force to rebuild them.");
                         return;
                     }
@@ -340,7 +340,7 @@ namespace AnimeStudio.CLI
             {
                 Logger.Info("Unity bake dry run wrote requests only; animation_bake_cache was not updated.");
             }
-            TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: false);
+            TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: false, unityProject);
         }
 
         private static void WriteNoOpBakeBatchReport(
@@ -1358,7 +1358,7 @@ FROM animation_bake_cache;";
                     : DateTime.MinValue;
         }
 
-        private static void TryWriteBakeCacheSummary(string dbPath, string outputDirectory, string libraryRoot, bool fullScan = false)
+        private static void TryWriteBakeCacheSummary(string dbPath, string outputDirectory, string libraryRoot, bool fullScan = false, string unityProject = null)
         {
             try
             {
@@ -1375,51 +1375,54 @@ FROM animation_bake_cache;";
                     return;
                 }
 
+                var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
+                var importedAvatarAssetFileCount = importedAvatarAssets.Values
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+                CreateTempImportedAvatarAssetKeys(connection, importedAvatarAssets);
+                CreateTempExplicitUnityBakeCandidateTable(connection);
                 var explicitUnityBakeCandidates = ScalarLong(connection, @"
 SELECT COUNT(*)
-FROM model_animation_candidates
-WHERE relation_source='explicit'
-  AND (
-    COALESCE(json_extract(raw_json, '$.requiresUnityBake'), 0)=1
-    OR COALESCE(json_extract(raw_json, '$.legacyUnityBakeSupported'), 0)=1
-    OR COALESCE(json_extract(raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
-  );");
+FROM temp_explicit_unity_bake_candidates;");
                 var uniqueExplicitUnityBakeCandidates = ScalarLong(connection, @"
 SELECT COUNT(*)
 FROM (
   SELECT DISTINCT model_output, animation_output
-  FROM model_animation_candidates
-  WHERE relation_source='explicit'
-    AND (
-      COALESCE(json_extract(raw_json, '$.requiresUnityBake'), 0)=1
-      OR COALESCE(json_extract(raw_json, '$.legacyUnityBakeSupported'), 0)=1
-      OR COALESCE(json_extract(raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
-    )
+  FROM temp_explicit_unity_bake_candidates
 );");
                 var bakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
 SELECT COUNT(*)
-FROM model_animation_candidates c
-JOIN assets m ON m.kind='Model' AND m.output=c.model_output
-WHERE c.relation_source='explicit'
-  AND (
-    COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
-    OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0)=1
-    OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
-  )
-  AND " + BakeReadyAvatarSql("m") + @";");
+FROM temp_explicit_unity_bake_candidates
+WHERE bake_ready_avatar=1;");
                 var uniqueBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
 SELECT COUNT(*)
 FROM (
-  SELECT DISTINCT c.model_output, c.animation_output
-  FROM model_animation_candidates c
-  JOIN assets m ON m.kind='Model' AND m.output=c.model_output
-  WHERE c.relation_source='explicit'
-    AND (
-      COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
-      OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0)=1
-      OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
-    )
-    AND " + BakeReadyAvatarSql("m") + @"
+  SELECT DISTINCT model_output, animation_output
+  FROM temp_explicit_unity_bake_candidates
+  WHERE bake_ready_avatar=1
+);");
+                var importedAvatarAssetBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM temp_explicit_unity_bake_candidates
+WHERE imported_avatar_ready=1;");
+                var uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM (
+  SELECT DISTINCT model_output, animation_output
+  FROM temp_explicit_unity_bake_candidates
+  WHERE imported_avatar_ready=1
+);");
+                var effectiveBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM temp_explicit_unity_bake_candidates
+WHERE bake_ready_avatar=1 OR imported_avatar_ready=1;");
+                var uniqueEffectiveBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM (
+  SELECT DISTINCT model_output, animation_output
+  FROM temp_explicit_unity_bake_candidates
+  WHERE bake_ready_avatar=1 OR imported_avatar_ready=1
 );");
                 var bakeReadyCacheWhere = BuildBakeReadyCacheWhere("bc");
                 var cachedCandidates = ScalarLong(connection, $@"
@@ -1456,6 +1459,20 @@ WHERE bc.status='baked'
                     ["uniqueBakeReadyExplicitUnityBakeCoverage"] = Ratio(uniqueBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
                     ["bakeReadyExplicitUnityBakeCoveragePercent"] = Percent(bakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
                     ["uniqueBakeReadyExplicitUnityBakeCoveragePercent"] = Percent(uniqueBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
+                    ["importedAvatarAssetFileCount"] = importedAvatarAssetFileCount,
+                    ["importedAvatarAssetKeyCount"] = importedAvatarAssets.Count,
+                    ["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = importedAvatarAssetBakeReadyExplicitUnityBakeCandidates,
+                    ["uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates,
+                    ["importedAvatarAssetBakeReadyExplicitUnityBakeCoverage"] = Ratio(importedAvatarAssetBakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
+                    ["uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCoverage"] = Ratio(uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
+                    ["importedAvatarAssetBakeReadyExplicitUnityBakeCoveragePercent"] = Percent(importedAvatarAssetBakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
+                    ["uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCoveragePercent"] = Percent(uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
+                    ["effectiveBakeReadyExplicitUnityBakeCandidates"] = effectiveBakeReadyExplicitUnityBakeCandidates,
+                    ["uniqueEffectiveBakeReadyExplicitUnityBakeCandidates"] = uniqueEffectiveBakeReadyExplicitUnityBakeCandidates,
+                    ["effectiveBakeReadyExplicitUnityBakeCoverage"] = Ratio(effectiveBakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
+                    ["uniqueEffectiveBakeReadyExplicitUnityBakeCoverage"] = Ratio(uniqueEffectiveBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
+                    ["effectiveBakeReadyExplicitUnityBakeCoveragePercent"] = Percent(effectiveBakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
+                    ["uniqueEffectiveBakeReadyExplicitUnityBakeCoveragePercent"] = Percent(uniqueEffectiveBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
                     ["cachedCandidates"] = cachedCandidates,
                     ["requestWrittenCandidates"] = requestWrittenCandidates,
                     ["bakedCandidates"] = bakedCandidates,
@@ -1995,6 +2012,92 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             }
 
             return result;
+        }
+
+        private static void CreateTempImportedAvatarAssetKeys(
+            SqliteConnection connection,
+            IReadOnlyDictionary<string, string> importedAvatarAssets)
+        {
+            using (var drop = connection.CreateCommand())
+            {
+                drop.CommandText = "DROP TABLE IF EXISTS temp_imported_avatar_asset_keys;";
+                drop.ExecuteNonQuery();
+            }
+
+            using (var create = connection.CreateCommand())
+            {
+                create.CommandText = "CREATE TEMP TABLE temp_imported_avatar_asset_keys(key TEXT PRIMARY KEY);";
+                create.ExecuteNonQuery();
+            }
+
+            if (importedAvatarAssets == null || importedAvatarAssets.Count == 0)
+            {
+                return;
+            }
+
+            using var transaction = connection.BeginTransaction();
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT OR IGNORE INTO temp_imported_avatar_asset_keys(key) VALUES ($key);";
+            var keyParameter = insert.CreateParameter();
+            keyParameter.ParameterName = "$key";
+            insert.Parameters.Add(keyParameter);
+
+            foreach (var key in importedAvatarAssets.Keys.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                keyParameter.Value = key.Trim();
+                insert.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+
+        private static void CreateTempExplicitUnityBakeCandidateTable(SqliteConnection connection)
+        {
+            using (var drop = connection.CreateCommand())
+            {
+                drop.CommandText = "DROP TABLE IF EXISTS temp_explicit_unity_bake_candidates;";
+                drop.ExecuteNonQuery();
+            }
+
+            using (var create = connection.CreateCommand())
+            {
+                // 这个表只服务全量摘要统计：候选关系仍来自 SQLite 里的 Unity 显式关系，不在这里新增或猜测绑定。
+                create.CommandText = @"
+CREATE TEMP TABLE temp_explicit_unity_bake_candidates AS
+SELECT c.model_output AS model_output
+     , c.animation_output AS animation_output
+     , CASE WHEN " + BakeReadyAvatarSql("m") + @" THEN 1 ELSE 0 END AS bake_ready_avatar
+     , CASE WHEN " + ImportedAvatarAssetMatchSql("m") + @" THEN 1 ELSE 0 END AS imported_avatar_ready
+FROM model_animation_candidates c
+JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+WHERE c.relation_source='explicit'
+  AND (
+    COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+  );";
+                create.ExecuteNonQuery();
+            }
+
+            using (var index = connection.CreateCommand())
+            {
+                index.CommandText = @"
+CREATE INDEX temp_explicit_unity_bake_candidates_pair_idx
+ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
+                index.ExecuteNonQuery();
+            }
+        }
+
+        private static string ImportedAvatarAssetMatchSql(string modelAlias)
+        {
+            var raw = $"{modelAlias}.raw_json";
+            return $@"EXISTS (
+    SELECT 1
+    FROM temp_imported_avatar_asset_keys importedAvatar
+    WHERE importedAvatar.key = COALESCE(json_extract({raw}, '$.avatar.name'), '')
+       OR importedAvatar.key = COALESCE({modelAlias}.name, '')
+  )";
         }
 
         private static string ResolveUnityAvatarAssetForSelection(
