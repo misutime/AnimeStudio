@@ -526,6 +526,7 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
             var p = AddParameters(command, "$modelOutput", "$animationOutput", "$relationSource", "$confidence", "$score", "$status", "$needsValidation", "$rawJson");
 
             long count = 0;
+            long skippedNonExplicit = 0;
             foreach (var modelRef in index["modelAnimationRefs"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
                 var modelId = S(modelRef, "modelId");
@@ -544,20 +545,37 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
 
                     var relationSource = S(candidate, "relationSource");
                     var confidence = S(candidate, "confidence");
+                    if (!IsExplicitModelAnimationRelation(relationSource, confidence))
+                    {
+                        skippedNonExplicit++;
+                        continue;
+                    }
+
                     Set(p, "$modelOutput", modelOutput);
                     Set(p, "$animationOutput", animationOutput);
                     Set(p, "$relationSource", relationSource);
                     Set(p, "$confidence", confidence);
                     Set(p, "$score", D(candidate, "score"));
-                    Set(p, "$status", string.Equals(relationSource, "explicit", StringComparison.OrdinalIgnoreCase) || string.Equals(confidence, "explicit_unity_reference", StringComparison.OrdinalIgnoreCase) ? "explicit" : "needs_validation");
-                    Set(p, "$needsValidation", string.Equals(relationSource, "explicit", StringComparison.OrdinalIgnoreCase) ? 0 : 1);
+                    Set(p, "$status", "explicit");
+                    Set(p, "$needsValidation", 0);
                     Set(p, "$rawJson", candidate.ToString(Formatting.None));
                     command.ExecuteNonQuery();
                     count++;
                 }
             }
 
+            if (skippedNonExplicit > 0)
+            {
+                Logger.Info($"Skipped {skippedNonExplicit} non-explicit compact model-animation candidate(s); fallback/diagnostic relations are not imported into model_animation_candidates.");
+            }
+
             return count;
+        }
+
+        private static bool IsExplicitModelAnimationRelation(string relationSource, string confidence)
+        {
+            return string.Equals(relationSource, "explicit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(confidence, "explicit_unity_reference", StringComparison.OrdinalIgnoreCase);
         }
 
         private static long ImportExplicitModelAnimationCandidatesFromSourceIndex(SqliteConnection connection, SqliteTransaction transaction, string root, string sourceIndexPath)
