@@ -210,8 +210,8 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return
-                $"最近Browser批量烘焙报告: {LatestBatch.ReportPath}{Environment.NewLine}" +
-                $"最近Browser批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}" +
+                $"最近{LatestBatch.SourceLabel}批量烘焙报告: {LatestBatch.ReportPath}{Environment.NewLine}" +
+                $"最近{LatestBatch.SourceLabel}批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}" +
                 LatestBatchAvatarSourceText();
         }
 
@@ -219,21 +219,15 @@ namespace AnimeStudio.LibraryBrowser
         {
             try
             {
-                var directory = Path.Combine(libraryRoot, ".as_browser_cache", "unity_bake_batch_reports");
-                if (!Directory.Exists(directory))
-                {
-                    return LatestBatchReport.Empty;
-                }
-
-                var reportPath = Directory.GetFiles(directory, "*.json")
-                    .OrderByDescending(File.GetLastWriteTimeUtc)
+                var reportFile = EnumerateBatchReportFiles(libraryRoot)
+                    .OrderByDescending(x => x.File.LastWriteTimeUtc)
                     .FirstOrDefault();
-                if (string.IsNullOrWhiteSpace(reportPath))
+                if (reportFile.File == null)
                 {
                     return LatestBatchReport.Empty;
                 }
 
-                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                using var document = JsonDocument.Parse(File.ReadAllText(reportFile.File.FullName));
                 var root = document.RootElement;
                 var avatarSourceCounts = ReadCountMap(root, "AvatarSourceCounts", "avatarSourceCounts");
                 if (avatarSourceCounts.Count == 0)
@@ -243,19 +237,43 @@ namespace AnimeStudio.LibraryBrowser
 
                 return new LatestBatchReport(
                     true,
-                    reportPath,
-                    ReadString(root, "Label", "label"),
-                    ReadString(root, "CompletedAtUtc", "completedAtUtc"),
-                    ReadInt64(root, "SuccessCount", "successCount"),
+                    reportFile.File.FullName,
+                    ReadString(root, "Label", "label", "mode"),
+                    ReadString(root, "CompletedAtUtc", "completedAtUtc", "generatedAt"),
+                    ReadInt64(root, "SuccessCount", "successCount", "bakedCompleted"),
                     ReadInt64(root, "FailureCount", "failureCount"),
-                    ReadInt64(root, "PendingCount", "pendingCount"),
+                    ReadInt64(root, "PendingCount", "pendingCount", "requestsWritten"),
                     ReadInt64(root, "SkippedAlreadyBaked", "skippedAlreadyBaked"),
                     ReadInt64(root, "SkippedMissingAvatarOracle", "skippedMissingAvatarOracle"),
-                    FormatAvatarSourceCounts(avatarSourceCounts));
+                    FormatAvatarSourceCounts(avatarSourceCounts),
+                    reportFile.SourceLabel);
             }
             catch
             {
                 return LatestBatchReport.Empty;
+            }
+        }
+
+        private static IEnumerable<BatchReportFile> EnumerateBatchReportFiles(string libraryRoot)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                yield break;
+            }
+
+            var browserDirectory = Path.Combine(libraryRoot, ".as_browser_cache", "unity_bake_batch_reports");
+            if (Directory.Exists(browserDirectory))
+            {
+                foreach (var path in Directory.GetFiles(browserDirectory, "*.json"))
+                {
+                    yield return new BatchReportFile(new FileInfo(path), "Browser");
+                }
+            }
+
+            var cliReport = Path.Combine(libraryRoot, "UnityBakedAnimationPreviews", "unity_bake_batch_report.json");
+            if (File.Exists(cliReport))
+            {
+                yield return new BatchReportFile(new FileInfo(cliReport), "CLI");
             }
         }
 
@@ -271,14 +289,25 @@ namespace AnimeStudio.LibraryBrowser
 
         private static string ReadString(JsonElement element, string property)
         {
-            return ReadString(element, property, null);
+            return ReadString(element, property, Array.Empty<string>());
         }
 
-        private static string ReadString(JsonElement element, string property, string fallbackProperty)
+        private static string ReadString(JsonElement element, string property, params string[] fallbackProperties)
         {
-            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            JsonElement value = default;
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out value))
             {
-                if (string.IsNullOrWhiteSpace(fallbackProperty) || !element.TryGetProperty(fallbackProperty, out value))
+                var found = false;
+                foreach (var fallbackProperty in fallbackProperties ?? Array.Empty<string>())
+                {
+                    if (!string.IsNullOrWhiteSpace(fallbackProperty) && element.TryGetProperty(fallbackProperty, out value))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
                 {
                     return "";
                 }
@@ -289,9 +318,25 @@ namespace AnimeStudio.LibraryBrowser
 
         private static long ReadInt64(JsonElement element, string property, string fallbackProperty = null)
         {
-            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            return ReadInt64(element, property, string.IsNullOrWhiteSpace(fallbackProperty) ? Array.Empty<string>() : new[] { fallbackProperty });
+        }
+
+        private static long ReadInt64(JsonElement element, string property, params string[] fallbackProperties)
+        {
+            JsonElement value = default;
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out value))
             {
-                if (string.IsNullOrWhiteSpace(fallbackProperty) || !element.TryGetProperty(fallbackProperty, out value))
+                var found = false;
+                foreach (var fallbackProperty in fallbackProperties ?? Array.Empty<string>())
+                {
+                    if (!string.IsNullOrWhiteSpace(fallbackProperty) && element.TryGetProperty(fallbackProperty, out value))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
                 {
                     return 0;
                 }
@@ -439,7 +484,7 @@ namespace AnimeStudio.LibraryBrowser
 
         internal sealed class LatestBatchReport
         {
-            public static LatestBatchReport Empty { get; } = new(false, "", "", "", 0, 0, 0, 0, 0, "");
+            public static LatestBatchReport Empty { get; } = new(false, "", "", "", 0, 0, 0, 0, 0, "", "Browser");
 
             public LatestBatchReport(
                 bool exists,
@@ -451,7 +496,8 @@ namespace AnimeStudio.LibraryBrowser
                 long pendingCount,
                 long skippedAlreadyBaked,
                 long skippedMissingAvatarOracle,
-                string avatarSourceCountsText)
+                string avatarSourceCountsText,
+                string sourceLabel)
             {
                 Exists = exists;
                 ReportPath = reportPath ?? "";
@@ -463,6 +509,7 @@ namespace AnimeStudio.LibraryBrowser
                 SkippedAlreadyBaked = skippedAlreadyBaked;
                 SkippedMissingAvatarOracle = skippedMissingAvatarOracle;
                 AvatarSourceCountsText = avatarSourceCountsText ?? "";
+                SourceLabel = string.IsNullOrWhiteSpace(sourceLabel) ? "Browser" : sourceLabel;
             }
 
             public bool Exists { get; }
@@ -475,6 +522,19 @@ namespace AnimeStudio.LibraryBrowser
             public long SkippedAlreadyBaked { get; }
             public long SkippedMissingAvatarOracle { get; }
             public string AvatarSourceCountsText { get; }
+            public string SourceLabel { get; }
+        }
+
+        private sealed class BatchReportFile
+        {
+            public BatchReportFile(FileInfo file, string sourceLabel)
+            {
+                File = file;
+                SourceLabel = sourceLabel ?? "";
+            }
+
+            public FileInfo File { get; }
+            public string SourceLabel { get; }
         }
 
         private string LatestBatchAvatarSourceText()
