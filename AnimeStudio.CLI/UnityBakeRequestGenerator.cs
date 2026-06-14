@@ -107,17 +107,20 @@ namespace AnimeStudio.CLI
                 Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
                 return;
             }
+            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
             var selection = SelectExplicitCandidateFromLibraryDb(
                 dbPath,
                 modelSelector,
                 animationSelector,
-                allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset));
+                allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset),
+                importedAvatarAssets);
             if (selection == null)
             {
                 Logger.Error("No explicit model-animation candidate matched the SQLite Unity bake request selectors.");
                 return;
             }
 
+            var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets);
             ResolveSelectionLibraryPaths(selection, libraryRoot);
             GenerateSelection(
                 dbPath,
@@ -128,7 +131,7 @@ namespace AnimeStudio.CLI
                 unityEditor,
                 unityModelPrefab,
                 unityAnimationClip,
-                unityAvatarAsset,
+                effectiveUnityAvatarAsset,
                 unityBakeOutput,
                 frameRate,
                 probeMuscles,
@@ -189,6 +192,7 @@ namespace AnimeStudio.CLI
             }
 
             limit = Math.Max(1, limit);
+            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
 
             var selections = SelectExplicitBakeCandidatesFromLibraryDb(
                     dbPath,
@@ -196,7 +200,8 @@ namespace AnimeStudio.CLI
                     animationSelector,
                     limit,
                     skipBakedCache: !force,
-                    allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset))
+                    allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset),
+                    importedAvatarAssets)
                 .ToArray();
             if (selections.Length == 0)
             {
@@ -208,7 +213,8 @@ namespace AnimeStudio.CLI
                             animationSelector,
                             limit,
                             skipBakedCache: false,
-                            allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset))
+                            allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset),
+                            importedAvatarAssets)
                         .Take(limit)
                         .ToArray();
                     if (cachedSelections.Length > 0)
@@ -235,6 +241,7 @@ namespace AnimeStudio.CLI
                 var animationName = (string)selection.Animation["name"];
                 var itemOutput = Path.Combine(output, $"{SafeName(modelName)}__{SafeName(animationName)}");
                 var itemFbx = BuildBatchFbxPath(bakedFbxOutput, output, modelName, animationName);
+                var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets);
 
                 var requestPath = GenerateSelection(
                     dbPath,
@@ -245,7 +252,7 @@ namespace AnimeStudio.CLI
                     unityEditor,
                     unityModelPrefab,
                     unityAnimationClip,
-                    unityAvatarAsset,
+                    effectiveUnityAvatarAsset,
                     null,
                     frameRate,
                     probeMuscles: false,
@@ -869,9 +876,20 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static PreviewSelection SelectExplicitCandidateFromLibraryDb(string dbPath, string modelSelector, string animationSelector, bool allowSuppliedAvatarAsset = false)
+        private static PreviewSelection SelectExplicitCandidateFromLibraryDb(
+            string dbPath,
+            string modelSelector,
+            string animationSelector,
+            bool allowSuppliedAvatarAsset = false,
+            IReadOnlyDictionary<string, string> importedAvatarAssets = null)
         {
-            return SelectExplicitBakeCandidatesFromLibraryDb(dbPath, modelSelector, animationSelector, 1, allowSuppliedAvatarAsset: allowSuppliedAvatarAsset)
+            return SelectExplicitBakeCandidatesFromLibraryDb(
+                    dbPath,
+                    modelSelector,
+                    animationSelector,
+                    1,
+                    allowSuppliedAvatarAsset: allowSuppliedAvatarAsset,
+                    importedAvatarAssets: importedAvatarAssets)
                 .FirstOrDefault();
         }
 
@@ -881,7 +899,8 @@ namespace AnimeStudio.CLI
             string animationSelector,
             int limit,
             bool skipBakedCache = false,
-            bool allowSuppliedAvatarAsset = false)
+            bool allowSuppliedAvatarAsset = false,
+            IReadOnlyDictionary<string, string> importedAvatarAssets = null)
         {
             SQLitePCL.Batteries_V2.Init();
             using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
@@ -1001,7 +1020,7 @@ WHERE c.relation_source='explicit'
     OR COALESCE(json_extract(a.raw_json, '$.hasMuscleClip'), 0) = 1
     OR COALESCE(json_extract(a.raw_json, '$.animationType'), '') LIKE '%Humanoid%'
   )
-  AND ($hasSuppliedAvatar = 1 OR " + BakeReadyAvatarSql("m") + @")
+  AND ($hasSuppliedAvatar = 1 OR $hasImportedAvatarAssets = 1 OR " + BakeReadyAvatarSql("m") + @")
   AND ($hasModelFilter = 0 OR c.model_output IN (SELECT output FROM temp_unity_bake_models))
   AND ($hasAnimationFilter = 0 OR c.animation_output IN (SELECT output FROM temp_unity_bake_animations))
 " + skipBakedCacheSql + @"
@@ -1031,6 +1050,7 @@ LIMIT $queryLimit;";
             command.Parameters.AddWithValue("$diversifyModels", diversifyModels ? 1 : 0);
             command.Parameters.AddWithValue("$modelRankLimit", modelRankLimit);
             command.Parameters.AddWithValue("$hasSuppliedAvatar", allowSuppliedAvatarAsset ? 1 : 0);
+            command.Parameters.AddWithValue("$hasImportedAvatarAssets", importedAvatarAssets?.Count > 0 ? 1 : 0);
 
             var result = new List<PreviewSelection>();
             using var reader = command.ExecuteReader();
@@ -1059,6 +1079,12 @@ LIMIT $queryLimit;";
                 animation["candidate"] = relation;
                 animation["requiresHumanoidBake"] = true;
                 ResolveBatchCandidatePaths(model, animation, libraryRoot);
+                if (!allowSuppliedAvatarAsset
+                    && !ModelHasBakeReadyAvatar(model)
+                    && string.IsNullOrWhiteSpace(ResolveUnityAvatarAsset(model, importedAvatarAssets)))
+                {
+                    continue;
+                }
                 if (!File.Exists((string)model["output"]) || !File.Exists((string)animation["output"]))
                 {
                     continue;
@@ -1930,6 +1956,113 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
         private static double Percent(long numerator, long denominator)
         {
             return denominator <= 0 ? 0 : Math.Round((double)numerator * 100.0 / denominator, 6);
+        }
+
+        private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(unityProject))
+            {
+                return result;
+            }
+
+            var directory = Path.Combine(unityProject, "Assets", "AnimeStudioBake", "ImportedAvatar");
+            if (!Directory.Exists(directory))
+            {
+                return result;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                var unityPath = Path.GetRelativePath(unityProject, path).Replace('\\', '/');
+                if (!unityPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // 这些 key 来自真实导入的 Unity Avatar asset 文件名，只用于定位生产 bake 的 Avatar oracle。
+                result[name] = unityPath;
+                if (name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase))
+                {
+                    result[name[..^"_ModelAvatar".Length]] = unityPath;
+                }
+            }
+
+            return result;
+        }
+
+        private static string ResolveUnityAvatarAssetForSelection(
+            PreviewSelection selection,
+            string suppliedUnityAvatarAsset,
+            IReadOnlyDictionary<string, string> importedAvatarAssets)
+        {
+            if (!string.IsNullOrWhiteSpace(suppliedUnityAvatarAsset))
+            {
+                return suppliedUnityAvatarAsset;
+            }
+
+            return ResolveUnityAvatarAsset(selection?.Model?["model"] as JObject, importedAvatarAssets);
+        }
+
+        private static string ResolveUnityAvatarAsset(JObject model, IReadOnlyDictionary<string, string> importedAvatarAssets)
+        {
+            if (model == null || importedAvatarAssets == null || importedAvatarAssets.Count == 0)
+            {
+                return null;
+            }
+
+            foreach (var key in BuildUnityAvatarLookupKeys(model))
+            {
+                if (importedAvatarAssets.TryGetValue(key, out var value))
+                {
+                    return value;
+                }
+            }
+
+            foreach (var key in BuildUnityAvatarLookupKeys(model))
+            {
+                var match = importedAvatarAssets.FirstOrDefault(x => ContainsIgnoreCase(key, x.Key) || ContainsIgnoreCase(x.Key, key));
+                if (!string.IsNullOrWhiteSpace(match.Value))
+                {
+                    return match.Value;
+                }
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<string> BuildUnityAvatarLookupKeys(JObject model)
+        {
+            var avatarName = (string)model?["avatar"]?["name"];
+            var modelName = (string)model?["name"];
+            var output = (string)model?["output"];
+            var fileName = string.IsNullOrWhiteSpace(output) ? null : Path.GetFileName(output);
+            var stem = string.IsNullOrWhiteSpace(fileName) ? null : Path.GetFileNameWithoutExtension(fileName);
+            return new[] { avatarName, modelName, stem, fileName }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static bool ContainsIgnoreCase(string value, string text)
+        {
+            return !string.IsNullOrWhiteSpace(value)
+                && !string.IsNullOrWhiteSpace(text)
+                && value.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool ModelHasBakeReadyAvatar(JObject model)
+        {
+            var avatar = model?["avatar"] as JObject;
+            var humanBones = avatar?["humanBones"] as JArray;
+            var skeletonBones = avatar?["skeletonBones"] as JArray;
+            return humanBones != null && humanBones.Count > 0
+                && skeletonBones != null && skeletonBones.Count > 0;
         }
 
         private static string BakeReadyAvatarSql(string modelAlias)
