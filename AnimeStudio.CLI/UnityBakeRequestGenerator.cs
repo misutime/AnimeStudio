@@ -934,6 +934,8 @@ namespace AnimeStudio.CLI
             }
             CreateTempOutputTable(connection, "temp_unity_bake_models", modelOutputs);
             CreateTempOutputTable(connection, "temp_unity_bake_animations", animationOutputs);
+            CreateTempImportedAvatarAssetKeys(connection, importedAvatarAssets);
+            CreateTempUnityBakeAvatarReadyModelTable(connection);
             var hasBakeCache = skipBakedCache && BakeCacheTableExists(connection);
             if (hasBakeCache)
             {
@@ -958,26 +960,35 @@ namespace AnimeStudio.CLI
                 queryLimit = Math.Min(Math.Max(queryLimit * 64, queryLimit), 4096);
             }
             var modelRankLimit = diversifyModels ? 16 : 1;
+            var readyModelLimit = diversifyModels
+                ? Math.Min(queryLimit, Math.Max(limit * 4, limit))
+                : -1;
 
             using var command = connection.CreateCommand();
             // 下面的名称排序只影响批量预览先后，不参与建立模型-动画关系。
             // 候选本身仍然必须来自 Unity 显式关系，避免把动作名猜测混进素材库绑定结果。
             command.CommandText = @"
-WITH candidate_rows AS (
-SELECT m.raw_json AS model_raw_json
-     , a.raw_json AS animation_raw_json
-     , c.raw_json AS relation_raw_json
-     , c.model_output
+WITH ready_models AS (
+SELECT m.raw_json AS raw_json
+     , m.output AS output
+     , m.name AS name
+FROM assets m
+WHERE m.kind='Model'
+  AND ($hasModelFilter = 0 OR m.output IN (SELECT output FROM temp_unity_bake_models))
+  AND (
+    $hasSuppliedAvatar = 1
+    OR m.output IN (SELECT output FROM temp_unity_bake_avatar_ready_models)
+  )
+ORDER BY m.name COLLATE NOCASE
+LIMIT $readyModelLimit
+),
+candidate_keys AS (
+SELECT c.model_output
      , c.animation_output
      , c.score AS candidate_score
      , m.name AS model_name
      , a.name AS animation_name
-     , CASE
-         WHEN COALESCE(json_extract(a.raw_json, '$.coreTransformBindingCount'), 0) > 0 THEN 0
-         WHEN COALESCE(json_extract(a.raw_json, '$.transformBindingCount'), 0) > 0 THEN 1
-         WHEN COALESCE(json_extract(a.raw_json, '$.curveCount'), 0) > 0 THEN 2
-         ELSE 3
-       END AS dynamic_rank
+     , 0 AS dynamic_rank
      , CASE
          WHEN a.name LIKE '%Standby%' OR a.name LIKE '%Idle%' OR a.name LIKE '%Loop%' OR a.name LIKE '%Sync%' THEN 1
          ELSE 0
@@ -997,12 +1008,6 @@ SELECT m.raw_json AS model_raw_json
            PARTITION BY c.model_output
            ORDER BY
              CASE
-               WHEN COALESCE(json_extract(a.raw_json, '$.coreTransformBindingCount'), 0) > 0 THEN 0
-               WHEN COALESCE(json_extract(a.raw_json, '$.transformBindingCount'), 0) > 0 THEN 1
-               WHEN COALESCE(json_extract(a.raw_json, '$.curveCount'), 0) > 0 THEN 2
-               ELSE 3
-             END ASC,
-             CASE
                WHEN a.name LIKE '%Standby%' OR a.name LIKE '%Idle%' OR a.name LIKE '%Loop%' OR a.name LIKE '%Sync%' THEN 1
                ELSE 0
              END ASC,
@@ -1019,42 +1024,48 @@ SELECT m.raw_json AS model_raw_json
              END ASC,
              c.score DESC,
              COALESCE(json_extract(c.raw_json, '$.missingInternalHumanoidSolver'), 0) ASC,
-             COALESCE(json_extract(a.raw_json, '$.duration'), 0) DESC,
              a.name COLLATE NOCASE
        ) AS model_rank
-FROM model_animation_candidates c
-JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+FROM ready_models m
+JOIN model_animation_candidates c INDEXED BY idx_model_animation_candidates_source_model
+  ON c.relation_source='explicit' AND c.model_output=m.output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
-WHERE c.relation_source='explicit'
-  AND (
-    COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0) = 1
+WHERE (
+    COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0) = 1
+    OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0) = 1
     OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 1
-    OR COALESCE(json_extract(a.raw_json, '$.hasMuscleClip'), 0) = 1
-    OR COALESCE(json_extract(a.raw_json, '$.animationType'), '') LIKE '%Humanoid%'
+    OR COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0) = 1
+    OR COALESCE(json_extract(c.raw_json, '$.productionUnityBakeReady'), 0) = 1
   )
-  AND ($hasSuppliedAvatar = 1 OR $hasImportedAvatarAssets = 1 OR " + BakeReadyAvatarSql("m") + @")
-  AND ($hasModelFilter = 0 OR c.model_output IN (SELECT output FROM temp_unity_bake_models))
   AND ($hasAnimationFilter = 0 OR c.animation_output IN (SELECT output FROM temp_unity_bake_animations))
 " + skipBakedCacheSql + @"
 )
-SELECT model_raw_json, animation_raw_json, relation_raw_json, model_output, animation_output
-FROM candidate_rows
-WHERE ($diversifyModels = 0 OR model_rank <= $modelRankLimit)
+SELECT m.raw_json AS model_raw_json
+     , a.raw_json AS animation_raw_json
+     , c.raw_json AS relation_raw_json
+     , k.model_output
+     , k.animation_output
+FROM candidate_keys k
+JOIN ready_models m ON m.output=k.model_output
+JOIN model_animation_candidates c INDEXED BY idx_model_animation_candidates_source_model
+  ON c.relation_source='explicit' AND c.model_output=k.model_output AND c.animation_output=k.animation_output
+JOIN assets a ON a.kind='Animation' AND a.output=k.animation_output
+WHERE ($diversifyModels = 0 OR k.model_rank <= $modelRankLimit)
 ORDER BY
-  CASE WHEN $diversifyModels = 1 THEN model_name END COLLATE NOCASE,
-  CASE WHEN $diversifyModels = 1 THEN dynamic_rank END ASC,
-  CASE WHEN $diversifyModels = 1 THEN static_name_rank END ASC,
-  CASE WHEN $diversifyModels = 1 THEN body_motion_name_rank END ASC,
-  CASE WHEN $diversifyModels = 1 THEN mirror_name_rank END ASC,
-  CASE WHEN $diversifyModels = 1 THEN animation_name END COLLATE NOCASE,
-  CASE WHEN $diversifyModels = 0 THEN dynamic_rank END ASC,
-  CASE WHEN $diversifyModels = 0 THEN static_name_rank END ASC,
-  CASE WHEN $diversifyModels = 0 THEN body_motion_name_rank END ASC,
-  CASE WHEN $diversifyModels = 0 THEN mirror_name_rank END ASC,
-  CASE WHEN $diversifyModels = 0 THEN candidate_score END DESC,
-  CASE WHEN $diversifyModels = 0 THEN COALESCE(json_extract(relation_raw_json, '$.missingInternalHumanoidSolver'), 0) END ASC,
-  model_name COLLATE NOCASE,
-  animation_name COLLATE NOCASE
+  CASE WHEN $diversifyModels = 1 THEN k.model_name END COLLATE NOCASE,
+  CASE WHEN $diversifyModels = 1 THEN k.dynamic_rank END ASC,
+  CASE WHEN $diversifyModels = 1 THEN k.static_name_rank END ASC,
+  CASE WHEN $diversifyModels = 1 THEN k.body_motion_name_rank END ASC,
+  CASE WHEN $diversifyModels = 1 THEN k.mirror_name_rank END ASC,
+  CASE WHEN $diversifyModels = 1 THEN k.animation_name END COLLATE NOCASE,
+  CASE WHEN $diversifyModels = 0 THEN k.dynamic_rank END ASC,
+  CASE WHEN $diversifyModels = 0 THEN k.static_name_rank END ASC,
+  CASE WHEN $diversifyModels = 0 THEN k.body_motion_name_rank END ASC,
+  CASE WHEN $diversifyModels = 0 THEN k.mirror_name_rank END ASC,
+  CASE WHEN $diversifyModels = 0 THEN k.candidate_score END DESC,
+  CASE WHEN $diversifyModels = 0 THEN COALESCE(json_extract(c.raw_json, '$.missingInternalHumanoidSolver'), 0) END ASC,
+  k.model_name COLLATE NOCASE,
+  k.animation_name COLLATE NOCASE
 LIMIT $queryLimit;";
             command.Parameters.AddWithValue("$hasModelFilter", modelOutputs == null ? 0 : 1);
             command.Parameters.AddWithValue("$hasAnimationFilter", animationOutputs == null ? 0 : 1);
@@ -1062,7 +1073,7 @@ LIMIT $queryLimit;";
             command.Parameters.AddWithValue("$diversifyModels", diversifyModels ? 1 : 0);
             command.Parameters.AddWithValue("$modelRankLimit", modelRankLimit);
             command.Parameters.AddWithValue("$hasSuppliedAvatar", allowSuppliedAvatarAsset ? 1 : 0);
-            command.Parameters.AddWithValue("$hasImportedAvatarAssets", importedAvatarAssets?.Count > 0 ? 1 : 0);
+            command.Parameters.AddWithValue("$readyModelLimit", readyModelLimit);
 
             var result = new List<PreviewSelection>();
             using var reader = command.ExecuteReader();
@@ -2062,6 +2073,39 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             }
 
             transaction.Commit();
+        }
+
+        private static void CreateTempUnityBakeAvatarReadyModelTable(SqliteConnection connection)
+        {
+            using (var drop = connection.CreateCommand())
+            {
+                drop.CommandText = "DROP TABLE IF EXISTS temp_unity_bake_avatar_ready_models;";
+                drop.ExecuteNonQuery();
+            }
+
+            using (var create = connection.CreateCommand())
+            {
+                // 先把“有可信 Avatar 来源”的模型收敛成小表，后面的几百万候选只做 output 命中。
+                // ImportedAvatar 仍然只用精确 key 匹配，不做 contains 模糊匹配。
+                create.CommandText = @"
+CREATE TEMP TABLE temp_unity_bake_avatar_ready_models AS
+SELECT m.output AS output
+FROM assets m
+WHERE m.kind='Model'
+  AND (
+    " + BakeReadyAvatarSql("m") + @"
+    OR " + ImportedAvatarAssetMatchSql("m") + @"
+  );";
+                create.ExecuteNonQuery();
+            }
+
+            using (var index = connection.CreateCommand())
+            {
+                index.CommandText = @"
+CREATE INDEX temp_unity_bake_avatar_ready_models_output_idx
+ON temp_unity_bake_avatar_ready_models(output);";
+                index.ExecuteNonQuery();
+            }
         }
 
         private static void CreateTempExplicitUnityBakeCandidateTable(SqliteConnection connection)
