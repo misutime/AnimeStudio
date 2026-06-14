@@ -29,8 +29,10 @@ namespace AnimeStudio.LibraryBrowser
             0,
             0,
             0,
+            0,
             "",
             "",
+            false,
             0,
             0,
             0,
@@ -58,10 +60,12 @@ namespace AnimeStudio.LibraryBrowser
             long effectiveBakeReadyCandidates,
             double effectiveBakeReadyCoveragePercent,
             long importedAvatarAssetFileCount,
+            long importedAvatarTrustedFileCount,
             long importedAvatarAssetKeyCount,
             long importedAvatarAssetBakeReadyCandidates,
             string importedAvatarProbeStatus,
             string importedAvatarProbeFreshness,
+            bool importedAvatarProbeEnforced,
             long importedAvatarProbeTotalAssets,
             long importedAvatarProbeValidHumanAvatars,
             long importedAvatarProbeInvalidAssets,
@@ -88,10 +92,12 @@ namespace AnimeStudio.LibraryBrowser
             EffectiveBakeReadyCandidates = effectiveBakeReadyCandidates;
             EffectiveBakeReadyCoveragePercent = effectiveBakeReadyCoveragePercent;
             ImportedAvatarAssetFileCount = importedAvatarAssetFileCount;
+            ImportedAvatarTrustedFileCount = importedAvatarTrustedFileCount;
             ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
             ImportedAvatarAssetBakeReadyCandidates = importedAvatarAssetBakeReadyCandidates;
             ImportedAvatarProbeStatus = importedAvatarProbeStatus ?? "";
             ImportedAvatarProbeFreshness = importedAvatarProbeFreshness ?? "";
+            ImportedAvatarProbeEnforced = importedAvatarProbeEnforced;
             ImportedAvatarProbeTotalAssets = importedAvatarProbeTotalAssets;
             ImportedAvatarProbeValidHumanAvatars = importedAvatarProbeValidHumanAvatars;
             ImportedAvatarProbeInvalidAssets = importedAvatarProbeInvalidAssets;
@@ -119,10 +125,12 @@ namespace AnimeStudio.LibraryBrowser
         public long EffectiveBakeReadyCandidates { get; }
         public double EffectiveBakeReadyCoveragePercent { get; }
         public long ImportedAvatarAssetFileCount { get; }
+        public long ImportedAvatarTrustedFileCount { get; }
         public long ImportedAvatarAssetKeyCount { get; }
         public long ImportedAvatarAssetBakeReadyCandidates { get; }
         public string ImportedAvatarProbeStatus { get; }
         public string ImportedAvatarProbeFreshness { get; }
+        public bool ImportedAvatarProbeEnforced { get; }
         public long ImportedAvatarProbeTotalAssets { get; }
         public long ImportedAvatarProbeValidHumanAvatars { get; }
         public long ImportedAvatarProbeInvalidAssets { get; }
@@ -186,7 +194,7 @@ namespace AnimeStudio.LibraryBrowser
                     $"动画快速摘要索引: {EmptyAsUnknown(LibraryIndex)}{FormatIndexScopeNote()}{Environment.NewLine}" +
                     $"动画快速摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
                     $"根目录bake cache: {(CacheSummaryPresent ? "已读取" : "未读取")}{Environment.NewLine}" +
-                    $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
+                    FormatImportedAvatarFileText() +
                     FormatImportedAvatarProbeText() +
                     $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveBakeReadyCoveragePercent)}){Environment.NewLine}" +
                     $"导入Avatar oracle候选: {ImportedAvatarAssetBakeReadyCandidates:N0}{Environment.NewLine}" +
@@ -277,16 +285,20 @@ namespace AnimeStudio.LibraryBrowser
                     isFastSummary
                         ? ReadInt64(root, "importedAvatarAssetCount")
                         : ReadInt64(importedAvatarReadiness, "fileCount"),
+                    isFastSummary
+                        ? ReadInt64(root, "importedAvatarAssetCount")
+                        : ReadInt64(importedAvatarReadiness, "trustedFileCount"),
                     ReadInt64(bake, "importedAvatarAssetKeyCount") != 0
                         ? ReadInt64(bake, "importedAvatarAssetKeyCount")
                         : ReadInt64(importedAvatarReadiness, "keyCount"),
                     ReadInt64(bake, "uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates", "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
-                    isFastSummary ? ReadString(root, "importedAvatarProbeStatus") : "",
-                    isFastSummary ? ReadString(root, "importedAvatarProbeFreshness") : "",
-                    isFastSummary ? ReadInt64(root, "importedAvatarProbeTotalAssets") : 0,
-                    isFastSummary ? ReadInt64(root, "importedAvatarProbeValidHumanAvatars") : 0,
-                    isFastSummary ? ReadInt64(root, "importedAvatarProbeInvalidAssets") : 0,
-                    isFastSummary ? ReadString(root, "importedAvatarProbeError") : "",
+                    isFastSummary ? ReadString(root, "importedAvatarProbeStatus") : ReadString(importedAvatarReadiness, "probeStatus"),
+                    isFastSummary ? ReadString(root, "importedAvatarProbeFreshness") : ReadString(importedAvatarReadiness, "probeFreshness"),
+                    !isFastSummary && ReadBool(importedAvatarReadiness, "probeEnforced"),
+                    isFastSummary ? ReadInt64(root, "importedAvatarProbeTotalAssets") : ReadInt64(importedAvatarReadiness, "fileCount"),
+                    isFastSummary ? ReadInt64(root, "importedAvatarProbeValidHumanAvatars") : ReadInt64(importedAvatarReadiness, "probeValidHumanAvatars"),
+                    isFastSummary ? ReadInt64(root, "importedAvatarProbeInvalidAssets") : ReadInt64(importedAvatarReadiness, "probeInvalidAssets"),
+                    isFastSummary ? ReadString(root, "importedAvatarProbeError") : ReadString(importedAvatarReadiness, "probeError"),
                     isFastSummary && ReadBool(root, "cacheSummaryPresent"),
                     ReadString(root, "sqliteSummaryError"),
                     ReadString(root, "generatedAt"));
@@ -353,19 +365,26 @@ namespace AnimeStudio.LibraryBrowser
             return
                 $"显式Humanoid/Muscle候选: {ExplicitUnityBakeCandidates:N0}{Environment.NewLine}" +
                 $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveBakeReadyCoveragePercent)}){Environment.NewLine}" +
-                $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
+                FormatImportedAvatarFileText() +
+                FormatImportedAvatarProbeText() +
                 $"导入Avatar oracle候选: {ImportedAvatarAssetBakeReadyCandidates:N0}{Environment.NewLine}";
         }
 
         private string FormatImportedAvatarProbeText()
         {
-            if (ImportedAvatarProbeTotalAssets <= 0 && string.IsNullOrWhiteSpace(ImportedAvatarProbeStatus))
+            if (ImportedAvatarProbeTotalAssets <= 0
+                && string.IsNullOrWhiteSpace(ImportedAvatarProbeStatus)
+                && string.IsNullOrWhiteSpace(ImportedAvatarProbeFreshness))
             {
                 return "导入Avatar asset有效性: 未验证" + Environment.NewLine;
             }
 
+            var status = ImportedAvatarProbeEnforced && string.IsNullOrWhiteSpace(ImportedAvatarProbeStatus)
+                ? "ok"
+                : EmptyAsUnknown(ImportedAvatarProbeStatus);
+            var enforced = ImportedAvatarProbeEnforced ? "，已强制使用验证结果" : "";
             var text =
-                $"导入Avatar asset有效性: {EmptyAsUnknown(ImportedAvatarProbeStatus)}，freshness {EmptyAsUnknown(ImportedAvatarProbeFreshness)}，有效 {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}，无效 {ImportedAvatarProbeInvalidAssets:N0}{Environment.NewLine}";
+                $"导入Avatar asset有效性: {status}，freshness {EmptyAsUnknown(ImportedAvatarProbeFreshness)}，有效 {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}，无效 {ImportedAvatarProbeInvalidAssets:N0}{enforced}{Environment.NewLine}";
             if (!string.IsNullOrWhiteSpace(ImportedAvatarProbeError))
             {
                 text += $"导入Avatar asset验证读取错误: {ImportedAvatarProbeError}{Environment.NewLine}";
@@ -376,6 +395,14 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return text;
+        }
+
+        private string FormatImportedAvatarFileText()
+        {
+            var trustedText = ImportedAvatarTrustedFileCount > 0
+                ? $"，可信文件 {ImportedAvatarTrustedFileCount:N0}"
+                : "";
+            return $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{trustedText}{Environment.NewLine}";
         }
 
         private string FormatProbeFreshnessSuffix()
