@@ -1542,10 +1542,12 @@ FROM animation_bake_cache;";
                 }
 
                 var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
-                var importedAvatarAssetFileCount = importedAvatarAssets.Values
+                var importedAvatarAssetTrustedFileCount = importedAvatarAssets.Values
                     .Where(x => !string.IsNullOrWhiteSpace(x))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Count();
+                var importedAvatarReadiness = BuildImportedAvatarReadinessSummary(unityProject, libraryRoot, importedAvatarAssets);
+                var importedAvatarAssetFileCount = (long?)importedAvatarReadiness["fileCount"] ?? importedAvatarAssetTrustedFileCount;
                 CreateTempImportedAvatarAssetKeys(connection, importedAvatarAssets);
                 CreateTempExplicitUnityBakeCandidateTable(connection);
                 var explicitUnityBakeCandidates = ScalarLong(connection, @"
@@ -1626,7 +1628,14 @@ WHERE bc.status='baked'
                     ["bakeReadyExplicitUnityBakeCoveragePercent"] = Percent(bakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
                     ["uniqueBakeReadyExplicitUnityBakeCoveragePercent"] = Percent(uniqueBakeReadyExplicitUnityBakeCandidates, uniqueExplicitUnityBakeCandidates),
                     ["importedAvatarAssetFileCount"] = importedAvatarAssetFileCount,
+                    ["importedAvatarAssetTrustedFileCount"] = (long?)importedAvatarReadiness["trustedFileCount"] ?? importedAvatarAssetTrustedFileCount,
                     ["importedAvatarAssetKeyCount"] = importedAvatarAssets.Count,
+                    ["importedAvatarProbeReportPath"] = (string)importedAvatarReadiness["probeReportPath"],
+                    ["importedAvatarProbeFreshness"] = (string)importedAvatarReadiness["probeFreshness"],
+                    ["importedAvatarProbeEnforced"] = (bool?)importedAvatarReadiness["probeEnforced"] ?? false,
+                    ["importedAvatarProbeValidHumanAvatars"] = (long?)importedAvatarReadiness["probeValidHumanAvatars"] ?? 0,
+                    ["importedAvatarProbeInvalidAssets"] = (long?)importedAvatarReadiness["probeInvalidAssets"] ?? 0,
+                    ["importedAvatarProbeError"] = (string)importedAvatarReadiness["probeError"],
                     ["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = importedAvatarAssetBakeReadyExplicitUnityBakeCandidates,
                     ["uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates,
                     ["importedAvatarAssetBakeReadyExplicitUnityBakeCoverage"] = Ratio(importedAvatarAssetBakeReadyExplicitUnityBakeCandidates, explicitUnityBakeCandidates),
@@ -2226,6 +2235,99 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             }
 
             return result;
+        }
+
+        private static JObject BuildImportedAvatarReadinessSummary(
+            string unityProject,
+            string libraryRoot,
+            IReadOnlyDictionary<string, string> trustedAssets)
+        {
+            var summary = new JObject
+            {
+                ["fileCount"] = 0,
+                ["trustedFileCount"] = trustedAssets?.Values
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count() ?? 0,
+                ["keyCount"] = trustedAssets?.Count ?? 0,
+                ["probeFreshness"] = "not_run",
+                ["probeEnforced"] = false,
+                ["probeValidHumanAvatars"] = 0,
+                ["probeInvalidAssets"] = 0,
+            };
+            if (string.IsNullOrWhiteSpace(unityProject))
+            {
+                return summary;
+            }
+
+            var directory = Path.Combine(unityProject, "Assets", "AnimeStudioBake", "ImportedAvatar");
+            if (!Directory.Exists(directory))
+            {
+                return summary;
+            }
+
+            var assetFiles = Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .ToArray();
+            summary["fileCount"] = assetFiles.Length;
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                return summary;
+            }
+
+            FileInfo reportFile;
+            try
+            {
+                reportFile = Directory.EnumerateDirectories(libraryRoot, "ImportedAvatarProbe*", SearchOption.TopDirectoryOnly)
+                    .Select(dir => Path.Combine(dir, "imported_avatar_probe_batch.json"))
+                    .Where(File.Exists)
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .FirstOrDefault();
+            }
+            catch (Exception ex)
+            {
+                summary["probeFreshness"] = "error";
+                summary["probeError"] = ex.Message;
+                return summary;
+            }
+
+            if (reportFile == null)
+            {
+                return summary;
+            }
+
+            summary["probeReportPath"] = reportFile.FullName;
+            try
+            {
+                var root = JObject.Parse(File.ReadAllText(reportFile.FullName));
+                summary["probeValidHumanAvatars"] = (int?)root["validHumanAvatars"] ?? 0;
+                summary["probeInvalidAssets"] = (int?)root["invalidAssets"] ?? 0;
+                if ((int?)root["totalAssets"] != assetFiles.Length)
+                {
+                    summary["probeFreshness"] = "mismatch";
+                    return summary;
+                }
+
+                var newestAssetTime = assetFiles.Length == 0
+                    ? DateTime.MinValue
+                    : assetFiles.Max(file => file.LastWriteTimeUtc);
+                if (reportFile.LastWriteTimeUtc < newestAssetTime)
+                {
+                    summary["probeFreshness"] = "stale";
+                    return summary;
+                }
+
+                summary["probeFreshness"] = "fresh";
+                summary["probeEnforced"] = true;
+                return summary;
+            }
+            catch (Exception ex)
+            {
+                summary["probeFreshness"] = "error";
+                summary["probeError"] = ex.Message;
+                return summary;
+            }
         }
 
         private static HashSet<string> LoadFreshImportedAvatarProbeKeys(string libraryRoot, FileInfo[] assetFiles)

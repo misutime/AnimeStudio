@@ -8,7 +8,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class LibraryBakeCacheSummary
     {
-        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "");
+        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "");
 
         public LibraryBakeCacheSummary(
             bool exists,
@@ -17,7 +17,10 @@ namespace AnimeStudio.LibraryBrowser
             long effectiveBakeReadyCandidates,
             double effectiveCoveragePercent,
             long importedAvatarAssetFileCount,
+            long importedAvatarTrustedFileCount,
             long importedAvatarAssetKeyCount,
+            string importedAvatarProbeFreshness,
+            bool importedAvatarProbeEnforced,
             long cachedCandidates,
             long trustedBakedCandidates,
             long staticPoseCandidates,
@@ -34,7 +37,10 @@ namespace AnimeStudio.LibraryBrowser
             EffectiveBakeReadyCandidates = effectiveBakeReadyCandidates;
             EffectiveCoveragePercent = effectiveCoveragePercent;
             ImportedAvatarAssetFileCount = importedAvatarAssetFileCount;
+            ImportedAvatarTrustedFileCount = importedAvatarTrustedFileCount;
             ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
+            ImportedAvatarProbeFreshness = importedAvatarProbeFreshness ?? "";
+            ImportedAvatarProbeEnforced = importedAvatarProbeEnforced;
             CachedCandidates = cachedCandidates;
             TrustedBakedCandidates = trustedBakedCandidates;
             StaticPoseCandidates = staticPoseCandidates;
@@ -52,7 +58,10 @@ namespace AnimeStudio.LibraryBrowser
         public long EffectiveBakeReadyCandidates { get; }
         public double EffectiveCoveragePercent { get; }
         public long ImportedAvatarAssetFileCount { get; }
+        public long ImportedAvatarTrustedFileCount { get; }
         public long ImportedAvatarAssetKeyCount { get; }
+        public string ImportedAvatarProbeFreshness { get; }
+        public bool ImportedAvatarProbeEnforced { get; }
         public long CachedCandidates { get; }
         public long TrustedBakedCandidates { get; }
         public long StaticPoseCandidates { get; }
@@ -96,7 +105,7 @@ namespace AnimeStudio.LibraryBrowser
                 $"Unity烘焙摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
                 $"显式Humanoid/Muscle候选: {ExplicitUnityBakeCandidates:N0}{Environment.NewLine}" +
                 $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveCoveragePercent)}){Environment.NewLine}" +
-                $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
+                $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{FormatImportedAvatarTrustText()}{Environment.NewLine}" +
                 $"已缓存烘焙记录: {CachedCandidates:N0} ({FormatPercent(CacheCoveragePercent)}){Environment.NewLine}" +
                 $"可信baked glTF: {TrustedBakedCandidates:N0} ({FormatPercent(TrustedBakedCoveragePercent)}){Environment.NewLine}" +
                 $"静态姿态/需复查/不可信: {StaticPoseCandidates:N0} / {NeedsReviewCandidates:N0} / {UntrustedBakedCandidates:N0}{Environment.NewLine}" +
@@ -114,7 +123,7 @@ namespace AnimeStudio.LibraryBrowser
             var path = Path.Combine(libraryRoot, "animation_bake_cache_summary.json");
             if (!File.Exists(path))
             {
-                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
             }
 
             try
@@ -128,7 +137,10 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(root, "effectiveBakeReadyExplicitUnityBakeCandidates"),
                     ReadDouble(root, "effectiveBakeReadyExplicitUnityBakeCoveragePercent"),
                     ReadInt64(root, "importedAvatarAssetFileCount"),
+                    ReadInt64(root, "importedAvatarAssetTrustedFileCount"),
                     ReadInt64(root, "importedAvatarAssetKeyCount"),
+                    ReadString(root, "importedAvatarProbeFreshness"),
+                    ReadBool(root, "importedAvatarProbeEnforced"),
                     ReadInt64(root, "cachedCandidates"),
                     ReadInt64(root, "trustedBakedCandidates"),
                     ReadInt64(root, "staticPoseCandidates"),
@@ -141,8 +153,26 @@ namespace AnimeStudio.LibraryBrowser
             }
             catch
             {
-                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
             }
+        }
+
+        private string FormatImportedAvatarTrustText()
+        {
+            var parts = "";
+            if (ImportedAvatarTrustedFileCount > 0)
+            {
+                parts += $"，可信文件 {ImportedAvatarTrustedFileCount:N0}";
+            }
+            if (!string.IsNullOrWhiteSpace(ImportedAvatarProbeFreshness))
+            {
+                parts += $"，probe {ImportedAvatarProbeFreshness}";
+            }
+            if (ImportedAvatarProbeEnforced)
+            {
+                parts += "，已强制验证";
+            }
+            return parts;
         }
 
         private string LatestBatchDetailText()
@@ -241,6 +271,23 @@ namespace AnimeStudio.LibraryBrowser
                 && long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out number)
                     ? number
                     : 0;
+        }
+
+        private static bool ReadBool(JsonElement element, string property)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            {
+                return false;
+            }
+
+            if (value.ValueKind == JsonValueKind.True)
+            {
+                return true;
+            }
+
+            return value.ValueKind == JsonValueKind.String
+                && bool.TryParse(value.GetString(), out var parsed)
+                && parsed;
         }
 
         private static double ReadDouble(JsonElement element, string property)
