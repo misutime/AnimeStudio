@@ -188,7 +188,7 @@ CREATE TABLE model_animation_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     model_output TEXT NOT NULL,
     animation_output TEXT NOT NULL,
-    relation_source TEXT,
+    relation_source TEXT NOT NULL CHECK(relation_source = 'explicit'),
     confidence TEXT,
     score REAL,
     status TEXT,
