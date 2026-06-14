@@ -235,6 +235,28 @@ namespace AnimeStudio.CLI
                     }
                 }
 
+                if (string.IsNullOrWhiteSpace(unityAvatarAsset))
+                {
+                    var missingAvatarSelections = SelectExplicitBakeCandidatesFromLibraryDb(
+                            dbPath,
+                            modelSelector,
+                            animationSelector,
+                            limit,
+                            skipBakedCache: false,
+                            allowSuppliedAvatarAsset: true,
+                            importedAvatarAssets)
+                        .Take(limit)
+                        .ToArray();
+                    if (missingAvatarSelections.Length > 0)
+                    {
+                        WriteNoOpMissingAvatarOracleBatchReport(dbPath, libraryRoot, output, runUnityBake, missingAvatarSelections);
+                        TryCompactBakeCache(dbPath, libraryRoot);
+                        TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: false, unityProject);
+                        Logger.Info($"Unity bake batch has {missingAvatarSelections.Length} explicit Humanoid/Muscle candidate(s), but none has a production Avatar oracle. Recover/import original Unity Avatar assets or complete HumanDescription metadata before baking.");
+                        return;
+                    }
+                }
+
                 Logger.Error("No explicit Humanoid/Muscle model-animation candidate matched the Unity bake batch selectors.");
                 return;
             }
@@ -384,6 +406,56 @@ namespace AnimeStudio.CLI
                 ["skippedBakedCandidates"] = skippedBakedCandidates,
                 ["runUnityBake"] = runUnityBake,
                 ["items"] = new JArray(),
+            };
+            var reportPath = Path.Combine(output, "unity_bake_batch_report.json");
+            File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
+            Logger.Info($"Unity bake batch report: {reportPath}");
+        }
+
+        private static void WriteNoOpMissingAvatarOracleBatchReport(
+            string dbPath,
+            string libraryRoot,
+            string output,
+            bool runUnityBake,
+            IReadOnlyList<PreviewSelection> missingAvatarSelections)
+        {
+            var items = new JArray();
+            foreach (var selection in missingAvatarSelections ?? Array.Empty<PreviewSelection>())
+            {
+                var model = selection?.Model?["model"] as JObject;
+                var animation = selection?.Animation as JObject;
+                var reason = (string)animation?["candidate"]?["productionUnityBakeBlockedReason"]
+                    ?? (string)animation?["productionUnityBakeBlockedReason"]
+                    ?? "missing_production_avatar_oracle";
+                items.Add(new JObject
+                {
+                    ["status"] = "skipped_missing_avatar_oracle",
+                    ["model"] = (string)model?["name"],
+                    ["animation"] = (string)animation?["name"],
+                    ["modelOutput"] = (string)model?["output"],
+                    ["animationOutput"] = (string)animation?["output"],
+                    ["relationSource"] = (string)animation?["relationSource"],
+                    ["confidence"] = (string)animation?["confidence"],
+                    ["avatarSource"] = "missing_production_avatar_oracle",
+                    ["avatarMatchKey"] = "",
+                    ["message"] = "缺少可信生产 Avatar oracle，未生成 Unity bake request。需要原始 Animator.avatar、完整 HumanDescription，或导入的原始 Unity Avatar asset。原因: " + reason,
+                });
+            }
+
+            var report = new JObject
+            {
+                ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                ["libraryRoot"] = libraryRoot,
+                ["libraryIndex"] = dbPath,
+                ["mode"] = "UnityBakeToGltfProduction",
+                ["status"] = "noop_missing_avatar_oracle",
+                ["rule"] = "Only relation_source=explicit Humanoid/Muscle candidates with a production Avatar oracle may enter Unity bake. Matching explicit candidates were skipped because no original Animator.avatar, complete HumanDescription, or imported Unity Avatar asset was available.",
+                ["requested"] = 0,
+                ["requestsWritten"] = 0,
+                ["bakedCompleted"] = 0,
+                ["skippedMissingAvatarOracle"] = items.Count,
+                ["runUnityBake"] = runUnityBake,
+                ["items"] = items,
             };
             var reportPath = Path.Combine(output, "unity_bake_batch_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
