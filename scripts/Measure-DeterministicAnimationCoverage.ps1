@@ -25,7 +25,30 @@ if ([string]::IsNullOrWhiteSpace($LibraryIndex)) {
     $LibraryIndex = Join-Path $LibraryPath "library_index.db"
 }
 if ([string]::IsNullOrWhiteSpace($SourceIndex)) {
-    $SourceIndex = Join-Path $LibraryPath "unity_source_index.db"
+    $sqliteSummary = Join-Path $LibraryPath "sqlite_index_summary.json"
+    if (Test-Path -LiteralPath $sqliteSummary) {
+        try {
+            $summaryText = Get-Content -LiteralPath $sqliteSummary -Raw
+            $summarySourceIndex = ""
+            $match = [regex]::Match(
+                $summaryText,
+                '"sourceIndex"\s*:\s*"(?<path>(?:\\.|[^"\\])*)"',
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($match.Success) {
+                $summarySourceIndex = [regex]::Unescape($match.Groups["path"].Value)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($summarySourceIndex)) {
+                $SourceIndex = $summarySourceIndex
+            }
+        }
+        catch {
+            $SourceIndex = $null
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($SourceIndex)) {
+        $SourceIndex = Join-Path $LibraryPath "unity_source_index.db"
+    }
 }
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"

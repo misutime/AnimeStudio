@@ -368,6 +368,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 - `totals.animatedCategoryExplicitCoverage`：按 `NPC`、`Avatar`、`Monster`、`Animal`、`Partner`、`Vehicle` 这类明显动画模型目录粗看显式覆盖；它比全库模型覆盖更接近角色/怪物/动物动画绑定进度。
 - `sourceIndexAnimationRelationHealth.staleOverridePairIndex`：为 `true` 时说明源索引是旧版或不完整版本，应先重建 `unity_source_index.db`，再重建 `library_index.db`。这不是让工具回退猜测关系的理由。
 
+如果命令没有显式传 `-SourceIndex`，脚本会先读取 `sqlite_index_summary.json` 中 `animationRelationCoverage.sourceIndexAnimationRelationHealth.sourceIndex`，也就是当前 `library_index.db` 实际重建时使用的源索引；找不到时才回退到素材库根目录的 `unity_source_index.db`。这能避免 VRising 这类“正式 library_index.db 由旁路 fresh source index 重建”的库，在 Browser 手动刷新 GateOnly 时误读旧根目录源索引。
+
 这份报告只回答“默认模型-动画候选是不是来自 Unity 确定性关系”。它不证明 Humanoid/Muscle 姿态已经能由 AnimeStudio 内部公式正确转成 glTF TRS；这类动画还必须继续看 preview/bake 验证报告。若项目阶段允许把 Unity bake 作为生产桥接路径，bake 结果仍应写回 glTF/GLB 并保留 relation_source、bakeMode 和验证状态，不能把 bake 成功当作新增或猜测模型-动画关系。
 
 `library_index.db` 还会生成两张候选统计表，供浏览器、覆盖度看板和批量验证直接查询，避免每次从几百万条候选明细重新 `GROUP BY`：
