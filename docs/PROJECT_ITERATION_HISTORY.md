@@ -321,6 +321,13 @@ Freedunk 验证过一批动画：
 
 这些验证说明 Unity bake 路径是可行的。
 
+原神动画扭曲问题最终定位到 Avatar oracle 不可信：
+
+- 只用 `AvatarConstant` / `internalSolver`、`BuildHumanAvatar` 或 glTF rest pose 复建，会在 idle、跑步、瞄准等动作中反复出现背手、肢体外翻、角色平躺或空中折叠。
+- 从打包 Unity 对象恢复原始 `UnityEngine.Avatar` asset，导入 Unity bake 工程后，通过 request 的 `unityAssetPaths.avatarAsset` 显式指定，Unity bake 结果恢复正常。
+- 这条 ImportedAvatar 路径已经用原神 NPCMale idle、Gorou 跑步/瞄准，以及后续多样本人工预览确认可作为阶段性主线。
+- 普通 Unity 项目仍优先使用原始 prefab / Animator.avatar / 完整 HumanDescription；原神这类缺可信 Avatar 的项目走 ImportedAvatar oracle。两条路径都必须来自 Unity 确定性数据，不能退回骨骼数量、名称或当前姿态猜测。
+
 ### 动画语义匹配
 
 VRising 后期暴露了新问题：

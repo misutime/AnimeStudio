@@ -39,6 +39,8 @@ namespace AnimeStudio.LibraryBrowser
             "",
             false,
             "",
+            "",
+            "",
             "");
 
         public LibraryDeterministicAnimationSummary(
@@ -71,6 +73,8 @@ namespace AnimeStudio.LibraryBrowser
             long importedAvatarProbeInvalidAssets,
             string importedAvatarProbeError,
             bool cacheSummaryPresent,
+            string cacheSummaryFreshness,
+            string cacheSummaryFreshnessNote,
             string sqliteSummaryError,
             string generatedAt)
         {
@@ -103,6 +107,8 @@ namespace AnimeStudio.LibraryBrowser
             ImportedAvatarProbeInvalidAssets = importedAvatarProbeInvalidAssets;
             ImportedAvatarProbeError = importedAvatarProbeError ?? "";
             CacheSummaryPresent = cacheSummaryPresent;
+            CacheSummaryFreshness = cacheSummaryFreshness ?? "";
+            CacheSummaryFreshnessNote = cacheSummaryFreshnessNote ?? "";
             SqliteSummaryError = sqliteSummaryError ?? "";
             GeneratedAt = generatedAt ?? "";
         }
@@ -136,6 +142,8 @@ namespace AnimeStudio.LibraryBrowser
         public long ImportedAvatarProbeInvalidAssets { get; }
         public string ImportedAvatarProbeError { get; }
         public bool CacheSummaryPresent { get; }
+        public string CacheSummaryFreshness { get; }
+        public string CacheSummaryFreshnessNote { get; }
         public string SqliteSummaryError { get; }
         public string GeneratedAt { get; }
 
@@ -153,7 +161,7 @@ namespace AnimeStudio.LibraryBrowser
 
             if (IsFastSummary)
             {
-                var cacheText = CacheSummaryPresent ? "cache OK" : "cache 缺失";
+                var cacheText = FormatCacheSummaryShortText();
                 var avatarText = ImportedAvatarProbeTotalAssets > 0
                     ? $"Avatar {ImportedAvatarProbeValidHumanAvatars:N0}/{ImportedAvatarProbeTotalAssets:N0}有效{FormatProbeFreshnessSuffix()}"
                     : $"Avatar {ImportedAvatarAssetFileCount:N0}";
@@ -193,7 +201,7 @@ namespace AnimeStudio.LibraryBrowser
                     $"动画快速摘要: {SummaryPath}{Environment.NewLine}" +
                     $"动画快速摘要索引: {EmptyAsUnknown(LibraryIndex)}{FormatIndexScopeNote()}{Environment.NewLine}" +
                     $"动画快速摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
-                    $"根目录bake cache: {(CacheSummaryPresent ? "已读取" : "未读取")}{Environment.NewLine}" +
+                    FormatCacheSummaryText() +
                     FormatImportedAvatarFileText() +
                     FormatImportedAvatarProbeText() +
                     $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveBakeReadyCoveragePercent)}){Environment.NewLine}" +
@@ -300,6 +308,8 @@ namespace AnimeStudio.LibraryBrowser
                     isFastSummary ? ReadInt64(root, "importedAvatarProbeInvalidAssets") : ReadInt64(importedAvatarReadiness, "probeInvalidAssets"),
                     isFastSummary ? ReadString(root, "importedAvatarProbeError") : ReadString(importedAvatarReadiness, "probeError"),
                     isFastSummary && ReadBool(root, "cacheSummaryPresent"),
+                    isFastSummary ? ReadString(root, "cacheSummaryFreshness") : "",
+                    isFastSummary ? ReadString(root, "cacheSummaryFreshnessNote") : "",
                     ReadString(root, "sqliteSummaryError"),
                     ReadString(root, "generatedAt"));
             }
@@ -414,6 +424,39 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             return "(需重验)";
+        }
+
+        private string FormatCacheSummaryShortText()
+        {
+            if (!CacheSummaryPresent)
+            {
+                return "cache 缺失";
+            }
+
+            if (string.Equals(CacheSummaryFreshness, "fresh", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(CacheSummaryFreshness))
+            {
+                return "cache OK";
+            }
+
+            if (string.Equals(CacheSummaryFreshness, "stale", StringComparison.OrdinalIgnoreCase))
+            {
+                return "cache 过期";
+            }
+
+            return $"cache {CacheSummaryFreshness}";
+        }
+
+        private string FormatCacheSummaryText()
+        {
+            var text = $"根目录bake cache: {(CacheSummaryPresent ? "已读取" : "未读取")}，freshness {EmptyAsUnknown(CacheSummaryFreshness)}{Environment.NewLine}";
+            if (!string.IsNullOrWhiteSpace(CacheSummaryFreshnessNote)
+                && !string.Equals(CacheSummaryFreshness, "fresh", StringComparison.OrdinalIgnoreCase))
+            {
+                text += $"根目录bake cache提示: {CacheSummaryFreshnessNote}{Environment.NewLine}";
+            }
+
+            return text;
         }
 
         private bool IsFastSummary => string.Equals(Mode, "fastSummary", StringComparison.OrdinalIgnoreCase);
