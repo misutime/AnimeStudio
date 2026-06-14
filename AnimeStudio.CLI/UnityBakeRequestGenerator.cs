@@ -313,6 +313,10 @@ namespace AnimeStudio.CLI
                     ["animationOutput"] = (string)selection.Animation["output"],
                     ["relationSource"] = (string)selection.Animation["relationSource"],
                     ["confidence"] = (string)selection.Animation["confidence"],
+                    ["unityAvatarAsset"] = effectiveUnityAvatarAsset,
+                    ["avatarSource"] = string.IsNullOrWhiteSpace(effectiveUnityAvatarAsset)
+                        ? "model_human_description_or_prefab"
+                        : "unityAssetPaths.avatarAsset",
                     ["request"] = requestPath,
                     ["result"] = resultPath,
                     ["bakedGltf"] = bakedGltf,

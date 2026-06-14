@@ -690,7 +690,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --run_unity_bake
 ```
 
-`--unity_avatar_asset` 必须指向 bake 工程内的 `Assets/.../*.asset` 路径。AnimeStudio 会把它写入 request 的 `unityAssetPaths.avatarAsset`，Unity helper 会直接 `AssetDatabase.LoadAssetAtPath<Avatar>`；加载到有效 human Avatar 时，结果报告才允许标记 `avatarTrust.source=imported_unity_avatar_asset` 和 `trustedProductionBake=true`。这个参数只能用于明确 `--preview_model` 的单模型定向预览/诊断，不能在未指定模型或命中多个模型时把同一个 Avatar 批量套用到不同模型。批量生产 bake 应把恢复出的 Avatar 放入 `Assets/AnimeStudioBake/ImportedAvatar` 或写入 `unityAvatarAssets` 映射，让工具按模型 Avatar 名/模型名精确匹配。如果没有这个参数，流程回到普通 Unity 项目的 prefab/HumanDescription 路径；`AvatarConstant/internalSolver` 只保留诊断作用，不能单独算可信生产动画。
+`--unity_avatar_asset` 必须指向 bake 工程内的 `Assets/.../*.asset` 路径。AnimeStudio 会把它写入 request 的 `unityAssetPaths.avatarAsset`，Unity helper 会直接 `AssetDatabase.LoadAssetAtPath<Avatar>`；加载到有效 human Avatar 时，结果报告才允许标记 `avatarTrust.source=imported_unity_avatar_asset` 和 `trustedProductionBake=true`。这个参数只能用于明确 `--preview_model` 的单模型定向预览/诊断，不能在未指定模型或命中多个模型时把同一个 Avatar 批量套用到不同模型。批量生产 bake 应把恢复出的 Avatar 放入 `Assets/AnimeStudioBake/ImportedAvatar` 或写入 `unityAvatarAssets` 映射，让工具按模型 Avatar 名/模型名精确匹配。`unity_bake_batch_report.json.items[*]` 会记录 `unityAvatarAsset` 和 `avatarSource`，方便人工直接审查每条 request 是否用了正确的 Avatar oracle。如果没有这个参数，流程回到普通 Unity 项目的 prefab/HumanDescription 路径；`AvatarConstant/internalSolver` 只保留诊断作用，不能单独算可信生产动画。
 
 Library Browser 也支持同一条路径。素材库根目录可写本地配置 `.as_browser_cache\unity_bake_settings.json`，本地配置会覆盖全局配置：
 
