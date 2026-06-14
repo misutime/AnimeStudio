@@ -2993,6 +2993,13 @@ namespace AnimeStudio.LibraryBrowser
                 var playable = string.Equals(status?.Status, "可播放", StringComparison.OrdinalIgnoreCase);
                 if (RequiresUnityBake(animation))
                 {
+                    // 模型卡片和详情里的“主线 Unity 烘焙/缺A”只统计 Unity 显式关系。
+                    // 诊断或人工预览候选不能混进默认可烘焙进度，避免看起来像确定性绑定。
+                    if (!animation.IsExplicit)
+                    {
+                        continue;
+                    }
+
                     stats.UnityBakeRequired++;
                     if (string.Equals(animation.ProductionUnityBakeAvatarSource, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase))
                     {

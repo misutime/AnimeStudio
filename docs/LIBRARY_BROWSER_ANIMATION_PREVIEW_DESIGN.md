@@ -202,7 +202,7 @@ Browser 也会读取最新的 `AnimationRelationDiagnostics*/deterministic_anima
 
 Browser 的批量 Unity 烘焙入口只会处理已经具备生产 Avatar oracle 的显式候选。缺少原始 `Animator.avatar`、完整 `HumanDescription` 或导入 Avatar asset 的项会写入批次报告 `skipped_missing_avatar_oracle`，不调用 Unity bake，也不按旧 `BuildHumanAvatar` / AvatarConstant / 骨骼兼容 fallback 继续尝试。
 
-模型列表的大图标签会把动画状态压成短 badge：`显式N` 表示当前模型有 N 个 Unity 显式关系动画，`烘焙X/Y` 表示主线 Unity bake 进度，`AvatarN` 表示 N 个候选已命中导入 Avatar asset，`缺AN` 表示 N 个显式 Humanoid/Muscle 候选仍缺生产 Avatar oracle。模型筛选里的 `缺Avatar` 只定位这类缺口，不会把它们加入可烘焙队列。
+模型列表的大图标签会把动画状态压成短 badge：`显式N` 表示当前模型有 N 个 Unity 显式关系动画，`烘焙X/Y` 表示显式关系的主线 Unity bake 进度，`AvatarN` 表示 N 个显式候选已命中导入 Avatar asset，`缺AN` 表示 N 个显式 Humanoid/Muscle 候选仍缺生产 Avatar oracle。模型筛选里的 `缺Avatar` 只定位这类缺口，不会把它们加入可烘焙队列。
 
 单个动画预览读取到 CLI `unity_bake_batch_report.json` 的 `noop_missing_avatar_oracle` / `skipped_missing_avatar_oracle` 时，也应直接提示“缺少可信生产 Avatar oracle”，引导恢复/导入原始 Unity Avatar asset 或补完整 HumanDescription，而不是只显示笼统的“没有生成 baked glTF”。
 
