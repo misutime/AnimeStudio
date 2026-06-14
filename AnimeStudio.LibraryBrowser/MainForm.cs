@@ -59,6 +59,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ListView _animationList = new();
         private readonly ToolStrip _modelAnimationStrip = new();
         private readonly ToolStripTextBox _modelAnimationFilterBox = new();
+        private readonly ToolStripComboBox _modelAnimationStateBox = new();
         private readonly ToolStripButton _clearModelAnimationFilterButton = new("清除");
         private readonly ToolStripButton _showFavoriteModelAnimationsButton = new("收藏");
         private readonly ToolStrip _libraryAnimationStrip = new();
@@ -296,8 +297,13 @@ namespace AnimeStudio.LibraryBrowser
             ConfigureToolStrip(_modelAnimationStrip);
             _modelAnimationFilterBox.AutoSize = false;
             _modelAnimationFilterBox.Width = 280;
-            _modelAnimationFilterBox.ToolTipText = "过滤当前模型的动画，只按动画名或路径做普通包含搜索。";
+            _modelAnimationFilterBox.ToolTipText = "过滤当前模型的动画，支持动画名、路径、来源和当前预览/烘焙状态。";
             _modelAnimationFilterBox.TextBox.PlaceholderText = "过滤当前模型动画，例如 VampireMale_";
+            _modelAnimationStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _modelAnimationStateBox.Width = 130;
+            _modelAnimationStateBox.ToolTipText = "按当前模型下每个动画的预览/烘焙状态过滤，方便批量重试失败或待烘焙项。";
+            _modelAnimationStateBox.Items.AddRange(new object[] { "全部状态", "可播放", "待可信烘焙", "导入Avatar", "需Avatar元数据", "失败/需复查" });
+            _modelAnimationStateBox.SelectedIndex = 0;
             _clearModelAnimationFilterButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _showFavoriteModelAnimationsButton.CheckOnClick = true;
             _showFavoriteModelAnimationsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -305,6 +311,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 new ToolStripLabel("过滤"),
                 _modelAnimationFilterBox,
+                _modelAnimationStateBox,
                 _clearModelAnimationFilterButton,
                 new ToolStripSeparator(),
                 _showFavoriteModelAnimationsButton
@@ -568,7 +575,12 @@ namespace AnimeStudio.LibraryBrowser
             _bakeSelectedAnimationModelsButton.Click += async (_, _) => await BakeSelectedLibraryAnimationModelsAsync();
             _bakeVisibleAnimationModelsButton.Click += async (_, _) => await BakeVisibleLibraryAnimationModelsAsync();
             _modelAnimationFilterBox.TextChanged += (_, _) => RebuildAnimationList();
-            _clearModelAnimationFilterButton.Click += (_, _) => _modelAnimationFilterBox.Clear();
+            _modelAnimationStateBox.SelectedIndexChanged += (_, _) => RebuildAnimationList();
+            _clearModelAnimationFilterButton.Click += (_, _) =>
+            {
+                _modelAnimationFilterBox.Clear();
+                _modelAnimationStateBox.SelectedIndex = 0;
+            };
             _kindBox.SelectedIndexChanged += (_, _) => ApplyFilter();
             _qualityBox.SelectedIndexChanged += (_, _) => ApplyFilter();
             _thumbnailStateBox.SelectedIndexChanged += (_, _) => ApplyFilter();
@@ -2833,13 +2845,24 @@ namespace AnimeStudio.LibraryBrowser
                 }
 
                 var text = _modelAnimationFilterBox.Text?.Trim() ?? "";
-                var animations = string.IsNullOrWhiteSpace(text)
-                    ? _detailAnimations
-                    : _detailAnimations
-                        .Where(x => Contains(x.Name, text)
-                            || Contains(x.BestPath, text)
-                            || Contains(x.Source, text))
-                        .ToList();
+                var stateFilter = _modelAnimationStateBox.SelectedItem?.ToString() ?? "全部状态";
+                var animations = _detailAnimations
+                    .Where(animation =>
+                    {
+                        var status = GetModelAnimationDisplayStatus(_detailModel, animation);
+                        if (!MatchesModelAnimationStateFilter(_detailModel, animation, status, stateFilter))
+                        {
+                            return false;
+                        }
+
+                        return string.IsNullOrWhiteSpace(text)
+                            || Contains(animation.Name, text)
+                            || Contains(animation.BestPath, text)
+                            || Contains(animation.Source, text)
+                            || Contains(status, text)
+                            || Contains(DescribeAnimationCapability(animation), text);
+                    })
+                    .ToList();
                 if (_showFavoriteModelAnimationsButton.Checked && _curationStore != null)
                 {
                     animations = animations
@@ -2850,25 +2873,7 @@ namespace AnimeStudio.LibraryBrowser
 
                 foreach (var animation in _visibleDetailAnimations)
                 {
-                    var preview = _previewCache?.GetStatus(_detailModel, animation);
-                    var status = animation.IsUnreal
-                        ? animation.IsUsableCandidate ? "UE可预览" : animation.IsMetadataOnly ? "UE元数据" : "UE诊断"
-                        : preview?.Status ?? "未生成";
-                    if (!animation.IsUnreal
-                        && NeedsAvatarHumanDescriptionRefresh(animation)
-                        && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
-                    {
-                        status = "需 Avatar 元数据";
-                    }
-                    else if (!animation.IsUnreal
-                        && RequiresUnityBake(animation)
-                        && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
-                    {
-                        status = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
-                            ? "需 Unity 烘焙"
-                            : "需 Unity 烘焙(Avatar)";
-                    }
-
+                    var status = GetModelAnimationDisplayStatus(_detailModel, animation);
                     var source = animation.IsUnreal
                         ? animation.IsUsableCandidate ? "UE关系" : animation.IsMetadataOnly ? "UE元数据" : "UE诊断"
                         : animation.IsExplicit ? "显式" : animation.NeedsValidation ? "需验证" : "候选";
@@ -2892,6 +2897,63 @@ namespace AnimeStudio.LibraryBrowser
             {
                 _animationList.EndUpdate();
             }
+        }
+
+        private string GetModelAnimationDisplayStatus(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            if (animation == null)
+            {
+                return "未生成";
+            }
+
+            if (animation.IsUnreal)
+            {
+                return animation.IsUsableCandidate ? "UE可预览" : animation.IsMetadataOnly ? "UE元数据" : "UE诊断";
+            }
+
+            var preview = _previewCache?.GetStatus(model, animation);
+            var status = preview?.Status ?? "未生成";
+            if (NeedsAvatarHumanDescriptionRefresh(animation)
+                && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
+            {
+                return "需 Avatar 元数据";
+            }
+
+            if (RequiresUnityBake(animation)
+                && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
+                    ? "需 Unity 烘焙"
+                    : "需 Unity 烘焙(Avatar)";
+            }
+
+            return status;
+        }
+
+        private bool MatchesModelAnimationStateFilter(
+            LibraryModelItem model,
+            LibraryAnimationCandidate animation,
+            string status,
+            string stateFilter)
+        {
+            return stateFilter switch
+            {
+                "可播放" => string.Equals(status, "可播放", StringComparison.OrdinalIgnoreCase),
+                "待可信烘焙" => !animation.IsUnreal
+                    && RequiresUnityBake(animation)
+                    && !IsUnityBakeAlreadyPlayable(model, animation)
+                    && !NeedsAvatarHumanDescriptionRefresh(animation),
+                "导入Avatar" => !animation.IsUnreal
+                    && RequiresUnityBake(animation)
+                    && !string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset),
+                "需Avatar元数据" => !animation.IsUnreal
+                    && NeedsAvatarHumanDescriptionRefresh(animation),
+                "失败/需复查" => Contains(status, "失败")
+                    || Contains(status, "需重建")
+                    || Contains(status, "需复查")
+                    || Contains(status, "已烘焙但需重建"),
+                _ => true,
+            };
         }
 
         private void RebuildLibraryAnimationList()
