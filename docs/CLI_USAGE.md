@@ -769,7 +769,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Write-UnityAvatarAssetRecoveryP
   -OnlyMissing
 ```
 
-`-OnlyMissing` 会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，把已经精确命中的 Avatar 标成 recovered 并从输出列表中过滤掉，只列出剩余待恢复项。CSV/Markdown 里会保留 `source/pathId`、建议的 `Assets/AnimeStudioBake/ImportedAvatar/<AvatarName>.asset` 路径、样例模型，以及 `cumulativeMissingInternalHumanoidCoveragePercent` 这类累计收益字段；优先恢复表头几项，就能直接看到预计补齐多少仍缺 Avatar oracle 的 Humanoid/internal 候选。恢复出的 `.asset` 放进 bake 工程后，再运行 Browser 的“快速摘要”或 `Measure-DeterministicAnimationCoverage.ps1 -FastSummary` 检查 ImportedAvatar 数量和有效 Avatar oracle 覆盖是否上升。
+`-OnlyMissing` 会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，把已经精确命中的 Avatar 标成 recovered 并从输出列表中过滤掉，只列出剩余待恢复项。如果素材库根目录下有 fresh 的 `ImportedAvatarProbe*/imported_avatar_probe_batch.json`，计划会强制只把 Unity 实测 `avatar.isValid && avatar.isHuman` 的 Avatar asset 算作 recovered；无效或未出现在 probe 中的 `.asset` 不会被当成可信 oracle。CSV/Markdown 里会保留 `source/pathId`、建议的 `Assets/AnimeStudioBake/ImportedAvatar/<AvatarName>.asset` 路径、样例模型、`avatarAssetProbeStatus`，以及 `cumulativeMissingInternalHumanoidCoveragePercent` 这类累计收益字段；优先恢复表头几项，就能直接看到预计补齐多少仍缺 Avatar oracle 的 Humanoid/internal 候选。恢复出的 `.asset` 放进 bake 工程后，再运行 Browser 的“验证AvatarAsset”或 `Test-UnityImportedAvatarAssets.ps1`，随后用 Browser 的“快速摘要”或 `Measure-DeterministicAnimationCoverage.ps1 -FastSummary` 检查 ImportedAvatar 数量和有效 Avatar oracle 覆盖是否上升。
 
 如果要确认恢复出的 `.asset` 不只是文件存在，而是 Unity 真的能加载成有效 Humanoid Avatar，可以先运行批量探针。它只调用 bake 工程里的 `AnimeStudioImportedAvatarProbe`，不会新增模型-动画关系，也不会烘焙动画：
 

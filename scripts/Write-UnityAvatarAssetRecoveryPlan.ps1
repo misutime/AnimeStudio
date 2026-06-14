@@ -102,29 +102,96 @@ args = parser.parse_args()
 def imported_avatar_assets(unity_project):
     result = {}
     keys = set()
+    latest_write = None
     if not unity_project:
-        return result, keys
+        return result, keys, latest_write
     root = os.path.join(unity_project, "Assets", "AnimeStudioBake", "ImportedAvatar")
     if not os.path.isdir(root):
-        return result, keys
+        return result, keys, latest_write
     for dirpath, _dirnames, filenames in os.walk(root):
         for filename in filenames:
             if not filename.lower().endswith(".asset"):
                 continue
+            full_path = os.path.join(dirpath, filename)
             stem = os.path.splitext(filename)[0]
-            unity_path = os.path.relpath(os.path.join(dirpath, filename), unity_project).replace("\\", "/")
+            unity_path = os.path.relpath(full_path, unity_project).replace("\\", "/")
             result[stem] = unity_path
             keys.add(stem)
             suffix = "_ModelAvatar"
             if stem.lower().endswith(suffix.lower()):
                 keys.add(stem[:-len(suffix)])
-    return result, keys
+            timestamp = os.path.getmtime(full_path)
+            latest_write = timestamp if latest_write is None else max(latest_write, timestamp)
+    return result, keys, latest_write
+
+
+def latest_imported_avatar_probe(library_root, imported_asset_count, latest_asset_write):
+    result = {
+        "path": "",
+        "freshness": "not_run",
+        "status": "",
+        "totalAssets": 0,
+        "validHumanAvatars": 0,
+        "invalidAssets": 0,
+        "validKeys": set(),
+        "invalidKeys": set(),
+        "error": "",
+    }
+    if not library_root or not os.path.isdir(library_root):
+        return result
+    candidates = []
+    for name in os.listdir(library_root):
+        if not name.startswith("ImportedAvatarProbe"):
+            continue
+        path = os.path.join(library_root, name, "imported_avatar_probe_batch.json")
+        if os.path.isfile(path):
+            candidates.append(path)
+    if not candidates:
+        return result
+    path = max(candidates, key=lambda x: os.path.getmtime(x))
+    result["path"] = path
+    try:
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            probe = json.load(handle)
+    except Exception as exc:
+        result["freshness"] = "error"
+        result["error"] = str(exc)
+        return result
+
+    result["status"] = str(probe.get("status") or "")
+    result["totalAssets"] = int(probe.get("totalAssets") or 0)
+    result["validHumanAvatars"] = int(probe.get("validHumanAvatars") or 0)
+    result["invalidAssets"] = int(probe.get("invalidAssets") or 0)
+    for item in probe.get("items") or []:
+        asset_path = str(item.get("avatarAssetPath") or "").replace("\\", "/")
+        stem = os.path.splitext(os.path.basename(asset_path))[0]
+        if not stem:
+            continue
+        keys = {stem}
+        suffix = "_ModelAvatar"
+        if stem.lower().endswith(suffix.lower()):
+            keys.add(stem[:-len(suffix)])
+        if str(item.get("status") or "").lower() == "ok" and item.get("isValid") and item.get("isHuman"):
+            result["validKeys"].update(keys)
+        else:
+            result["invalidKeys"].update(keys)
+
+    if result["totalAssets"] != imported_asset_count:
+        result["freshness"] = "mismatch"
+    elif latest_asset_write is not None and os.path.getmtime(path) < latest_asset_write:
+        result["freshness"] = "stale"
+    else:
+        result["freshness"] = "fresh"
+    return result
 
 con = sqlite3.connect(args.db)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
-imported_assets, imported_keys = imported_avatar_assets(args.unity_project)
+imported_assets, imported_keys, imported_latest_write = imported_avatar_assets(args.unity_project)
+avatar_probe = latest_imported_avatar_probe(args.library, len(imported_assets), imported_latest_write)
+probe_enforced = avatar_probe["freshness"] == "fresh"
+valid_imported_keys = avatar_probe["validKeys"] if probe_enforced else imported_keys
 avatars = {}
 sql = """
 SELECT a.name, a.output, a.raw_json,
@@ -143,13 +210,25 @@ for row in cur.execute(sql):
         continue
 
     key = (avatar_name, source, int(path_id))
+    existing_asset = imported_assets.get(avatar_name, "")
+    probe_state = "unverified"
+    if probe_enforced:
+        if avatar_name in avatar_probe["validKeys"]:
+            probe_state = "valid"
+        elif avatar_name in avatar_probe["invalidKeys"]:
+            probe_state = "invalid"
+        elif existing_asset:
+            probe_state = "missing_probe_item"
+        else:
+            probe_state = "missing"
     item = avatars.setdefault(key, {
         "avatarName": avatar_name,
         "source": source,
         "sourceShort": short_source(source),
         "pathId": int(path_id),
-        "isRecovered": avatar_name in imported_keys,
-        "existingUnityAsset": imported_assets.get(avatar_name, ""),
+        "isRecovered": avatar_name in valid_imported_keys,
+        "existingUnityAsset": existing_asset,
+        "avatarAssetProbeStatus": probe_state,
         "models": 0,
         "explicitLinks": 0,
         "internalHumanoidLinks": 0,
@@ -213,6 +292,14 @@ summary = {
     "unityProject": args.unity_project,
     "onlyMissing": bool(args.only_missing),
     "importedAvatarAssetCount": len(imported_assets),
+    "importedAvatarProbeReportPath": avatar_probe["path"],
+    "importedAvatarProbeFreshness": avatar_probe["freshness"],
+    "importedAvatarProbeStatus": avatar_probe["status"],
+    "importedAvatarProbeTotalAssets": avatar_probe["totalAssets"],
+    "importedAvatarProbeValidHumanAvatars": avatar_probe["validHumanAvatars"],
+    "importedAvatarProbeInvalidAssets": avatar_probe["invalidAssets"],
+    "importedAvatarProbeError": avatar_probe["error"],
+    "importedAvatarProbeEnforced": probe_enforced,
     "uniqueAvatarObjects": len(items_all),
     "recoveredAvatarObjects": sum(1 for x in items_all if x["isRecovered"]),
     "missingAvatarObjects": sum(1 for x in items_all if not x["isRecovered"]),
@@ -253,6 +340,7 @@ with open(csv_path, "w", encoding="utf-8-sig", newline="") as handle:
         "cumulativeMissingInternalHumanoidCoveragePercent",
         "cumulativeMissingExplicitLinks",
         "cumulativeMissingExplicitCoveragePercent",
+        "avatarAssetProbeStatus",
         "source",
         "pathId",
         "existingUnityAsset",
@@ -272,6 +360,7 @@ with open(csv_path, "w", encoding="utf-8-sig", newline="") as handle:
             item["cumulativeMissingInternalHumanoidCoveragePercent"],
             item["cumulativeMissingExplicitLinks"],
             item["cumulativeMissingExplicitCoveragePercent"],
+            item["avatarAssetProbeStatus"],
             item["sourceShort"],
             item["pathId"],
             item["existingUnityAsset"],
@@ -296,6 +385,11 @@ with open(md_path, "w", encoding="utf-8-sig") as handle:
     handle.write("这份计划只读取 Library 的确定性模型元数据：`assets.raw_json.avatar.name/source/pathId` 和 `model_animation_candidate_model_summary`。它不新增模型-动画关系，也不按名称猜测 Avatar。\n\n")
     handle.write(f"- 独立 Avatar 对象: {len(items_all)}\n")
     handle.write(f"- 已导入 Avatar asset: {len(imported_assets)}\n")
+    handle.write(f"- ImportedAvatar probe freshness: {summary['importedAvatarProbeFreshness']}\n")
+    handle.write(f"- ImportedAvatar probe enforced: {summary['importedAvatarProbeEnforced']}\n")
+    if summary["importedAvatarProbeReportPath"]:
+        handle.write(f"- ImportedAvatar probe report: {summary['importedAvatarProbeReportPath']}\n")
+        handle.write(f"- ImportedAvatar probe valid/invalid: {summary['importedAvatarProbeValidHumanAvatars']} / {summary['importedAvatarProbeInvalidAssets']}\n")
     handle.write(f"- 已恢复 Avatar 对象: {summary['recoveredAvatarObjects']}\n")
     handle.write(f"- 待恢复 Avatar 对象: {summary['missingAvatarObjects']}\n")
     handle.write(f"- 列出 Avatar 对象: {len(limited)}\n")
@@ -308,11 +402,11 @@ with open(md_path, "w", encoding="utf-8-sig") as handle:
     handle.write(f"- 待恢复显式候选链接: {summary['missingExplicitLinks']} ({summary['missingExplicitCoveragePercent']}%)\n\n")
     if args.only_missing:
         handle.write("当前报告启用了 OnlyMissing，只列出尚未在 `Assets/AnimeStudioBake/ImportedAvatar` 精确命中的 Avatar。\n\n")
-    handle.write("| rank | status | avatar | models | internal links | cumulative missing internal | cumulative % | explicit links | source | pathId |\n")
-    handle.write("|---:|---|---|---:|---:|---:|---:|---:|---|---:|\n")
+    handle.write("| rank | status | avatar | probe | models | internal links | cumulative missing internal | cumulative % | explicit links | source | pathId |\n")
+    handle.write("|---:|---|---|---|---:|---:|---:|---:|---:|---|---:|\n")
     for index, item in enumerate(limited[:80], 1):
         handle.write(
-            f"| {index} | {'recovered' if item['isRecovered'] else 'missing'} | {item['avatarName']} | {item['models']} | {item['internalHumanoidLinks']} | "
+            f"| {index} | {'recovered' if item['isRecovered'] else 'missing'} | {item['avatarName']} | {item['avatarAssetProbeStatus']} | {item['models']} | {item['internalHumanoidLinks']} | "
             f"{item['cumulativeMissingInternalHumanoidLinks']} | {item['cumulativeMissingInternalHumanoidCoveragePercent']} | "
             f"{item['explicitLinks']} | {item['sourceShort']} | {item['pathId']} |\n"
         )
