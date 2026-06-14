@@ -1399,8 +1399,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 - 只有显式 `--animation_package Embedded` 或 `Both`，或后续专门的预览/打包命令，才把动画写进模型 glTF。
 - `unity_relations.jsonl` 是后续动画绑定的上游关系图，包含 GameObject、组件、Animator、Controller、Avatar、SkinnedMeshRenderer、AnimationClip binding 等 Unity 原生关系。
 - `unity_relation_summary.json` 是关系图摘要，适合快速判断当前样本有没有 Animator Controller、Avatar、Muscle Clip、skin bones 等关键关系。
-- `animation_bindings.jsonl` 和 `model_animations.json` 目前是候选索引，不等于最终可播放验证结果；默认候选只应来自 Unity 显式引用或结构兼容关系，不能靠路径/名称猜测。
-- 候选索引会记录 `relationSource`、`confidence`、`score`、`matchedBindingPaths`、`unmatchedBindingPaths`、`requiresHumanoidBake`。其中 `explicit_unity_reference` 表示来自 Animator/Animation 显式引用，`structural_unity_binding` 表示 AnimationClip binding path 与模型骨骼路径兼容，`structural_unity_avatar` 表示模型 Avatar 与 Humanoid/Muscle 动画结构兼容。
+- `animation_bindings.jsonl` 和 `model_animations.json` 目前是候选索引，不等于最终可播放验证结果；默认推荐候选只能来自 Unity 显式关系，例如 Animator、Animation、AnimatorController、AnimatorOverrideController、PPtr 和源索引依赖图。结构兼容、骨骼路径、Avatar 兼容、路径/名称语义只能作为诊断、过滤或显式人工预览依据，不能进入默认 `model_animations.json` / SQLite 推荐候选。
+- 候选索引会记录 `relationSource`、`confidence`、`score`、`matchedBindingPaths`、`unmatchedBindingPaths`、`requiresHumanoidBake`。`relationSource=explicit` 才表示可进入默认 Unity 动画候选；`confidence=explicit_unity_reference` 只能说明这条显式关系的质量，不能单独把旧 fallback/diagnostic 候选升级成默认候选。`structural_unity_binding` / `structural_unity_avatar` 等结构兼容结果只能保留为诊断或人工强制预览线索。
 - 预览/打包命令会负责验证实际写入 glTF 后的 channel 数、skin/joint 和主体骨骼覆盖。
 
 ### 默认素材库命令
