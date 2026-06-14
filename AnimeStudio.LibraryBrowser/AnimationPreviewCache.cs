@@ -973,18 +973,58 @@ FROM animation_bake_cache;";
             {
                 if (trustedProperty.ValueKind == JsonValueKind.True || trustedProperty.ValueKind == JsonValueKind.False)
                 {
-                    trusted = trustedProperty.GetBoolean();
+                    trusted = trustedProperty.GetBoolean()
+                        && AvatarTrustSourceMatchesExplicitRequest(root, avatarTrust);
                     return true;
                 }
 
                 if (trustedProperty.ValueKind == JsonValueKind.String
                     && bool.TryParse(trustedProperty.GetString(), out trusted))
                 {
+                    trusted = trusted && AvatarTrustSourceMatchesExplicitRequest(root, avatarTrust);
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private static bool AvatarTrustSourceMatchesExplicitRequest(JsonElement root, JsonElement avatarTrust)
+        {
+            if (!ReportRequestHasExplicitAvatarAsset(root))
+            {
+                return true;
+            }
+
+            var source = ReadString(avatarTrust, "Source") ?? ReadString(avatarTrust, "source");
+            return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ReportRequestHasExplicitAvatarAsset(JsonElement root)
+        {
+            var requestPath = ReadString(root, "request");
+            if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var request = JsonDocument.Parse(File.ReadAllText(requestPath));
+                var requestRoot = request.RootElement;
+                if (!requestRoot.TryGetProperty("unityAssetPaths", out var unityAssetPaths)
+                    || unityAssetPaths.ValueKind != JsonValueKind.Object)
+                {
+                    return false;
+                }
+
+                var avatarAsset = ReadString(unityAssetPaths, "avatarAsset");
+                return !string.IsNullOrWhiteSpace(avatarAsset);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool TryReadInt(JsonElement obj, string name, out int value)

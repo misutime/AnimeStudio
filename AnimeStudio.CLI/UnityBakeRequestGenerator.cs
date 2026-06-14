@@ -1910,7 +1910,31 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             }
 
             var source = (string)avatarTrust["Source"] ?? (string)avatarTrust["source"];
+            if (ReportRequestHasExplicitAvatarAsset(report))
+            {
+                return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase);
+            }
+
             return !string.Equals(source, "avatar_constant_oracle_unity_validated", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ReportRequestHasExplicitAvatarAsset(JObject report)
+        {
+            var requestPath = (string)report?["request"];
+            if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var request = JObject.Parse(File.ReadAllText(requestPath));
+                return !string.IsNullOrWhiteSpace((string)request["unityAssetPaths"]?["avatarAsset"]);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool UsesFirstSampleHumanoidDelta(JObject report)

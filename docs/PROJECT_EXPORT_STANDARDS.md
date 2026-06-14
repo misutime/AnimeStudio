@@ -195,7 +195,7 @@ Unity bake 的可信 Avatar 来源固定为三类：原始 prefab / Animator 上
 
 不同游戏可以走不同 Avatar 获取路径，但都必须是 Unity 确定性数据：VRising、Freedunk 这类普通 Unity 项目优先直接使用源索引或 request 里的原始 `Animator.avatar` / `UnityEngine.Avatar` asset；原神这类需要额外恢复 Avatar 的项目，走导入到 bake 工程后的原始 Avatar asset oracle。只有 request 明确带 `unityAssetPaths.avatarAsset` 时，bake helper 才能把它作为生产 Avatar；没有这个字段时，才能进入受限的复建/诊断分支，并在报告里写清来源，不能退回骨骼数量、名称或当前姿态猜测。
 `unityAssetPaths.avatarAsset` 是强约束，不是提示。只要 request 显式指定了它，Unity helper 必须加载到有效 Humanoid `Avatar` 才能继续；路径缺失、加载失败或 Avatar 无效时应直接失败，不能静默退回 `BuildHumanAvatar` / `AvatarConstant` / glTF rest pose 复建。即使同一个 request 也提供了 prefab，显式 Avatar asset 仍应覆盖 Animator.avatar，避免配置写了但实际没用。
-apply 阶段也必须遵守同一优先级：只要 request 带了 `unityAssetPaths.avatarAsset`，`unity_bake_apply_report.json` 的 `avatarTrust.TrustedProductionBake` 只能由这个导入 Avatar asset 的有效 Humanoid 结果证明；不能因为 request 里还带有 `HumanDescription.skeletonBones`、prefab 或 AvatarConstant/internalSolver 诊断数据，就把失败或旧 helper 结果标成可信。
+apply 和后续统计读取阶段也必须遵守同一优先级：只要 request 带了 `unityAssetPaths.avatarAsset`，`unity_bake_apply_report.json` 的 `avatarTrust.TrustedProductionBake` 只能由这个导入 Avatar asset 的有效 Humanoid 结果证明；不能因为 request 里还带有 `HumanDescription.skeletonBones`、prefab 或 AvatarConstant/internalSolver 诊断数据，就把失败或旧 helper 结果标成可信。Browser、SQLite 摘要和诊断脚本读取旧缓存时也要交叉读取 apply report 里的 `request`，发现 request 显式带 Avatar asset 而 `avatarTrust.source` 不是 `imported_unity_avatar_asset` 时，一律按不可信 baked 处理。
 
 Unity bake 只能作用在已经来自 Unity 显式关系的候选上，不能用来新增或猜测模型-动画绑定。报告必须保留 `relation_source=explicit`、`baked=true` / `bakeMode`、request/result 路径和 glTF 验证状态。内部 Humanoid/Muscle 求解器保留现有代码和文档作为后续研究基础，但默认流程不得把近似 muscle 求解、骨架数量兼容或名称匹配伪装成已验证可复用身体动画。
 

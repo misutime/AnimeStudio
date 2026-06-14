@@ -182,6 +182,26 @@ def unity_bake_apply_report_for_gltf(baked_gltf_path, library_root):
     return report_path, read_json_file(report_path)
 
 
+def report_request_has_explicit_avatar_asset(report):
+    request_path = str((report or {}).get("request") or "").strip()
+    if not request_path or not os.path.exists(request_path):
+        return False
+    request = read_json_file(request_path) or {}
+    unity_paths = request.get("unityAssetPaths") or {}
+    return bool(str(unity_paths.get("avatarAsset") or "").strip())
+
+
+def avatar_trust_matches_explicit_request(report, avatar_trust):
+    if not report_request_has_explicit_avatar_asset(report):
+        return True
+    source = str(
+        (avatar_trust or {}).get("Source")
+        or (avatar_trust or {}).get("source")
+        or ""
+    ).strip().lower()
+    return source == "imported_unity_avatar_asset"
+
+
 def is_trusted_baked_gltf_path(baked_gltf_path, library_root):
     report_path, report = unity_bake_apply_report_for_gltf(baked_gltf_path, library_root)
     if not report_path or not report:
@@ -195,7 +215,11 @@ def is_trusted_baked_gltf_path(baked_gltf_path, library_root):
             avatar_trust.get("TrustedProductionBake")
             or avatar_trust.get("trustedProductionBake")
         )
-        return int(report.get("frameVaryingTracks") or 0) > 0 and trusted_avatar
+        return (
+            int(report.get("frameVaryingTracks") or 0) > 0
+            and trusted_avatar
+            and avatar_trust_matches_explicit_request(report, avatar_trust)
+        )
     except Exception:
         return False
 
@@ -578,7 +602,7 @@ def unity_bake_production(cur, library_root):
         category_counts.values(),
         key=lambda x: (-x["candidateCount"], x["category"].lower()),
     )[:24]
-    result["note"] = "Unity bake production coverage is normalized to bake-ready explicit candidates. Trusted baked requires unity_bake_apply_report.json status ok/warning, frameVaryingTracks > 0, and avatarTrust.TrustedProductionBake=true; static_pose and needs_review are terminal diagnostics and are not counted as failed or pending."
+    result["note"] = "Unity bake production coverage is normalized to bake-ready explicit candidates. Trusted baked requires unity_bake_apply_report.json status ok/warning, frameVaryingTracks > 0, avatarTrust.TrustedProductionBake=true, and imported_unity_avatar_asset source when the original request explicitly supplied unityAssetPaths.avatarAsset; static_pose and needs_review are terminal diagnostics and are not counted as failed or pending."
     return result
 
 

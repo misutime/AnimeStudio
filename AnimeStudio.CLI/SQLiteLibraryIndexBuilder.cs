@@ -1818,7 +1818,7 @@ WHERE bc.status='baked'
             var summary = new JObject
             {
                 ["status"] = "ok",
-                ["rule"] = "Unity bake production only counts relation_source=explicit Humanoid/Muscle candidates whose model has a real Unity prefab/Animator.avatar or complete HumanDescription.humanBones + skeletonBones. trustedBaked requires status=baked, baked glTF exists, unity_bake_apply_report.json is ok/warning, frameVaryingTracks > 0, and avatarTrust.TrustedProductionBake=true. AvatarConstant/internalSolver oracle is diagnostic only until original Unity Avatar/HumanDescription recovery is proven.",
+                ["rule"] = "Unity bake production only counts relation_source=explicit Humanoid/Muscle candidates whose model has a real Unity prefab/Animator.avatar, complete HumanDescription.humanBones + skeletonBones, or an explicitly imported original Unity Avatar asset. trustedBaked requires status=baked, baked glTF exists, unity_bake_apply_report.json is ok/warning, frameVaryingTracks > 0, avatarTrust.TrustedProductionBake=true, and imported_unity_avatar_asset source when the original request supplied unityAssetPaths.avatarAsset. AvatarConstant/internalSolver oracle is diagnostic only until original Unity Avatar/HumanDescription recovery is proven.",
                 ["explicitUnityBakeCandidates"] = explicitUnityBakeCandidates,
                 ["uniqueExplicitUnityBakeCandidates"] = uniqueExplicitUnityBakeCandidates,
                 ["explicitUnityBakeModels"] = explicitUnityBakeModels,
@@ -2132,7 +2132,31 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             }
 
             var source = (string)avatarTrust["Source"] ?? (string)avatarTrust["source"];
+            if (ReportRequestHasExplicitAvatarAsset(report))
+            {
+                return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase);
+            }
+
             return !string.Equals(source, "avatar_constant_oracle_unity_validated", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ReportRequestHasExplicitAvatarAsset(JObject report)
+        {
+            var requestPath = (string)report?["request"];
+            if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var request = JObject.Parse(File.ReadAllText(requestPath));
+                return !string.IsNullOrWhiteSpace((string)request["unityAssetPaths"]?["avatarAsset"]);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool UsesFirstSampleHumanoidDelta(JObject report)
