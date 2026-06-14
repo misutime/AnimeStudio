@@ -124,6 +124,12 @@ namespace AnimeStudio.CLI
                 Logger.Error("Selected preview entry is missing model or animation name.");
                 return null;
             }
+            if (!IsExplicitPreviewRelation(selection.Animation))
+            {
+                Logger.Error("Selected preview candidate is not a Unity explicit model-animation relation. Default preview generation refuses structure/name/manual matches.");
+                Logger.Error($"Relation source: {(string)selection.Animation["relationSource"] ?? "(none)"}; confidence: {(string)selection.Animation["confidence"] ?? "(none)"}");
+                return null;
+            }
             var output = string.IsNullOrWhiteSpace(outputDirectory)
                 ? Path.Combine(
                     Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? Directory.GetCurrentDirectory(),
@@ -1472,41 +1478,73 @@ LIMIT 4096;";
             using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
             connection.Open();
 
-            var model = SelectAssetFromLibraryDb(connection, "Model", modelSelector);
-            var animation = SelectAssetFromLibraryDb(connection, "Animation", animationSelector);
-            if (model == null || animation == null)
+            using var command = connection.CreateCommand();
+            var modelSelectorClause = BuildAssetSelectorSqlClause(command, "m", modelSelector, "previewModel");
+            var animationSelectorClause = BuildAssetSelectorSqlClause(command, "a", animationSelector, "previewAnimation");
+            command.CommandText = $@"
+SELECT m.raw_json, a.raw_json, c.raw_json
+FROM model_animation_candidates c
+JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
+WHERE c.relation_source='explicit'
+  AND {modelSelectorClause}
+  AND {animationSelectorClause}
+ORDER BY c.score DESC, m.name COLLATE NOCASE, a.name COLLATE NOCASE
+LIMIT 128;";
+
+            var rows = new List<PreviewSelection>();
+            using (var reader = command.ExecuteReader())
             {
-                return null;
+                while (reader.Read())
+                {
+                    var model = JObject.Parse(reader.GetString(0));
+                    var animation = JObject.Parse(reader.GetString(1));
+                    var relation = JObject.Parse(reader.GetString(2));
+                    if (!Matches(modelSelector, (string)model["name"], (string)model["output"])
+                        || !Matches(animationSelector, (string)animation["name"], (string)animation["output"]))
+                    {
+                        continue;
+                    }
+
+                    var candidate = new JObject
+                    {
+                        ["name"] = animation["name"],
+                        ["output"] = animation["output"],
+                        ["animationAsset"] = animation["animationAsset"],
+                        ["source"] = animation["source"],
+                        ["sourceType"] = animation["sourceType"],
+                        ["pathId"] = animation["pathId"],
+                        ["animationType"] = animation["animationType"],
+                        ["animationCapability"] = animation["animationCapability"],
+                        ["hasMuscleClip"] = animation["hasMuscleClip"],
+                        ["curveCount"] = animation["curveCount"],
+                        ["transformBindingCount"] = animation["transformBindingCount"],
+                        ["humanoidBindingCount"] = animation["humanoidBindingCount"],
+                        ["relation"] = (string)relation["relation"] ?? (string)relation["relationSource"] ?? "library.sqlite.explicit_candidate",
+                        ["relationSource"] = (string)relation["relationSource"] ?? "explicit",
+                        ["confidence"] = (string)relation["confidence"] ?? "explicit_unity_source_index",
+                        ["score"] = (double?)relation["score"] ?? 100,
+                        ["candidate"] = relation,
+                    };
+                    rows.Add(new PreviewSelection(
+                        new JObject
+                        {
+                            ["model"] = model,
+                            ["candidateCount"] = 1,
+                            ["candidates"] = new JArray(candidate),
+                        },
+                        candidate));
+                }
             }
 
-            var candidate = new JObject
-            {
-                ["name"] = animation["name"],
-                ["output"] = animation["output"],
-                ["animationAsset"] = animation["animationAsset"],
-                ["source"] = animation["source"],
-                ["sourceType"] = animation["sourceType"],
-                ["pathId"] = animation["pathId"],
-                ["animationType"] = animation["animationType"],
-                ["animationCapability"] = animation["animationCapability"],
-                ["hasMuscleClip"] = animation["hasMuscleClip"],
-                ["curveCount"] = animation["curveCount"],
-                ["transformBindingCount"] = animation["transformBindingCount"],
-                ["humanoidBindingCount"] = animation["humanoidBindingCount"],
-                ["relation"] = "library.sqlite.selection",
-                ["relationSource"] = "sqlite",
-                ["confidence"] = "manual_preview_selection",
-                ["score"] = 100,
-            };
+            return rows.FirstOrDefault();
+        }
 
-            return new PreviewSelection(
-                new JObject
-                {
-                    ["model"] = model,
-                    ["candidateCount"] = 1,
-                    ["candidates"] = new JArray(candidate),
-                },
-                candidate);
+        private static bool IsExplicitPreviewRelation(JObject animation)
+        {
+            return string.Equals((string)animation?["relationSource"], "explicit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)animation?["confidence"], "explicit_unity_reference", StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)animation?["confidence"], "explicit_unity_source_index", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ResolveSelectionLibraryPaths(PreviewSelection selection, string libraryRoot)
