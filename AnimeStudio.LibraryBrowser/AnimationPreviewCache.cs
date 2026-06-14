@@ -94,6 +94,22 @@ namespace AnimeStudio.LibraryBrowser
             CancellationToken cancellationToken,
             Action<string> progress = null)
         {
+            if (model == null || animation == null)
+            {
+                return new AnimationPreviewStatus("失败", null, null, "没有选中模型或动画。");
+            }
+
+            if (animation?.IsExplicit != true)
+            {
+                var status = new AnimationPreviewStatus(
+                    "拒绝预览",
+                    null,
+                    null,
+                    "当前模型-动画关系不是 Unity 显式关系；结构匹配只能诊断，不能写入默认可播放预览缓存。");
+                WriteState(GetPreviewDirectory(model, animation), status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
             if (animation?.NeedsProductionAvatarRefresh == true)
             {
                 var status = new AnimationPreviewStatus(
@@ -215,7 +231,23 @@ namespace AnimeStudio.LibraryBrowser
             CancellationToken cancellationToken,
             Action<string> progress = null)
         {
+            if (model == null || animation == null)
+            {
+                return new AnimationPreviewStatus("烘焙失败", null, null, "没有选中模型或动画。");
+            }
+
             var directory = GetPreviewDirectory(model, animation);
+            if (animation?.IsExplicit != true)
+            {
+                var status = new AnimationPreviewStatus(
+                    "拒绝烘焙",
+                    null,
+                    null,
+                    "Unity bake 只能处理 Unity 显式关系候选；结构匹配、骨骼兼容或人工拼接不能进入生产烘焙。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
             var current = GetStatus(model, animation);
             if (string.Equals(current.Status, "可播放", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(current.GltfPath)

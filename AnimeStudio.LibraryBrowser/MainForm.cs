@@ -3837,6 +3837,15 @@ namespace AnimeStudio.LibraryBrowser
                 return "没有选中模型或动画。";
             }
 
+            if (!animation.IsExplicit)
+            {
+                return "当前动画关系不是 Unity 显式关系，不能进入默认 glTF 预览或 Unity 烘焙。"
+                    + Environment.NewLine
+                    + "骨骼路径、结构兼容、名称或人工定向匹配只能用于诊断，不能当作素材库默认绑定。"
+                    + Environment.NewLine
+                    + $"关系来源: {EmptyAsUnknown(animation.RelationSource)}";
+            }
+
             if (string.IsNullOrWhiteSpace(model.OutputPath) || !File.Exists(model.OutputPath))
             {
                 return "模型 glTF 文件不存在，无法生成动画预览。"
