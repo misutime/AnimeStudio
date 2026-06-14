@@ -212,9 +212,9 @@ Browser 的批量 Unity 烘焙入口只会处理已经具备生产 Avatar oracle
 
 旧 `model_animations.json` 入口也必须遵守同一条规则：`--generate_preview_gltf`、`--pack_model_animations` 和 `--generate_unity_bake_request` 只能处理显式 Unity 关系候选。SQLite 重建导入 `model_animations.compact.json` 时也必须要求 `relationSource=explicit`，`model_animation_candidates.relation_source` 本身有 `CHECK(relation_source='explicit')` 约束；`confidence=explicit_unity_reference` 只能作为显式关系的质量说明，不能单独把 fallback/diagnostic 提升成默认候选。嵌入 sidecar、结构匹配、名称匹配或手工选择可以保留为诊断数据，但不能进入默认可播放 glTF、动画包或生产 Unity bake 请求。
 
-模型页“质量”筛选也提供动画主线入口：`有导入Avatar候选` 只看已经匹配 ImportedAvatar oracle 的显式 Unity bake 候选；`待可信烘焙` 排除已有可信 `可播放` 缓存，用来找下一批需要 Unity bake 的模型；`需Avatar元数据` 用来定位仍缺生产 Avatar/HumanDescription 的显式候选。选中单个模型后，模型详情里的动画列表也提供同一组状态筛选：`待可信烘焙`、`导入Avatar`、`需Avatar元数据`、`失败/需复查`。这样可以在一个模型内直接筛出失败或待处理动画，再执行“批量烘焙当前可见动画”，不需要从批次报告里手工逐个复制动画名。
+模型页“质量”筛选也提供动画主线入口：`有导入Avatar候选` 只看已经匹配 ImportedAvatar oracle 的显式 Unity bake 候选；`有原始Avatar候选` 只看走原始 prefab / HumanDescription / 生产 Avatar 标记路径的显式 Unity bake 候选；`待可信烘焙` 排除已有可信 `可播放` 缓存，用来找下一批需要 Unity bake 的模型；`需Avatar元数据` 用来定位仍缺生产 Avatar/HumanDescription 的显式候选。选中单个模型后，模型详情里的动画列表也提供同一组状态筛选：`待可信烘焙`、`导入Avatar`、`原始Avatar`、`需Avatar元数据`、`失败/需复查`。这样可以在一个模型内直接筛出失败或待处理动画，再执行“批量烘焙当前可见动画”，不需要从批次报告里手工逐个复制动画名。
 
-动画页右侧模型列表有独立状态筛选：`待可信烘焙`、`导入Avatar`、`需Avatar元数据`、`失败/需复查` 都按“当前动画 + 当前模型”的显式候选记录判断，而不是只看全局动画记录。这样同一个 AnimationClip 关联多个模型时，Browser 会使用每个模型自己的 Avatar asset、匹配键和缓存状态。
+动画页右侧模型列表有独立状态筛选：`待可信烘焙`、`导入Avatar`、`原始Avatar`、`需Avatar元数据`、`失败/需复查` 都按“当前动画 + 当前模型”的显式候选记录判断，而不是只看全局动画记录。这样同一个 AnimationClip 关联多个模型时，Browser 会使用每个模型自己的 Avatar asset、匹配键和缓存状态。
 
 动画页详情区会汇总当前右侧可见模型的状态计数：可播放、待可信烘焙、导入 Avatar、需 Avatar 元数据、失败或复查。这个计数跟随右侧文本过滤和状态筛选变化，方便在批量烘焙前确认当前操作范围。
 

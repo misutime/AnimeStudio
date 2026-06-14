@@ -209,7 +209,7 @@ namespace AnimeStudio.LibraryBrowser
             _kindBox.Width = 160;
             _qualityBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _qualityBox.Width = 160;
-            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "质量问题", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画", "有导入Avatar候选", "待可信烘焙", "缺Avatar", "需Avatar元数据" });
+            _qualityBox.Items.AddRange(new object[] { "全部质量", "任务/道具", "任务需复查", "质量问题", "路径关系待补", "缺材质", "无外部贴图", "验证警告", "有动画", "有导入Avatar候选", "有原始Avatar候选", "待可信烘焙", "缺Avatar", "需Avatar元数据" });
             _qualityBox.SelectedIndex = 0;
             _thumbnailStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _thumbnailStateBox.Width = 120;
@@ -328,7 +328,7 @@ namespace AnimeStudio.LibraryBrowser
             _modelAnimationStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _modelAnimationStateBox.Width = 130;
             _modelAnimationStateBox.ToolTipText = "按当前模型下每个动画的预览/烘焙状态过滤，方便批量重试失败或待烘焙项。";
-            _modelAnimationStateBox.Items.AddRange(new object[] { "全部状态", "可播放", "待可信烘焙", "导入Avatar", "需Avatar元数据", "失败/需复查" });
+            _modelAnimationStateBox.Items.AddRange(new object[] { "全部状态", "可播放", "待可信烘焙", "导入Avatar", "原始Avatar", "需Avatar元数据", "失败/需复查" });
             _modelAnimationStateBox.SelectedIndex = 0;
             _clearModelAnimationFilterButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _showFavoriteModelAnimationsButton.CheckOnClick = true;
@@ -351,7 +351,7 @@ namespace AnimeStudio.LibraryBrowser
             _animationModelStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _animationModelStateBox.Width = 130;
             _animationModelStateBox.ToolTipText = "按当前动画对右侧模型的预览/烘焙状态过滤。";
-            _animationModelStateBox.Items.AddRange(new object[] { "全部状态", "可播放", "待可信烘焙", "导入Avatar", "需Avatar元数据", "失败/需复查" });
+            _animationModelStateBox.Items.AddRange(new object[] { "全部状态", "可播放", "待可信烘焙", "导入Avatar", "原始Avatar", "需Avatar元数据", "失败/需复查" });
             _animationModelStateBox.SelectedIndex = 0;
             _clearAnimationModelSearchButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _clearAnimationModelFilterButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -2040,6 +2040,7 @@ namespace AnimeStudio.LibraryBrowser
                 "验证警告" => query.Where(x => string.Equals(x.ValidationStatus, "warning", StringComparison.OrdinalIgnoreCase)),
                 "有动画" => query.Where(x => _animationIndex.CountForModel(x) > 0 || x.AnimationCandidateCount > 0),
                 "有导入Avatar候选" => query.Where(ModelHasImportedAvatarBakeCandidate),
+                "有原始Avatar候选" => query.Where(ModelHasOriginalAvatarBakeCandidate),
                 "待可信烘焙" => query.Where(ModelHasPendingTrustedUnityBake),
                 "缺Avatar" => query.Where(ModelNeedsAvatarMetadata),
                 "需Avatar元数据" => query.Where(ModelNeedsAvatarMetadata),
@@ -2050,10 +2051,15 @@ namespace AnimeStudio.LibraryBrowser
         private bool ModelHasImportedAvatarBakeCandidate(LibraryModelItem item)
         {
             return ModelHasAnimation(item, animation =>
-                !animation.IsUnreal
-                && animation.IsExplicit
-                && RequiresUnityBake(animation)
-                && !string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset));
+                animation.IsExplicit
+                && HasImportedAvatarAssetOracle(animation));
+        }
+
+        private bool ModelHasOriginalAvatarBakeCandidate(LibraryModelItem item)
+        {
+            return ModelHasAnimation(item, animation =>
+                animation.IsExplicit
+                && HasOriginalAvatarOracle(animation));
         }
 
         private bool ModelHasPendingTrustedUnityBake(LibraryModelItem item)
@@ -3346,8 +3352,9 @@ namespace AnimeStudio.LibraryBrowser
                     && !IsUnityBakeAlreadyPlayable(model, animation)
                     && !NeedsAvatarHumanDescriptionRefresh(animation),
                 "导入Avatar" => !animation.IsUnreal
-                    && RequiresUnityBake(animation)
-                    && !string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset),
+                    && HasImportedAvatarAssetOracle(animation),
+                "原始Avatar" => !animation.IsUnreal
+                    && HasOriginalAvatarOracle(animation),
                 "需Avatar元数据" => !animation.IsUnreal
                     && NeedsAvatarHumanDescriptionRefresh(animation),
                 "失败/需复查" => Contains(status, "失败")
@@ -3529,9 +3536,13 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     var modelAnimation = ResolveAnimationForModel(model, animation);
                     return modelAnimation != null
-                        && !modelAnimation.IsUnreal
-                        && RequiresUnityBake(modelAnimation)
-                        && !string.IsNullOrWhiteSpace(modelAnimation.ProductionUnityBakeAvatarAsset);
+                        && HasImportedAvatarAssetOracle(modelAnimation);
+                }),
+                "原始Avatar" => query.Where(model =>
+                {
+                    var modelAnimation = ResolveAnimationForModel(model, animation);
+                    return modelAnimation != null
+                        && HasOriginalAvatarOracle(modelAnimation);
                 }),
                 "需Avatar元数据" => query.Where(model =>
                 {
@@ -3783,6 +3794,23 @@ namespace AnimeStudio.LibraryBrowser
         {
             return string.Equals(animation?.ProductionUnityBakeAvatarSource, "model_human_description", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(animation?.ProductionUnityBakeAvatarSource, "candidate_production_avatar", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasImportedAvatarAssetOracle(LibraryAnimationCandidate animation)
+        {
+            return animation != null
+                && !animation.IsUnreal
+                && RequiresUnityBake(animation)
+                && (string.Equals(animation.ProductionUnityBakeAvatarSource, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset));
+        }
+
+        private static bool HasOriginalAvatarOracle(LibraryAnimationCandidate animation)
+        {
+            return animation != null
+                && !animation.IsUnreal
+                && RequiresUnityBake(animation)
+                && IsKnownProductionAvatarSource(animation);
         }
 
         private static bool HasMissingProductionAvatarOracle(LibraryAnimationCandidate animation)
