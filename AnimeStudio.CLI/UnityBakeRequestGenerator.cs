@@ -188,9 +188,9 @@ namespace AnimeStudio.CLI
             Directory.CreateDirectory(output);
             if (limit == 0)
             {
-                WriteSummaryOnlyBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, force, unityProject);
                 TryCompactBakeCache(dbPath, libraryRoot);
                 TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: true, unityProject);
+                WriteSummaryOnlyBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, force);
                 Logger.Info("Unity bake batch limit is 0; wrote reports only and skipped request generation.");
                 return;
             }
@@ -467,10 +467,9 @@ namespace AnimeStudio.CLI
             string libraryRoot,
             string output,
             bool runUnityBake,
-            bool force,
-            string unityProject)
+            bool force)
         {
-            var readiness = BuildSummaryOnlyBakeReadiness(dbPath, libraryRoot, unityProject);
+            var readiness = BuildSummaryOnlyBakeReadiness(libraryRoot, output);
             var report = new JObject
             {
                 ["generatedAt"] = DateTime.UtcNow.ToString("O"),
@@ -497,7 +496,7 @@ namespace AnimeStudio.CLI
             Logger.Info($"Unity bake batch report: {reportPath}");
         }
 
-        private static JObject BuildSummaryOnlyBakeReadiness(string dbPath, string libraryRoot, string unityProject)
+        private static JObject BuildSummaryOnlyBakeReadiness(string libraryRoot, string output)
         {
             var summary = new JObject
             {
@@ -509,26 +508,18 @@ namespace AnimeStudio.CLI
             };
             try
             {
-                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
-                connection.Open();
-                var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
-                CreateTempImportedAvatarAssetKeys(connection, importedAvatarAssets);
-                CreateTempExplicitUnityBakeCandidateTable(connection);
-                var explicitUnityBakeCandidates = ScalarLong(connection, @"
-SELECT COUNT(*)
-FROM temp_explicit_unity_bake_candidates;");
-                var bakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
-SELECT COUNT(*)
-FROM temp_explicit_unity_bake_candidates
-WHERE bake_ready_avatar=1;");
-                var importedAvatarAssetBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
-SELECT COUNT(*)
-FROM temp_explicit_unity_bake_candidates
-WHERE imported_avatar_ready=1;");
-                var effectiveBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
-SELECT COUNT(*)
-FROM temp_explicit_unity_bake_candidates
-WHERE bake_ready_avatar=1 OR imported_avatar_ready=1;");
+                var summaryPath = ResolveFreshBakeSummaryPath(libraryRoot, output);
+                if (string.IsNullOrWhiteSpace(summaryPath))
+                {
+                    summary["summaryError"] = "animation_bake_cache_summary.json was not found after summary refresh.";
+                    return summary;
+                }
+
+                var root = JObject.Parse(File.ReadAllText(summaryPath));
+                var explicitUnityBakeCandidates = (long?)root["explicitUnityBakeCandidates"] ?? 0;
+                var bakeReadyExplicitUnityBakeCandidates = (long?)root["bakeReadyExplicitUnityBakeCandidates"] ?? 0;
+                var importedAvatarAssetBakeReadyExplicitUnityBakeCandidates = (long?)root["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] ?? 0;
+                var effectiveBakeReadyExplicitUnityBakeCandidates = (long?)root["effectiveBakeReadyExplicitUnityBakeCandidates"] ?? 0;
                 summary["explicitUnityBakeCandidates"] = explicitUnityBakeCandidates;
                 summary["bakeReadyExplicitUnityBakeCandidates"] = bakeReadyExplicitUnityBakeCandidates;
                 summary["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = importedAvatarAssetBakeReadyExplicitUnityBakeCandidates;
@@ -545,6 +536,21 @@ WHERE bake_ready_avatar=1 OR imported_avatar_ready=1;");
             }
 
             return summary;
+        }
+
+        private static string ResolveFreshBakeSummaryPath(string libraryRoot, string output)
+        {
+            var candidates = new[]
+            {
+                Path.Combine(output ?? "", "animation_bake_cache_summary.json"),
+                Path.Combine(libraryRoot ?? "", "animation_bake_cache_summary.json"),
+            };
+            return candidates
+                .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Select(file => file.FullName)
+                .FirstOrDefault();
         }
 
         private static JObject CountReportItemsByString(JArray items, string propertyName)
