@@ -469,6 +469,12 @@ namespace AnimeStudio.CLI
                 Logger.Error("Selected Unity bake request entry is missing model or animation name.");
                 return null;
             }
+            if (!IsExplicitBakeRelation(animation))
+            {
+                Logger.Error("Selected Unity bake candidate is not a Unity explicit model-animation relation. Production bake refuses structure/name/manual matches.");
+                Logger.Error($"Relation source: {(string)animation?["relationSource"] ?? "(none)"}; confidence: {(string)animation?["confidence"] ?? "(none)"}");
+                return null;
+            }
 
             var requiresHumanoidBake = (bool?)animation?["requiresHumanoidBake"] ?? false;
             var avatar = PrepareAvatarForUnityBake(model?["avatar"] as JObject, requiresHumanoidBake, unityModelPrefab, unityAvatarAsset);
@@ -916,6 +922,13 @@ namespace AnimeStudio.CLI
                 ["confidence"] = "manual_unity_bake_selection",
                 ["score"] = 100,
             };
+        }
+
+        private static bool IsExplicitBakeRelation(JObject animation)
+        {
+            return string.Equals((string)animation?["relationSource"], "explicit", StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)animation?["confidence"], "explicit_unity_reference", StringComparison.OrdinalIgnoreCase)
+                || string.Equals((string)animation?["confidence"], "explicit_unity_source_index", StringComparison.OrdinalIgnoreCase);
         }
 
         private static PreviewSelection SelectExplicitCandidateFromLibraryDb(

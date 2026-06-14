@@ -1358,6 +1358,7 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
         {
             var candidates = model["candidates"]?
                 .OfType<JObject>()
+                .Where(IsExplicitPreviewRelation)
                 .OrderByDescending(x => (int?)x["score"] ?? 0)
                 .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
                 .ToList() ?? new List<JObject>();
