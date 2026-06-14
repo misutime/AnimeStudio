@@ -151,6 +151,13 @@ namespace AnimeStudio.UnityBake
                     ? ApplyFirstEditorCurveSampleAsHumanPose(instance.transform, animator, transforms, editorCurveTracks, sampleTimes, internalAvatarPoseSnapshots, internalAvatarPoseTimeline, out editorCurveSetHumanPoseTransformTracks)
                     : new List<ProbeRotationTrack>();
                 var rigMetadata = instance.GetComponentInChildren<AnimeStudioBakeRigMetadata>(true);
+                var requestedAvatarAsset = AnimeStudioGltfSkeletonBuilder.NormalizeUnityAssetPath(request.unityAssetPaths.avatarAsset);
+                var importedAvatarAssetValid = !string.IsNullOrWhiteSpace(requestedAvatarAsset)
+                    && animator.avatar != null
+                    && animator.avatar.isValid
+                    && animator.avatar.isHuman
+                    && rigMetadata != null
+                    && string.Equals(rigMetadata.restPoseSource, "imported_unity_avatar_asset", StringComparison.Ordinal);
                 return new AnimeStudioBakeResult
                 {
                     status = "ok",
@@ -164,6 +171,9 @@ namespace AnimeStudio.UnityBake
                     isHumanMotion = clip.isHumanMotion,
                     avatarName = animator.avatar != null ? animator.avatar.name : null,
                     avatarValid = animator.avatar != null && animator.avatar.isValid,
+                    requestedAvatarAsset = requestedAvatarAsset,
+                    importedAvatarAsset = importedAvatarAssetValid ? requestedAvatarAsset : null,
+                    importedAvatarAssetValid = importedAvatarAssetValid,
                     clipFilterMode = clipFilterStats.mode,
                     clipFilterRemovedTransformCurveCount = clipFilterStats.removedTransformCurveCount,
                     clipFilterRemovedAnimatorCurveCount = clipFilterStats.removedAnimatorCurveCount,

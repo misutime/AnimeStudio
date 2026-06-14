@@ -79,7 +79,7 @@ namespace AnimeStudio.UnityBake
                 return null;
             }
 
-            var normalized = path.Replace('\\', '/');
+            var normalized = NormalizeUnityAssetPath(path);
             var avatar = AssetDatabase.LoadAssetAtPath<Avatar>(normalized);
             if (avatar == null)
             {
@@ -95,6 +95,11 @@ namespace AnimeStudio.UnityBake
             }
 
             return avatar;
+        }
+
+        public static string NormalizeUnityAssetPath(string path)
+        {
+            return string.IsNullOrWhiteSpace(path) ? "" : path.Replace('\\', '/').Trim();
         }
 
         private static Avatar BuildAvatar(GameObject root, AnimeStudioAvatarAsset avatarAsset)

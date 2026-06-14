@@ -305,7 +305,7 @@ namespace AnimeStudio.CLI
             }
 
             var requestedAvatarAsset = (string)request["unityAssetPaths"]?["avatarAsset"];
-            if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && ((bool?)result?["avatarValid"] ?? false))
+            if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && IsImportedAvatarAssetResultValid(result))
             {
                 return new AvatarTrustReport(
                     TrustedProductionBake: true,
@@ -393,6 +393,23 @@ namespace AnimeStudio.CLI
                 && humanPose != null && humanPose.Count >= humanNodes.Count
                 && avatarNodes != null && avatarNodes.Count > 0
                 && avatarDefaultPose != null && avatarDefaultPose.Count >= avatarNodes.Count;
+        }
+
+        private static bool IsImportedAvatarAssetResultValid(JObject result)
+        {
+            if (result == null || !((bool?)result["avatarValid"] ?? false))
+            {
+                return false;
+            }
+
+            if ((bool?)result["importedAvatarAssetValid"] ?? false)
+            {
+                return true;
+            }
+
+            // 兼容已经由新 helper 之前版本生成、但明确记录了导入 Avatar rest pose 的结果。
+            return string.Equals((string)result["rigRestPoseSource"], "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                && ((bool?)result["rigRestPoseApplied"] ?? false);
         }
 
         private static bool IsRequest(JObject value) => value["animeStudioAssets"] != null && value["outputJson"] != null;

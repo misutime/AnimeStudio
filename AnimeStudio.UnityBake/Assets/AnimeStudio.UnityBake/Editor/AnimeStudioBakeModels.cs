@@ -166,6 +166,9 @@ namespace AnimeStudio.UnityBake
         public bool isHumanMotion;
         public string avatarName;
         public bool avatarValid;
+        public string requestedAvatarAsset;
+        public string importedAvatarAsset;
+        public bool importedAvatarAssetValid;
         public string clipFilterMode;
         public int clipFilterRemovedTransformCurveCount;
         public int clipFilterRemovedAnimatorCurveCount;
