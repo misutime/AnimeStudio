@@ -16,6 +16,13 @@ namespace AnimeStudio.UnityBake
                 return;
             }
 
+            var avatarAssetPath = GetArgument("-animeStudioImportedAvatarProbe");
+            if (!string.IsNullOrWhiteSpace(avatarAssetPath))
+            {
+                AnimeStudioImportedAvatarProbe.Run(avatarAssetPath, GetArgument("-outputJson"));
+                return;
+            }
+
             var requestPath = GetArgument("-animeStudioBakeRequest");
             if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
             {

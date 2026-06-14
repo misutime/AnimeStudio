@@ -78,7 +78,15 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 
 ## Unity Bake 配置（生产主线）
 
-当前 Humanoid/Muscle 的可验收生产主线是 Unity bake -> glTF。Browser 调用 CLI 时应只针对 `library_index.db` 中 `relation_source=explicit` 的候选生成请求，由 Unity 采样 `Animator` / `Avatar` / `PlayableGraph`，再让 AnimeStudio 把采样后的目标骨架 TRS 写回 glTF。模型必须使用 Unity 工程内真实 prefab/Animator.avatar，或导出索引里完整的 `HumanDescription.humanBones + skeletonBones`；从打包 `AvatarConstant` 恢复出的 `avatar.oracle` / `internalSolver` 只能作为诊断和后续 Avatar 恢复输入，不能直接算生产 bake ready。只有 Unity 返回有效 Humanoid Avatar，且 apply 报告里 `avatarTrust.TrustedProductionBake=true`，Browser 才把 baked glTF 当作可播放生产预览。内部 `Avatar/Muscle -> glTF TRS` 求解保留为实验诊断入口，不作为默认预览或验收路径。
+当前 Humanoid/Muscle 的可验收生产主线是 Unity bake -> glTF。Browser 调用 CLI 时应只针对 `library_index.db` 中 `relation_source=explicit` 的候选生成请求，由 Unity 采样 `Animator` / `Avatar` / `PlayableGraph`，再让 AnimeStudio 把采样后的目标骨架 TRS 写回 glTF。
+
+生产 bake 的 Avatar 来源必须是 Unity 确定性数据，按以下顺序使用：
+
+1. 普通 Unity 项目优先使用工程内真实 prefab / Animator 上的 `Animator.avatar`，例如 VRising、Freedunk 这类已能直接加载原始 Avatar 关系的库。
+2. 如果索引里保留了完整 `HumanDescription.humanBones + skeletonBones`，可以由 Unity `AvatarBuilder.BuildHumanAvatar` 复建 Avatar。
+3. 原神这类只靠 `AvatarConstant` / `internalSolver` 会出现肢体扭曲的库，必须先从打包 Unity 对象恢复原始 `UnityEngine.Avatar` asset，导入 bake 工程，并在 request 的 `unityAssetPaths.avatarAsset` 里显式指定。导入后仍由 Unity 自身加载 Avatar，因此它也是确定性生产来源，不是名称或骨骼数量猜测。
+
+从打包 `AvatarConstant` 恢复出的 `avatar.oracle` / `internalSolver` 只能作为定位原始 Avatar asset 和后续公式研究的诊断输入，不能单独算生产 bake ready。只有 Unity 返回有效 Humanoid Avatar，且 apply 报告里 `avatarTrust.TrustedProductionBake=true`，Browser 才把 baked glTF 当作可播放生产预览。内部 `Avatar/Muscle -> glTF TRS` 求解保留为实验诊断入口，不作为默认预览或验收路径。
 
 Library Browser 不要求用户通过环境变量配置 Unity 路径。需要运行 Unity bake 生产预览时，配置优先级如下：
 

@@ -262,7 +262,10 @@ namespace AnimeStudio.CLI
                 var bakedGltf = bakeApply.BakedGltfPath;
 
                 var requestWritten = !string.IsNullOrWhiteSpace(requestPath) && File.Exists(requestPath);
-                var bakedOk = string.Equals(bakeApply.Status, "ok", StringComparison.OrdinalIgnoreCase)
+                // Unity 烘焙写回可能带 warning（例如非关键 track/报告提示），
+                // 只要已经产出 baked glTF，就应该算作批任务完成，细节仍保留在 applyStatus。
+                var bakedOk = (string.Equals(bakeApply.Status, "ok", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(bakeApply.Status, "warning", StringComparison.OrdinalIgnoreCase))
                     && !string.IsNullOrWhiteSpace(bakedGltf)
                     && File.Exists(bakedGltf);
                 var staticPose = string.Equals(bakeApply.Status, "static_pose", StringComparison.OrdinalIgnoreCase)
