@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 namespace AnimeStudio.LibraryBrowser
@@ -24,7 +25,8 @@ namespace AnimeStudio.LibraryBrowser
             long untrustedBakedCandidates,
             double cacheCoveragePercent,
             double trustedBakedCoveragePercent,
-            string generatedAt)
+            string generatedAt,
+            LatestBatchReport latestBatchReport = null)
         {
             Exists = exists;
             SummaryPath = summaryPath ?? "";
@@ -41,6 +43,7 @@ namespace AnimeStudio.LibraryBrowser
             CacheCoveragePercent = cacheCoveragePercent;
             TrustedBakedCoveragePercent = trustedBakedCoveragePercent;
             GeneratedAt = generatedAt ?? "";
+            LatestBatch = latestBatchReport ?? LatestBatchReport.Empty;
         }
 
         public bool Exists { get; }
@@ -58,12 +61,23 @@ namespace AnimeStudio.LibraryBrowser
         public double CacheCoveragePercent { get; }
         public double TrustedBakedCoveragePercent { get; }
         public string GeneratedAt { get; }
+        public LatestBatchReport LatestBatch { get; }
 
         public string ShortLabel()
         {
             if (!Exists)
             {
+                if (LatestBatch.Exists && LatestBatch.SkippedMissingAvatarOracle > 0)
+                {
+                    return $"Unity烘焙摘要: 未生成，最近缺Avatar {LatestBatch.SkippedMissingAvatarOracle}";
+                }
+
                 return "Unity烘焙摘要: 未生成";
+            }
+
+            if (LatestBatch.Exists && LatestBatch.SkippedMissingAvatarOracle > 0)
+            {
+                return $"Unity烘焙oracle {FormatPercent(EffectiveCoveragePercent)}，可信 {TrustedBakedCandidates}，最近缺Avatar {LatestBatch.SkippedMissingAvatarOracle}";
             }
 
             return $"Unity烘焙oracle {FormatPercent(EffectiveCoveragePercent)}，可信 {TrustedBakedCandidates}";
@@ -73,7 +87,8 @@ namespace AnimeStudio.LibraryBrowser
         {
             if (!Exists)
             {
-                return "Unity烘焙摘要: 未生成。可用 CLI 批量烘焙或 --preview_validation_limit 0 刷新全局统计。" + Environment.NewLine;
+                return "Unity烘焙摘要: 未生成。可用 CLI 批量烘焙或 --preview_validation_limit 0 刷新全局统计。" + Environment.NewLine
+                    + LatestBatchDetailText();
             }
 
             return
@@ -84,7 +99,8 @@ namespace AnimeStudio.LibraryBrowser
                 $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
                 $"已缓存烘焙记录: {CachedCandidates:N0} ({FormatPercent(CacheCoveragePercent)}){Environment.NewLine}" +
                 $"可信baked glTF: {TrustedBakedCandidates:N0} ({FormatPercent(TrustedBakedCoveragePercent)}){Environment.NewLine}" +
-                $"静态姿态/需复查/不可信: {StaticPoseCandidates:N0} / {NeedsReviewCandidates:N0} / {UntrustedBakedCandidates:N0}{Environment.NewLine}";
+                $"静态姿态/需复查/不可信: {StaticPoseCandidates:N0} / {NeedsReviewCandidates:N0} / {UntrustedBakedCandidates:N0}{Environment.NewLine}" +
+                LatestBatchDetailText();
         }
 
         public static LibraryBakeCacheSummary Load(string libraryRoot)
@@ -94,10 +110,11 @@ namespace AnimeStudio.LibraryBrowser
                 return Empty;
             }
 
+            var latestBatchReport = LoadLatestBatchReport(libraryRoot);
             var path = Path.Combine(libraryRoot, "animation_bake_cache_summary.json");
             if (!File.Exists(path))
             {
-                return Empty;
+                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
             }
 
             try
@@ -119,11 +136,61 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(root, "untrustedBakedCandidates"),
                     ReadDouble(root, "cacheCoveragePercent"),
                     ReadDouble(root, "trustedBakedCoveragePercent"),
-                    ReadString(root, "generatedAt"));
+                    ReadString(root, "generatedAt"),
+                    latestBatchReport);
             }
             catch
             {
-                return Empty;
+                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+            }
+        }
+
+        private string LatestBatchDetailText()
+        {
+            if (!LatestBatch.Exists)
+            {
+                return "";
+            }
+
+            return
+                $"最近Browser批量烘焙报告: {LatestBatch.ReportPath}{Environment.NewLine}" +
+                $"最近Browser批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}";
+        }
+
+        private static LatestBatchReport LoadLatestBatchReport(string libraryRoot)
+        {
+            try
+            {
+                var directory = Path.Combine(libraryRoot, ".as_browser_cache", "unity_bake_batch_reports");
+                if (!Directory.Exists(directory))
+                {
+                    return LatestBatchReport.Empty;
+                }
+
+                var reportPath = Directory.GetFiles(directory, "*.json")
+                    .OrderByDescending(File.GetLastWriteTimeUtc)
+                    .FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(reportPath))
+                {
+                    return LatestBatchReport.Empty;
+                }
+
+                using var document = JsonDocument.Parse(File.ReadAllText(reportPath));
+                var root = document.RootElement;
+                return new LatestBatchReport(
+                    true,
+                    reportPath,
+                    ReadString(root, "Label", "label"),
+                    ReadString(root, "CompletedAtUtc", "completedAtUtc"),
+                    ReadInt64(root, "SuccessCount", "successCount"),
+                    ReadInt64(root, "FailureCount", "failureCount"),
+                    ReadInt64(root, "PendingCount", "pendingCount"),
+                    ReadInt64(root, "SkippedAlreadyBaked", "skippedAlreadyBaked"),
+                    ReadInt64(root, "SkippedMissingAvatarOracle", "skippedMissingAvatarOracle"));
+            }
+            catch
+            {
+                return LatestBatchReport.Empty;
             }
         }
 
@@ -139,11 +206,20 @@ namespace AnimeStudio.LibraryBrowser
 
         private static string ReadString(JsonElement element, string property)
         {
-            return element.ValueKind == JsonValueKind.Object
-                && element.TryGetProperty(property, out var value)
-                && value.ValueKind == JsonValueKind.String
-                    ? value.GetString() ?? ""
-                    : "";
+            return ReadString(element, property, null);
+        }
+
+        private static string ReadString(JsonElement element, string property, string fallbackProperty)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            {
+                if (string.IsNullOrWhiteSpace(fallbackProperty) || !element.TryGetProperty(fallbackProperty, out value))
+                {
+                    return "";
+                }
+            }
+
+            return value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
         }
 
         private static long ReadInt64(JsonElement element, string property, string fallbackProperty = null)
@@ -183,6 +259,43 @@ namespace AnimeStudio.LibraryBrowser
                 && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number)
                     ? number
                     : 0;
+        }
+
+        internal sealed class LatestBatchReport
+        {
+            public static LatestBatchReport Empty { get; } = new(false, "", "", "", 0, 0, 0, 0, 0);
+
+            public LatestBatchReport(
+                bool exists,
+                string reportPath,
+                string label,
+                string completedAtUtc,
+                long successCount,
+                long failureCount,
+                long pendingCount,
+                long skippedAlreadyBaked,
+                long skippedMissingAvatarOracle)
+            {
+                Exists = exists;
+                ReportPath = reportPath ?? "";
+                Label = label ?? "";
+                CompletedAtUtc = completedAtUtc ?? "";
+                SuccessCount = successCount;
+                FailureCount = failureCount;
+                PendingCount = pendingCount;
+                SkippedAlreadyBaked = skippedAlreadyBaked;
+                SkippedMissingAvatarOracle = skippedMissingAvatarOracle;
+            }
+
+            public bool Exists { get; }
+            public string ReportPath { get; }
+            public string Label { get; }
+            public string CompletedAtUtc { get; }
+            public long SuccessCount { get; }
+            public long FailureCount { get; }
+            public long PendingCount { get; }
+            public long SkippedAlreadyBaked { get; }
+            public long SkippedMissingAvatarOracle { get; }
         }
     }
 }
