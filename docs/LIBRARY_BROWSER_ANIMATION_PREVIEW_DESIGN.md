@@ -196,6 +196,7 @@ Browser 内触发单个或批量 Unity bake 后，会重新读取已有 `animati
 Browser 也会读取最新的 `AnimationRelationDiagnostics*/deterministic_animation_coverage.json` 或根目录同名报告，在状态栏和模型详情中显示“动画关系门禁”。如果报告包含 `unityBakeProduction` 或 FastSummary 内嵌的 `animationBakeCacheSummary`，Browser 会同时显示有效 Avatar oracle、导入 Avatar asset 文件/key 和导入 Avatar oracle 候选数，便于确认原神这类库是否已经通过 `unityAssetPaths.avatarAsset` 进入生产 bake ready。这个结果只来自 `Measure-DeterministicAnimationCoverage.ps1 -FastSummary/-GateOnly/-SummaryOnly/-FailOnWarning` 等离线命令；Browser 打开素材库时不会主动执行 SQLite 全库诊断，避免大库 UI 卡顿。
 
 顶部工具栏的“刷新动画门禁”是下拉入口：`快速摘要` 运行 FastSummary，只读取根目录 bake cache、ImportedAvatar asset 和最近批次报告，适合原神这类大库做阶段性确认；`快速门禁` 运行 GateOnly，检查默认候选是否全是 Unity 显式关系；`烘焙摘要` 运行 SummaryOnly，统计 Unity bake / Avatar oracle 覆盖，并在已配置 Unity Bake Project 时传入 `-UnityProject` 读取 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`。三者都不会烘焙动画，也不会新增或猜测模型-动画关系。
+同一个下拉里的 `Avatar恢复计划` 会运行 `Write-UnityAvatarAssetRecoveryPlan.ps1 -OnlyMissing`，按 Unity Avatar 对象列出仍未导入 `ImportedAvatar` 的缺口，并输出 CSV/Markdown/JSON 和配置模板。这个入口只生成计划，不调用 UnityRipper/uTinyRipper，不写入素材库关系，也不会把缺失 Avatar 当成可烘焙。
 
 Browser 的批量 Unity 烘焙入口只会处理已经具备生产 Avatar oracle 的显式候选。缺少原始 `Animator.avatar`、完整 `HumanDescription` 或导入 Avatar asset 的项会写入批次报告 `skipped_missing_avatar_oracle`，不调用 Unity bake，也不按旧 `BuildHumanAvatar` / AvatarConstant / 骨骼兼容 fallback 继续尝试。
 

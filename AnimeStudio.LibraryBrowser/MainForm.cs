@@ -41,6 +41,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripMenuItem _refreshAnimationGateFastItem = new("快速门禁");
         private readonly ToolStripMenuItem _refreshAnimationFastSummaryItem = new("快速摘要");
         private readonly ToolStripMenuItem _refreshAnimationSummaryItem = new("烘焙摘要");
+        private readonly ToolStripMenuItem _writeAvatarRecoveryPlanItem = new("Avatar恢复计划");
         private readonly ToolStripButton _rebuildAnimationIndexButton = new("重建动画索引");
         private readonly ToolStripButton _unitySettingsButton = new("Unity设置");
         private readonly ToolStripDropDownButton _unityWorkerButton = new("Unity Worker");
@@ -174,10 +175,13 @@ namespace AnimeStudio.LibraryBrowser
                 _refreshAnimationFastSummaryItem,
                 _refreshAnimationGateFastItem,
                 _refreshAnimationSummaryItem,
+                new ToolStripSeparator(),
+                _writeAvatarRecoveryPlanItem,
             });
             _refreshAnimationFastSummaryItem.ToolTipText = "运行 FastSummary，只读取根目录 bake cache、ImportedAvatar asset 和最近批次报告，不扫描大型 SQLite 候选表。";
             _refreshAnimationGateFastItem.ToolTipText = "运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
             _refreshAnimationSummaryItem.ToolTipText = "运行 SummaryOnly 覆盖诊断；如果已配置 Unity Bake Project，会同步统计 ImportedAvatar oracle 覆盖。";
+            _writeAvatarRecoveryPlanItem.ToolTipText = "生成 OnlyMissing Avatar asset 恢复计划，列出仍缺 ImportedAvatar oracle 的 Unity Avatar 对象。";
             _rebuildAnimationIndexButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _rebuildAnimationIndexButton.ToolTipText = "只重建 library_index.db 的结构化索引和显式动画候选，不重新导出模型、贴图或动画。";
             _unitySettingsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -577,6 +581,7 @@ namespace AnimeStudio.LibraryBrowser
             _refreshAnimationFastSummaryItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.FastSummary);
             _refreshAnimationGateFastItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.GateOnly);
             _refreshAnimationSummaryItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.SummaryOnly);
+            _writeAvatarRecoveryPlanItem.Click += async (_, _) => await WriteAvatarRecoveryPlanAsync();
             _rebuildAnimationIndexButton.Click += async (_, _) => await RebuildAnimationIndexAsync();
             _unitySettingsButton.Click += (_, _) => ConfigureUnitySettings();
             _startUnityWorkerItem.Click += async (_, _) => await StartUnityWorkerAsync();
@@ -1140,6 +1145,73 @@ namespace AnimeStudio.LibraryBrowser
             _ => "动画关系门禁失败",
         };
 
+        private async Task WriteAvatarRecoveryPlanAsync()
+        {
+            if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
+            {
+                MessageBox.Show(this, "请先选择素材库。", "Avatar恢复计划", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var script = FindRepoScript(@"scripts\Write-UnityAvatarAssetRecoveryPlan.ps1");
+            if (string.IsNullOrWhiteSpace(script))
+            {
+                MessageBox.Show(
+                    this,
+                    "没有找到 scripts\\Write-UnityAvatarAssetRecoveryPlan.ps1。请从 AnimeStudio 源码目录启动 Browser，或在命令行手动运行恢复计划脚本。",
+                    "Avatar恢复计划",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var settings = LibraryBrowserSettings.LoadEffective(_root);
+            var unityProject = Directory.Exists(settings?.UnityProject) ? settings.UnityProject : "";
+            if (string.IsNullOrWhiteSpace(unityProject))
+            {
+                var confirm = MessageBox.Show(
+                    this,
+                    "当前没有配置有效的 Unity Bake Project。可以继续生成恢复计划，但无法过滤已经导入的 ImportedAvatar asset。\n\n是否继续？",
+                    "Avatar恢复计划",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (confirm != DialogResult.Yes)
+                {
+                    return;
+                }
+            }
+
+            var outputDir = Path.Combine(_root, "UnityAvatarAssetRecoveryPlan_BrowserMissing_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            _refreshAnimationGateButton.Enabled = false;
+            UpdateStatus("正在生成Avatar恢复计划");
+
+            ProcessRunResult result;
+            try
+            {
+                result = await RunAvatarRecoveryPlanAsync(script, _root, outputDir, unityProject, settings?.UnityEditor ?? "");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Avatar恢复计划失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("Avatar恢复计划失败");
+                return;
+            }
+            finally
+            {
+                _refreshAnimationGateButton.Enabled = true;
+            }
+
+            var title = result.ExitCode == 0 ? "Avatar恢复计划已生成" : $"Avatar恢复计划退出码 {result.ExitCode}";
+            UpdateStatus(title);
+            var message = $"输出目录: {outputDir}{Environment.NewLine}{Environment.NewLine}{TrimProcessOutput(result.CombinedOutput)}";
+            MessageBox.Show(
+                this,
+                message,
+                title,
+                MessageBoxButtons.OK,
+                result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
         private async Task RebuildAnimationIndexAsync()
         {
             if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
@@ -1359,9 +1431,63 @@ namespace AnimeStudio.LibraryBrowser
             return new ProcessRunResult(process.ExitCode, combined);
         }
 
+        private static async Task<ProcessRunResult> RunAvatarRecoveryPlanAsync(
+            string script,
+            string libraryRoot,
+            string outputDir,
+            string unityProject,
+            string unityEditor)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(script);
+            startInfo.ArgumentList.Add("-LibraryPath");
+            startInfo.ArgumentList.Add(libraryRoot);
+            startInfo.ArgumentList.Add("-OutputDir");
+            startInfo.ArgumentList.Add(outputDir);
+            startInfo.ArgumentList.Add("-Limit");
+            startInfo.ArgumentList.Add("200");
+            if (!string.IsNullOrWhiteSpace(unityProject))
+            {
+                startInfo.ArgumentList.Add("-UnityProject");
+                startInfo.ArgumentList.Add(unityProject);
+            }
+            if (!string.IsNullOrWhiteSpace(unityEditor))
+            {
+                startInfo.ArgumentList.Add("-UnityEditor");
+                startInfo.ArgumentList.Add(unityEditor);
+            }
+            startInfo.ArgumentList.Add("-OnlyMissing");
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PowerShell。");
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            var combined = string.IsNullOrWhiteSpace(error)
+                ? output
+                : output + Environment.NewLine + error;
+            return new ProcessRunResult(process.ExitCode, combined);
+        }
+
         private static string FindDeterministicAnimationGateScript()
         {
-            const string relativeScript = @"scripts\Measure-DeterministicAnimationCoverage.ps1";
+            return FindRepoScript(@"scripts\Measure-DeterministicAnimationCoverage.ps1");
+        }
+
+        private static string FindRepoScript(string relativeScript)
+        {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var root in EnumerateCandidateRepoRoots())
             {
