@@ -386,6 +386,15 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 
 如果读取到 ImportedAvatar probe，FastSummary 会写出 `importedAvatarProbeFreshness`：`fresh` 表示 probe 的 asset 数量与当前 `ImportedAvatar` 目录一致，且报告不早于目录内最新 `.asset`；`stale` / `mismatch` 表示恢复或替换过 Avatar asset 后还没重新验证，Browser 会提示重新运行“验证AvatarAsset”。这个 freshness 只保护 Avatar oracle 验证报告的新鲜度，不会新增或修改模型-动画关系。
 
+改动动画导出、Browser 动画列表、Unity bake request/apply 或 Avatar oracle 相关代码后，先跑本仓库级一键门禁：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\Test-AnimationPipelineGates.ps1
+```
+
+它会检查两条红线：默认动画候选不能用 `confidence`、结构兼容、骨骼数量或名称提升为显式关系；`unityAssetPaths.avatarAsset` 一旦显式传入，Unity bake helper、apply 和 Browser 都必须只信任有效的导入 `UnityEngine.Avatar` asset，不能静默退回 `BuildHumanAvatar`、`AvatarConstant`、`internalSolver` 或 glTF rest pose。默认还会构建 CLI 和 Browser。需要同时跑 `AnimatorOverrideController` clip-pair 样本回归时，加 `-IncludeOverrideRegression`；只想快速跑源码门禁时，加 `-SkipBuild`。
+
 非 `-FastSummary` 的深度模式主要读取 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
 
 - `gate.status`：默认应为 `ok`。
