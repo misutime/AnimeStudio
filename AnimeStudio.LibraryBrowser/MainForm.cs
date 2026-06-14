@@ -60,6 +60,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripButton _showFavoriteModelAnimationsButton = new("收藏");
         private readonly ToolStrip _libraryAnimationStrip = new();
         private readonly ToolStripTextBox _animationModelFilterBox = new();
+        private readonly ToolStripComboBox _animationModelStateBox = new();
         private readonly ToolStripButton _clearAnimationModelSearchButton = new("清除");
         private readonly ToolStripButton _clearAnimationModelFilterButton = new("全部模型");
         private readonly ToolStripButton _showFavoriteLibraryAnimationsButton = new("收藏");
@@ -304,6 +305,11 @@ namespace AnimeStudio.LibraryBrowser
             _animationModelFilterBox.Width = 240;
             _animationModelFilterBox.ToolTipText = "过滤右侧关联模型，支持模型名、路径、分类和预览/烘焙状态。";
             _animationModelFilterBox.TextBox.PlaceholderText = "过滤模型，例如 Charlotte 或 可播放";
+            _animationModelStateBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _animationModelStateBox.Width = 130;
+            _animationModelStateBox.ToolTipText = "按当前动画对右侧模型的预览/烘焙状态过滤。";
+            _animationModelStateBox.Items.AddRange(new object[] { "全部状态", "可播放", "待可信烘焙", "导入Avatar", "需Avatar元数据", "失败/需复查" });
+            _animationModelStateBox.SelectedIndex = 0;
             _clearAnimationModelSearchButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _clearAnimationModelFilterButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _showFavoriteLibraryAnimationsButton.CheckOnClick = true;
@@ -316,6 +322,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 new ToolStripLabel("模型过滤"),
                 _animationModelFilterBox,
+                _animationModelStateBox,
                 _clearAnimationModelSearchButton,
                 new ToolStripSeparator(),
                 _showFavoriteLibraryAnimationsButton,
@@ -539,7 +546,12 @@ namespace AnimeStudio.LibraryBrowser
             _clearSearchButton.Click += (_, _) => ClearSearch();
             _clearAnimationModelFilterButton.Click += (_, _) => ClearSelectedLibraryAnimation();
             _animationModelFilterBox.TextChanged += (_, _) => RebuildAnimationModelList();
-            _clearAnimationModelSearchButton.Click += (_, _) => _animationModelFilterBox.Clear();
+            _animationModelStateBox.SelectedIndexChanged += (_, _) => RebuildAnimationModelList();
+            _clearAnimationModelSearchButton.Click += (_, _) =>
+            {
+                _animationModelFilterBox.Clear();
+                _animationModelStateBox.SelectedIndex = 0;
+            };
             _libraryAnimationList.SelectedIndexChanged += (_, _) => SelectLibraryAnimationFilter();
             _bakeSelectedAnimationModelsButton.Click += async (_, _) => await BakeSelectedLibraryAnimationModelsAsync();
             _bakeVisibleAnimationModelsButton.Click += async (_, _) => await BakeVisibleLibraryAnimationModelsAsync();
@@ -2655,7 +2667,7 @@ namespace AnimeStudio.LibraryBrowser
                 var animation = _selectedLibraryAnimation?.Animation;
                 query = query.Where(model =>
                 {
-                    var previewStatus = BuildAnimationModelPreviewStatus(model, animation);
+                    var previewStatus = BuildAnimationModelPreviewStatus(model, ResolveAnimationForModel(model, animation));
                     return Contains(model.Name, modelFilter)
                         || Contains(model.OutputPath, modelFilter)
                         || Contains(model.ModelSourceLabel, modelFilter)
@@ -2663,6 +2675,7 @@ namespace AnimeStudio.LibraryBrowser
                         || Contains(previewStatus.Label, modelFilter);
                 });
             }
+            query = ApplyAnimationModelStateFilter(query, _selectedLibraryAnimation?.Animation);
 
             _visibleAnimationModels = query
                 .OrderBy(x => x.ModelSourceLabel, StringComparer.OrdinalIgnoreCase)
@@ -2675,7 +2688,8 @@ namespace AnimeStudio.LibraryBrowser
                 _animationModelList.Items.Clear();
                 foreach (var model in _visibleAnimationModels)
                 {
-                    var previewStatus = BuildAnimationModelPreviewStatus(model, _selectedLibraryAnimation.Animation);
+                    var previewAnimation = ResolveAnimationForModel(model, _selectedLibraryAnimation.Animation);
+                    var previewStatus = BuildAnimationModelPreviewStatus(model, previewAnimation);
                     var item = new ListViewItem(model.Name)
                     {
                         Tag = model,
@@ -2697,6 +2711,66 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             UpdateAnimationPageDetails();
+        }
+
+        private IEnumerable<LibraryModelItem> ApplyAnimationModelStateFilter(IEnumerable<LibraryModelItem> query, LibraryAnimationCandidate animation)
+        {
+            return (_animationModelStateBox.SelectedItem as string) switch
+            {
+                "可播放" => query.Where(model => IsUnityBakeAlreadyPlayable(model, ResolveAnimationForModel(model, animation))),
+                "待可信烘焙" => query.Where(model =>
+                {
+                    var modelAnimation = ResolveAnimationForModel(model, animation);
+                    return modelAnimation != null
+                        && !modelAnimation.IsUnreal
+                        && RequiresUnityBake(modelAnimation)
+                        && !NeedsAvatarHumanDescriptionRefresh(modelAnimation)
+                        && !IsUnityBakeAlreadyPlayable(model, modelAnimation);
+                }),
+                "导入Avatar" => query.Where(model =>
+                {
+                    var modelAnimation = ResolveAnimationForModel(model, animation);
+                    return modelAnimation != null
+                        && !modelAnimation.IsUnreal
+                        && RequiresUnityBake(modelAnimation)
+                        && !string.IsNullOrWhiteSpace(modelAnimation.ProductionUnityBakeAvatarAsset);
+                }),
+                "需Avatar元数据" => query.Where(model =>
+                {
+                    var modelAnimation = ResolveAnimationForModel(model, animation);
+                    return modelAnimation != null
+                        && !modelAnimation.IsUnreal
+                        && NeedsAvatarHumanDescriptionRefresh(modelAnimation);
+                }),
+                "失败/需复查" => query.Where(model =>
+                {
+                    var modelAnimation = ResolveAnimationForModel(model, animation);
+                    var status = BuildAnimationModelPreviewStatus(model, modelAnimation).Label;
+                    return Contains(status, "失败")
+                        || Contains(status, "复查")
+                        || Contains(status, "静态姿态")
+                        || Contains(status, "需重建");
+                }),
+                _ => query,
+            };
+        }
+
+        private LibraryAnimationCandidate ResolveAnimationForModel(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            if (model == null || animation == null)
+            {
+                return animation;
+            }
+
+            var targetPath = NormalizePathForCompare(animation.BestPath);
+            if (string.IsNullOrWhiteSpace(targetPath))
+            {
+                return animation;
+            }
+
+            return _animationIndex.FindForModel(model)
+                .FirstOrDefault(x => string.Equals(NormalizePathForCompare(x.BestPath), targetPath, StringComparison.OrdinalIgnoreCase))
+                ?? animation;
         }
 
         private AnimationModelPreviewStatus BuildAnimationModelPreviewStatus(LibraryModelItem model, LibraryAnimationCandidate animation)
@@ -3306,7 +3380,7 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var pendingModels = models
-                .Where(x => !IsUnityBakeAlreadyPlayable(x, animation))
+                .Where(x => !IsUnityBakeAlreadyPlayable(x, ResolveAnimationForModel(x, animation)))
                 .ToList();
             var skippedBaked = models.Count - pendingModels.Count;
             if (pendingModels.Count == 0)
@@ -3332,7 +3406,8 @@ namespace AnimeStudio.LibraryBrowser
             for (var i = 0; i < pendingModels.Count; i++)
             {
                 var model = pendingModels[i];
-                var inputError = ValidateAnimationPreviewInputs(model, animation);
+                var modelAnimation = ResolveAnimationForModel(model, animation);
+                var inputError = ValidateAnimationPreviewInputs(model, modelAnimation);
                 if (!string.IsNullOrWhiteSpace(inputError))
                 {
                     failures.Add($"{model.Name}: {inputError}");
@@ -3344,7 +3419,7 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     var status = await _previewCache.EnsureUnityBakeAsync(
                         model,
-                        animation,
+                        modelAnimation,
                         CancellationToken.None,
                         message => BeginInvoke(() => UpdateStatus(message)));
                     if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
@@ -3385,6 +3460,7 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
+            animation = ResolveAnimationForModel(model, animation);
             if (animation.IsUnreal)
             {
                 await GenerateUnrealAnimationPreviewAsync(model, animation, openAfterGenerate, RebuildAnimationModelList);
