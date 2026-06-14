@@ -32,6 +32,10 @@ Run-Step "Unity Avatar asset trust gate" {
     & (Join-Path $RepoRoot "scripts\Test-UnityAvatarAssetTrustGate.ps1") -RepoRoot $RepoRoot
 }
 
+Run-Step "Unity bake cache trust gate" {
+    & (Join-Path $RepoRoot "scripts\Test-UnityBakeCacheTrustGate.ps1") -RepoRoot $RepoRoot
+}
+
 if ($IncludeOverrideRegression) {
     Run-Step "AnimatorOverrideController clip-pair regression" {
         & (Join-Path $RepoRoot "scripts\Test-OverrideClipPairRegression.ps1") -CliPath $CliPath
