@@ -12,7 +12,9 @@ param(
 
     [string]$UnityProject = "D:\misutime\AnimeStudioUnityProject",
 
-    [string]$UnityEditor = "C:\Program Files\Unity\Hub\Editor\6000.4.11f1\Editor\Unity.exe"
+    [string]$UnityEditor = "C:\Program Files\Unity\Hub\Editor\6000.4.11f1\Editor\Unity.exe",
+
+    [switch]$OnlyMissing
 )
 
 if ($PSVersionTable.PSVersion.Major -lt 6) {
@@ -20,6 +22,13 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
     if ($pwsh -ne $null) {
         $forwardArgs = @()
         foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+            if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+                if ($entry.Value.IsPresent) {
+                    $forwardArgs += "-$($entry.Key)"
+                }
+                continue
+            }
+
             $forwardArgs += "-$($entry.Key)"
             if ($entry.Value -is [Array]) {
                 $forwardArgs += $entry.Value
@@ -86,12 +95,36 @@ parser.add_argument("--out", required=True)
 parser.add_argument("--limit", type=int, default=200)
 parser.add_argument("--unity-project", default="")
 parser.add_argument("--unity-editor", default="")
+parser.add_argument("--only-missing", action="store_true")
 args = parser.parse_args()
+
+
+def imported_avatar_assets(unity_project):
+    result = {}
+    keys = set()
+    if not unity_project:
+        return result, keys
+    root = os.path.join(unity_project, "Assets", "AnimeStudioBake", "ImportedAvatar")
+    if not os.path.isdir(root):
+        return result, keys
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for filename in filenames:
+            if not filename.lower().endswith(".asset"):
+                continue
+            stem = os.path.splitext(filename)[0]
+            unity_path = os.path.relpath(os.path.join(dirpath, filename), unity_project).replace("\\", "/")
+            result[stem] = unity_path
+            keys.add(stem)
+            suffix = "_ModelAvatar"
+            if stem.lower().endswith(suffix.lower()):
+                keys.add(stem[:-len(suffix)])
+    return result, keys
 
 con = sqlite3.connect(args.db)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
+imported_assets, imported_keys = imported_avatar_assets(args.unity_project)
 avatars = {}
 sql = """
 SELECT a.name, a.output, a.raw_json,
@@ -115,6 +148,8 @@ for row in cur.execute(sql):
         "source": source,
         "sourceShort": short_source(source),
         "pathId": int(path_id),
+        "isRecovered": avatar_name in imported_keys,
+        "existingUnityAsset": imported_assets.get(avatar_name, ""),
         "models": 0,
         "explicitLinks": 0,
         "internalHumanoidLinks": 0,
@@ -134,11 +169,12 @@ for row in cur.execute(sql):
             "internalHumanoidLinks": int(row["internal_humanoid_count"] or 0),
         })
 
-items = sorted(
+items_all = sorted(
     avatars.values(),
-    key=lambda x: (x["internalHumanoidLinks"], x["explicitLinks"], x["models"]),
+    key=lambda x: (not x["isRecovered"], x["internalHumanoidLinks"], x["explicitLinks"], x["models"]),
     reverse=True,
 )
+items = [x for x in items_all if not x["isRecovered"]] if args.only_missing else items_all
 if args.limit and args.limit > 0:
     limited = items[:args.limit]
 else:
@@ -148,11 +184,19 @@ summary = {
     "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
     "libraryRoot": args.library,
     "libraryIndex": args.db,
-    "uniqueAvatarObjects": len(items),
+    "unityProject": args.unity_project,
+    "onlyMissing": bool(args.only_missing),
+    "importedAvatarAssetCount": len(imported_assets),
+    "uniqueAvatarObjects": len(items_all),
+    "recoveredAvatarObjects": sum(1 for x in items_all if x["isRecovered"]),
+    "missingAvatarObjects": sum(1 for x in items_all if not x["isRecovered"]),
     "listedAvatarObjects": len(limited),
-    "totalModels": sum(x["models"] for x in items),
-    "totalExplicitLinks": sum(x["explicitLinks"] for x in items),
-    "totalInternalHumanoidLinks": sum(x["internalHumanoidLinks"] for x in items),
+    "totalModels": sum(x["models"] for x in items_all),
+    "totalExplicitLinks": sum(x["explicitLinks"] for x in items_all),
+    "totalInternalHumanoidLinks": sum(x["internalHumanoidLinks"] for x in items_all),
+    "missingModels": sum(x["models"] for x in items if not x["isRecovered"]),
+    "missingExplicitLinks": sum(x["explicitLinks"] for x in items if not x["isRecovered"]),
+    "missingInternalHumanoidLinks": sum(x["internalHumanoidLinks"] for x in items if not x["isRecovered"]),
     "items": limited,
 }
 
@@ -166,17 +210,19 @@ with open(json_path, "w", encoding="utf-8-sig") as handle:
 
 with open(csv_path, "w", encoding="utf-8-sig", newline="") as handle:
     writer = csv.writer(handle)
-    writer.writerow(["rank", "avatarName", "models", "internalHumanoidLinks", "explicitLinks", "source", "pathId", "suggestedUnityAsset", "sampleModel"])
+    writer.writerow(["rank", "status", "avatarName", "models", "internalHumanoidLinks", "explicitLinks", "source", "pathId", "existingUnityAsset", "suggestedUnityAsset", "sampleModel"])
     for index, item in enumerate(limited, 1):
         sample = item["samples"][0]["modelName"] if item["samples"] else ""
         writer.writerow([
             index,
+            "recovered" if item["isRecovered"] else "missing",
             item["avatarName"],
             item["models"],
             item["internalHumanoidLinks"],
             item["explicitLinks"],
             item["sourceShort"],
             item["pathId"],
+            item["existingUnityAsset"],
             item["suggestedUnityAsset"],
             sample,
         ])
@@ -187,6 +233,7 @@ config = {
     "unityAvatarAssets": {
         item["avatarName"]: item["suggestedUnityAsset"]
         for item in limited
+        if not item["isRecovered"]
     },
 }
 with open(config_path, "w", encoding="utf-8-sig") as handle:
@@ -195,16 +242,21 @@ with open(config_path, "w", encoding="utf-8-sig") as handle:
 with open(md_path, "w", encoding="utf-8-sig") as handle:
     handle.write("# Unity Avatar Asset 恢复优先级\n\n")
     handle.write("这份计划只读取 Library 的确定性模型元数据：`assets.raw_json.avatar.name/source/pathId` 和 `model_animation_candidate_model_summary`。它不新增模型-动画关系，也不按名称猜测 Avatar。\n\n")
-    handle.write(f"- 独立 Avatar 对象: {len(items)}\n")
+    handle.write(f"- 独立 Avatar 对象: {len(items_all)}\n")
+    handle.write(f"- 已导入 Avatar asset: {len(imported_assets)}\n")
+    handle.write(f"- 已恢复 Avatar 对象: {summary['recoveredAvatarObjects']}\n")
+    handle.write(f"- 待恢复 Avatar 对象: {summary['missingAvatarObjects']}\n")
     handle.write(f"- 列出 Avatar 对象: {len(limited)}\n")
     handle.write(f"- 覆盖模型数: {summary['totalModels']}\n")
     handle.write(f"- 覆盖显式候选链接: {summary['totalExplicitLinks']}\n")
     handle.write(f"- 覆盖 Humanoid/internal 链接: {summary['totalInternalHumanoidLinks']}\n\n")
-    handle.write("| rank | avatar | models | internal links | explicit links | source | pathId |\n")
-    handle.write("|---:|---|---:|---:|---:|---|---:|\n")
+    if args.only_missing:
+        handle.write("当前报告启用了 OnlyMissing，只列出尚未在 `Assets/AnimeStudioBake/ImportedAvatar` 精确命中的 Avatar。\n\n")
+    handle.write("| rank | status | avatar | models | internal links | explicit links | source | pathId |\n")
+    handle.write("|---:|---|---|---:|---:|---:|---|---:|\n")
     for index, item in enumerate(limited[:80], 1):
         handle.write(
-            f"| {index} | {item['avatarName']} | {item['models']} | {item['internalHumanoidLinks']} | "
+            f"| {index} | {'recovered' if item['isRecovered'] else 'missing'} | {item['avatarName']} | {item['models']} | {item['internalHumanoidLinks']} | "
             f"{item['explicitLinks']} | {item['sourceShort']} | {item['pathId']} |\n"
         )
     handle.write("\n## 使用方式\n\n")
@@ -228,4 +280,5 @@ python $scriptPath `
     --out $OutputDir `
     --limit $Limit `
     --unity-project $UnityProject `
-    --unity-editor $UnityEditor
+    --unity-editor $UnityEditor `
+    $(if ($OnlyMissing) { "--only-missing" })

@@ -757,6 +757,18 @@ Library Browser 也支持同一条路径。素材库根目录可写本地配置 
 
 映射 key 可以写模型名，也可以写模型元数据里的 `avatar.name`。推荐对原神这类共用 Avatar 的 NPC 写 Avatar 名，例如 `NPC_Male_Common_ModelAvatar`；Browser 会从 `library_index.db assets.raw_json.avatar.name` 读取该模型真实 Avatar 名后再查映射，这样一个配置可以覆盖所有引用同一个 Unity Avatar 的模型。这个关系来自导出的 Unity Avatar 元数据，不是按目录或角色名前缀推断。
 
+要继续补齐原神这类库的 Avatar oracle，可以先生成恢复优先级计划。计划只读取 `assets.raw_json.avatar.name/source/pathId` 和 `model_animation_candidate_model_summary`，不会新增模型-动画关系，也不会按名称猜测绑定：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\Write-UnityAvatarAssetRecoveryPlan.ps1 `
+  -LibraryPath "D:\Assets\AS-Assets\YuanShen-Assets" `
+  -UnityProject "D:\misutime\AnimeStudioUnityProject" `
+  -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\UnityAvatarAssetRecoveryPlan" `
+  -OnlyMissing
+```
+
+`-OnlyMissing` 会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，把已经精确命中的 Avatar 标成 recovered 并从输出列表中过滤掉，只列出剩余待恢复项。CSV/Markdown 里会保留 `source/pathId`、建议的 `Assets/AnimeStudioBake/ImportedAvatar/<AvatarName>.asset` 路径和样例模型；恢复出的 `.asset` 放进 bake 工程后，再运行 Browser 的“快速摘要”或 `Measure-DeterministicAnimationCoverage.ps1 -FastSummary` 检查 ImportedAvatar 数量和有效 Avatar oracle 覆盖是否上升。
+
 ### 独立动画资产
 
 默认 Library 导出会把动画作为独立资产保存，而不是直接塞进模型：
