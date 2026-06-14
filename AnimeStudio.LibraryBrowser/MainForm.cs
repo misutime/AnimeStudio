@@ -3656,6 +3656,7 @@ namespace AnimeStudio.LibraryBrowser
             var playable = 0;
             var pendingBake = 0;
             var importedAvatar = 0;
+            var originalAvatar = 0;
             var needsAvatar = 0;
             var failedOrReview = 0;
             foreach (var model in _visibleAnimationModels)
@@ -3674,12 +3675,13 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     pendingBake++;
                 }
-                if (modelAnimation != null
-                    && !modelAnimation.IsUnreal
-                    && RequiresUnityBake(modelAnimation)
-                    && !string.IsNullOrWhiteSpace(modelAnimation.ProductionUnityBakeAvatarAsset))
+                if (HasImportedAvatarAssetOracle(modelAnimation))
                 {
                     importedAvatar++;
+                }
+                if (HasOriginalAvatarOracle(modelAnimation))
+                {
+                    originalAvatar++;
                 }
                 if (modelAnimation != null
                     && !modelAnimation.IsUnreal
@@ -3696,7 +3698,7 @@ namespace AnimeStudio.LibraryBrowser
                 }
             }
 
-            return $"当前可见模型状态: 可播放 {playable} / 待可信烘焙 {pendingBake} / 导入Avatar {importedAvatar} / 需Avatar元数据 {needsAvatar} / 失败或复查 {failedOrReview}{Environment.NewLine}";
+            return $"当前可见模型状态: 可播放 {playable} / 待可信烘焙 {pendingBake} / 导入Avatar {importedAvatar} / 原始Avatar {originalAvatar} / 需Avatar元数据 {needsAvatar} / 失败或复查 {failedOrReview}{Environment.NewLine}";
         }
 
         private static string DescribeAnimationCapability(LibraryAnimationCandidate animation)

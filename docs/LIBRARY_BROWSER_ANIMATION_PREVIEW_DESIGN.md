@@ -216,7 +216,7 @@ Browser 的批量 Unity 烘焙入口只会处理已经具备生产 Avatar oracle
 
 动画页右侧模型列表有独立状态筛选：`待可信烘焙`、`导入Avatar`、`原始Avatar`、`需Avatar元数据`、`失败/需复查` 都按“当前动画 + 当前模型”的显式候选记录判断，而不是只看全局动画记录。这样同一个 AnimationClip 关联多个模型时，Browser 会使用每个模型自己的 Avatar asset、匹配键和缓存状态。
 
-动画页详情区会汇总当前右侧可见模型的状态计数：可播放、待可信烘焙、导入 Avatar、需 Avatar 元数据、失败或复查。这个计数跟随右侧文本过滤和状态筛选变化，方便在批量烘焙前确认当前操作范围。
+动画页详情区会汇总当前右侧可见模型的状态计数：可播放、待可信烘焙、导入 Avatar、原始 Avatar、需 Avatar 元数据、失败或复查。这个计数跟随右侧文本过滤和状态筛选变化，方便在批量烘焙前确认当前操作范围。
 
 批量 Unity bake 每次执行都会在 `<LibraryRoot>\.as_browser_cache\unity_bake_batch_reports\` 写一份操作报告，记录本批次的模型、动画、显式关系来源、Avatar asset 命中、Avatar 来源/asset/key 汇总、成功/失败、失败原因、baked glTF 和 apply report 路径。Browser 的全局摘要会读取最近批次的 Avatar 来源统计，显示本批实际走了 ImportedAvatar oracle 还是原始 prefab / HumanDescription 路径。这个报告只用于 Browser 操作审计和失败重试，不写入 `model_animation_candidates`，也不新增任何模型-动画关系。失败重试应通过模型页的动画名过滤，或动画页右侧“失败/需复查”状态筛选缩小当前可见范围后再次执行批量烘焙；重试仍会重新走同一条 Unity 显式关系 + 可信 Avatar gate。
 
