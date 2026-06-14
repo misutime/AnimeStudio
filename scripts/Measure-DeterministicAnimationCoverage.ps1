@@ -668,38 +668,68 @@ def effective_bake_ready_avatar_sql(model_alias):
 
 
 def unity_bake_production(cur, library_root, include_details=True, imported_avatar_info=None):
-    bake_where = """
-        c.relation_source='explicit'
-        AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-    """
-    cur.execute("DROP TABLE IF EXISTS temp_unity_bake_candidates;")
-    # Materialize the explicit Unity-bake candidate set once. The JSON filter is
-    # expensive on large libraries and many later summaries reuse the same set.
+    cur.execute("DROP TABLE IF EXISTS temp_explicit_candidate_flags;")
+    # Parse expensive candidate JSON flags once. YuanShen-sized libraries have
+    # millions of explicit candidates, and later summaries reuse these flags.
     cur.execute(
-        f"""
-        CREATE TEMP TABLE temp_unity_bake_candidates AS
+        """
+        CREATE TEMP TABLE temp_explicit_candidate_flags AS
         SELECT c.model_output AS model_output,
-               c.animation_output AS animation_output
+               c.animation_output AS animation_output,
+               CASE WHEN COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1 THEN 1 ELSE 0 END AS full_humanoid_bake_required,
+               CASE WHEN COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeBlocked'), 0)=1 THEN 1 ELSE 0 END AS full_humanoid_bake_blocked,
+               CASE WHEN COALESCE(json_extract(c.raw_json, '$.partialDirectGltf'), 0)=1 THEN 1 ELSE 0 END AS partial_direct_gltf,
+               CASE WHEN json_extract(c.raw_json, '$.productionAnimationPath')='DirectGltfTransformOnly' THEN 1 ELSE 0 END AS direct_gltf_transform_only,
+               COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)') AS blocked_reason
         FROM model_animation_candidates c
-        WHERE {bake_where};
+        WHERE c.relation_source='explicit';
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS temp_explicit_candidate_flags_model ON temp_explicit_candidate_flags(model_output);")
+    cur.execute("CREATE INDEX IF NOT EXISTS temp_explicit_candidate_flags_pair ON temp_explicit_candidate_flags(model_output, animation_output);")
+    cur.execute("DROP TABLE IF EXISTS temp_unity_bake_candidates;")
+    cur.execute(
+        """
+        CREATE TEMP TABLE temp_unity_bake_candidates AS
+        SELECT model_output,
+               animation_output,
+               blocked_reason
+        FROM temp_explicit_candidate_flags
+        WHERE full_humanoid_bake_required=1;
         """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS temp_unity_bake_candidates_model ON temp_unity_bake_candidates(model_output);")
     cur.execute("CREATE INDEX IF NOT EXISTS temp_unity_bake_candidates_animation ON temp_unity_bake_candidates(animation_output);")
     cur.execute("CREATE INDEX IF NOT EXISTS temp_unity_bake_candidates_pair ON temp_unity_bake_candidates(model_output, animation_output);")
+    cur.execute("DROP TABLE IF EXISTS temp_unity_bake_avatar_ready_models;")
+    # Precompute model-level Avatar readiness once; large libraries can have
+    # millions of explicit candidates that point back to the same model JSON.
+    cur.execute(
+        """
+        CREATE TEMP TABLE temp_unity_bake_avatar_ready_models AS
+        SELECT m.output AS model_output,
+               CASE WHEN """ + bake_ready_avatar_sql("m") + """ THEN 1 ELSE 0 END AS bake_ready_avatar,
+               CASE WHEN """ + imported_avatar_asset_match_sql("m") + """ THEN 1 ELSE 0 END AS imported_avatar_ready
+        FROM assets m
+        WHERE m.kind='Model'
+          AND (
+            """ + effective_bake_ready_avatar_sql("m") + """
+          );
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS temp_unity_bake_avatar_ready_models_output ON temp_unity_bake_avatar_ready_models(model_output);")
     cur.execute("DROP TABLE IF EXISTS temp_bake_ready_animation_candidates;")
-    # Materialize this expensive Avatar/JSON filter once so cache statistics
-    # do not repeatedly scan model_animation_candidates on large libraries.
+    # Candidate relations still come from explicit Unity links; this only
+    # filters them to models that already have a production Avatar oracle.
     cur.execute(
         """
         CREATE TEMP TABLE temp_bake_ready_animation_candidates AS
         SELECT t.model_output AS model_output,
                t.animation_output AS animation_output,
-               CASE WHEN """ + bake_ready_avatar_sql("m") + """ THEN 1 ELSE 0 END AS bake_ready_avatar,
-               CASE WHEN """ + imported_avatar_asset_match_sql("m") + """ THEN 1 ELSE 0 END AS imported_avatar_ready
+               ready.bake_ready_avatar AS bake_ready_avatar,
+               ready.imported_avatar_ready AS imported_avatar_ready
         FROM temp_unity_bake_candidates t
-        JOIN assets m ON m.kind='Model' AND m.output=t.model_output
-        WHERE """ + effective_bake_ready_avatar_sql("m") + """;
+        JOIN temp_unity_bake_avatar_ready_models ready ON ready.model_output=t.model_output;
         """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS temp_bake_ready_animation_candidates_pair ON temp_bake_ready_animation_candidates(model_output, animation_output);")
@@ -780,12 +810,11 @@ def unity_bake_production(cur, library_root, include_details=True, imported_avat
     path_flags = cur.execute(
         """
         SELECT
-          SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1 THEN 1 ELSE 0 END) AS fullHumanoidBakeRequiredCandidates,
-          SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.fullHumanoidBakeBlocked'), 0)=1 THEN 1 ELSE 0 END) AS fullHumanoidBakeBlockedCandidates,
-          SUM(CASE WHEN COALESCE(json_extract(raw_json, '$.partialDirectGltf'), 0)=1 THEN 1 ELSE 0 END) AS partialDirectGltfCandidates,
-          SUM(CASE WHEN json_extract(raw_json, '$.productionAnimationPath')='DirectGltfTransformOnly' THEN 1 ELSE 0 END) AS directGltfTransformOnlyCandidates
-        FROM model_animation_candidates
-        WHERE relation_source='explicit';
+          SUM(full_humanoid_bake_required) AS fullHumanoidBakeRequiredCandidates,
+          SUM(full_humanoid_bake_blocked) AS fullHumanoidBakeBlockedCandidates,
+          SUM(partial_direct_gltf) AS partialDirectGltfCandidates,
+          SUM(direct_gltf_transform_only) AS directGltfTransformOnlyCandidates
+        FROM temp_explicit_candidate_flags;
         """
     ).fetchone()
     full_humanoid_bake_required_candidates = int(path_flags["fullHumanoidBakeRequiredCandidates"] or 0)
@@ -1028,24 +1057,28 @@ def avatar_production_gate(cur):
     human_description_flag_models = int(model_avatar["humanDescriptionFlagModels"] or 0)
     empty_human_description_models = int(model_avatar["emptyHumanDescriptionModels"] or 0)
     avatar_constant_oracle_models = int(model_avatar["avatarConstantOracleModels"] or 0)
-    explicit_humanoid_candidates = int(scalar(
-        cur,
-        """
-        SELECT COUNT(*)
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1;
-        """
-    ))
-    explicit_humanoid_models = int(scalar(
-        cur,
-        """
-        SELECT COUNT(DISTINCT model_output)
-        FROM model_animation_candidates
-        WHERE relation_source='explicit'
-          AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1;
-        """
-    ))
+    if table_exists(cur, "temp_unity_bake_candidates"):
+        explicit_humanoid_candidates = int(scalar(cur, "SELECT COUNT(*) FROM temp_unity_bake_candidates;"))
+        explicit_humanoid_models = int(scalar(cur, "SELECT COUNT(DISTINCT model_output) FROM temp_unity_bake_candidates;"))
+    else:
+        explicit_humanoid_candidates = int(scalar(
+            cur,
+            """
+            SELECT COUNT(*)
+            FROM model_animation_candidates
+            WHERE relation_source='explicit'
+              AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1;
+            """
+        ))
+        explicit_humanoid_models = int(scalar(
+            cur,
+            """
+            SELECT COUNT(DISTINCT model_output)
+            FROM model_animation_candidates
+            WHERE relation_source='explicit'
+              AND COALESCE(json_extract(raw_json, '$.fullHumanoidBakeRequired'), 0)=1;
+            """
+        ))
     if table_exists(cur, "temp_bake_ready_animation_candidates"):
         ready_candidates = int(scalar(cur, "SELECT COUNT(*) FROM temp_bake_ready_animation_candidates;"))
         ready_models = int(scalar(cur, "SELECT COUNT(DISTINCT model_output) FROM temp_bake_ready_animation_candidates;"))
@@ -1062,7 +1095,7 @@ def avatar_production_gate(cur):
                 AND ready.animation_output=t.animation_output
             );
             """
-        ))
+            ))
     else:
         ready_candidates = int(scalar(
             cur,
@@ -1097,21 +1130,39 @@ def avatar_production_gate(cur):
               AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
               AND NOT (""" + effective_bake_ready_avatar_sql("m") + """);
             """
-        ))
-    blocked_reasons = rows(
-        cur,
-        """
-        SELECT COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)') AS reason,
-               COUNT(*) AS count
-        FROM model_animation_candidates c
-        JOIN assets m ON m.kind='Model' AND m.output=c.model_output
-        WHERE c.relation_source='explicit'
-          AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
-          AND NOT (""" + effective_bake_ready_avatar_sql("m") + """)
-        GROUP BY COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)')
-        ORDER BY count DESC, reason COLLATE NOCASE;
-        """
-    )
+            ))
+    if table_exists(cur, "temp_bake_ready_animation_candidates"):
+        blocked_reasons = rows(
+            cur,
+            """
+            SELECT COALESCE(t.blocked_reason, '(null)') AS reason,
+                   COUNT(*) AS count
+            FROM temp_unity_bake_candidates t
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM temp_bake_ready_animation_candidates ready
+              WHERE ready.model_output=t.model_output
+                AND ready.animation_output=t.animation_output
+            )
+            GROUP BY COALESCE(t.blocked_reason, '(null)')
+            ORDER BY count DESC, reason COLLATE NOCASE;
+            """
+        )
+    else:
+        blocked_reasons = rows(
+            cur,
+            """
+            SELECT COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)') AS reason,
+                   COUNT(*) AS count
+            FROM model_animation_candidates c
+            JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+            WHERE c.relation_source='explicit'
+              AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+              AND NOT (""" + effective_bake_ready_avatar_sql("m") + """)
+            GROUP BY COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), '(null)')
+            ORDER BY count DESC, reason COLLATE NOCASE;
+            """
+        )
     return {
         "available": True,
         "rule": "Production Unity bake requires the original Unity prefab/Animator.avatar, complete HumanDescription.humanBones + skeletonBones, or an exact matched imported original Unity Avatar asset. AvatarConstant/internalSolver/oracle is diagnostic recovery input only and is not production ready by itself.",
