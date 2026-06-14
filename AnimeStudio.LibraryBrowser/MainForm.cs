@@ -1807,7 +1807,7 @@ namespace AnimeStudio.LibraryBrowser
 
             var explicitText = explicitAnimationCount > 0 ? $" 显式{explicitAnimationCount}" : "";
             var bakeText = bakeStats?.UnityBakeRequired > 0
-                ? $" 烘焙{bakeStats.UnityBaked}/{bakeStats.UnityBakeRequired}"
+                ? $" 烘焙{bakeStats.UnityBaked}/{bakeStats.UnityBakeRequired}{BuildAvatarBakeBadge(bakeStats)}"
                 : "";
             if (reportedAnimationCount > 0 && reportedAnimationCount != usableAnimationCount)
             {
@@ -1817,9 +1817,21 @@ namespace AnimeStudio.LibraryBrowser
             return $"动画{usableAnimationCount}{explicitText}{bakeText}";
         }
 
+        private static string BuildAvatarBakeBadge(ModelAnimationBakeStats bakeStats)
+        {
+            if (bakeStats == null || bakeStats.UnityBakeWithAvatarAsset <= 0)
+            {
+                return "";
+            }
+
+            return $" Avatar{bakeStats.UnityBakeWithAvatarAsset}";
+        }
+
         private sealed class ModelAnimationBakeStats
         {
             public int UnityBakeRequired { get; set; }
+            public int UnityBakeWithAvatarAsset { get; set; }
+            public int UnityBakeWithoutAvatarAsset { get; set; }
             public int UnityBaked { get; set; }
             public int UnityBakePending { get; set; }
             public int DirectPreview { get; set; }
@@ -1837,6 +1849,8 @@ namespace AnimeStudio.LibraryBrowser
 
                 return
                     $"主线 Unity 烘焙需求: {UnityBakeRequired}{Environment.NewLine}" +
+                    $"导入 Avatar asset: {UnityBakeWithAvatarAsset}{Environment.NewLine}" +
+                    $"非导入 Avatar 路径/待补: {UnityBakeWithoutAvatarAsset}{Environment.NewLine}" +
                     $"主线已 Unity 烘焙: {UnityBaked}{Environment.NewLine}" +
                     $"主线待 Unity 烘焙: {UnityBakePending}{Environment.NewLine}" +
                     $"Unity 烘焙静态姿态: {StaticPose}{Environment.NewLine}" +
@@ -1855,6 +1869,7 @@ namespace AnimeStudio.LibraryBrowser
 
                 return
                     $"主线 Unity 烘焙: {UnityBaked}/{UnityBakeRequired}{Environment.NewLine}" +
+                    $"导入 Avatar asset: {UnityBakeWithAvatarAsset} | 非导入 Avatar 路径/待补: {UnityBakeWithoutAvatarAsset}{Environment.NewLine}" +
                     $"待烘焙: {UnityBakePending} | 静态姿态: {StaticPose} | 需重建: {NeedRebuild} | 失败: {Failed}{Environment.NewLine}" +
                     $"可直接 glTF 预览: {DirectPreview}{Environment.NewLine}";
             }
@@ -2185,6 +2200,15 @@ namespace AnimeStudio.LibraryBrowser
                 if (RequiresUnityBake(animation))
                 {
                     stats.UnityBakeRequired++;
+                    if (string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset))
+                    {
+                        stats.UnityBakeWithoutAvatarAsset++;
+                    }
+                    else
+                    {
+                        stats.UnityBakeWithAvatarAsset++;
+                    }
+
                     if (playable)
                     {
                         stats.UnityBaked++;
@@ -2451,7 +2475,9 @@ namespace AnimeStudio.LibraryBrowser
                         && RequiresUnityBake(animation)
                         && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
                     {
-                        status = "需 Unity 烘焙";
+                        status = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
+                            ? "需 Unity 烘焙"
+                            : "需 Unity 烘焙(Avatar)";
                     }
 
                     var source = animation.IsUnreal
@@ -2663,7 +2689,10 @@ namespace AnimeStudio.LibraryBrowser
                 var avatarText = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
                     ? ""
                     : $" 已匹配导入 Avatar asset: {animation.ProductionUnityBakeAvatarAsset}{FormatAvatarMatchKey(animation)}。";
-                return new AnimationModelPreviewStatus("需 Unity 烘焙", "该模型-动画关系来自显式 Unity 索引，Humanoid/Muscle 身体动画需双击后由 Unity bake 生成可信 glTF。" + avatarText);
+                var label = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
+                    ? "需 Unity 烘焙"
+                    : "需 Unity 烘焙(Avatar)";
+                return new AnimationModelPreviewStatus(label, "该模型-动画关系来自显式 Unity 索引，Humanoid/Muscle 身体动画需双击后由 Unity bake 生成可信 glTF。" + avatarText);
             }
 
             return new AnimationModelPreviewStatus("可生成", "双击模型会生成模型+动画 glTF 预览。");
