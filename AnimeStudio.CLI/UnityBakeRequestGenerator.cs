@@ -1984,7 +1984,8 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             var source = (string)avatarTrust["Source"] ?? (string)avatarTrust["source"];
             if (ReportRequestHasExplicitAvatarAsset(report))
             {
-                return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase);
+                return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                    && ReportHasImportedAvatarAssetProof(report);
             }
 
             return !string.Equals(source, "avatar_constant_oracle_unity_validated", StringComparison.OrdinalIgnoreCase);
@@ -2007,6 +2008,17 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             {
                 return false;
             }
+        }
+
+        private static bool ReportHasImportedAvatarAssetProof(JObject report)
+        {
+            if ((bool?)report?["unityBakeImportedAvatarAssetValid"] ?? false)
+            {
+                return true;
+            }
+
+            return string.Equals((string)report?["unityBakeRigRestPoseSource"], "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                && ((bool?)report?["unityBakeRigRestPoseApplied"] ?? false);
         }
 
         private static bool UsesFirstSampleHumanoidDelta(JObject report)

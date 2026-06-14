@@ -214,7 +214,15 @@ def avatar_trust_matches_explicit_request(report, avatar_trust):
         or (avatar_trust or {}).get("source")
         or ""
     ).strip().lower()
-    return source == "imported_unity_avatar_asset"
+    return source == "imported_unity_avatar_asset" and report_has_imported_avatar_asset_proof(report)
+
+
+def report_has_imported_avatar_asset_proof(report):
+    if bool((report or {}).get("unityBakeImportedAvatarAssetValid")):
+        return True
+    source = str((report or {}).get("unityBakeRigRestPoseSource") or "").strip().lower()
+    applied = bool((report or {}).get("unityBakeRigRestPoseApplied"))
+    return source == "imported_unity_avatar_asset" and applied
 
 
 def is_trusted_baked_gltf_path(baked_gltf_path, library_root):

@@ -997,7 +997,20 @@ FROM animation_bake_cache;";
             }
 
             var source = ReadString(avatarTrust, "Source") ?? ReadString(avatarTrust, "source");
-            return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase);
+            return string.Equals(source, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                && ReportHasImportedAvatarAssetProof(root);
+        }
+
+        private static bool ReportHasImportedAvatarAssetProof(JsonElement root)
+        {
+            if (TryReadBool(root, "unityBakeImportedAvatarAssetValid", out var valid) && valid)
+            {
+                return true;
+            }
+
+            return string.Equals(ReadString(root, "unityBakeRigRestPoseSource"), "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
+                && TryReadBool(root, "unityBakeRigRestPoseApplied", out var applied)
+                && applied;
         }
 
         private static bool ReportRequestHasExplicitAvatarAsset(JsonElement root)
@@ -1041,6 +1054,23 @@ FROM animation_bake_cache;";
             }
 
             return property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out value);
+        }
+
+        private static bool TryReadBool(JsonElement obj, string name, out bool value)
+        {
+            value = false;
+            if (!obj.TryGetProperty(name, out var property))
+            {
+                return false;
+            }
+
+            if (property.ValueKind == JsonValueKind.True || property.ValueKind == JsonValueKind.False)
+            {
+                value = property.GetBoolean();
+                return true;
+            }
+
+            return property.ValueKind == JsonValueKind.String && bool.TryParse(property.GetString(), out value);
         }
 
         private static string ReadDbString(SqliteDataReader reader, int index)
