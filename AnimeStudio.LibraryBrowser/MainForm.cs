@@ -29,6 +29,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripDropDownButton _recentButton = new("最近");
         private readonly ToolStripButton _refreshListButton = new("刷新列表");
         private readonly ToolStripButton _reloadButton = new("重新加载");
+        private readonly ToolStripButton _refreshAnimationGateButton = new("刷新动画门禁");
         private readonly ToolStripButton _unitySettingsButton = new("Unity设置");
         private readonly ToolStripDropDownButton _unityWorkerButton = new("Unity Worker");
         private readonly ToolStripMenuItem _unityWorkerStatusItem = new("状态: 未选择素材库");
@@ -153,6 +154,8 @@ namespace AnimeStudio.LibraryBrowser
             _recentButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _refreshListButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _reloadButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            _refreshAnimationGateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            _refreshAnimationGateButton.ToolTipText = "只运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系。";
             _unitySettingsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _unitySettingsButton.ToolTipText = "设置 LibraryBrowser 全局 Unity Editor 和 Unity Bake Project。素材库本地配置仍可覆盖全局配置。";
             _unityWorkerButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -210,6 +213,7 @@ namespace AnimeStudio.LibraryBrowser
                 _recentButton,
                 _refreshListButton,
                 _reloadButton,
+                _refreshAnimationGateButton,
                 _unitySettingsButton,
                 _unityWorkerButton,
             });
@@ -538,6 +542,7 @@ namespace AnimeStudio.LibraryBrowser
             _openButton.Click += async (_, _) => await ChooseRootAsync();
             _refreshListButton.Click += (_, _) => RefreshListOnly();
             _reloadButton.Click += async (_, _) => await ReloadAsync();
+            _refreshAnimationGateButton.Click += async (_, _) => await RefreshAnimationGateAsync();
             _unitySettingsButton.Click += (_, _) => ConfigureUnitySettings();
             _startUnityWorkerItem.Click += async (_, _) => await StartUnityWorkerAsync();
             _restartUnityWorkerItem.Click += async (_, _) => await RestartUnityWorkerAsync();
@@ -958,6 +963,150 @@ namespace AnimeStudio.LibraryBrowser
         {
             _bakeCacheSummary = LibraryBakeCacheSummary.Load(_root);
         }
+
+        private void ReloadDeterministicAnimationSummary()
+        {
+            _deterministicAnimationSummary = LibraryDeterministicAnimationSummary.Load(_root);
+        }
+
+        private async Task RefreshAnimationGateAsync()
+        {
+            if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
+            {
+                MessageBox.Show(this, "请先选择素材库。", "动画关系门禁", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var script = FindDeterministicAnimationGateScript();
+            if (string.IsNullOrWhiteSpace(script))
+            {
+                MessageBox.Show(
+                    this,
+                    "没有找到 scripts\\Measure-DeterministicAnimationCoverage.ps1。请从 AnimeStudio 源码目录启动 Browser，或在命令行手动运行 GateOnly 门禁。",
+                    "动画关系门禁",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var outputDir = Path.Combine(_root, "AnimationRelationDiagnostics_BrowserGate_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            _refreshAnimationGateButton.Enabled = false;
+            UpdateStatus("正在刷新动画关系门禁");
+
+            ProcessRunResult result;
+            try
+            {
+                result = await RunDeterministicAnimationGateAsync(script, _root, outputDir);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "动画关系门禁失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("动画关系门禁失败");
+                return;
+            }
+            finally
+            {
+                _refreshAnimationGateButton.Enabled = true;
+            }
+
+            ReloadDeterministicAnimationSummary();
+            RefreshCurrentModelDetailText();
+            UpdateStatus(result.ExitCode == 0 ? "动画关系门禁通过" : "动画关系门禁有警告");
+
+            var message = $"输出目录: {outputDir}{Environment.NewLine}{Environment.NewLine}{TrimProcessOutput(result.CombinedOutput)}";
+            MessageBox.Show(
+                this,
+                message,
+                result.ExitCode == 0 ? "动画关系门禁通过" : $"动画关系门禁退出码 {result.ExitCode}",
+                MessageBoxButtons.OK,
+                result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
+        private static async Task<ProcessRunResult> RunDeterministicAnimationGateAsync(string script, string libraryRoot, string outputDir)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(script);
+            startInfo.ArgumentList.Add("-LibraryPath");
+            startInfo.ArgumentList.Add(libraryRoot);
+            startInfo.ArgumentList.Add("-OutputDir");
+            startInfo.ArgumentList.Add(outputDir);
+            startInfo.ArgumentList.Add("-GateOnly");
+            startInfo.ArgumentList.Add("-FailOnWarning");
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PowerShell。");
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            var combined = string.IsNullOrWhiteSpace(error)
+                ? output
+                : output + Environment.NewLine + error;
+            return new ProcessRunResult(process.ExitCode, combined);
+        }
+
+        private static string FindDeterministicAnimationGateScript()
+        {
+            const string relativeScript = @"scripts\Measure-DeterministicAnimationCoverage.ps1";
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in EnumerateCandidateRepoRoots())
+            {
+                if (string.IsNullOrWhiteSpace(root) || !seen.Add(root))
+                {
+                    continue;
+                }
+
+                var candidate = Path.Combine(root, relativeScript);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<string> EnumerateCandidateRepoRoots()
+        {
+            foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
+            {
+                var current = string.IsNullOrWhiteSpace(start) ? null : new DirectoryInfo(start);
+                while (current != null)
+                {
+                    yield return current.FullName;
+                    current = current.Parent;
+                }
+            }
+        }
+
+        private static string TrimProcessOutput(string output)
+        {
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return "命令没有输出。";
+            }
+
+            const int maxLength = 4000;
+            if (output.Length <= maxLength)
+            {
+                return output.Trim();
+            }
+
+            return "..." + output.Substring(output.Length - maxLength).TrimStart();
+        }
+
+        private readonly record struct ProcessRunResult(int ExitCode, string CombinedOutput);
 
         private void RebuildRecentMenu()
         {
