@@ -573,7 +573,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 "imported_unity_avatar_asset" => "导入AvatarAsset",
                 "model_human_description" => "原始模型Avatar/HumanDescription",
-                "candidate_production_avatar" => "候选生产Avatar",
+                "candidate_production_avatar" => "旧候选标记(需重验)",
                 "" => "未记录",
                 null => "未记录",
                 _ => source

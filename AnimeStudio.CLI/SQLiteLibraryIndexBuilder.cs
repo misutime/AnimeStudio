@@ -2350,28 +2350,8 @@ EXISTS (
         {
             var raw = $"{modelAlias}.raw_json";
             return $@"(
-    (
-      COALESCE(json_array_length(json_extract({raw}, '$.avatar.humanBones')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.skeletonBones')), 0) > 0
-    )
-    OR (
-      COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.humanBoneIndex')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.humanSkeleton.nodes')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.humanSkeleton.pose')), 0)
-          >= COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.humanSkeleton.nodes')), 1)
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.avatarSkeleton.nodes')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.avatarSkeleton.defaultPose')), 0)
-          >= COALESCE(json_array_length(json_extract({raw}, '$.avatar.oracle.avatarSkeleton.nodes')), 1)
-    )
-    OR (
-      COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.humanBoneIndex')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.skeleton.nodes')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.skeleton.humanSkeletonPose')), 0)
-          >= COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.skeleton.nodes')), 1)
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.avatarSkeleton.nodes')), 0) > 0
-      AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.avatarSkeleton.defaultPose')), 0)
-          >= COALESCE(json_array_length(json_extract({raw}, '$.avatar.internalSolver.avatarSkeleton.nodes')), 1)
-    )
+    COALESCE(json_array_length(json_extract({raw}, '$.avatar.humanBones')), 0) > 0
+    AND COALESCE(json_array_length(json_extract({raw}, '$.avatar.skeletonBones')), 0) > 0
   )";
         }
 

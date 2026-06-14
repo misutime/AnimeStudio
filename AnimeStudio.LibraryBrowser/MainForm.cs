@@ -3819,8 +3819,7 @@ namespace AnimeStudio.LibraryBrowser
 
         private static bool IsKnownProductionAvatarSource(LibraryAnimationCandidate animation)
         {
-            return string.Equals(animation?.ProductionUnityBakeAvatarSource, "model_human_description", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(animation?.ProductionUnityBakeAvatarSource, "candidate_production_avatar", StringComparison.OrdinalIgnoreCase);
+            return string.Equals(animation?.ProductionUnityBakeAvatarSource, "model_human_description", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasImportedAvatarAssetOracle(LibraryAnimationCandidate animation)
@@ -3860,7 +3859,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 "imported_unity_avatar_asset" => "导入AvatarAsset",
                 "model_human_description" => "原始模型Avatar/HumanDescription",
-                "candidate_production_avatar" => "候选已标记生产Avatar",
+                "candidate_production_avatar" => "旧候选标记(需重验)",
                 _ => ""
             };
         }
@@ -3887,7 +3886,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 "imported_unity_avatar_asset" => "需 Unity 烘焙(导入Avatar)",
                 "model_human_description" => "需 Unity 烘焙(原始Avatar)",
-                "candidate_production_avatar" => "需 Unity 烘焙(生产Avatar)",
+                "candidate_production_avatar" => "需恢复Avatar",
                 _ => "需 Unity 烘焙"
             };
         }
@@ -3898,7 +3897,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 "imported_unity_avatar_asset" => "需 Unity 烘焙(导入Avatar)",
                 "model_human_description" => "需 Unity 烘焙(原始Avatar)",
-                "candidate_production_avatar" => "需 Unity 烘焙(生产Avatar)",
+                "candidate_production_avatar" => "需恢复Avatar",
                 _ => "需 Unity 烘焙"
             };
         }
@@ -4368,8 +4367,8 @@ namespace AnimeStudio.LibraryBrowser
                 return true;
             }
 
-            return animation.ProductionUnityBakeReady
-                || !string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset);
+            return HasOriginalAvatarOracle(animation)
+                || HasImportedAvatarAssetOracle(animation);
         }
 
         private void AddSkippedMissingAvatarItems(

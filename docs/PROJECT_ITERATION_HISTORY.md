@@ -327,6 +327,7 @@ Freedunk 验证过一批动画：
 - 从打包 Unity 对象恢复原始 `UnityEngine.Avatar` asset，导入 Unity bake 工程后，通过 request 的 `unityAssetPaths.avatarAsset` 显式指定，Unity bake 结果恢复正常。
 - 这条 ImportedAvatar 路径已经用原神 NPCMale idle、Gorou 跑步/瞄准，以及后续多样本人工预览确认可作为阶段性主线。
 - 普通 Unity 项目仍优先使用原始 prefab / Animator.avatar / 完整 HumanDescription；原神这类缺可信 Avatar 的项目走 ImportedAvatar oracle。两条路径都必须来自 Unity 确定性数据，不能退回骨骼数量、名称或当前姿态猜测。
+- 旧索引里的 `productionUnityBakeReady` / `candidate_production_avatar` 不能单独当作可信 Avatar 证明。Browser 和 SQLite 摘要必须重新验证当前模型有完整 HumanDescription，或 request/settings 有显式导入的原始 Avatar asset；`AvatarConstant` / `internalSolver` 只能继续作为诊断和恢复线索。
 
 ### 动画语义匹配
 

@@ -902,8 +902,9 @@ ORDER BY model_output;";
             var modelHasProductionAvatar = HasProductionUnityBakeAvatar(model);
             var importedAvatarAsset = importedAvatar?.AssetPath;
             var hasImportedAvatarAsset = !string.IsNullOrWhiteSpace(importedAvatarAsset);
-            var candidateProductionReady = ReadBool(candidate, "productionUnityBakeReady");
-            var productionReady = candidateProductionReady || modelHasProductionAvatar || hasImportedAvatarAsset;
+            // 旧索引里的 productionUnityBakeReady 只能说明候选当时被标过可烘焙；
+            // Browser 打开库时必须重新用当前模型 HumanDescription 或显式 Avatar asset 证明。
+            var productionReady = modelHasProductionAvatar || hasImportedAvatarAsset;
             var productionBlocked = ReadBool(candidate, "productionUnityBakeBlocked") && !productionReady;
             if (IsUnrealAnimationRecord(output, animationAsset, relation, relationSource, animationType, ReadString(animation, "source")))
             {
@@ -946,8 +947,7 @@ ORDER BY model_output;";
                 ProductionUnityBakeBlockedReason = productionBlocked ? ReadString(candidate, "productionUnityBakeBlockedReason") ?? "" : "",
                 ProductionUnityBakeAvatarSource = DetermineProductionUnityBakeAvatarSource(
                     hasImportedAvatarAsset,
-                    modelHasProductionAvatar,
-                    candidateProductionReady),
+                    modelHasProductionAvatar),
                 ProductionUnityBakeAvatarAsset = importedAvatarAsset ?? ReadString(candidate, "unityAvatarAsset") ?? "",
                 ProductionUnityBakeAvatarMatchKey = importedAvatar?.MatchKey ?? ReadString(candidate, "unityAvatarMatchKey") ?? "",
                 HasAvatarOracle = HasAvatarOracle(model),
@@ -1025,13 +1025,12 @@ ORDER BY model_output;";
                 RequiresHumanoidBake = ReadBool(candidate, "requiresHumanoidBake"),
                 RequiresUnityBake = ReadBool(candidate, "requiresUnityBake"),
                 RequiresInternalHumanoidSolve = ReadBool(candidate, "requiresInternalHumanoidSolve"),
-                ProductionUnityBakeReady = ReadBool(candidate, "productionUnityBakeReady"),
+                ProductionUnityBakeReady = !string.IsNullOrWhiteSpace(ReadString(candidate, "unityAvatarAsset")),
                 ProductionUnityBakeBlocked = ReadBool(candidate, "productionUnityBakeBlocked"),
                 ProductionUnityBakeBlockedReason = ReadString(candidate, "productionUnityBakeBlockedReason") ?? "",
                 ProductionUnityBakeAvatarSource = DetermineProductionUnityBakeAvatarSource(
                     !string.IsNullOrWhiteSpace(ReadString(candidate, "unityAvatarAsset")),
-                    false,
-                    ReadBool(candidate, "productionUnityBakeReady")),
+                    false),
                 ProductionUnityBakeAvatarAsset = ReadString(candidate, "unityAvatarAsset") ?? "",
                 ProductionUnityBakeAvatarMatchKey = ReadString(candidate, "unityAvatarMatchKey") ?? "",
                 IsContainerAnimation = ReadBool(candidate, "isContainerAnimation"),
@@ -1085,13 +1084,12 @@ ORDER BY model_output;";
                 RequiresHumanoidBake = ReadBool(animation, "hasMuscleClip"),
                 RequiresUnityBake = ReadBool(animation, "requiresUnityBake"),
                 RequiresInternalHumanoidSolve = ReadBool(animation, "requiresInternalHumanoidSolve"),
-                ProductionUnityBakeReady = ReadBool(animation, "productionUnityBakeReady"),
+                ProductionUnityBakeReady = !string.IsNullOrWhiteSpace(ReadString(animation, "unityAvatarAsset")),
                 ProductionUnityBakeBlocked = ReadBool(animation, "productionUnityBakeBlocked"),
                 ProductionUnityBakeBlockedReason = ReadString(animation, "productionUnityBakeBlockedReason") ?? "",
                 ProductionUnityBakeAvatarSource = DetermineProductionUnityBakeAvatarSource(
                     !string.IsNullOrWhiteSpace(ReadString(animation, "unityAvatarAsset")),
-                    false,
-                    ReadBool(animation, "productionUnityBakeReady")),
+                    false),
                 ProductionUnityBakeAvatarAsset = ReadString(animation, "unityAvatarAsset") ?? "",
                 ProductionUnityBakeAvatarMatchKey = ReadString(animation, "unityAvatarMatchKey") ?? "",
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
@@ -1903,8 +1901,7 @@ GROUP BY ab.id;";
 
         private static string DetermineProductionUnityBakeAvatarSource(
             bool hasImportedAvatarAsset,
-            bool modelHasProductionAvatar,
-            bool candidateProductionReady)
+            bool modelHasProductionAvatar)
         {
             if (hasImportedAvatarAsset)
             {
@@ -1916,7 +1913,8 @@ GROUP BY ab.id;";
                 return "model_human_description";
             }
 
-            return candidateProductionReady ? "candidate_production_avatar" : "";
+            // candidate_production_avatar 是旧的过渡标记，不能单独证明生产 Avatar。
+            return "";
         }
 
         private static UnityAvatarAssetResolution ResolveImportedAvatarAsset(

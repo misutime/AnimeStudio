@@ -80,6 +80,7 @@ $requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
 $libraryIndexBuilder = Read-RepoFile "AnimeStudio.CLI\SQLiteLibraryIndexBuilder.cs"
 $libraryBrowserMainForm = Read-RepoFile "AnimeStudio.LibraryBrowser\MainForm.cs"
 $libraryBrowserPreviewCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
+$libraryBrowserAnimationIndex = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationIndex.cs"
 $cliUsage = Read-RepoFile "docs\CLI_USAGE.md"
 
 $skipSelector = Get-MethodBodyText $requestGenerator "private static IEnumerable<PreviewSelection> SelectExplicitBakeCandidatesFromLibraryDb"
@@ -125,6 +126,12 @@ Assert-Contains $trustedIndex '"frameVaryingTracks"' "SQLite summary must requir
 Assert-Contains $trustedIndex "IsTrustedAvatarBake(report)" "SQLite summary must require Avatar trust for trusted baked rows."
 Assert-Contains $trustedIndex "UsesFirstSampleHumanoidDelta(report)" "SQLite summary must reject first-sample delta legacy bakes."
 
+$sqliteBakeReadyAvatar = Get-MethodBodyText $libraryIndexBuilder "private static string BakeReadyAvatarSql"
+Assert-Contains $sqliteBakeReadyAvatar '$.avatar.humanBones' "SQLite production bake-ready summary must require HumanDescription humanBones."
+Assert-Contains $sqliteBakeReadyAvatar '$.avatar.skeletonBones' "SQLite production bake-ready summary must require HumanDescription skeletonBones."
+Assert-NotContains $sqliteBakeReadyAvatar '$.avatar.oracle' "SQLite production bake-ready summary must not count AvatarConstant/oracle as production Avatar."
+Assert-NotContains $sqliteBakeReadyAvatar '$.avatar.internalSolver' "SQLite production bake-ready summary must not count AvatarConstant/internalSolver as production Avatar."
+
 $uniqueIndex = Get-MethodBodyText $libraryIndexBuilder "private static JObject BuildUniqueBakeCacheCounts"
 Assert-Contains $uniqueIndex "IsTrustedBakedGltfPath(bakedGltf, libraryRoot)" "SQLite summary unique counts must recompute trusted baked proof."
 Assert-Contains $uniqueIndex "IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)" "SQLite summary must treat needs_review as terminal diagnostics."
@@ -137,6 +144,20 @@ $browserProcessed = Get-MethodBodyText $libraryBrowserMainForm "private bool IsU
 Assert-Contains $browserProcessed '"可播放"' "Browser batch bake must skip trusted playable baked previews."
 Assert-Contains $browserProcessed '"静态姿态"' "Browser batch bake must skip static_pose terminal diagnostics."
 Assert-Contains $browserProcessed '"需人工验收"' "Browser batch bake must skip needs_review terminal diagnostics."
+
+$browserKnownAvatar = Get-MethodBodyText $libraryBrowserMainForm "private static bool IsKnownProductionAvatarSource"
+Assert-Contains $browserKnownAvatar '"model_human_description"' "Browser production Avatar source must accept complete model HumanDescription."
+Assert-NotContains $browserKnownAvatar "candidate_production_avatar" "Browser production Avatar source must not accept legacy candidate-only flags."
+
+$browserProductionOracle = Get-MethodBodyText $libraryBrowserMainForm "private static bool HasProductionBakeOracle"
+Assert-Contains $browserProductionOracle "HasOriginalAvatarOracle(animation)" "Browser batch bake oracle gate must require original model Avatar/HumanDescription."
+Assert-Contains $browserProductionOracle "HasImportedAvatarAssetOracle(animation)" "Browser batch bake oracle gate must accept explicit imported Unity Avatar assets."
+Assert-NotContains $browserProductionOracle "ProductionUnityBakeReady" "Browser batch bake oracle gate must not trust old productionUnityBakeReady flags by themselves."
+
+$browserDetermineAvatarSource = Get-MethodBodyText $libraryBrowserAnimationIndex "private static string DetermineProductionUnityBakeAvatarSource"
+Assert-Contains $browserDetermineAvatarSource '"imported_unity_avatar_asset"' "Browser animation index must keep explicit imported Avatar asset source."
+Assert-Contains $browserDetermineAvatarSource '"model_human_description"' "Browser animation index must keep complete HumanDescription source."
+Assert-NotContains $browserDetermineAvatarSource '"candidate_production_avatar"' "Browser animation index must not convert old candidate flags into production Avatar sources."
 
 $browserModelFilter = Get-MethodBodyText $libraryBrowserMainForm "private bool MatchesModelAnimationStateFilter"
 Assert-Contains $browserModelFilter "IsUnityBakeAlreadyProcessedTerminal(model, animation)" "Browser model animation pending filter must exclude terminal diagnostics."
