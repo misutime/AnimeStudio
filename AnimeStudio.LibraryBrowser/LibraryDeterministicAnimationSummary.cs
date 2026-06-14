@@ -29,6 +29,8 @@ namespace AnimeStudio.LibraryBrowser
             0,
             0,
             0,
+            false,
+            "",
             "");
 
         public LibraryDeterministicAnimationSummary(
@@ -52,6 +54,8 @@ namespace AnimeStudio.LibraryBrowser
             long importedAvatarAssetFileCount,
             long importedAvatarAssetKeyCount,
             long importedAvatarAssetBakeReadyCandidates,
+            bool cacheSummaryPresent,
+            string sqliteSummaryError,
             string generatedAt)
         {
             Exists = exists;
@@ -74,6 +78,8 @@ namespace AnimeStudio.LibraryBrowser
             ImportedAvatarAssetFileCount = importedAvatarAssetFileCount;
             ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
             ImportedAvatarAssetBakeReadyCandidates = importedAvatarAssetBakeReadyCandidates;
+            CacheSummaryPresent = cacheSummaryPresent;
+            SqliteSummaryError = sqliteSummaryError ?? "";
             GeneratedAt = generatedAt ?? "";
         }
 
@@ -97,6 +103,8 @@ namespace AnimeStudio.LibraryBrowser
         public long ImportedAvatarAssetFileCount { get; }
         public long ImportedAvatarAssetKeyCount { get; }
         public long ImportedAvatarAssetBakeReadyCandidates { get; }
+        public bool CacheSummaryPresent { get; }
+        public string SqliteSummaryError { get; }
         public string GeneratedAt { get; }
 
         public string ShortLabel()
@@ -109,6 +117,15 @@ namespace AnimeStudio.LibraryBrowser
             if (!UsesDefaultLibraryIndex)
             {
                 return "动画关系门禁: 旁路报告";
+            }
+
+            if (IsFastSummary)
+            {
+                var cacheText = CacheSummaryPresent ? "cache OK" : "cache 缺失";
+                var bakeText = EffectiveBakeReadyCandidates > 0
+                    ? $"，oracle {FormatPercent(EffectiveBakeReadyCoveragePercent)}"
+                    : "";
+                return $"动画快速摘要，Avatar {ImportedAvatarAssetFileCount:N0}，{cacheText}{bakeText}";
             }
 
             if (string.Equals(GateStatus, "ok", StringComparison.OrdinalIgnoreCase))
@@ -133,6 +150,21 @@ namespace AnimeStudio.LibraryBrowser
             if (!Exists)
             {
                 return "动画关系门禁: 未生成。可运行 Measure-DeterministicAnimationCoverage.ps1 -GateOnly -FailOnWarning 生成快速门禁报告。" + Environment.NewLine;
+            }
+
+            if (IsFastSummary)
+            {
+                return
+                    $"动画快速摘要: {SummaryPath}{Environment.NewLine}" +
+                    $"动画快速摘要索引: {EmptyAsUnknown(LibraryIndex)}{FormatIndexScopeNote()}{Environment.NewLine}" +
+                    $"动画快速摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
+                    $"根目录bake cache: {(CacheSummaryPresent ? "已读取" : "未读取")}{Environment.NewLine}" +
+                    $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{Environment.NewLine}" +
+                    $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveBakeReadyCoveragePercent)}){Environment.NewLine}" +
+                    $"导入Avatar oracle候选: {ImportedAvatarAssetBakeReadyCandidates:N0}{Environment.NewLine}" +
+                    FormatFastSummaryWarningText() +
+                    "FastSummary 只用于阶段性确认 cache / ImportedAvatar 状态，不替代 GateOnly 或 SummaryOnly 的深度关系门禁。" +
+                    Environment.NewLine;
             }
 
             return
@@ -162,6 +194,8 @@ namespace AnimeStudio.LibraryBrowser
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(path));
                 var root = document.RootElement;
+                var mode = ReadString(root, "mode");
+                var isFastSummary = string.Equals(mode, "fastSummary", StringComparison.OrdinalIgnoreCase);
                 var totals = root.TryGetProperty("totals", out var totalsElement) && totalsElement.ValueKind == JsonValueKind.Object
                     ? totalsElement
                     : default;
@@ -180,6 +214,12 @@ namespace AnimeStudio.LibraryBrowser
                     && bakeElement.ValueKind == JsonValueKind.Object
                         ? bakeElement
                         : default;
+                if (isFastSummary
+                    && root.TryGetProperty("animationBakeCacheSummary", out var fastBakeElement)
+                    && fastBakeElement.ValueKind == JsonValueKind.Object)
+                {
+                    bake = fastBakeElement;
+                }
                 var importedAvatarReadiness = bake.ValueKind == JsonValueKind.Object
                     && bake.TryGetProperty("importedAvatarAssetReadiness", out var importedAvatarReadinessElement)
                     && importedAvatarReadinessElement.ValueKind == JsonValueKind.Object
@@ -193,7 +233,7 @@ namespace AnimeStudio.LibraryBrowser
                     path,
                     libraryIndex,
                     usesDefaultIndex,
-                    ReadString(root, "mode"),
+                    mode,
                     ReadString(gate, "status"),
                     ReadString(sourceHealth, "status"),
                     ReadString(candidateSchema, "status"),
@@ -204,11 +244,17 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(totals, "modelsWithExplicitCandidates"),
                     ReadInt64(totals, "animationsWithExplicitCandidates"),
                     ReadInt64(bake, "explicitUnityBakeCandidates"),
-                    ReadInt64(bake, "bakeReadyExplicitUnityBakeCandidates"),
-                    ReadDouble(bake, "bakeReadyExplicitUnityBakeCoveragePercent"),
-                    ReadInt64(importedAvatarReadiness, "fileCount"),
-                    ReadInt64(importedAvatarReadiness, "keyCount"),
-                    ReadInt64(bake, "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
+                    ReadInt64(bake, "effectiveBakeReadyExplicitUnityBakeCandidates", "bakeReadyExplicitUnityBakeCandidates"),
+                    ReadDouble(bake, "effectiveBakeReadyExplicitUnityBakeCoveragePercent", "bakeReadyExplicitUnityBakeCoveragePercent"),
+                    isFastSummary
+                        ? ReadInt64(root, "importedAvatarAssetCount")
+                        : ReadInt64(importedAvatarReadiness, "fileCount"),
+                    ReadInt64(bake, "importedAvatarAssetKeyCount") != 0
+                        ? ReadInt64(bake, "importedAvatarAssetKeyCount")
+                        : ReadInt64(importedAvatarReadiness, "keyCount"),
+                    ReadInt64(bake, "uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates", "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
+                    isFastSummary && ReadBool(root, "cacheSummaryPresent"),
+                    ReadString(root, "sqliteSummaryError"),
                     ReadString(root, "generatedAt"));
             }
             catch
@@ -277,6 +323,15 @@ namespace AnimeStudio.LibraryBrowser
                 $"导入Avatar oracle候选: {ImportedAvatarAssetBakeReadyCandidates:N0}{Environment.NewLine}";
         }
 
+        private bool IsFastSummary => string.Equals(Mode, "fastSummary", StringComparison.OrdinalIgnoreCase);
+
+        private string FormatFastSummaryWarningText()
+        {
+            return string.IsNullOrWhiteSpace(SqliteSummaryError)
+                ? ""
+                : $"SQLite摘要读取提示: {SqliteSummaryError}{Environment.NewLine}";
+        }
+
         private static string FormatPercent(double value)
         {
             return value.ToString("0.###", CultureInfo.InvariantCulture) + "%";
@@ -333,9 +388,17 @@ namespace AnimeStudio.LibraryBrowser
 
         private static long ReadInt64(JsonElement element, string property)
         {
+            return ReadInt64(element, property, null);
+        }
+
+        private static long ReadInt64(JsonElement element, string property, string fallbackProperty)
+        {
             if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
             {
-                return 0;
+                if (string.IsNullOrWhiteSpace(fallbackProperty) || !element.TryGetProperty(fallbackProperty, out value))
+                {
+                    return 0;
+                }
             }
 
             if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number))
@@ -351,9 +414,17 @@ namespace AnimeStudio.LibraryBrowser
 
         private static double ReadDouble(JsonElement element, string property)
         {
+            return ReadDouble(element, property, null);
+        }
+
+        private static double ReadDouble(JsonElement element, string property, string fallbackProperty)
+        {
             if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
             {
-                return 0;
+                if (string.IsNullOrWhiteSpace(fallbackProperty) || !element.TryGetProperty(fallbackProperty, out value))
+                {
+                    return 0;
+                }
             }
 
             if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
@@ -365,6 +436,22 @@ namespace AnimeStudio.LibraryBrowser
                 && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number)
                     ? number
                     : 0;
+        }
+
+        private static bool ReadBool(JsonElement element, string property)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            {
+                return false;
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String => bool.TryParse(value.GetString(), out var result) && result,
+                _ => false,
+            };
         }
     }
 }
