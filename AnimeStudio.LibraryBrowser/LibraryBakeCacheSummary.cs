@@ -211,6 +211,7 @@ namespace AnimeStudio.LibraryBrowser
 
             return
                 $"最近{LatestBatch.SourceLabel}批量烘焙报告: {LatestBatch.ReportPath}{Environment.NewLine}" +
+                LatestBatchRunModeText() +
                 $"最近{LatestBatch.SourceLabel}批量烘焙: {EmptyAsUnknown(LatestBatch.Label)}，完成 {EmptyAsUnknown(LatestBatch.CompletedAtUtc)}，成功/失败/待处理/已烘焙/缺Avatar {LatestBatch.SuccessCount:N0} / {LatestBatch.FailureCount:N0} / {LatestBatch.PendingCount:N0} / {LatestBatch.SkippedAlreadyBaked:N0} / {LatestBatch.SkippedMissingAvatarOracle:N0}{Environment.NewLine}" +
                 LatestBatchAvatarSourceText();
         }
@@ -239,7 +240,10 @@ namespace AnimeStudio.LibraryBrowser
                     true,
                     reportFile.File.FullName,
                     ReadString(root, "Label", "label", "mode"),
+                    ReadString(root, "Status", "status"),
                     ReadString(root, "CompletedAtUtc", "completedAtUtc", "generatedAt"),
+                    ReadInt64(root, "RequestedCount", "requestedCount", "requested"),
+                    ReadBool(root, "RunUnityBake", "runUnityBake"),
                     ReadInt64(root, "SuccessCount", "successCount", "bakedCompleted"),
                     ReadInt64(root, "FailureCount", "failureCount"),
                     ReadInt64(root, "PendingCount", "pendingCount", "requestsWritten"),
@@ -353,11 +357,25 @@ namespace AnimeStudio.LibraryBrowser
                     : 0;
         }
 
-        private static bool ReadBool(JsonElement element, string property)
+        private static bool ReadBool(JsonElement element, string property, params string[] fallbackProperties)
         {
-            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value))
+            JsonElement value = default;
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out value))
             {
-                return false;
+                var found = false;
+                foreach (var fallbackProperty in fallbackProperties ?? Array.Empty<string>())
+                {
+                    if (!string.IsNullOrWhiteSpace(fallbackProperty) && element.TryGetProperty(fallbackProperty, out value))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    return false;
+                }
             }
 
             if (value.ValueKind == JsonValueKind.True)
@@ -484,13 +502,16 @@ namespace AnimeStudio.LibraryBrowser
 
         internal sealed class LatestBatchReport
         {
-            public static LatestBatchReport Empty { get; } = new(false, "", "", "", 0, 0, 0, 0, 0, "", "Browser");
+            public static LatestBatchReport Empty { get; } = new(false, "", "", "", "", 0, false, 0, 0, 0, 0, 0, "", "Browser");
 
             public LatestBatchReport(
                 bool exists,
                 string reportPath,
                 string label,
+                string status,
                 string completedAtUtc,
+                long requestedCount,
+                bool runUnityBake,
                 long successCount,
                 long failureCount,
                 long pendingCount,
@@ -502,7 +523,10 @@ namespace AnimeStudio.LibraryBrowser
                 Exists = exists;
                 ReportPath = reportPath ?? "";
                 Label = label ?? "";
+                Status = status ?? "";
                 CompletedAtUtc = completedAtUtc ?? "";
+                RequestedCount = requestedCount;
+                RunUnityBake = runUnityBake;
                 SuccessCount = successCount;
                 FailureCount = failureCount;
                 PendingCount = pendingCount;
@@ -515,7 +539,10 @@ namespace AnimeStudio.LibraryBrowser
             public bool Exists { get; }
             public string ReportPath { get; }
             public string Label { get; }
+            public string Status { get; }
             public string CompletedAtUtc { get; }
+            public long RequestedCount { get; }
+            public bool RunUnityBake { get; }
             public long SuccessCount { get; }
             public long FailureCount { get; }
             public long PendingCount { get; }
@@ -542,6 +569,18 @@ namespace AnimeStudio.LibraryBrowser
             return string.IsNullOrWhiteSpace(LatestBatch.AvatarSourceCountsText)
                 ? ""
                 : $"最近批次Avatar来源: {LatestBatch.AvatarSourceCountsText}{Environment.NewLine}";
+        }
+
+        private string LatestBatchRunModeText()
+        {
+            if (LatestBatch.RequestedCount == 0 && string.IsNullOrWhiteSpace(LatestBatch.Status))
+            {
+                return "";
+            }
+
+            var status = string.IsNullOrWhiteSpace(LatestBatch.Status) ? "未记录" : LatestBatch.Status;
+            var unityBake = LatestBatch.RunUnityBake ? "是" : "否";
+            return $"最近批次状态: {status}，请求 {LatestBatch.RequestedCount:N0}，运行Unity {unityBake}{Environment.NewLine}";
         }
     }
 }
