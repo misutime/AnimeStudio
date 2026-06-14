@@ -111,7 +111,7 @@ namespace AnimeStudio.CLI
             {
                 return;
             }
-            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
+            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
             var selection = SelectExplicitCandidateFromLibraryDb(
                 dbPath,
                 modelSelector,
@@ -200,7 +200,7 @@ namespace AnimeStudio.CLI
             {
                 return;
             }
-            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
+            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
 
             var selections = SelectExplicitBakeCandidatesFromLibraryDb(
                     dbPath,
@@ -1541,7 +1541,7 @@ FROM animation_bake_cache;";
                     return;
                 }
 
-                var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject);
+                var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
                 var importedAvatarAssetFileCount = importedAvatarAssets.Values
                     .Where(x => !string.IsNullOrWhiteSpace(x))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -2177,7 +2177,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             return denominator <= 0 ? 0 : Math.Round((double)numerator * 100.0 / denominator, 6);
         }
 
-        private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject)
+        private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject, string libraryRoot = null)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(unityProject))
@@ -2191,16 +2191,28 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 return result;
             }
 
-            foreach (var path in Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly))
+            var assetFiles = Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .ToArray();
+            var validProbeKeys = LoadFreshImportedAvatarProbeKeys(libraryRoot, assetFiles);
+            foreach (var file in assetFiles)
             {
-                var name = Path.GetFileNameWithoutExtension(path);
+                var name = Path.GetFileNameWithoutExtension(file.FullName);
                 if (string.IsNullOrWhiteSpace(name))
                 {
                     continue;
                 }
 
-                var unityPath = Path.GetRelativePath(unityProject, path).Replace('\\', '/');
+                var unityPath = Path.GetRelativePath(unityProject, file.FullName).Replace('\\', '/');
                 if (!unityPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (validProbeKeys != null
+                    && !validProbeKeys.Contains(name)
+                    && !(name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase)
+                        && validProbeKeys.Contains(name[..^"_ModelAvatar".Length])))
                 {
                     continue;
                 }
@@ -2214,6 +2226,97 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             }
 
             return result;
+        }
+
+        private static HashSet<string> LoadFreshImportedAvatarProbeKeys(string libraryRoot, FileInfo[] assetFiles)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                return null;
+            }
+
+            FileInfo reportFile;
+            try
+            {
+                reportFile = Directory.EnumerateDirectories(libraryRoot, "ImportedAvatarProbe*", SearchOption.TopDirectoryOnly)
+                    .Select(dir => Path.Combine(dir, "imported_avatar_probe_batch.json"))
+                    .Where(File.Exists)
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (reportFile == null)
+            {
+                return null;
+            }
+
+            var newestAssetTime = assetFiles.Length == 0
+                ? DateTime.MinValue
+                : assetFiles.Max(file => file.LastWriteTimeUtc);
+            if (reportFile.LastWriteTimeUtc < newestAssetTime)
+            {
+                return null;
+            }
+
+            try
+            {
+                var root = JObject.Parse(File.ReadAllText(reportFile.FullName));
+                if ((int?)root["totalAssets"] != assetFiles.Length)
+                {
+                    return null;
+                }
+
+                var items = root["items"] as JArray;
+                if (items == null)
+                {
+                    return null;
+                }
+
+                var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in items.OfType<JObject>())
+                {
+                    if (!string.Equals((string)item["status"], "ok", StringComparison.OrdinalIgnoreCase)
+                        || !((bool?)item["isValid"] ?? false)
+                        || !((bool?)item["isHuman"] ?? false))
+                    {
+                        continue;
+                    }
+
+                    var avatarAssetPath = (string)item["avatarAssetPath"];
+                    var name = Path.GetFileNameWithoutExtension((avatarAssetPath ?? "").Replace('/', Path.DirectorySeparatorChar));
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = (string)item["avatarName"];
+                    }
+
+                    AddImportedAvatarKey(result, name);
+                }
+
+                return result;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void AddImportedAvatarKey(HashSet<string> target, string name)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            target.Add(name);
+            if (name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase))
+            {
+                target.Add(name[..^"_ModelAvatar".Length]);
+            }
         }
 
         private static void CreateTempImportedAvatarAssetKeys(
