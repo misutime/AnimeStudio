@@ -175,6 +175,32 @@ items_all = sorted(
     reverse=True,
 )
 items = [x for x in items_all if not x["isRecovered"]] if args.only_missing else items_all
+
+missing_items = [x for x in items_all if not x["isRecovered"]]
+recovered_items = [x for x in items_all if x["isRecovered"]]
+total_internal_links = sum(x["internalHumanoidLinks"] for x in items_all)
+total_explicit_links = sum(x["explicitLinks"] for x in items_all)
+missing_internal_links = sum(x["internalHumanoidLinks"] for x in missing_items)
+missing_explicit_links = sum(x["explicitLinks"] for x in missing_items)
+recovered_internal_links = sum(x["internalHumanoidLinks"] for x in recovered_items)
+recovered_explicit_links = sum(x["explicitLinks"] for x in recovered_items)
+
+
+def percent(part, total):
+    return round((float(part) / float(total) * 100.0), 6) if total else 0.0
+
+
+running_internal = 0
+running_explicit = 0
+for item in items:
+    if not item["isRecovered"]:
+        running_internal += item["internalHumanoidLinks"]
+        running_explicit += item["explicitLinks"]
+    item["cumulativeMissingInternalHumanoidLinks"] = running_internal
+    item["cumulativeMissingExplicitLinks"] = running_explicit
+    item["cumulativeMissingInternalHumanoidCoveragePercent"] = percent(running_internal, missing_internal_links)
+    item["cumulativeMissingExplicitCoveragePercent"] = percent(running_explicit, missing_explicit_links)
+
 if args.limit and args.limit > 0:
     limited = items[:args.limit]
 else:
@@ -192,11 +218,17 @@ summary = {
     "missingAvatarObjects": sum(1 for x in items_all if not x["isRecovered"]),
     "listedAvatarObjects": len(limited),
     "totalModels": sum(x["models"] for x in items_all),
-    "totalExplicitLinks": sum(x["explicitLinks"] for x in items_all),
-    "totalInternalHumanoidLinks": sum(x["internalHumanoidLinks"] for x in items_all),
-    "missingModels": sum(x["models"] for x in items if not x["isRecovered"]),
-    "missingExplicitLinks": sum(x["explicitLinks"] for x in items if not x["isRecovered"]),
-    "missingInternalHumanoidLinks": sum(x["internalHumanoidLinks"] for x in items if not x["isRecovered"]),
+    "totalExplicitLinks": total_explicit_links,
+    "totalInternalHumanoidLinks": total_internal_links,
+    "recoveredExplicitLinks": recovered_explicit_links,
+    "recoveredInternalHumanoidLinks": recovered_internal_links,
+    "recoveredExplicitCoveragePercent": percent(recovered_explicit_links, total_explicit_links),
+    "recoveredInternalHumanoidCoveragePercent": percent(recovered_internal_links, total_internal_links),
+    "missingModels": sum(x["models"] for x in missing_items),
+    "missingExplicitLinks": missing_explicit_links,
+    "missingInternalHumanoidLinks": missing_internal_links,
+    "missingExplicitCoveragePercent": percent(missing_explicit_links, total_explicit_links),
+    "missingInternalHumanoidCoveragePercent": percent(missing_internal_links, total_internal_links),
     "items": limited,
 }
 
@@ -210,7 +242,23 @@ with open(json_path, "w", encoding="utf-8-sig") as handle:
 
 with open(csv_path, "w", encoding="utf-8-sig", newline="") as handle:
     writer = csv.writer(handle)
-    writer.writerow(["rank", "status", "avatarName", "models", "internalHumanoidLinks", "explicitLinks", "source", "pathId", "existingUnityAsset", "suggestedUnityAsset", "sampleModel"])
+    writer.writerow([
+        "rank",
+        "status",
+        "avatarName",
+        "models",
+        "internalHumanoidLinks",
+        "explicitLinks",
+        "cumulativeMissingInternalHumanoidLinks",
+        "cumulativeMissingInternalHumanoidCoveragePercent",
+        "cumulativeMissingExplicitLinks",
+        "cumulativeMissingExplicitCoveragePercent",
+        "source",
+        "pathId",
+        "existingUnityAsset",
+        "suggestedUnityAsset",
+        "sampleModel",
+    ])
     for index, item in enumerate(limited, 1):
         sample = item["samples"][0]["modelName"] if item["samples"] else ""
         writer.writerow([
@@ -220,6 +268,10 @@ with open(csv_path, "w", encoding="utf-8-sig", newline="") as handle:
             item["models"],
             item["internalHumanoidLinks"],
             item["explicitLinks"],
+            item["cumulativeMissingInternalHumanoidLinks"],
+            item["cumulativeMissingInternalHumanoidCoveragePercent"],
+            item["cumulativeMissingExplicitLinks"],
+            item["cumulativeMissingExplicitCoveragePercent"],
             item["sourceShort"],
             item["pathId"],
             item["existingUnityAsset"],
@@ -250,13 +302,18 @@ with open(md_path, "w", encoding="utf-8-sig") as handle:
     handle.write(f"- 覆盖模型数: {summary['totalModels']}\n")
     handle.write(f"- 覆盖显式候选链接: {summary['totalExplicitLinks']}\n")
     handle.write(f"- 覆盖 Humanoid/internal 链接: {summary['totalInternalHumanoidLinks']}\n\n")
+    handle.write(f"- 已恢复 Humanoid/internal 链接: {summary['recoveredInternalHumanoidLinks']} ({summary['recoveredInternalHumanoidCoveragePercent']}%)\n")
+    handle.write(f"- 待恢复 Humanoid/internal 链接: {summary['missingInternalHumanoidLinks']} ({summary['missingInternalHumanoidCoveragePercent']}%)\n")
+    handle.write(f"- 已恢复显式候选链接: {summary['recoveredExplicitLinks']} ({summary['recoveredExplicitCoveragePercent']}%)\n")
+    handle.write(f"- 待恢复显式候选链接: {summary['missingExplicitLinks']} ({summary['missingExplicitCoveragePercent']}%)\n\n")
     if args.only_missing:
         handle.write("当前报告启用了 OnlyMissing，只列出尚未在 `Assets/AnimeStudioBake/ImportedAvatar` 精确命中的 Avatar。\n\n")
-    handle.write("| rank | status | avatar | models | internal links | explicit links | source | pathId |\n")
-    handle.write("|---:|---|---|---:|---:|---:|---|---:|\n")
+    handle.write("| rank | status | avatar | models | internal links | cumulative missing internal | cumulative % | explicit links | source | pathId |\n")
+    handle.write("|---:|---|---|---:|---:|---:|---:|---:|---|---:|\n")
     for index, item in enumerate(limited[:80], 1):
         handle.write(
             f"| {index} | {'recovered' if item['isRecovered'] else 'missing'} | {item['avatarName']} | {item['models']} | {item['internalHumanoidLinks']} | "
+            f"{item['cumulativeMissingInternalHumanoidLinks']} | {item['cumulativeMissingInternalHumanoidCoveragePercent']} | "
             f"{item['explicitLinks']} | {item['sourceShort']} | {item['pathId']} |\n"
         )
     handle.write("\n## 使用方式\n\n")

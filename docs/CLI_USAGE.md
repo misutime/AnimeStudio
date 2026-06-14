@@ -767,7 +767,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Write-UnityAvatarAssetRecoveryP
   -OnlyMissing
 ```
 
-`-OnlyMissing` 会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，把已经精确命中的 Avatar 标成 recovered 并从输出列表中过滤掉，只列出剩余待恢复项。CSV/Markdown 里会保留 `source/pathId`、建议的 `Assets/AnimeStudioBake/ImportedAvatar/<AvatarName>.asset` 路径和样例模型；恢复出的 `.asset` 放进 bake 工程后，再运行 Browser 的“快速摘要”或 `Measure-DeterministicAnimationCoverage.ps1 -FastSummary` 检查 ImportedAvatar 数量和有效 Avatar oracle 覆盖是否上升。
+`-OnlyMissing` 会扫描 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，把已经精确命中的 Avatar 标成 recovered 并从输出列表中过滤掉，只列出剩余待恢复项。CSV/Markdown 里会保留 `source/pathId`、建议的 `Assets/AnimeStudioBake/ImportedAvatar/<AvatarName>.asset` 路径、样例模型，以及 `cumulativeMissingInternalHumanoidCoveragePercent` 这类累计收益字段；优先恢复表头几项，就能直接看到预计补齐多少仍缺 Avatar oracle 的 Humanoid/internal 候选。恢复出的 `.asset` 放进 bake 工程后，再运行 Browser 的“快速摘要”或 `Measure-DeterministicAnimationCoverage.ps1 -FastSummary` 检查 ImportedAvatar 数量和有效 Avatar oracle 覆盖是否上升。
 
 ### 独立动画资产
 
