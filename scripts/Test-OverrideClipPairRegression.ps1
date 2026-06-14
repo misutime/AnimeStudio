@@ -181,7 +181,7 @@ con = sqlite3.connect(db)
 rows = [x[0] for x in con.execute("SELECT animation_output FROM model_animation_candidates ORDER BY animation_output")]
 con.close()
 
-if mode in ("pair", "separated"):
+if mode == "pair":
     expected = [
         "Animations/Test/KeepClip.animation_asset.json",
         "Animations/Test/OverrideClip.animation_asset.json",
@@ -191,7 +191,7 @@ elif mode == "empty":
         "Animations/Test/KeepClip.animation_asset.json",
         "Animations/Test/OriginalClip.animation_asset.json",
     ]
-elif mode == "stale":
+elif mode in ("separated", "stale"):
     expected = []
 else:
     raise ValueError(f"unknown mode: {mode}")
@@ -205,7 +205,7 @@ if rows != expected:
 if mode == "pair":
     print("OK: AnimatorOverrideController.clipPair keeps override clip and drops replaced original clip.")
 elif mode == "separated":
-    print("OK: separated legacy override clips are compatible but still require source-index rebuild for exact pairs.")
+    print("OK: separated legacy override clips are skipped until source index has exact clipPair relations.")
 elif mode == "empty":
     print("OK: empty AnimatorOverrideController overrideSet safely inherits base controller clips.")
 else:

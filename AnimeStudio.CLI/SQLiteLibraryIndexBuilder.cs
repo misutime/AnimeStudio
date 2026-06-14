@@ -3281,25 +3281,26 @@ WHERE s.explicit_model_count > 0;";
                 var overrideOriginalClips = GetMany(_overrideOriginalClips, controller).ToArray();
                 var overrideClips = GetMany(_overrideClips, controller).ToArray();
                 var hasKnownOverrideSet = _overrideSetCounts.ContainsKey(controller);
+                var overrideSetCount = hasKnownOverrideSet ? _overrideSetCounts[controller] : -1;
                 var overriddenOriginalClips = overridePairs
                     .Where(x => x.OverrideClip.IsValid)
                     .Select(x => x.OriginalClip)
                     .Where(x => x.IsValid)
                     .ToHashSet();
-                if (overridePairs.Length == 0)
-                {
-                    // 兼容旧 source_index：旧表只有 originalClip/overrideClip 两类分离关系，没有 pair id。
-                    // 有 overrideClip 时，originalClip 通常代表被替换的 base clip，应从 base controller 中排除。
-                    overriddenOriginalClips = overrideOriginalClips.ToHashSet();
-                }
 
                 var isOverrideController = Objects.TryGetValue(controller, out var controllerObject)
                     && string.Equals(controllerObject.Type, "AnimatorOverrideController", StringComparison.OrdinalIgnoreCase);
-                var hasAnyOverrideDetail = overridePairs.Length > 0 || overrideOriginalClips.Length > 0 || overrideClips.Length > 0;
-                if (isOverrideController && baseControllers.Length > 0 && !hasAnyOverrideDetail && !hasKnownOverrideSet)
+                if (isOverrideController && baseControllers.Length > 0 && overridePairs.Length == 0)
                 {
-                    _skippedStaleOverrideControllers++;
-                    yield break;
+                    var hasSeparatedOverrideRefs = overrideOriginalClips.Length > 0 || overrideClips.Length > 0;
+                    var hasNonEmptyOverrideSetWithoutPairs = hasKnownOverrideSet && overrideSetCount > 0;
+                    if (!hasKnownOverrideSet || hasSeparatedOverrideRefs || hasNonEmptyOverrideSetWithoutPairs)
+                    {
+                        // 旧 source_index 只有 originalClip/overrideClip 分离列表时，无法证明
+                        // original -> override 的一一对应关系。生产候选宁可缺失，也不能猜 pair。
+                        _skippedStaleOverrideControllers++;
+                        yield break;
+                    }
                 }
 
                 foreach (var clip in GetMany(_controllerClips, controller))
@@ -3326,23 +3327,6 @@ WHERE s.explicit_model_count > 0;";
                         if (selected.IsValid)
                         {
                             yield return selected;
-                        }
-                    }
-                }
-                else
-                {
-                    if (overrideClips.Length > 0)
-                    {
-                        foreach (var clip in overrideClips)
-                        {
-                            yield return clip;
-                        }
-                    }
-                    else
-                    {
-                        foreach (var clip in GetMany(_overrideOriginalClips, controller))
-                        {
-                            yield return clip;
                         }
                     }
                 }

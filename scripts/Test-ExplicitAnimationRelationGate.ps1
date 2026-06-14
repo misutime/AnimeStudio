@@ -116,6 +116,8 @@ Assert-Contains $sqliteGate "relationSource" "SQLite compact import gate must re
 Assert-Contains $sqliteGate '"explicit"' "SQLite compact import gate must accept only explicit."
 Assert-NotContains $sqliteGate "explicit_unity_reference" "SQLite compact import gate must not fall back to old confidence values."
 Assert-NotContains $sqlite "OR mar.confidence = 'explicit_unity_reference'" "Old SQLite queries must not add default candidates by confidence."
+Assert-NotContains $sqlite "兼容旧 source_index：旧表只有 originalClip/overrideClip" "SQLite source graph must not infer AnimatorOverrideController clip pairs from separated legacy relations."
+Assert-Contains $sqlite "不能猜 pair" "SQLite source graph must explicitly reject legacy separated AnimatorOverrideController relations."
 
 $browserExplicit = Get-TextAfterMarker $browserCandidate "public bool IsExplicit =>" 450
 Assert-Contains $browserExplicit "RelationSource" "Browser explicit candidate check must read RelationSource."
