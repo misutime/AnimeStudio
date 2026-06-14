@@ -3237,8 +3237,8 @@ namespace AnimeStudio.LibraryBrowser
                     return;
                 }
 
-                _detailAnimations = targeted.ToList();
-                RebuildAnimationList();
+                // 定向结构匹配只作为诊断文本展示，不能替换默认动画列表。
+                // 默认列表必须保持 Unity/引擎显式关系，避免把骨骼路径兼容误当成生产绑定。
                 _detailBox.AppendText(Environment.NewLine + BuildTargetedAnimationDetails(targeted));
             });
         }
@@ -3256,7 +3256,9 @@ namespace AnimeStudio.LibraryBrowser
 
                 var text = _modelAnimationFilterBox.Text?.Trim() ?? "";
                 var stateFilter = _modelAnimationStateBox.SelectedItem?.ToString() ?? "全部状态";
+                var hiddenDiagnosticCount = _detailAnimations.Count(x => !x.IsExplicit);
                 var animations = _detailAnimations
+                    .Where(x => x.IsExplicit)
                     .Where(animation =>
                     {
                         var status = GetModelAnimationDisplayStatus(_detailModel, animation);
@@ -3300,6 +3302,20 @@ namespace AnimeStudio.LibraryBrowser
                     item.SubItems.Add(animation.Duration > 0 ? $"{animation.Duration:0.##}s" : "");
                     item.SubItems.Add(animation.MatchedPathCount > 0 ? animation.MatchedPathCount.ToString() : "");
                     item.SubItems.Add(DescribeAnimationCapability(animation));
+                    _animationList.Items.Add(item);
+                }
+
+                if (hiddenDiagnosticCount > 0)
+                {
+                    var item = new ListViewItem("诊断隐藏")
+                    {
+                        ToolTipText = "结构兼容、骨骼路径或人工定向匹配候选不会进入默认预览/烘焙列表。"
+                    };
+                    item.SubItems.Add("诊断");
+                    item.SubItems.Add($"已隐藏 {hiddenDiagnosticCount} 个非显式候选");
+                    item.SubItems.Add("");
+                    item.SubItems.Add("");
+                    item.SubItems.Add("需要显式诊断入口查看");
                     _animationList.Items.Add(item);
                 }
             }
