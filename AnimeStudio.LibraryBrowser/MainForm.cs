@@ -104,6 +104,7 @@ namespace AnimeStudio.LibraryBrowser
         private LibraryCurationStore _curationStore;
         private LibraryAnimationIndex _animationIndex = LibraryAnimationIndex.Empty;
         private LibrarySourceIndexHealth _sourceIndexHealth = LibrarySourceIndexHealth.Empty;
+        private LibraryBakeCacheSummary _bakeCacheSummary = LibraryBakeCacheSummary.Empty;
         private AnimationPreviewCache _previewCache;
         private LibraryModelItem _detailModel;
         private List<LibraryAnimationCandidate> _detailAnimations = new();
@@ -906,6 +907,7 @@ namespace AnimeStudio.LibraryBrowser
                 _curationStore = new LibraryCurationStore(root);
                 _animationIndex = await Task.Run(() => LibraryAnimationIndex.Load(root));
                 _sourceIndexHealth = await Task.Run(() => LibrarySourceIndexHealth.Load(root));
+                _bakeCacheSummary = await Task.Run(() => LibraryBakeCacheSummary.Load(root));
                 _allLibraryAnimations = _animationIndex.FindAllAnimations().ToList();
                 _selectedLibraryAnimation = null;
                 _previewCache = new AnimationPreviewCache(root);
@@ -935,7 +937,7 @@ namespace AnimeStudio.LibraryBrowser
             var source = string.IsNullOrWhiteSpace(_animationIndex.LoadSource)
                 ? "未加载"
                 : _animationIndex.LoadSource;
-            return $"动画索引: {source}，动画 {_allLibraryAnimations.Count}，预建候选 {_animationIndex.IndexedCandidateCount} / 模型 {_animationIndex.IndexedModelCount}，{_sourceIndexHealth.ShortLabel()}";
+            return $"动画索引: {source}，动画 {_allLibraryAnimations.Count}，预建候选 {_animationIndex.IndexedCandidateCount} / 模型 {_animationIndex.IndexedModelCount}，{_sourceIndexHealth.ShortLabel()}，{_bakeCacheSummary.ShortLabel()}";
         }
 
         private void RebuildRecentMenu()
@@ -2157,6 +2159,7 @@ namespace AnimeStudio.LibraryBrowser
                 $"UE缺外部贴图槽: {(item.NoExternalTextureSlots ? "是" : "否")}{Environment.NewLine}" +
                 $"动画索引来源: {EmptyAsUnknown(_animationIndex.LoadSource)}{Environment.NewLine}" +
                 _sourceIndexHealth.DetailText() +
+                _bakeCacheSummary.DetailText() +
                 $"动画数量: {usableCount}{Environment.NewLine}" +
                 $"关系动画总数: {allAnimationCount}{Environment.NewLine}" +
                 $"显式关系动画: {explicitCount}{Environment.NewLine}" +
