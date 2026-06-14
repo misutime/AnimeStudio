@@ -8,7 +8,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class LibraryBakeCacheSummary
     {
-        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "");
+        public static LibraryBakeCacheSummary Empty { get; } = new(false, "", 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "");
 
         public LibraryBakeCacheSummary(
             bool exists,
@@ -16,6 +16,8 @@ namespace AnimeStudio.LibraryBrowser
             long explicitUnityBakeCandidates,
             long effectiveBakeReadyCandidates,
             double effectiveCoveragePercent,
+            long bakeReadyAvatarCandidates,
+            long importedAvatarBakeReadyCandidates,
             long importedAvatarAssetFileCount,
             long importedAvatarTrustedFileCount,
             long importedAvatarAssetKeyCount,
@@ -36,6 +38,8 @@ namespace AnimeStudio.LibraryBrowser
             ExplicitUnityBakeCandidates = explicitUnityBakeCandidates;
             EffectiveBakeReadyCandidates = effectiveBakeReadyCandidates;
             EffectiveCoveragePercent = effectiveCoveragePercent;
+            BakeReadyAvatarCandidates = bakeReadyAvatarCandidates;
+            ImportedAvatarBakeReadyCandidates = importedAvatarBakeReadyCandidates;
             ImportedAvatarAssetFileCount = importedAvatarAssetFileCount;
             ImportedAvatarTrustedFileCount = importedAvatarTrustedFileCount;
             ImportedAvatarAssetKeyCount = importedAvatarAssetKeyCount;
@@ -57,6 +61,8 @@ namespace AnimeStudio.LibraryBrowser
         public long ExplicitUnityBakeCandidates { get; }
         public long EffectiveBakeReadyCandidates { get; }
         public double EffectiveCoveragePercent { get; }
+        public long BakeReadyAvatarCandidates { get; }
+        public long ImportedAvatarBakeReadyCandidates { get; }
         public long ImportedAvatarAssetFileCount { get; }
         public long ImportedAvatarTrustedFileCount { get; }
         public long ImportedAvatarAssetKeyCount { get; }
@@ -105,6 +111,7 @@ namespace AnimeStudio.LibraryBrowser
                 $"Unity烘焙摘要时间: {EmptyAsUnknown(GeneratedAt)}{Environment.NewLine}" +
                 $"显式Humanoid/Muscle候选: {ExplicitUnityBakeCandidates:N0}{Environment.NewLine}" +
                 $"有效Avatar oracle候选: {EffectiveBakeReadyCandidates:N0} ({FormatPercent(EffectiveCoveragePercent)}){Environment.NewLine}" +
+                FormatAvatarOraclePathText() +
                 $"导入Avatar asset文件/key: {ImportedAvatarAssetFileCount:N0} / {ImportedAvatarAssetKeyCount:N0}{FormatImportedAvatarTrustText()}{Environment.NewLine}" +
                 $"已缓存烘焙记录: {CachedCandidates:N0} ({FormatPercent(CacheCoveragePercent)}){Environment.NewLine}" +
                 $"可信baked glTF: {TrustedBakedCandidates:N0} ({FormatPercent(TrustedBakedCoveragePercent)}){Environment.NewLine}" +
@@ -123,7 +130,7 @@ namespace AnimeStudio.LibraryBrowser
             var path = Path.Combine(libraryRoot, "animation_bake_cache_summary.json");
             if (!File.Exists(path))
             {
-                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+                return new LibraryBakeCacheSummary(false, "", 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
             }
 
             try
@@ -136,6 +143,8 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(root, "explicitUnityBakeCandidates"),
                     ReadInt64(root, "effectiveBakeReadyExplicitUnityBakeCandidates"),
                     ReadDouble(root, "effectiveBakeReadyExplicitUnityBakeCoveragePercent"),
+                    ReadInt64(root, "bakeReadyExplicitUnityBakeCandidates"),
+                    ReadInt64(root, "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
                     ReadInt64(root, "importedAvatarAssetFileCount"),
                     ReadInt64(root, "importedAvatarAssetTrustedFileCount"),
                     ReadInt64(root, "importedAvatarAssetKeyCount"),
@@ -153,8 +162,25 @@ namespace AnimeStudio.LibraryBrowser
             }
             catch
             {
-                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
+                return new LibraryBakeCacheSummary(false, path, 0, 0, 0, 0, 0, 0, 0, 0, "", false, 0, 0, 0, 0, 0, 0, 0, "", latestBatchReport);
             }
+        }
+
+        private string FormatAvatarOraclePathText()
+        {
+            if (BakeReadyAvatarCandidates == 0 && ImportedAvatarBakeReadyCandidates == 0)
+            {
+                return "";
+            }
+
+            var overlap = Math.Max(0, BakeReadyAvatarCandidates + ImportedAvatarBakeReadyCandidates - EffectiveBakeReadyCandidates);
+            var text = $"Avatar oracle路径: 原始Prefab/HumanDescription {BakeReadyAvatarCandidates:N0}，导入AvatarAsset {ImportedAvatarBakeReadyCandidates:N0}";
+            if (overlap > 0)
+            {
+                text += $"，重叠 {overlap:N0}";
+            }
+
+            return text + Environment.NewLine;
         }
 
         private string FormatImportedAvatarTrustText()
