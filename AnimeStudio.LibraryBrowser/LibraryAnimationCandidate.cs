@@ -34,6 +34,7 @@ namespace AnimeStudio.LibraryBrowser
         public bool ProductionUnityBakeReady { get; init; }
         public bool ProductionUnityBakeBlocked { get; init; }
         public string ProductionUnityBakeBlockedReason { get; init; } = "";
+        public string ProductionUnityBakeAvatarSource { get; init; } = "";
         public string ProductionUnityBakeAvatarAsset { get; init; } = "";
         public string ProductionUnityBakeAvatarMatchKey { get; init; } = "";
         public bool HasAvatarOracle { get; init; }

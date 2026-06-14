@@ -2230,7 +2230,8 @@ namespace AnimeStudio.LibraryBrowser
         {
             public int UnityBakeRequired { get; set; }
             public int UnityBakeWithAvatarAsset { get; set; }
-            public int UnityBakeWithoutAvatarAsset { get; set; }
+            public int UnityBakeWithModelAvatar { get; set; }
+            public int UnityBakeWithoutAvatarOracle { get; set; }
             public int UnityBaked { get; set; }
             public int UnityBakePending { get; set; }
             public int DirectPreview { get; set; }
@@ -2249,7 +2250,8 @@ namespace AnimeStudio.LibraryBrowser
                 return
                     $"主线 Unity 烘焙需求: {UnityBakeRequired}{Environment.NewLine}" +
                     $"导入 Avatar asset: {UnityBakeWithAvatarAsset}{Environment.NewLine}" +
-                    $"非导入 Avatar 路径/待补: {UnityBakeWithoutAvatarAsset}{Environment.NewLine}" +
+                    $"原始模型 Avatar/HumanDescription: {UnityBakeWithModelAvatar}{Environment.NewLine}" +
+                    $"缺生产 Avatar oracle: {UnityBakeWithoutAvatarOracle}{Environment.NewLine}" +
                     $"主线已 Unity 烘焙: {UnityBaked}{Environment.NewLine}" +
                     $"主线待 Unity 烘焙: {UnityBakePending}{Environment.NewLine}" +
                     $"Unity 烘焙静态姿态: {StaticPose}{Environment.NewLine}" +
@@ -2268,7 +2270,7 @@ namespace AnimeStudio.LibraryBrowser
 
                 return
                     $"主线 Unity 烘焙: {UnityBaked}/{UnityBakeRequired}{Environment.NewLine}" +
-                    $"导入 Avatar asset: {UnityBakeWithAvatarAsset} | 非导入 Avatar 路径/待补: {UnityBakeWithoutAvatarAsset}{Environment.NewLine}" +
+                    $"导入 Avatar asset: {UnityBakeWithAvatarAsset} | 原始模型 Avatar/HumanDescription: {UnityBakeWithModelAvatar} | 缺 oracle: {UnityBakeWithoutAvatarOracle}{Environment.NewLine}" +
                     $"待烘焙: {UnityBakePending} | 静态姿态: {StaticPose} | 需重建: {NeedRebuild} | 失败: {Failed}{Environment.NewLine}" +
                     $"可直接 glTF 预览: {DirectPreview}{Environment.NewLine}";
             }
@@ -2601,13 +2603,17 @@ namespace AnimeStudio.LibraryBrowser
                 if (RequiresUnityBake(animation))
                 {
                     stats.UnityBakeRequired++;
-                    if (string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset))
+                    if (string.Equals(animation.ProductionUnityBakeAvatarSource, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase))
                     {
-                        stats.UnityBakeWithoutAvatarAsset++;
+                        stats.UnityBakeWithAvatarAsset++;
+                    }
+                    else if (IsKnownProductionAvatarSource(animation))
+                    {
+                        stats.UnityBakeWithModelAvatar++;
                     }
                     else
                     {
-                        stats.UnityBakeWithAvatarAsset++;
+                        stats.UnityBakeWithoutAvatarOracle++;
                     }
 
                     if (playable)
@@ -2678,11 +2684,13 @@ namespace AnimeStudio.LibraryBrowser
                 var confidence = string.IsNullOrWhiteSpace(animation.Confidence) ? "" : $" {animation.Confidence}";
                 var capability = string.IsNullOrWhiteSpace(animation.Capability) ? "" : $" {animation.Capability}";
                 var bake = RequiresUnityBake(animation) ? " 需要Unity烘焙" : "";
+                var avatarSource = FormatProductionAvatarSource(animation);
+                avatarSource = string.IsNullOrWhiteSpace(avatarSource) ? "" : $" AvatarOracle={avatarSource}";
                 var avatarAsset = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset) ? "" : $" AvatarAsset={animation.ProductionUnityBakeAvatarAsset}";
                 var avatarKey = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarMatchKey) ? "" : $" AvatarKey={animation.ProductionUnityBakeAvatarMatchKey}";
                 var validation = FormatAnimationValidation(animation);
                 var source = animation.IsExplicit ? "显式关系" : "结构关系";
-                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}{avatarAsset}{avatarKey}");
+                lines.Add($"- [{source}] {animation.Name}{score}{confidence}{capability}{validation}{bake}{avatarSource}{avatarAsset}{avatarKey}");
                 if (!string.IsNullOrWhiteSpace(animation.BestPath))
                 {
                     lines.Add($"  {animation.BestPath}");
@@ -2922,9 +2930,7 @@ namespace AnimeStudio.LibraryBrowser
             if (RequiresUnityBake(animation)
                 && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
             {
-                return string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
-                    ? "需 Unity 烘焙"
-                    : "需 Unity 烘焙(Avatar)";
+                return FormatUnityBakePendingStatus(animation);
             }
 
             return status;
@@ -3199,13 +3205,10 @@ namespace AnimeStudio.LibraryBrowser
 
             if (RequiresUnityBake(animation))
             {
-                var avatarText = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
-                    ? ""
-                    : $" 已匹配导入 Avatar asset: {animation.ProductionUnityBakeAvatarAsset}{FormatAvatarMatchKey(animation)}。";
-                var label = string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
-                    ? "需 Unity 烘焙"
-                    : "需 Unity 烘焙(Avatar)";
-                return new AnimationModelPreviewStatus(label, "该模型-动画关系来自显式 Unity 索引，Humanoid/Muscle 身体动画需双击后由 Unity bake 生成可信 glTF。" + avatarText);
+                var avatarText = FormatProductionAvatarTooltip(animation);
+                return new AnimationModelPreviewStatus(
+                    FormatUnityBakePendingStatus(animation),
+                    "该模型-动画关系来自显式 Unity 索引，Humanoid/Muscle 身体动画需双击后由 Unity bake 生成可信 glTF。" + avatarText);
             }
 
             return new AnimationModelPreviewStatus("可生成", "双击模型会生成模型+动画 glTF 预览。");
@@ -3337,9 +3340,7 @@ namespace AnimeStudio.LibraryBrowser
                 }
                 if (RequiresUnityBake(animation))
                 {
-                    return string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
-                        ? "需 Unity 烘焙"
-                        : "需 Unity 烘焙(Avatar asset)";
+                    return FormatUnityBakeCapability(animation);
                 }
 
                 return animation.Capability switch
@@ -3364,9 +3365,7 @@ namespace AnimeStudio.LibraryBrowser
             }
             if (RequiresUnityBake(animation))
             {
-                return string.IsNullOrWhiteSpace(animation.ProductionUnityBakeAvatarAsset)
-                    ? "需 Unity 烘焙"
-                    : "需 Unity 烘焙(Avatar asset)";
+                return FormatUnityBakeCapability(animation);
             }
 
             if (animation.MatchedPathCount > 0)
@@ -3382,6 +3381,61 @@ namespace AnimeStudio.LibraryBrowser
             return string.IsNullOrWhiteSpace(animation?.ProductionUnityBakeAvatarMatchKey)
                 ? ""
                 : $"，匹配键: {animation.ProductionUnityBakeAvatarMatchKey}";
+        }
+
+        private static bool IsKnownProductionAvatarSource(LibraryAnimationCandidate animation)
+        {
+            return string.Equals(animation?.ProductionUnityBakeAvatarSource, "model_human_description", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(animation?.ProductionUnityBakeAvatarSource, "candidate_production_avatar", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string FormatProductionAvatarSource(LibraryAnimationCandidate animation)
+        {
+            return animation?.ProductionUnityBakeAvatarSource switch
+            {
+                "imported_unity_avatar_asset" => "导入AvatarAsset",
+                "model_human_description" => "原始模型Avatar/HumanDescription",
+                "candidate_production_avatar" => "候选已标记生产Avatar",
+                _ => ""
+            };
+        }
+
+        private static string FormatProductionAvatarTooltip(LibraryAnimationCandidate animation)
+        {
+            var source = FormatProductionAvatarSource(animation);
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return " 尚未看到生产 Avatar oracle；如果继续失败，应先恢复原始 Avatar 或刷新 HumanDescription。";
+            }
+
+            if (string.Equals(animation?.ProductionUnityBakeAvatarSource, "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase))
+            {
+                return $" 已匹配{source}: {animation.ProductionUnityBakeAvatarAsset}{FormatAvatarMatchKey(animation)}。";
+            }
+
+            return $" Avatar oracle: {source}。";
+        }
+
+        private static string FormatUnityBakePendingStatus(LibraryAnimationCandidate animation)
+        {
+            return animation?.ProductionUnityBakeAvatarSource switch
+            {
+                "imported_unity_avatar_asset" => "需 Unity 烘焙(导入Avatar)",
+                "model_human_description" => "需 Unity 烘焙(原始Avatar)",
+                "candidate_production_avatar" => "需 Unity 烘焙(生产Avatar)",
+                _ => "需 Unity 烘焙"
+            };
+        }
+
+        private static string FormatUnityBakeCapability(LibraryAnimationCandidate animation)
+        {
+            return animation?.ProductionUnityBakeAvatarSource switch
+            {
+                "imported_unity_avatar_asset" => "需 Unity 烘焙(导入Avatar)",
+                "model_human_description" => "需 Unity 烘焙(原始Avatar)",
+                "candidate_production_avatar" => "需 Unity 烘焙(生产Avatar)",
+                _ => "需 Unity 烘焙"
+            };
         }
 
         private static bool RequiresUnityBake(LibraryAnimationCandidate animation)
@@ -4019,6 +4073,7 @@ namespace AnimeStudio.LibraryBrowser
                     AnimationName = animation?.Name ?? "",
                     AnimationPath = animation?.BestPath ?? "",
                     RelationSource = animation?.RelationSource ?? "",
+                    AvatarSource = animation?.ProductionUnityBakeAvatarSource ?? "",
                     AvatarAsset = animation?.ProductionUnityBakeAvatarAsset ?? "",
                     AvatarMatchKey = animation?.ProductionUnityBakeAvatarMatchKey ?? "",
                     StartedAtUtc = DateTime.UtcNow,
@@ -4064,6 +4119,7 @@ namespace AnimeStudio.LibraryBrowser
             public string AnimationName { get; set; } = "";
             public string AnimationPath { get; set; } = "";
             public string RelationSource { get; set; } = "";
+            public string AvatarSource { get; set; } = "";
             public string AvatarAsset { get; set; } = "";
             public string AvatarMatchKey { get; set; } = "";
             public string Status { get; set; } = "";

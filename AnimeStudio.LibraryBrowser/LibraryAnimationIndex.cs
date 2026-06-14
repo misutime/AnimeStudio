@@ -903,7 +903,8 @@ ORDER BY model_output;";
             var modelHasProductionAvatar = HasProductionUnityBakeAvatar(model);
             var importedAvatarAsset = importedAvatar?.AssetPath;
             var hasImportedAvatarAsset = !string.IsNullOrWhiteSpace(importedAvatarAsset);
-            var productionReady = ReadBool(candidate, "productionUnityBakeReady") || modelHasProductionAvatar || hasImportedAvatarAsset;
+            var candidateProductionReady = ReadBool(candidate, "productionUnityBakeReady");
+            var productionReady = candidateProductionReady || modelHasProductionAvatar || hasImportedAvatarAsset;
             var productionBlocked = ReadBool(candidate, "productionUnityBakeBlocked") && !productionReady;
             if (IsUnrealAnimationRecord(output, animationAsset, relation, relationSource, animationType, ReadString(animation, "source")))
             {
@@ -944,6 +945,10 @@ ORDER BY model_output;";
                 ProductionUnityBakeReady = productionReady,
                 ProductionUnityBakeBlocked = productionBlocked,
                 ProductionUnityBakeBlockedReason = productionBlocked ? ReadString(candidate, "productionUnityBakeBlockedReason") ?? "" : "",
+                ProductionUnityBakeAvatarSource = DetermineProductionUnityBakeAvatarSource(
+                    hasImportedAvatarAsset,
+                    modelHasProductionAvatar,
+                    candidateProductionReady),
                 ProductionUnityBakeAvatarAsset = importedAvatarAsset ?? ReadString(candidate, "unityAvatarAsset") ?? "",
                 ProductionUnityBakeAvatarMatchKey = importedAvatar?.MatchKey ?? ReadString(candidate, "unityAvatarMatchKey") ?? "",
                 HasAvatarOracle = HasAvatarOracle(model),
@@ -1024,7 +1029,12 @@ ORDER BY model_output;";
                 ProductionUnityBakeReady = ReadBool(candidate, "productionUnityBakeReady"),
                 ProductionUnityBakeBlocked = ReadBool(candidate, "productionUnityBakeBlocked"),
                 ProductionUnityBakeBlockedReason = ReadString(candidate, "productionUnityBakeBlockedReason") ?? "",
+                ProductionUnityBakeAvatarSource = DetermineProductionUnityBakeAvatarSource(
+                    !string.IsNullOrWhiteSpace(ReadString(candidate, "unityAvatarAsset")),
+                    false,
+                    ReadBool(candidate, "productionUnityBakeReady")),
                 ProductionUnityBakeAvatarAsset = ReadString(candidate, "unityAvatarAsset") ?? "",
+                ProductionUnityBakeAvatarMatchKey = ReadString(candidate, "unityAvatarMatchKey") ?? "",
                 IsContainerAnimation = ReadBool(candidate, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(candidate, "transformBindingPaths")
             };
@@ -1079,7 +1089,12 @@ ORDER BY model_output;";
                 ProductionUnityBakeReady = ReadBool(animation, "productionUnityBakeReady"),
                 ProductionUnityBakeBlocked = ReadBool(animation, "productionUnityBakeBlocked"),
                 ProductionUnityBakeBlockedReason = ReadString(animation, "productionUnityBakeBlockedReason") ?? "",
+                ProductionUnityBakeAvatarSource = DetermineProductionUnityBakeAvatarSource(
+                    !string.IsNullOrWhiteSpace(ReadString(animation, "unityAvatarAsset")),
+                    false,
+                    ReadBool(animation, "productionUnityBakeReady")),
                 ProductionUnityBakeAvatarAsset = ReadString(animation, "unityAvatarAsset") ?? "",
+                ProductionUnityBakeAvatarMatchKey = ReadString(animation, "unityAvatarMatchKey") ?? "",
                 IsContainerAnimation = ReadBool(animation, "isContainerAnimation"),
                 BindingPaths = ReadStringArray(animation, "transformBindingPaths")
             };
@@ -1884,6 +1899,24 @@ GROUP BY ab.id;";
             var humanBones = ReadArrayLength(avatar, "humanBones");
             var skeletonBones = ReadArrayLength(avatar, "skeletonBones");
             return humanBones > 0 && skeletonBones > 0;
+        }
+
+        private static string DetermineProductionUnityBakeAvatarSource(
+            bool hasImportedAvatarAsset,
+            bool modelHasProductionAvatar,
+            bool candidateProductionReady)
+        {
+            if (hasImportedAvatarAsset)
+            {
+                return "imported_unity_avatar_asset";
+            }
+
+            if (modelHasProductionAvatar)
+            {
+                return "model_human_description";
+            }
+
+            return candidateProductionReady ? "candidate_production_avatar" : "";
         }
 
         private static UnityAvatarAssetResolution ResolveImportedAvatarAsset(
