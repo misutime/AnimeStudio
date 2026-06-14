@@ -198,7 +198,7 @@ Browser 也会读取最新的 `AnimationRelationDiagnostics*/deterministic_anima
 顶部工具栏的“刷新动画门禁”是下拉入口：`快速摘要` 运行 FastSummary，只读取根目录 bake cache、ImportedAvatar asset 和最近批次报告，适合原神这类大库做阶段性确认；`快速门禁` 运行 GateOnly，检查默认候选是否全是 Unity 显式关系；`烘焙摘要` 运行 SummaryOnly，统计 Unity bake / Avatar oracle 覆盖，并在已配置 Unity Bake Project 时传入 `-UnityProject` 读取 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`。三者都不会烘焙动画，也不会新增或猜测模型-动画关系。
 同一个下拉里的 `Avatar恢复计划` 会运行 `Write-UnityAvatarAssetRecoveryPlan.ps1 -OnlyMissing`，按 Unity Avatar 对象列出仍未导入 `ImportedAvatar` 的缺口，并输出 CSV/Markdown/JSON 和配置模板。这个入口只生成计划，不调用 UnityRipper/uTinyRipper，不写入素材库关系，也不会把缺失 Avatar 当成可烘焙。
 
-同一个下拉里的 `验证AvatarAsset` 会运行 `Test-UnityImportedAvatarAssets.ps1`，让 Unity Editor 用 `AssetDatabase.LoadAssetAtPath<Avatar>` 批量验证 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`。只有 `avatar.isValid && avatar.isHuman` 的条目才算有效 Avatar oracle；这个入口只做验证和报告，不新增模型-动画关系，也不触发动画 bake。
+同一个下拉里的 `验证AvatarAsset` 会运行 `Test-UnityImportedAvatarAssets.ps1`，让 Unity Editor 用 `AssetDatabase.LoadAssetAtPath<Avatar>` 批量验证 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`。只有 `avatar.isValid && avatar.isHuman` 的条目才算有效 Avatar oracle；这个入口只做验证和报告，不新增模型-动画关系，也不触发动画 bake。验证成功后 Browser 会自动刷新一次 `FastSummary`，让顶部状态立刻显示当前 probe 的 `fresh` / 有效数量。
 
 Browser 的批量 Unity 烘焙入口只会处理已经具备生产 Avatar oracle 的显式候选。缺少原始 `Animator.avatar`、完整 `HumanDescription` 或导入 Avatar asset 的项会写入批次报告 `skipped_missing_avatar_oracle`，不调用 Unity bake，也不按旧 `BuildHumanAvatar` / AvatarConstant / 骨骼兼容 fallback 继续尝试。
 

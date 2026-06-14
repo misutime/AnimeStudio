@@ -1249,9 +1249,26 @@ namespace AnimeStudio.LibraryBrowser
             UpdateStatus("正在验证AvatarAsset");
 
             ProcessRunResult result;
+            ProcessRunResult? fastSummaryResult = null;
+            var fastSummaryOutputDir = "";
             try
             {
                 result = await RunImportedAvatarProbeAsync(script, settings!.UnityProject, settings.UnityEditor, outputDir);
+                if (result.ExitCode == 0)
+                {
+                    var fastSummaryScript = FindDeterministicAnimationGateScript();
+                    if (!string.IsNullOrWhiteSpace(fastSummaryScript))
+                    {
+                        fastSummaryOutputDir = Path.Combine(_root, "AnimationRelationDiagnostics_BrowserFast_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+                        UpdateStatus("AvatarAsset验证通过，正在刷新动画快速摘要");
+                        fastSummaryResult = await RunDeterministicAnimationGateAsync(
+                            fastSummaryScript,
+                            _root,
+                            fastSummaryOutputDir,
+                            AnimationDiagnosticsMode.FastSummary,
+                            settings.UnityProject);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -1264,15 +1281,37 @@ namespace AnimeStudio.LibraryBrowser
                 _refreshAnimationGateButton.Enabled = true;
             }
 
-            var title = result.ExitCode == 0 ? "AvatarAsset验证通过" : $"AvatarAsset验证退出码 {result.ExitCode}";
+            if (fastSummaryResult != null)
+            {
+                ReloadDeterministicAnimationSummary();
+                ReloadBakeCacheSummary();
+                RefreshCurrentModelDetailText();
+            }
+
+            var title = result.ExitCode == 0
+                ? fastSummaryResult?.ExitCode == 0
+                    ? "AvatarAsset验证通过，快速摘要已刷新"
+                    : "AvatarAsset验证通过"
+                : $"AvatarAsset验证退出码 {result.ExitCode}";
             UpdateStatus(title);
-            var message = $"输出目录: {outputDir}{Environment.NewLine}{Environment.NewLine}{TrimProcessOutput(result.CombinedOutput)}";
+            var message = $"验证输出目录: {outputDir}{Environment.NewLine}{Environment.NewLine}{TrimProcessOutput(result.CombinedOutput)}";
+            if (fastSummaryResult != null)
+            {
+                message += Environment.NewLine
+                    + Environment.NewLine
+                    + $"快速摘要输出目录: {fastSummaryOutputDir}"
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + TrimProcessOutput(fastSummaryResult.Value.CombinedOutput);
+            }
             MessageBox.Show(
                 this,
                 message,
                 title,
                 MessageBoxButtons.OK,
-                result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                result.ExitCode == 0 && (fastSummaryResult == null || fastSummaryResult.Value.ExitCode == 0)
+                    ? MessageBoxIcon.Information
+                    : MessageBoxIcon.Warning);
         }
 
         private async Task RebuildAnimationIndexAsync()
