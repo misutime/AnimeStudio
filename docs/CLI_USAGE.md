@@ -349,6 +349,17 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -FailOnWarning
 ```
 
+原神这类大库如果只想在重建后快速拦截“默认候选表混入猜测关系”，加 `-GateOnly`。它只跑候选表和源索引健康门禁，跳过 Unity bake cache、Avatar blocker 和分类覆盖大统计；需要完整覆盖率报告时再去掉这个参数：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\Measure-DeterministicAnimationCoverage.ps1 `
+  -LibraryPath "D:\Assets\AS-Assets\YuanShen-Assets" `
+  -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\AnimationRelationDiagnostics_Gate" `
+  -GateOnly `
+  -FailOnWarning
+```
+
 脚本只读 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
 
 - `gate.status`：默认应为 `ok`。

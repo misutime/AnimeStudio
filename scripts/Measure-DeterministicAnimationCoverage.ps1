@@ -14,6 +14,8 @@ param(
 
     [int]$TopCategoryLimit = 24,
 
+    [switch]$GateOnly,
+
     [switch]$FailOnWarning
 )
 
@@ -710,6 +712,7 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--animated-category", action="append", default=[])
     parser.add_argument("--top-category-limit", type=int, default=24)
+    parser.add_argument("--gate-only", action="store_true")
     parser.add_argument("--fail-on-warning", action="store_true")
     args = parser.parse_args()
 
@@ -766,31 +769,60 @@ def main():
             """
         )
 
-        model_outputs = [row[0] for row in cur.execute("SELECT output FROM assets WHERE kind='Model' AND output IS NOT NULL AND output<>'';")]
-        explicit_model_outputs = set(row[0] for row in cur.execute("SELECT DISTINCT model_output FROM model_animation_candidates WHERE relation_source='explicit';"))
+        if args.gate_only:
+            top_categories = []
+            animated_categories = []
+            animated_total = 0
+            animated_linked = 0
+            unity_bake_summary = {
+                "available": False,
+                "rule": "GateOnly skips Unity bake production coverage and only checks deterministic relation gates.",
+                "note": "Run without -GateOnly for full bake/cache/avatar coverage.",
+                "statusCounts": [],
+            }
+            avatar_gate_summary = {
+                "available": False,
+                "note": "GateOnly skips Avatar production coverage. Run without -GateOnly for full Avatar diagnostics.",
+                "blockedReasonCounts": [],
+            }
+            avatar_blockers = {
+                "available": False,
+                "note": "GateOnly skips model Avatar refresh blocker queries.",
+                "byReason": [],
+                "topModels": [],
+                "totalModelCount": 0,
+                "totalCandidateCount": 0,
+            }
+        else:
+            model_outputs = [row[0] for row in cur.execute("SELECT output FROM assets WHERE kind='Model' AND output IS NOT NULL AND output<>'';")]
+            explicit_model_outputs = set(row[0] for row in cur.execute("SELECT DISTINCT model_output FROM model_animation_candidates WHERE relation_source='explicit';"))
 
-        categories = {}
-        for output in model_outputs:
-            category = category_from_output(output)
-            item = categories.setdefault(category, {"category": category, "models": 0, "modelsWithExplicitCandidates": 0})
-            item["models"] += 1
-            if output in explicit_model_outputs:
-                item["modelsWithExplicitCandidates"] += 1
-        for item in categories.values():
-            item["explicitCoverage"] = ratio(item["modelsWithExplicitCandidates"], item["models"])
+            categories = {}
+            for output in model_outputs:
+                category = category_from_output(output)
+                item = categories.setdefault(category, {"category": category, "models": 0, "modelsWithExplicitCandidates": 0})
+                item["models"] += 1
+                if output in explicit_model_outputs:
+                    item["modelsWithExplicitCandidates"] += 1
+            for item in categories.values():
+                item["explicitCoverage"] = ratio(item["modelsWithExplicitCandidates"], item["models"])
 
-        top_categories = sorted(categories.values(), key=lambda x: (-x["models"], x["category"].lower()))[: max(args.top_category_limit, 0)]
-        animated_categories = []
-        for category in args.animated_category:
-            item = categories.get(category)
-            if item is None:
-                item = {"category": category, "models": 0, "modelsWithExplicitCandidates": 0, "explicitCoverage": 0.0}
-            animated_categories.append(item)
-        animated_total = sum(x["models"] for x in animated_categories)
-        animated_linked = sum(x["modelsWithExplicitCandidates"] for x in animated_categories)
+            top_categories = sorted(categories.values(), key=lambda x: (-x["models"], x["category"].lower()))[: max(args.top_category_limit, 0)]
+            animated_categories = []
+            for category in args.animated_category:
+                item = categories.get(category)
+                if item is None:
+                    item = {"category": category, "models": 0, "modelsWithExplicitCandidates": 0, "explicitCoverage": 0.0}
+                animated_categories.append(item)
+            animated_total = sum(x["models"] for x in animated_categories)
+            animated_linked = sum(x["modelsWithExplicitCandidates"] for x in animated_categories)
+            unity_bake_summary = unity_bake_production(cur, args.library_path)
+            avatar_gate_summary = avatar_production_gate(cur)
+            avatar_blockers = model_avatar_refresh_blockers(cur, args.top_category_limit)
 
         summary = {
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "mode": "gateOnly" if args.gate_only else "full",
             "libraryPath": args.library_path,
             "libraryIndex": args.library_index,
             "sourceIndex": args.source_index,
@@ -825,9 +857,9 @@ def main():
             "statuses": statuses,
             "animatedCategories": animated_categories,
             "topCategories": top_categories,
-            "unityBakeProduction": unity_bake_production(cur, args.library_path),
-            "avatarProductionGate": avatar_production_gate(cur),
-            "modelAvatarRefreshBlockers": model_avatar_refresh_blockers(cur, args.top_category_limit),
+            "unityBakeProduction": unity_bake_summary,
+            "avatarProductionGate": avatar_gate_summary,
+            "modelAvatarRefreshBlockers": avatar_blockers,
             "sourceIndexAnimationRelationHealth": source_health(args.source_index),
         }
     finally:
@@ -853,6 +885,7 @@ def main():
     md.append(f"- Library: `{args.library_path}`")
     md.append(f"- Library index: `{args.library_index}`")
     md.append(f"- Source index: `{args.source_index}`")
+    md.append(f"- Mode: `{summary.get('mode')}`")
     md.append(f"- Gate: `{summary['gate']['status']}` - {summary['gate']['note']}")
     md.append("")
     md.extend(table([summary["totals"]], [
@@ -1040,6 +1073,9 @@ foreach ($category in $AnimatedCategory) {
 }
 if ($FailOnWarning) {
     $argsList += "--fail-on-warning"
+}
+if ($GateOnly) {
+    $argsList += "--gate-only"
 }
 
 try {
