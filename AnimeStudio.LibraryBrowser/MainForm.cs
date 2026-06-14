@@ -2069,7 +2069,7 @@ namespace AnimeStudio.LibraryBrowser
                 && animation.IsExplicit
                 && RequiresUnityBake(animation)
                 && !NeedsAvatarHumanDescriptionRefresh(animation)
-                && !IsUnityBakeAlreadyPlayable(item, animation));
+                && !IsUnityBakeAlreadyProcessedTerminal(item, animation));
         }
 
         private bool ModelNeedsAvatarMetadata(LibraryModelItem item)
@@ -2632,6 +2632,7 @@ namespace AnimeStudio.LibraryBrowser
             public int DirectPreview { get; set; }
             public int OldLocalPreview { get; set; }
             public int StaticPose { get; set; }
+            public int NeedsManualReview { get; set; }
             public int NeedRebuild { get; set; }
             public int Failed { get; set; }
 
@@ -2650,6 +2651,7 @@ namespace AnimeStudio.LibraryBrowser
                     $"主线已 Unity 烘焙: {UnityBaked}{Environment.NewLine}" +
                     $"主线待 Unity 烘焙: {UnityBakePending}{Environment.NewLine}" +
                     $"Unity 烘焙静态姿态: {StaticPose}{Environment.NewLine}" +
+                    $"Unity 烘焙需人工验收: {NeedsManualReview}{Environment.NewLine}" +
                     $"Unity 烘焙需重建: {NeedRebuild}{Environment.NewLine}" +
                     $"Unity 烘焙失败: {Failed}{Environment.NewLine}" +
                     $"可直接 glTF 预览: {DirectPreview}{Environment.NewLine}" +
@@ -2666,7 +2668,7 @@ namespace AnimeStudio.LibraryBrowser
                 return
                     $"主线 Unity 烘焙: {UnityBaked}/{UnityBakeRequired}{Environment.NewLine}" +
                     $"导入 Avatar asset: {UnityBakeWithAvatarAsset} | 原始模型 Avatar/HumanDescription: {UnityBakeWithModelAvatar} | 缺 oracle: {UnityBakeWithoutAvatarOracle}{Environment.NewLine}" +
-                    $"待烘焙: {UnityBakePending} | 静态姿态: {StaticPose} | 需重建: {NeedRebuild} | 失败: {Failed}{Environment.NewLine}" +
+                    $"待烘焙: {UnityBakePending} | 静态姿态: {StaticPose} | 人工验收: {NeedsManualReview} | 需重建: {NeedRebuild} | 失败: {Failed}{Environment.NewLine}" +
                     $"可直接 glTF 预览: {DirectPreview}{Environment.NewLine}";
             }
         }
@@ -3026,6 +3028,10 @@ namespace AnimeStudio.LibraryBrowser
                     {
                         stats.StaticPose++;
                     }
+                    else if (string.Equals(status?.Status, "需人工验收", StringComparison.OrdinalIgnoreCase))
+                    {
+                        stats.NeedsManualReview++;
+                    }
                     else if (string.Equals(status?.Status, "已烘焙但需重建", StringComparison.OrdinalIgnoreCase))
                     {
                         stats.NeedRebuild++;
@@ -3365,7 +3371,7 @@ namespace AnimeStudio.LibraryBrowser
                 "可播放" => string.Equals(status, "可播放", StringComparison.OrdinalIgnoreCase),
                 "待可信烘焙" => !animation.IsUnreal
                     && RequiresUnityBake(animation)
-                    && !IsUnityBakeAlreadyPlayable(model, animation)
+                    && !IsUnityBakeAlreadyProcessedTerminal(model, animation)
                     && !NeedsAvatarHumanDescriptionRefresh(animation),
                 "导入Avatar" => !animation.IsUnreal
                     && HasImportedAvatarAssetOracle(animation),
@@ -3376,6 +3382,7 @@ namespace AnimeStudio.LibraryBrowser
                 "失败/需复查" => Contains(status, "失败")
                     || Contains(status, "需重建")
                     || Contains(status, "需复查")
+                    || Contains(status, "人工验收")
                     || Contains(status, "已烘焙但需重建"),
                 _ => true,
             };
@@ -3546,7 +3553,7 @@ namespace AnimeStudio.LibraryBrowser
                         && !modelAnimation.IsUnreal
                         && RequiresUnityBake(modelAnimation)
                         && !NeedsAvatarHumanDescriptionRefresh(modelAnimation)
-                        && !IsUnityBakeAlreadyPlayable(model, modelAnimation);
+                        && !IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation);
                 }),
                 "导入Avatar" => query.Where(model =>
                 {
@@ -3573,6 +3580,7 @@ namespace AnimeStudio.LibraryBrowser
                     var status = BuildAnimationModelPreviewStatus(model, modelAnimation).Label;
                     return Contains(status, "失败")
                         || Contains(status, "复查")
+                        || Contains(status, "人工验收")
                         || Contains(status, "静态姿态")
                         || Contains(status, "需重建");
                 }),
@@ -3687,7 +3695,7 @@ namespace AnimeStudio.LibraryBrowser
                     && !modelAnimation.IsUnreal
                     && RequiresUnityBake(modelAnimation)
                     && !NeedsAvatarHumanDescriptionRefresh(modelAnimation)
-                    && !IsUnityBakeAlreadyPlayable(model, modelAnimation))
+                    && !IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation))
                 {
                     pendingBake++;
                 }
@@ -3707,6 +3715,7 @@ namespace AnimeStudio.LibraryBrowser
                 }
                 if (Contains(status, "失败")
                     || Contains(status, "复查")
+                    || Contains(status, "人工验收")
                     || Contains(status, "静态姿态")
                     || Contains(status, "需重建"))
                 {

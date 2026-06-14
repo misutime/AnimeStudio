@@ -138,6 +138,24 @@ Assert-Contains $browserProcessed '"可播放"' "Browser batch bake must skip tr
 Assert-Contains $browserProcessed '"静态姿态"' "Browser batch bake must skip static_pose terminal diagnostics."
 Assert-Contains $browserProcessed '"需人工验收"' "Browser batch bake must skip needs_review terminal diagnostics."
 
+$browserModelFilter = Get-MethodBodyText $libraryBrowserMainForm "private bool MatchesModelAnimationStateFilter"
+Assert-Contains $browserModelFilter "IsUnityBakeAlreadyProcessedTerminal(model, animation)" "Browser model animation pending filter must exclude terminal diagnostics."
+Assert-Contains $browserModelFilter '"人工验收"' "Browser model animation review filter must include needs_review terminal diagnostics."
+
+$browserAnimationFilter = Get-MethodBodyText $libraryBrowserMainForm "private IEnumerable<LibraryModelItem> ApplyAnimationModelStateFilter"
+Assert-Contains $browserAnimationFilter "IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation)" "Browser animation model pending filter must exclude terminal diagnostics."
+Assert-Contains $browserAnimationFilter '"人工验收"' "Browser animation model review filter must include needs_review terminal diagnostics."
+
+$browserModelQualityFilter = Get-MethodBodyText $libraryBrowserMainForm "private bool ModelHasPendingTrustedUnityBake"
+Assert-Contains $browserModelQualityFilter "IsUnityBakeAlreadyProcessedTerminal(item, animation)" "Browser main model pending filter must exclude terminal diagnostics."
+
+$browserModelStats = Get-MethodBodyText $libraryBrowserMainForm "private sealed class ModelAnimationBakeStats"
+Assert-Contains $browserModelStats "NeedsManualReview" "Browser model detail stats must expose needs_review terminal diagnostics."
+
+$browserAnimationSummary = Get-MethodBodyText $libraryBrowserMainForm "private string BuildAnimationModelStateSummary"
+Assert-Contains $browserAnimationSummary "IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation)" "Browser animation page pending count must exclude terminal diagnostics."
+Assert-Contains $browserAnimationSummary '"人工验收"' "Browser animation page review count must include needs_review terminal diagnostics."
+
 $browserPreviewPriority = Get-MethodBodyText $libraryBrowserPreviewCache "private static int BakeCacheStatusPriority"
 Assert-Contains $browserPreviewPriority '"需人工验收" => 45' "Browser preview status must keep needs_review above request_written rows."
 Assert-Contains $browserPreviewPriority '"静态姿态" => 44' "Browser preview status must keep static_pose above request_written rows."
