@@ -188,7 +188,7 @@ namespace AnimeStudio.CLI
             Directory.CreateDirectory(output);
             if (limit == 0)
             {
-                WriteSummaryOnlyBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, force);
+                WriteSummaryOnlyBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, force, unityProject);
                 TryCompactBakeCache(dbPath, libraryRoot);
                 TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: true, unityProject);
                 Logger.Info("Unity bake batch limit is 0; wrote reports only and skipped request generation.");
@@ -467,8 +467,10 @@ namespace AnimeStudio.CLI
             string libraryRoot,
             string output,
             bool runUnityBake,
-            bool force)
+            bool force,
+            string unityProject)
         {
+            var readiness = BuildSummaryOnlyBakeReadiness(dbPath, libraryRoot, unityProject);
             var report = new JObject
             {
                 ["generatedAt"] = DateTime.UtcNow.ToString("O"),
@@ -482,11 +484,67 @@ namespace AnimeStudio.CLI
                 ["bakedCompleted"] = 0,
                 ["skipBakedCache"] = !force,
                 ["runUnityBake"] = runUnityBake,
+                ["explicitUnityBakeCandidates"] = (long?)readiness["explicitUnityBakeCandidates"] ?? 0,
+                ["bakeReadyExplicitUnityBakeCandidates"] = (long?)readiness["bakeReadyExplicitUnityBakeCandidates"] ?? 0,
+                ["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = (long?)readiness["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] ?? 0,
+                ["effectiveBakeReadyExplicitUnityBakeCandidates"] = (long?)readiness["effectiveBakeReadyExplicitUnityBakeCandidates"] ?? 0,
+                ["avatarSourceCounts"] = readiness["avatarSourceCounts"] ?? new JObject(),
+                ["summaryError"] = (string)readiness["summaryError"],
                 ["items"] = new JArray(),
             };
             var reportPath = Path.Combine(output, "unity_bake_batch_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Unity bake batch report: {reportPath}");
+        }
+
+        private static JObject BuildSummaryOnlyBakeReadiness(string dbPath, string libraryRoot, string unityProject)
+        {
+            var summary = new JObject
+            {
+                ["explicitUnityBakeCandidates"] = 0,
+                ["bakeReadyExplicitUnityBakeCandidates"] = 0,
+                ["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = 0,
+                ["effectiveBakeReadyExplicitUnityBakeCandidates"] = 0,
+                ["avatarSourceCounts"] = new JObject(),
+            };
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+                connection.Open();
+                var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
+                CreateTempImportedAvatarAssetKeys(connection, importedAvatarAssets);
+                CreateTempExplicitUnityBakeCandidateTable(connection);
+                var explicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM temp_explicit_unity_bake_candidates;");
+                var bakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM temp_explicit_unity_bake_candidates
+WHERE bake_ready_avatar=1;");
+                var importedAvatarAssetBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM temp_explicit_unity_bake_candidates
+WHERE imported_avatar_ready=1;");
+                var effectiveBakeReadyExplicitUnityBakeCandidates = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM temp_explicit_unity_bake_candidates
+WHERE bake_ready_avatar=1 OR imported_avatar_ready=1;");
+                summary["explicitUnityBakeCandidates"] = explicitUnityBakeCandidates;
+                summary["bakeReadyExplicitUnityBakeCandidates"] = bakeReadyExplicitUnityBakeCandidates;
+                summary["importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"] = importedAvatarAssetBakeReadyExplicitUnityBakeCandidates;
+                summary["effectiveBakeReadyExplicitUnityBakeCandidates"] = effectiveBakeReadyExplicitUnityBakeCandidates;
+                summary["avatarSourceCounts"] = new JObject
+                {
+                    ["model_human_description"] = bakeReadyExplicitUnityBakeCandidates,
+                    ["imported_unity_avatar_asset"] = importedAvatarAssetBakeReadyExplicitUnityBakeCandidates,
+                };
+            }
+            catch (Exception ex)
+            {
+                summary["summaryError"] = ex.Message;
+            }
+
+            return summary;
         }
 
         private static JObject CountReportItemsByString(JArray items, string propertyName)
