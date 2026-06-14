@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -3656,6 +3657,7 @@ namespace AnimeStudio.LibraryBrowser
                 .Where(x => !IsUnityBakeAlreadyPlayable(model, x))
                 .ToList();
             var skippedBaked = requestedCount - pendingAnimations.Count;
+            var report = new UnityBakeBatchUiReport(_root, label, "modelAnimations", requestedCount, pendingAnimations.Count, skippedBaked);
             if (pendingAnimations.Count == 0)
             {
                 RebuildAnimationList();
@@ -3666,17 +3668,20 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var failures = new List<string>();
+            var successCount = 0;
             for (var i = 0; i < pendingAnimations.Count; i++)
             {
                 var animation = pendingAnimations[i];
+                var item = report.StartItem(model, animation, i + 1);
                 var inputError = ValidateAnimationPreviewInputs(model, animation);
                 if (!string.IsNullOrWhiteSpace(inputError))
                 {
                     failures.Add($"{animation.Name}: {inputError}");
+                    report.FinishItem(item, "failed", inputError, null);
                     continue;
                 }
 
-                UpdateStatus($"{label} {i + 1}/{pendingAnimations.Count}: {animation.Name}");
+                UpdateStatus($"{label} {i + 1}/{pendingAnimations.Count}: 成功 {successCount}，失败 {failures.Count}，跳过 {skippedBaked} | {animation.Name}");
                 try
                 {
                     var status = await _previewCache.EnsureUnityBakeAsync(
@@ -3687,11 +3692,18 @@ namespace AnimeStudio.LibraryBrowser
                     if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
                     {
                         failures.Add($"{animation.Name}: {status.Message ?? status.Status}");
+                        report.FinishItem(item, "failed", status.Message ?? status.Status, status);
+                    }
+                    else
+                    {
+                        successCount++;
+                        report.FinishItem(item, "baked", null, status);
                     }
                 }
                 catch (Exception ex)
                 {
                     failures.Add($"{animation.Name}: {ex.Message}");
+                    report.FinishItem(item, "failed", ex.Message, null);
                 }
 
                 RebuildAnimationList();
@@ -3699,19 +3711,26 @@ namespace AnimeStudio.LibraryBrowser
                 RefreshCurrentModelDetailText();
             }
 
+            report.Complete(successCount, failures.Count);
+            var reportPath = WriteUnityBakeBatchUiReport(report);
             RebuildAnimationList();
             ReloadBakeCacheSummary();
             RefreshCurrentModelDetailText();
             if (failures.Count == 0)
             {
-                UpdateStatus($"{label}完成: 成功 {pendingAnimations.Count}/{pendingAnimations.Count}，已跳过 {skippedBaked} 个已烘焙");
+                UpdateStatus($"{label}完成: 成功 {successCount}/{pendingAnimations.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
                 return;
             }
 
-            UpdateStatus($"{label}完成: 成功 {pendingAnimations.Count - failures.Count}/{pendingAnimations.Count}，已跳过 {skippedBaked} 个已烘焙");
+            UpdateStatus($"{label}完成: 成功 {successCount}/{pendingAnimations.Count}，失败 {failures.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
             MessageBox.Show(
                 this,
-                string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12)),
+                string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12))
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + $"完整批次报告: {reportPath}"
+                    + Environment.NewLine
+                    + "要重试失败项，可以按报告里的动画名过滤当前模型动画列表，再执行批量烘焙当前可见项。",
                 "批量烘焙未全部完成",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -3777,6 +3796,7 @@ namespace AnimeStudio.LibraryBrowser
                 .Where(x => !IsUnityBakeAlreadyPlayable(x, ResolveAnimationForModel(x, animation)))
                 .ToList();
             var skippedBaked = models.Count - pendingModels.Count;
+            var report = new UnityBakeBatchUiReport(_root, label, "animationModels", models.Count, pendingModels.Count, skippedBaked);
             if (pendingModels.Count == 0)
             {
                 RebuildAnimationModelList();
@@ -3797,18 +3817,21 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var failures = new List<string>();
+            var successCount = 0;
             for (var i = 0; i < pendingModels.Count; i++)
             {
                 var model = pendingModels[i];
                 var modelAnimation = ResolveAnimationForModel(model, animation);
+                var item = report.StartItem(model, modelAnimation, i + 1);
                 var inputError = ValidateAnimationPreviewInputs(model, modelAnimation);
                 if (!string.IsNullOrWhiteSpace(inputError))
                 {
                     failures.Add($"{model.Name}: {inputError}");
+                    report.FinishItem(item, "failed", inputError, null);
                     continue;
                 }
 
-                UpdateStatus($"{label} {i + 1}/{pendingModels.Count}: {model.Name}");
+                UpdateStatus($"{label} {i + 1}/{pendingModels.Count}: 成功 {successCount}，失败 {failures.Count}，跳过 {skippedBaked} | {model.Name}");
                 try
                 {
                     var status = await _previewCache.EnsureUnityBakeAsync(
@@ -3819,32 +3842,176 @@ namespace AnimeStudio.LibraryBrowser
                     if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
                     {
                         failures.Add($"{model.Name}: {status.Message ?? status.Status}");
+                        report.FinishItem(item, "failed", status.Message ?? status.Status, status);
+                    }
+                    else
+                    {
+                        successCount++;
+                        report.FinishItem(item, "baked", null, status);
                     }
                 }
                 catch (Exception ex)
                 {
                     failures.Add($"{model.Name}: {ex.Message}");
+                    report.FinishItem(item, "failed", ex.Message, null);
                 }
 
                 RebuildAnimationModelList();
                 ReloadBakeCacheSummary();
             }
 
+            report.Complete(successCount, failures.Count);
+            var reportPath = WriteUnityBakeBatchUiReport(report);
             RebuildAnimationModelList();
             ReloadBakeCacheSummary();
             if (failures.Count == 0)
             {
-                UpdateStatus($"{label}完成: 成功 {pendingModels.Count}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙");
+                UpdateStatus($"{label}完成: 成功 {successCount}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
                 return;
             }
 
-            UpdateStatus($"{label}完成: 成功 {pendingModels.Count - failures.Count}/{pendingModels.Count}，已跳过 {skippedBaked} 个已烘焙");
+            UpdateStatus($"{label}完成: 成功 {successCount}/{pendingModels.Count}，失败 {failures.Count}，已跳过 {skippedBaked} 个已烘焙 | 报告 {reportPath}");
             MessageBox.Show(
                 this,
-                string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12)),
+                string.Join(Environment.NewLine + Environment.NewLine, failures.Take(12))
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + $"完整批次报告: {reportPath}"
+                    + Environment.NewLine
+                    + "要重试失败项，可以先用“失败/需复查”过滤右侧模型列表，再执行烘焙可见模型。",
                 "动画反查批量烘焙未全部完成",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+        }
+
+        private string WriteUnityBakeBatchUiReport(UnityBakeBatchUiReport report)
+        {
+            report ??= new UnityBakeBatchUiReport(_root, "Unity 批量烘焙", "unknown", 0, 0, 0);
+            var directory = Path.Combine(_root ?? "", ".as_browser_cache", "unity_bake_batch_reports");
+            Directory.CreateDirectory(directory);
+            var fileName = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + SafeReportFileToken(report.Label) + ".json";
+            var path = Path.Combine(directory, fileName);
+            var json = JsonSerializer.Serialize(
+                report,
+                new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+            File.WriteAllText(path, json, Encoding.UTF8);
+            return path;
+        }
+
+        private static string SafeReportFileToken(string value)
+        {
+            var text = string.IsNullOrWhiteSpace(value) ? "unity_bake_batch" : value.Trim();
+            foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                text = text.Replace(c, '_');
+            }
+
+            text = Regex.Replace(text, @"\s+", "_");
+            return text.Length > 80 ? text[..80] : text;
+        }
+
+        private sealed class UnityBakeBatchUiReport
+        {
+            public UnityBakeBatchUiReport(
+                string libraryRoot,
+                string label,
+                string scope,
+                int requestedCount,
+                int pendingCount,
+                int skippedAlreadyBaked)
+            {
+                LibraryRoot = libraryRoot ?? "";
+                Label = label ?? "";
+                Scope = scope ?? "";
+                RequestedCount = requestedCount;
+                PendingCount = pendingCount;
+                SkippedAlreadyBaked = skippedAlreadyBaked;
+                StartedAtUtc = DateTime.UtcNow;
+            }
+
+            public string LibraryRoot { get; set; }
+            public string Label { get; set; }
+            public string Scope { get; set; }
+            public DateTime StartedAtUtc { get; set; }
+            public DateTime? CompletedAtUtc { get; set; }
+            public int RequestedCount { get; set; }
+            public int PendingCount { get; set; }
+            public int SkippedAlreadyBaked { get; set; }
+            public int SuccessCount { get; set; }
+            public int FailureCount { get; set; }
+            public List<UnityBakeBatchUiReportItem> Items { get; } = new();
+
+            public UnityBakeBatchUiReportItem StartItem(
+                LibraryModelItem model,
+                LibraryAnimationCandidate animation,
+                int index)
+            {
+                var item = new UnityBakeBatchUiReportItem
+                {
+                    Index = index,
+                    ModelName = model?.Name ?? "",
+                    ModelPath = model?.OutputPath ?? "",
+                    AnimationName = animation?.Name ?? "",
+                    AnimationPath = animation?.BestPath ?? "",
+                    RelationSource = animation?.RelationSource ?? "",
+                    AvatarAsset = animation?.ProductionUnityBakeAvatarAsset ?? "",
+                    AvatarMatchKey = animation?.ProductionUnityBakeAvatarMatchKey ?? "",
+                    StartedAtUtc = DateTime.UtcNow,
+                    Status = "running"
+                };
+                Items.Add(item);
+                return item;
+            }
+
+            public void FinishItem(
+                UnityBakeBatchUiReportItem item,
+                string status,
+                string message,
+                AnimationPreviewStatus previewStatus)
+            {
+                if (item == null)
+                {
+                    return;
+                }
+
+                item.CompletedAtUtc = DateTime.UtcNow;
+                item.DurationSeconds = Math.Round((item.CompletedAtUtc.Value - item.StartedAtUtc).TotalSeconds, 3);
+                item.Status = status ?? "";
+                item.Message = message ?? previewStatus?.Message ?? "";
+                item.PreviewStatus = previewStatus?.Status ?? "";
+                item.BakedGltfPath = previewStatus?.GltfPath ?? "";
+                item.ReportPath = previewStatus?.ValidationPath ?? "";
+            }
+
+            public void Complete(int successCount, int failureCount)
+            {
+                CompletedAtUtc = DateTime.UtcNow;
+                SuccessCount = successCount;
+                FailureCount = failureCount;
+            }
+        }
+
+        private sealed class UnityBakeBatchUiReportItem
+        {
+            public int Index { get; set; }
+            public string ModelName { get; set; } = "";
+            public string ModelPath { get; set; } = "";
+            public string AnimationName { get; set; } = "";
+            public string AnimationPath { get; set; } = "";
+            public string RelationSource { get; set; } = "";
+            public string AvatarAsset { get; set; } = "";
+            public string AvatarMatchKey { get; set; } = "";
+            public string Status { get; set; } = "";
+            public string PreviewStatus { get; set; } = "";
+            public string Message { get; set; } = "";
+            public string BakedGltfPath { get; set; } = "";
+            public string ReportPath { get; set; } = "";
+            public DateTime StartedAtUtc { get; set; }
+            public DateTime? CompletedAtUtc { get; set; }
+            public double DurationSeconds { get; set; }
         }
 
         private async Task GenerateSelectedLibraryAnimationPreviewAsync(bool openAfterGenerate)
