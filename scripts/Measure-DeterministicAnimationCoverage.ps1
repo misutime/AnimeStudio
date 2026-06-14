@@ -12,7 +12,9 @@ param(
 
     [string[]]$AnimatedCategory = @("NPC", "Avatar", "Monster", "Animal", "Partner", "Vehicle"),
 
-    [int]$TopCategoryLimit = 24
+    [int]$TopCategoryLimit = 24,
+
+    [switch]$FailOnWarning
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +43,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 
 
 def scalar(cur, sql, args=()):
@@ -707,6 +710,7 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--animated-category", action="append", default=[])
     parser.add_argument("--top-category-limit", type=int, default=24)
+    parser.add_argument("--fail-on-warning", action="store_true")
     args = parser.parse_args()
 
     con = sqlite3.connect(args.library_index)
@@ -988,14 +992,32 @@ def main():
 
     print(json_path)
     print(md_path)
-    print(json.dumps({
+    console_summary = {
         "gate": summary["gate"],
         "totals": summary["totals"],
         "unityBakeProduction": summary["unityBakeProduction"],
         "avatarProductionGate": summary["avatarProductionGate"],
         "sourceIndexStatus": summary["sourceIndexAnimationRelationHealth"].get("status"),
         "staleOverridePairIndex": summary["sourceIndexAnimationRelationHealth"].get("staleOverridePairIndex"),
-    }, ensure_ascii=False))
+    }
+    print(json.dumps(console_summary, ensure_ascii=False))
+
+    if args.fail_on_warning:
+        failed_reasons = []
+        if summary["gate"].get("status") != "ok":
+            failed_reasons.append(summary["gate"].get("note") or "deterministic gate is not ok")
+        source_status = summary["sourceIndexAnimationRelationHealth"].get("status")
+        if source_status not in ("ok", "missing"):
+            failed_reasons.append(summary["sourceIndexAnimationRelationHealth"].get("note") or f"source index status is {source_status}")
+        if failed_reasons:
+            print(json.dumps({
+                "status": "failed",
+                "rule": "-FailOnWarning treats deterministic gate/source-index warnings as command failures.",
+                "reasons": failed_reasons,
+                "json": json_path,
+                "markdown": md_path,
+            }, ensure_ascii=False), file=sys.stderr)
+            sys.exit(2)
 
 
 if __name__ == "__main__":
@@ -1015,6 +1037,9 @@ $argsList = @(
 )
 foreach ($category in $AnimatedCategory) {
     $argsList += @("--animated-category", $category)
+}
+if ($FailOnWarning) {
+    $argsList += "--fail-on-warning"
 }
 
 try {

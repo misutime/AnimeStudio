@@ -339,6 +339,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\AnimationRelationDiagnostics"
 ```
 
+自动验收或批处理里可以加 `-FailOnWarning`。这会在默认候选表混入非显式关系，或源索引动画关系健康检查出现 warning 时返回非零退出码；报告仍会写出，方便直接定位原因：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\Measure-DeterministicAnimationCoverage.ps1 `
+  -LibraryPath "D:\Assets\AS-Assets\YuanShen-Assets" `
+  -OutputDir "D:\Assets\AS-Assets\YuanShen-Assets\AnimationRelationDiagnostics" `
+  -FailOnWarning
+```
+
 脚本只读 `library_index.db` 和 `unity_source_index.db`，输出 `deterministic_animation_coverage.json` 与 `DETERMINISTIC_ANIMATION_COVERAGE.md`。验收时优先看：
 
 - `gate.status`：默认应为 `ok`。
