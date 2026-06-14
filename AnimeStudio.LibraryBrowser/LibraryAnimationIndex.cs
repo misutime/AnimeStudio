@@ -322,6 +322,9 @@ SELECT mar.model, mar.confidence, ra.raw_json,
        ra.segment_count
 FROM model_animation_relations mar
 JOIN relation_animations ra ON ra.relation_id = mar.id
+-- 旧表也只读取确定性显式关系；fallback/diagnostic 不能进入默认动画列表。
+WHERE LOWER(COALESCE(ra.relation_source, '')) IN ('explicit', 'componentowner', 'componentownerblendspacesample', 'componentanimclass')
+   OR mar.confidence = 'explicit_unity_reference'
 ORDER BY mar.model, ra.name;"
                         : @"
 SELECT mar.model, mar.confidence, ra.raw_json
