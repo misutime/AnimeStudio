@@ -42,6 +42,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripMenuItem _refreshAnimationFastSummaryItem = new("快速摘要");
         private readonly ToolStripMenuItem _refreshAnimationSummaryItem = new("烘焙摘要");
         private readonly ToolStripMenuItem _writeAvatarRecoveryPlanItem = new("Avatar恢复计划");
+        private readonly ToolStripMenuItem _probeImportedAvatarAssetsItem = new("验证AvatarAsset");
         private readonly ToolStripButton _rebuildAnimationIndexButton = new("重建动画索引");
         private readonly ToolStripButton _unitySettingsButton = new("Unity设置");
         private readonly ToolStripDropDownButton _unityWorkerButton = new("Unity Worker");
@@ -177,11 +178,13 @@ namespace AnimeStudio.LibraryBrowser
                 _refreshAnimationSummaryItem,
                 new ToolStripSeparator(),
                 _writeAvatarRecoveryPlanItem,
+                _probeImportedAvatarAssetsItem,
             });
             _refreshAnimationFastSummaryItem.ToolTipText = "运行 FastSummary，只读取根目录 bake cache、ImportedAvatar asset 和最近批次报告，不扫描大型 SQLite 候选表。";
             _refreshAnimationGateFastItem.ToolTipText = "运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
             _refreshAnimationSummaryItem.ToolTipText = "运行 SummaryOnly 覆盖诊断；如果已配置 Unity Bake Project，会同步统计 ImportedAvatar oracle 覆盖。";
             _writeAvatarRecoveryPlanItem.ToolTipText = "生成 OnlyMissing Avatar asset 恢复计划，列出仍缺 ImportedAvatar oracle 的 Unity Avatar 对象。";
+            _probeImportedAvatarAssetsItem.ToolTipText = "用 Unity AssetDatabase 批量验证 ImportedAvatar/*.asset 是否都是有效 Humanoid Avatar。";
             _rebuildAnimationIndexButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _rebuildAnimationIndexButton.ToolTipText = "只重建 library_index.db 的结构化索引和显式动画候选，不重新导出模型、贴图或动画。";
             _unitySettingsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -582,6 +585,7 @@ namespace AnimeStudio.LibraryBrowser
             _refreshAnimationGateFastItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.GateOnly);
             _refreshAnimationSummaryItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.SummaryOnly);
             _writeAvatarRecoveryPlanItem.Click += async (_, _) => await WriteAvatarRecoveryPlanAsync();
+            _probeImportedAvatarAssetsItem.Click += async (_, _) => await ProbeImportedAvatarAssetsAsync();
             _rebuildAnimationIndexButton.Click += async (_, _) => await RebuildAnimationIndexAsync();
             _unitySettingsButton.Click += (_, _) => ConfigureUnitySettings();
             _startUnityWorkerItem.Click += async (_, _) => await StartUnityWorkerAsync();
@@ -1212,6 +1216,65 @@ namespace AnimeStudio.LibraryBrowser
                 result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
 
+        private async Task ProbeImportedAvatarAssetsAsync()
+        {
+            if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
+            {
+                MessageBox.Show(this, "请先选择素材库。", "验证AvatarAsset", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var script = FindRepoScript(@"scripts\Test-UnityImportedAvatarAssets.ps1");
+            if (string.IsNullOrWhiteSpace(script))
+            {
+                MessageBox.Show(
+                    this,
+                    "没有找到 scripts\\Test-UnityImportedAvatarAssets.ps1。请从 AnimeStudio 源码目录启动 Browser，或在命令行手动运行验证脚本。",
+                    "验证AvatarAsset",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var settings = LibraryBrowserSettings.LoadEffective(_root);
+            var settingsError = settings?.ValidateUnityBake();
+            if (!string.IsNullOrWhiteSpace(settingsError))
+            {
+                MessageBox.Show(this, settingsError, "验证AvatarAsset", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var outputDir = Path.Combine(_root, "ImportedAvatarProbe_Browser_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            _refreshAnimationGateButton.Enabled = false;
+            UpdateStatus("正在验证AvatarAsset");
+
+            ProcessRunResult result;
+            try
+            {
+                result = await RunImportedAvatarProbeAsync(script, settings!.UnityProject, settings.UnityEditor, outputDir);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "验证AvatarAsset失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("验证AvatarAsset失败");
+                return;
+            }
+            finally
+            {
+                _refreshAnimationGateButton.Enabled = true;
+            }
+
+            var title = result.ExitCode == 0 ? "AvatarAsset验证通过" : $"AvatarAsset验证退出码 {result.ExitCode}";
+            UpdateStatus(title);
+            var message = $"输出目录: {outputDir}{Environment.NewLine}{Environment.NewLine}{TrimProcessOutput(result.CombinedOutput)}";
+            MessageBox.Show(
+                this,
+                message,
+                title,
+                MessageBoxButtons.OK,
+                result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
         private async Task RebuildAnimationIndexAsync()
         {
             if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
@@ -1468,6 +1531,44 @@ namespace AnimeStudio.LibraryBrowser
                 startInfo.ArgumentList.Add(unityEditor);
             }
             startInfo.ArgumentList.Add("-OnlyMissing");
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PowerShell。");
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            var combined = string.IsNullOrWhiteSpace(error)
+                ? output
+                : output + Environment.NewLine + error;
+            return new ProcessRunResult(process.ExitCode, combined);
+        }
+
+        private static async Task<ProcessRunResult> RunImportedAvatarProbeAsync(
+            string script,
+            string unityProject,
+            string unityEditor,
+            string outputDir)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-NoProfile");
+            startInfo.ArgumentList.Add("-ExecutionPolicy");
+            startInfo.ArgumentList.Add("Bypass");
+            startInfo.ArgumentList.Add("-File");
+            startInfo.ArgumentList.Add(script);
+            startInfo.ArgumentList.Add("-UnityProject");
+            startInfo.ArgumentList.Add(unityProject);
+            startInfo.ArgumentList.Add("-UnityEditor");
+            startInfo.ArgumentList.Add(unityEditor);
+            startInfo.ArgumentList.Add("-OutputDir");
+            startInfo.ArgumentList.Add(outputDir);
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PowerShell。");
             var outputTask = process.StandardOutput.ReadToEndAsync();
