@@ -36,19 +36,25 @@ namespace AnimeStudio.LibraryBrowser
             var local = LoadFromFile(LocalSettingsPath(root));
             var global = LoadGlobal();
 
+            var unityProject = FirstNotEmpty(
+                local?.UnityProject,
+                global?.UnityProject,
+                FindDefaultUnityBakeProject(),
+                Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_BAKE_PROJECT"));
+            var unityEditor = NormalizeUnityEditorPath(FirstNotEmpty(
+                local?.UnityEditor,
+                global?.UnityEditor,
+                FindDefaultUnityEditor(),
+                Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_EDITOR")));
+
             return new LibraryBrowserSettings
             {
-                UnityProject = FirstNotEmpty(
-                    local?.UnityProject,
-                    global?.UnityProject,
-                    FindDefaultUnityBakeProject(),
-                    Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_BAKE_PROJECT")),
-                UnityEditor = NormalizeUnityEditorPath(FirstNotEmpty(
-                    local?.UnityEditor,
-                    global?.UnityEditor,
-                    FindDefaultUnityEditor(),
-                    Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_EDITOR"))),
-                UnityAvatarAssets = MergeAvatarAssets(global?.UnityAvatarAssets, local?.UnityAvatarAssets),
+                UnityProject = unityProject,
+                UnityEditor = unityEditor,
+                UnityAvatarAssets = MergeAvatarAssets(
+                    DiscoverImportedAvatarAssets(unityProject),
+                    global?.UnityAvatarAssets,
+                    local?.UnityAvatarAssets),
             };
         }
 
@@ -307,13 +313,53 @@ namespace AnimeStudio.LibraryBrowser
                 && value.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static IReadOnlyDictionary<string, string> MergeAvatarAssets(
-            IReadOnlyDictionary<string, string> global,
-            IReadOnlyDictionary<string, string> local)
+        private static IReadOnlyDictionary<string, string> DiscoverImportedAvatarAssets(string unityProject)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            AddStringMap(result, global);
-            AddStringMap(result, local);
+            if (string.IsNullOrWhiteSpace(unityProject))
+            {
+                return result;
+            }
+
+            var directory = Path.Combine(unityProject, "Assets", "AnimeStudioBake", "ImportedAvatar");
+            if (!Directory.Exists(directory))
+            {
+                return result;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(directory, "*.asset", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                var unityPath = Path.GetRelativePath(unityProject, path).Replace('\\', '/');
+                if (!unityPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // 这些 key 都来自真实导入的 Avatar asset 文件名，只做查找便利，不生成模型-动画关系。
+                result[name] = unityPath;
+                if (name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase))
+                {
+                    result[name[..^"_ModelAvatar".Length]] = unityPath;
+                }
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyDictionary<string, string> MergeAvatarAssets(
+            params IReadOnlyDictionary<string, string>[] maps)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var map in maps)
+            {
+                AddStringMap(result, map);
+            }
             return result;
         }
 

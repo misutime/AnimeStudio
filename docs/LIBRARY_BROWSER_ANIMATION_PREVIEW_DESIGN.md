@@ -86,6 +86,8 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 2. 如果索引里保留了完整 `HumanDescription.humanBones + skeletonBones`，可以由 Unity `AvatarBuilder.BuildHumanAvatar` 复建 Avatar。
 3. 原神这类只靠 `AvatarConstant` / `internalSolver` 会出现肢体扭曲的库，必须先从打包 Unity 对象恢复原始 `UnityEngine.Avatar` asset，导入 bake 工程，并在 request 的 `unityAssetPaths.avatarAsset` 里显式指定。导入后仍由 Unity 自身加载 Avatar，因此它也是确定性生产来源，不是名称或骨骼数量猜测。
 
+Library Browser 会自动扫描 `UnityBakeProject/Assets/AnimeStudioBake/ImportedAvatar/*.asset`，按文件名把已导入的 Avatar asset 加入候选映射；全局或素材库本地 `unityAvatarAssets` 仍可显式覆盖。这样原神恢复新的 Avatar asset 后，通常只需要把 `.asset` 放进固定目录并让 Unity 导入，不需要每次手写 JSON。
+
 从打包 `AvatarConstant` 恢复出的 `avatar.oracle` / `internalSolver` 只能作为定位原始 Avatar asset 和后续公式研究的诊断输入，不能单独算生产 bake ready。只有 Unity 返回有效 Humanoid Avatar，且 apply 报告里 `avatarTrust.TrustedProductionBake=true`，Browser 才把 baked glTF 当作可播放生产预览。内部 `Avatar/Muscle -> glTF TRS` 求解保留为实验诊断入口，不作为默认预览或验收路径。
 
 Library Browser 不要求用户通过环境变量配置 Unity 路径。需要运行 Unity bake 生产预览时，配置优先级如下：
