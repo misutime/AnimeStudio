@@ -304,6 +304,22 @@ namespace AnimeStudio.CLI
                     Message: "Unity bake request did not contain Avatar metadata, so the baked glTF must be treated as diagnostic output.");
             }
 
+            var requestedAvatarAsset = (string)request["unityAssetPaths"]?["avatarAsset"];
+            if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && ((bool?)result?["avatarValid"] ?? false))
+            {
+                return new AvatarTrustReport(
+                    TrustedProductionBake: true,
+                    Source: "imported_unity_avatar_asset",
+                    Message: null);
+            }
+            if (!string.IsNullOrWhiteSpace(requestedAvatarAsset))
+            {
+                return new AvatarTrustReport(
+                    TrustedProductionBake: false,
+                    Source: "imported_unity_avatar_asset_invalid",
+                    Message: "Unity bake request explicitly supplied unityAssetPaths.avatarAsset, but the Unity result did not report a valid Humanoid Avatar. The result must not fall back to HumanDescription, AvatarConstant, internalSolver, or glTF rest pose trust.");
+            }
+
             var skeletonBoneCount = avatar["skeletonBones"] is JArray skeletonBones ? skeletonBones.Count : 0;
             var humanBonesSource = (string)avatar["humanBonesSource"];
             if (skeletonBoneCount > 0)
@@ -311,15 +327,6 @@ namespace AnimeStudio.CLI
                 return new AvatarTrustReport(
                     TrustedProductionBake: true,
                     Source: "human_description_skeleton_bones",
-                    Message: null);
-            }
-
-            var requestedAvatarAsset = (string)request["unityAssetPaths"]?["avatarAsset"];
-            if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && ((bool?)result?["avatarValid"] ?? false))
-            {
-                return new AvatarTrustReport(
-                    TrustedProductionBake: true,
-                    Source: "imported_unity_avatar_asset",
                     Message: null);
             }
 
