@@ -645,6 +645,7 @@ namespace AnimeStudio.CLI
             }
 
             var startLock = Path.Combine(queuePath, "worker_start.lock");
+            Process workerProcess = null;
             using (AcquireFileLock(startLock, TimeSpan.FromSeconds(20)))
             {
                 if (IsFresh(heartbeat, TimeSpan.FromSeconds(30)))
@@ -662,7 +663,7 @@ namespace AnimeStudio.CLI
                     "-logFile", Quote(workerLog),
                 };
                 Logger.Info("Starting persistent Unity bake worker...");
-                Process.Start(new ProcessStartInfo
+                workerProcess = Process.Start(new ProcessStartInfo
                 {
                     FileName = unityEditor,
                     Arguments = string.Join(" ", args),
@@ -681,10 +682,25 @@ namespace AnimeStudio.CLI
                     Logger.Info($"Unity bake worker is ready: {queuePath}");
                     return true;
                 }
+                if (workerProcess != null && workerProcess.HasExited)
+                {
+                    Logger.Error($"Unity bake worker exited before heartbeat. ExitCode={workerProcess.ExitCode}; Log={workerLog}");
+                    var tail = TryReadLogTail(workerLog, 80);
+                    if (!string.IsNullOrWhiteSpace(tail))
+                    {
+                        Logger.Error("Unity bake worker log tail:\n" + tail);
+                    }
+                    return false;
+                }
                 Thread.Sleep(1000);
             }
 
             Logger.Error($"Unity bake worker did not become ready. Log: {workerLog}");
+            var logTail = TryReadLogTail(workerLog, 80);
+            if (!string.IsNullOrWhiteSpace(logTail))
+            {
+                Logger.Error("Unity bake worker log tail:\n" + logTail);
+            }
             return false;
         }
 
@@ -746,6 +762,24 @@ namespace AnimeStudio.CLI
             catch
             {
                 // Diagnostic copy only.
+            }
+        }
+
+        private static string TryReadLogTail(string path, int maxLines)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return null;
+                }
+
+                var lines = File.ReadAllLines(path);
+                return string.Join(Environment.NewLine, lines.Skip(Math.Max(0, lines.Length - Math.Max(1, maxLines))));
+            }
+            catch
+            {
+                return null;
             }
         }
 
