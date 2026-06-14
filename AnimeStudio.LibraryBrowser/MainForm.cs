@@ -111,6 +111,8 @@ namespace AnimeStudio.LibraryBrowser
         private List<LibraryAnimationUsage> _allLibraryAnimations = new();
         private List<LibraryAnimationUsage> _visibleLibraryAnimations = new();
         private LibraryAnimationUsage _selectedLibraryAnimation;
+        private int _selectedAnimationIndexedModelCount;
+        private int _selectedAnimationAvailableModelCount;
         private readonly List<ToolStripButton> _typeButtons = new();
         private string _selectedModelType = "全部";
         private CancellationTokenSource _thumbnailCts;
@@ -327,7 +329,7 @@ namespace AnimeStudio.LibraryBrowser
             _libraryAnimationList.FullRowSelect = true;
             _libraryAnimationList.HideSelection = false;
             _libraryAnimationList.Columns.Add("动画", 360);
-            _libraryAnimationList.Columns.Add("模型数", 72);
+            _libraryAnimationList.Columns.Add("索引模型数", 88);
             _libraryAnimationList.Columns.Add("时长", 64);
             _libraryAnimationList.Columns.Add("能力", 140);
             _libraryAnimationList.Columns.Add("路径", 360);
@@ -2547,25 +2549,35 @@ namespace AnimeStudio.LibraryBrowser
 
         private void RebuildAnimationModelList()
         {
-            IEnumerable<LibraryModelItem> query = Enumerable.Empty<LibraryModelItem>();
+            var availableModels = new List<LibraryModelItem>();
+            _selectedAnimationIndexedModelCount = 0;
+            _selectedAnimationAvailableModelCount = 0;
             if (_selectedLibraryAnimation != null)
             {
                 var modelOutputs = _animationIndex.FindModelOutputsForAnimation(_selectedLibraryAnimation)
                     .Select(NormalizePathForCompare)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _selectedAnimationIndexedModelCount = _selectedLibraryAnimation.ModelCount;
                 if (modelOutputs.Count > 0)
                 {
-                    query = _allModels.Where(x => modelOutputs.Contains(NormalizePathForCompare(x.OutputPath)));
+                    availableModels = _allModels
+                        .Where(x => modelOutputs.Contains(NormalizePathForCompare(x.OutputPath)))
+                        .ToList();
                 }
                 else
                 {
                     var bindingPaths = _selectedLibraryAnimation.Animation.BindingPaths;
-                    query = _allModels
+                    availableModels = _allModels
                         .Where(x => IsTargetedAnimationModelMatch(
                             CountMatchedBindingPaths(BuildModelBindingPathSet(x), bindingPaths),
-                            bindingPaths.Length));
+                            bindingPaths.Length))
+                        .ToList();
+                    _selectedAnimationIndexedModelCount = availableModels.Count;
                 }
             }
+            _selectedAnimationAvailableModelCount = availableModels.Count;
+
+            IEnumerable<LibraryModelItem> query = availableModels;
 
             var modelFilter = _animationModelFilterBox.Text?.Trim() ?? "";
             if (!string.IsNullOrWhiteSpace(modelFilter))
@@ -2665,13 +2677,15 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var animation = _selectedLibraryAnimation.Animation;
+            var missingOrNotExported = Math.Max(0, _selectedAnimationIndexedModelCount - _selectedAnimationAvailableModelCount);
             _animationDetailBox.Text =
                 $"动画: {animation.Name}{Environment.NewLine}" +
                 $"时长: {(animation.Duration > 0 ? $"{animation.Duration:0.##}s" : "Unknown")}{Environment.NewLine}" +
                 $"能力: {DescribeAnimationCapability(animation)}{Environment.NewLine}" +
                 $"验证: {FormatAnimationValidation(animation)}{Environment.NewLine}" +
                 $"帧/轨道/片段: {FormatAnimationCounts(animation)}{Environment.NewLine}" +
-                $"关联模型: {_visibleAnimationModels.Count}{Environment.NewLine}" +
+                $"关联模型: 当前筛选 {_visibleAnimationModels.Count} / 当前库可见 {_selectedAnimationAvailableModelCount} / 索引记录 {_selectedAnimationIndexedModelCount}{Environment.NewLine}" +
+                $"缺失或未导出模型: {missingOrNotExported}{Environment.NewLine}" +
                 $"来源: {animation.Source}{Environment.NewLine}" +
                 $"路径: {animation.BestPath}{Environment.NewLine}{Environment.NewLine}" +
                 "操作: 在右侧模型列表双击模型，生成模型+动画的可播放 glTF 预览。";

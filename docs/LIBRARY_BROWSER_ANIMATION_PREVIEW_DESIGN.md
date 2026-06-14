@@ -78,6 +78,8 @@ dotnet run --project D:\misutime\AnimeStudio\AnimeStudio.CLI\AnimeStudio.CLI.csp
 
 原神这类几百万候选的大库不能在 Browser 启动时一次性读取全部 `model_animation_candidates`。Browser 应优先使用 SQLite lazy 模式：启动阶段只统计每个模型的显式候选数量、每个动画关联的模型数量；选中模型时再按 `model_output` 查询该模型自己的候选，选中动画时再按 `animation_output` 查询该动画关联的模型。SQLite 加载失败时必须写出 `.as_browser_cache/animation_index_sqlite_error.txt`，不能静默回退成“0 动画”误导用户。素材库索引中的相对路径只能相对当前 Library root 解析，不能回退到 Browser 当前工作目录，避免旧索引或缺失文件误命中仓库里的同名 `Models/`。
 
+动画反查页要把“索引模型数”和“当前库可见模型数”分开显示。索引模型数表示 SQLite 里由 Unity 显式关系记录下来的全部模型-动画关系；当前库可见模型数表示这些关系里，当前 Browser 实际加载到可浏览模型列表的数量。旧导出或筛选后的库可能有确定性关系但缺少对应模型文件，这种情况要显示为“缺失或未导出模型”，不能把索引覆盖率误当成当前可预览覆盖率。
+
 ## Unity Bake 配置（生产主线）
 
 当前 Humanoid/Muscle 的可验收生产主线是 Unity bake -> glTF。Browser 调用 CLI 时应只针对 `library_index.db` 中 `relation_source=explicit` 的候选生成请求，由 Unity 采样 `Animator` / `Avatar` / `PlayableGraph`，再让 AnimeStudio 把采样后的目标骨架 TRS 写回 glTF。
