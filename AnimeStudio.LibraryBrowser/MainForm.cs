@@ -30,7 +30,9 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripDropDownButton _recentButton = new("最近");
         private readonly ToolStripButton _refreshListButton = new("刷新列表");
         private readonly ToolStripButton _reloadButton = new("重新加载");
-        private readonly ToolStripButton _refreshAnimationGateButton = new("刷新动画门禁");
+        private readonly ToolStripDropDownButton _refreshAnimationGateButton = new("刷新动画门禁");
+        private readonly ToolStripMenuItem _refreshAnimationGateFastItem = new("快速门禁");
+        private readonly ToolStripMenuItem _refreshAnimationSummaryItem = new("烘焙摘要");
         private readonly ToolStripButton _rebuildAnimationIndexButton = new("重建动画索引");
         private readonly ToolStripButton _unitySettingsButton = new("Unity设置");
         private readonly ToolStripDropDownButton _unityWorkerButton = new("Unity Worker");
@@ -158,7 +160,14 @@ namespace AnimeStudio.LibraryBrowser
             _refreshListButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _reloadButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _refreshAnimationGateButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
-            _refreshAnimationGateButton.ToolTipText = "只运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
+            _refreshAnimationGateButton.ToolTipText = "刷新动画确定性报告。快速门禁只检查显式关系；烘焙摘要会统计 Unity bake / Avatar oracle 覆盖。";
+            _refreshAnimationGateButton.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                _refreshAnimationGateFastItem,
+                _refreshAnimationSummaryItem,
+            });
+            _refreshAnimationGateFastItem.ToolTipText = "运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
+            _refreshAnimationSummaryItem.ToolTipText = "运行 SummaryOnly 覆盖诊断；如果已配置 Unity Bake Project，会同步统计 ImportedAvatar oracle 覆盖。";
             _rebuildAnimationIndexButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _rebuildAnimationIndexButton.ToolTipText = "只重建 library_index.db 的结构化索引和显式动画候选，不重新导出模型、贴图或动画。";
             _unitySettingsButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
@@ -554,7 +563,9 @@ namespace AnimeStudio.LibraryBrowser
             _openButton.Click += async (_, _) => await ChooseRootAsync();
             _refreshListButton.Click += (_, _) => RefreshListOnly();
             _reloadButton.Click += async (_, _) => await ReloadAsync();
-            _refreshAnimationGateButton.Click += async (_, _) => await RefreshAnimationGateAsync();
+            _refreshAnimationGateButton.Click += async (_, _) => await RefreshAnimationGateAsync(summaryOnly: false);
+            _refreshAnimationGateFastItem.Click += async (_, _) => await RefreshAnimationGateAsync(summaryOnly: false);
+            _refreshAnimationSummaryItem.Click += async (_, _) => await RefreshAnimationGateAsync(summaryOnly: true);
             _rebuildAnimationIndexButton.Click += async (_, _) => await RebuildAnimationIndexAsync();
             _unitySettingsButton.Click += (_, _) => ConfigureUnitySettings();
             _startUnityWorkerItem.Click += async (_, _) => await StartUnityWorkerAsync();
@@ -987,7 +998,7 @@ namespace AnimeStudio.LibraryBrowser
             _deterministicAnimationSummary = LibraryDeterministicAnimationSummary.Load(_root);
         }
 
-        private async Task RefreshAnimationGateAsync()
+        private async Task RefreshAnimationGateAsync(bool summaryOnly)
         {
             if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
             {
@@ -1007,19 +1018,53 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            var outputDir = Path.Combine(_root, "AnimationRelationDiagnostics_BrowserGate_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            var settings = summaryOnly
+                ? LibraryBrowserSettings.LoadEffective(_root)
+                : null;
+            var unityProject = summaryOnly && Directory.Exists(settings?.UnityProject)
+                ? settings.UnityProject
+                : "";
+            if (summaryOnly && string.IsNullOrWhiteSpace(unityProject))
+            {
+                var confirm = MessageBox.Show(
+                    this,
+                    "当前没有配置有效的 Unity Bake Project。可以继续刷新 SummaryOnly 报告，但 ImportedAvatar oracle 覆盖会保守显示为不可测或 0。\n\n是否继续？",
+                    "刷新烘焙摘要",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (confirm != DialogResult.Yes)
+                {
+                    return;
+                }
+            }
+            else if (summaryOnly)
+            {
+                var confirm = MessageBox.Show(
+                    this,
+                    "这会运行 SummaryOnly 动画覆盖诊断，统计 Unity bake / Avatar oracle 覆盖。大库可能需要几分钟，但不会烘焙动画，也不会新增或猜测模型-动画关系。\n\n是否继续？",
+                    "刷新烘焙摘要",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information);
+                if (confirm != DialogResult.Yes)
+                {
+                    return;
+                }
+            }
+
+            var outputPrefix = summaryOnly ? "AnimationRelationDiagnostics_BrowserSummary_" : "AnimationRelationDiagnostics_BrowserGate_";
+            var outputDir = Path.Combine(_root, outputPrefix + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
             _refreshAnimationGateButton.Enabled = false;
-            UpdateStatus("正在刷新动画关系门禁");
+            UpdateStatus(summaryOnly ? "正在刷新动画烘焙摘要" : "正在刷新动画关系门禁");
 
             ProcessRunResult result;
             try
             {
-                result = await RunDeterministicAnimationGateAsync(script, _root, outputDir);
+                result = await RunDeterministicAnimationGateAsync(script, _root, outputDir, summaryOnly, unityProject);
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, ex.Message, "动画关系门禁失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                UpdateStatus("动画关系门禁失败");
+                MessageBox.Show(this, ex.Message, summaryOnly ? "动画烘焙摘要失败" : "动画关系门禁失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus(summaryOnly ? "动画烘焙摘要失败" : "动画关系门禁失败");
                 return;
             }
             finally
@@ -1029,13 +1074,17 @@ namespace AnimeStudio.LibraryBrowser
 
             ReloadDeterministicAnimationSummary();
             RefreshCurrentModelDetailText();
-            UpdateStatus(result.ExitCode == 0 ? "动画关系门禁通过" : "动画关系门禁有警告");
+            var successStatus = summaryOnly ? "动画烘焙摘要已刷新" : "动画关系门禁通过";
+            var warningStatus = summaryOnly ? "动画烘焙摘要有警告" : "动画关系门禁有警告";
+            UpdateStatus(result.ExitCode == 0 ? successStatus : warningStatus);
 
             var message = $"输出目录: {outputDir}{Environment.NewLine}{Environment.NewLine}{TrimProcessOutput(result.CombinedOutput)}";
             MessageBox.Show(
                 this,
                 message,
-                result.ExitCode == 0 ? "动画关系门禁通过" : $"动画关系门禁退出码 {result.ExitCode}",
+                result.ExitCode == 0
+                    ? (summaryOnly ? "动画烘焙摘要已刷新" : "动画关系门禁通过")
+                    : $"{(summaryOnly ? "动画烘焙摘要" : "动画关系门禁")}退出码 {result.ExitCode}",
                 MessageBoxButtons.OK,
                 result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
@@ -1112,7 +1161,7 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             await OpenLibraryAsync(_root);
-            await RefreshAnimationGateAsync();
+            await RefreshAnimationGateAsync(summaryOnly: false);
             UpdateStatus("SQLite 动画索引已重建");
             MessageBox.Show(
                 this,
@@ -1206,7 +1255,12 @@ namespace AnimeStudio.LibraryBrowser
             return default;
         }
 
-        private static async Task<ProcessRunResult> RunDeterministicAnimationGateAsync(string script, string libraryRoot, string outputDir)
+        private static async Task<ProcessRunResult> RunDeterministicAnimationGateAsync(
+            string script,
+            string libraryRoot,
+            string outputDir,
+            bool summaryOnly,
+            string unityProject)
         {
             var startInfo = new ProcessStartInfo
             {
@@ -1225,7 +1279,12 @@ namespace AnimeStudio.LibraryBrowser
             startInfo.ArgumentList.Add(libraryRoot);
             startInfo.ArgumentList.Add("-OutputDir");
             startInfo.ArgumentList.Add(outputDir);
-            startInfo.ArgumentList.Add("-GateOnly");
+            startInfo.ArgumentList.Add(summaryOnly ? "-SummaryOnly" : "-GateOnly");
+            if (summaryOnly && !string.IsNullOrWhiteSpace(unityProject))
+            {
+                startInfo.ArgumentList.Add("-UnityProject");
+                startInfo.ArgumentList.Add(unityProject);
+            }
             startInfo.ArgumentList.Add("-FailOnWarning");
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 PowerShell。");
