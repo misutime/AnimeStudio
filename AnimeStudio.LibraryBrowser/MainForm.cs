@@ -4164,10 +4164,13 @@ namespace AnimeStudio.LibraryBrowser
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
             {
+                var title = needsUnityBake
+                    ? "Unity 烘焙: " + (string.IsNullOrWhiteSpace(status.Status) ? "未可播放" : status.Status)
+                    : "动画预览失败";
                 MessageBox.Show(
                     this,
                     status.Message ?? (needsUnityBake ? "Unity 烘焙失败。" : "生成动画预览失败。"),
-                    needsUnityBake ? "Unity 烘焙失败" : "动画预览失败",
+                    title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return;
@@ -4774,10 +4777,13 @@ namespace AnimeStudio.LibraryBrowser
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
             {
+                var title = needsUnityBake
+                    ? "Unity 烘焙: " + (string.IsNullOrWhiteSpace(status.Status) ? "未可播放" : status.Status)
+                    : "动画预览失败";
                 MessageBox.Show(
                     this,
                     status.Message ?? (needsUnityBake ? "Unity 烘焙失败。" : "生成动画预览失败。"),
-                    needsUnityBake ? "Unity 烘焙失败" : "动画预览失败",
+                    title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return;

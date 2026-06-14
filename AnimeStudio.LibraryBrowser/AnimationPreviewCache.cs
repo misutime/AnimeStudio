@@ -55,9 +55,9 @@ namespace AnimeStudio.LibraryBrowser
                 var gltf = ReadString(root, "gltf");
                 var validation = ReadString(root, "validation");
                 var message = ReadString(root, "message");
-                if (!string.Equals(status, "可播放", StringComparison.OrdinalIgnoreCase)
-                    && sqliteBakeStatus != null
-                    && string.Equals(sqliteBakeStatus.Status, "可播放", StringComparison.OrdinalIgnoreCase))
+                var localStatus = new AnimationPreviewStatus(status, gltf, validation, message);
+                if (sqliteBakeStatus != null
+                    && BakeCacheStatusPriority(sqliteBakeStatus) > BakeCacheStatusPriority(localStatus))
                 {
                     return sqliteBakeStatus;
                 }
@@ -76,11 +76,7 @@ namespace AnimeStudio.LibraryBrowser
                     message ??= "这是旧的快速预览结果，只包含普通 Transform 曲线；Humanoid/Muscle 身体动作仍需 Unity 烘焙。";
                 }
 
-                return new AnimationPreviewStatus(
-                    status,
-                    gltf,
-                    validation,
-                    message);
+                return new AnimationPreviewStatus(status, gltf, validation, message);
             }
             catch
             {
@@ -375,15 +371,35 @@ namespace AnimeStudio.LibraryBrowser
             var report = string.IsNullOrWhiteSpace(bakedGltf)
                 ? null
                 : Path.Combine(Path.GetDirectoryName(bakedGltf) ?? output, "unity_bake_apply_report.json");
+            var applyStatus = ReadUnityBakeApplyStatus(report);
             var baked = process.ExitCode == 0
                 && !string.IsNullOrWhiteSpace(bakedGltf)
                 && File.Exists(bakedGltf)
                 && HasTrustedUnityBakeReport(report)
                 && IsUnityBakedGltf(bakedGltf);
-            var finalStatus = baked ? "可播放" : "烘焙失败";
-            var message = baked ? null : BuildUnityBakeFailureMessage(process.ExitCode, report ?? batchReport, stdout.ToString(), stderr.ToString());
-            WriteState(directory, finalStatus, baked ? bakedGltf : null, File.Exists(report) ? report : null, message);
-            return new AnimationPreviewStatus(finalStatus, baked ? bakedGltf : null, File.Exists(report) ? report : null, message);
+            var finalStatus = baked
+                ? "可播放"
+                : FormatBakeCacheStatus(
+                    !string.IsNullOrWhiteSpace(bakedGltf) && File.Exists(bakedGltf) ? "baked" : null,
+                    bakedGltf,
+                    applyStatus);
+            if (string.Equals(finalStatus, "未生成", StringComparison.OrdinalIgnoreCase))
+            {
+                finalStatus = "烘焙失败";
+            }
+
+            var diagnosticGltf = !string.IsNullOrWhiteSpace(bakedGltf) && File.Exists(bakedGltf)
+                ? bakedGltf
+                : null;
+            var validationPath = !string.IsNullOrWhiteSpace(report) && File.Exists(report)
+                ? report
+                : null;
+            var message = baked
+                ? null
+                : BuildUntrustedBakeCacheMessage("baked", bakedGltf, report, applyStatus)
+                  ?? BuildUnityBakeFailureMessage(process.ExitCode, report ?? batchReport, stdout.ToString(), stderr.ToString());
+            WriteState(directory, finalStatus, baked ? bakedGltf : diagnosticGltf, validationPath, message);
+            return new AnimationPreviewStatus(finalStatus, baked ? bakedGltf : diagnosticGltf, validationPath, message);
         }
 
         public async Task<AnimationPreviewStatus> EnsureUnrealAsync(

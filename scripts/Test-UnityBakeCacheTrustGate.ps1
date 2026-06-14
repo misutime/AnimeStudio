@@ -160,6 +160,14 @@ $browserPreviewPriority = Get-MethodBodyText $libraryBrowserPreviewCache "privat
 Assert-Contains $browserPreviewPriority '"需人工验收" => 45' "Browser preview status must keep needs_review above request_written rows."
 Assert-Contains $browserPreviewPriority '"静态姿态" => 44' "Browser preview status must keep static_pose above request_written rows."
 
+$browserGetStatus = Get-MethodBodyText $libraryBrowserPreviewCache "public AnimationPreviewStatus GetStatus"
+Assert-Contains $browserGetStatus "BakeCacheStatusPriority(sqliteBakeStatus) > BakeCacheStatusPriority(localStatus)" "Browser local preview state must not hide higher-priority SQLite terminal diagnostics."
+
+$browserEnsureBake = Get-MethodBodyText $libraryBrowserPreviewCache "public async Task<AnimationPreviewStatus> EnsureUnityBakeAsync"
+Assert-Contains $browserEnsureBake "ReadUnityBakeApplyStatus(report)" "Browser single Unity bake must read apply report status."
+Assert-Contains $browserEnsureBake "FormatBakeCacheStatus(" "Browser single Unity bake must preserve static_pose/needs_review/untrusted baked statuses."
+Assert-Contains $browserEnsureBake "BuildUntrustedBakeCacheMessage" "Browser single Unity bake must explain non-playable baked diagnostics."
+
 Assert-Contains $cliUsage "untrusted_baked" "CLI docs must explain that untrusted baked rows re-enter the queue."
 Assert-Contains $cliUsage "cacheTrustGate=untrusted_requeue_overwriteable" "CLI docs must explain that untrusted baked rows are not protected terminal cache."
 
