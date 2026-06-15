@@ -76,11 +76,32 @@ function Get-MethodBodyText {
     throw "Unclosed method body: $MethodName"
 }
 
+function Get-TextBetweenMarkers {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Start,
+        [Parameter(Mandatory = $true)][string]$End
+    )
+
+    $startIndex = $Text.IndexOf($Start, [System.StringComparison]::Ordinal)
+    if ($startIndex -lt 0) {
+        throw "Missing marker: $Start"
+    }
+
+    $endIndex = $Text.IndexOf($End, $startIndex + $Start.Length, [System.StringComparison]::Ordinal)
+    if ($endIndex -lt 0) {
+        throw "Missing marker: $End"
+    }
+
+    return $Text.Substring($startIndex, $endIndex - $startIndex)
+}
+
 $requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
 $libraryIndexBuilder = Read-RepoFile "AnimeStudio.CLI\SQLiteLibraryIndexBuilder.cs"
 $libraryBrowserMainForm = Read-RepoFile "AnimeStudio.LibraryBrowser\MainForm.cs"
 $libraryBrowserPreviewCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
 $libraryBrowserAnimationIndex = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationIndex.cs"
+$coverageScript = Read-RepoFile "scripts\Measure-DeterministicAnimationCoverage.ps1"
 $cliUsage = Read-RepoFile "docs\CLI_USAGE.md"
 
 $skipSelector = Get-MethodBodyText $requestGenerator "private static IEnumerable<PreviewSelection> SelectExplicitBakeCandidatesFromLibraryDb"
@@ -193,6 +214,12 @@ $browserEnsureBake = Get-MethodBodyText $libraryBrowserPreviewCache "public asyn
 Assert-Contains $browserEnsureBake "ReadUnityBakeApplyStatus(report)" "Browser single Unity bake must read apply report status."
 Assert-Contains $browserEnsureBake "FormatBakeCacheStatus(" "Browser single Unity bake must preserve static_pose/needs_review/untrusted baked statuses."
 Assert-Contains $browserEnsureBake "BuildUntrustedBakeCacheMessage" "Browser single Unity bake must explain non-playable baked diagnostics."
+
+$avatarBlockers = Get-TextBetweenMarkers $coverageScript "def model_avatar_refresh_blockers" "def main():"
+Assert-Contains $avatarBlockers "temp_bake_ready_animation_candidates" "Coverage blocker diagnostics must subtract currently bake-ready Avatar oracle candidates."
+Assert-Contains $avatarBlockers "effective_bake_ready_avatar_sql" "Coverage blocker diagnostics must use the current HumanDescription/imported Avatar oracle gate."
+Assert-NotContains $avatarBlockers "json_extract(c3.raw_json, '$.productionUnityBakeReady')" "Coverage blocker diagnostics must not count old productionUnityBakeReady flags as Avatar ready proof."
+Assert-NotContains $avatarBlockers "json_extract(c.raw_json, '$.productionUnityBakeBlocked'), 0)=1" "Coverage blocker diagnostics must not trust old productionUnityBakeBlocked flags as the blocker source."
 
 Assert-Contains $cliUsage "untrusted_baked" "CLI docs must explain that untrusted baked rows re-enter the queue."
 Assert-Contains $cliUsage "cacheTrustGate=untrusted_requeue_overwriteable" "CLI docs must explain that untrusted baked rows are not protected terminal cache."

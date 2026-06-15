@@ -1470,22 +1470,53 @@ def avatar_production_gate(cur):
 
 
 def model_avatar_refresh_blockers(cur, top_limit=24):
-    if not table_exists(cur, "model_animation_candidates"):
+    if not table_exists(cur, "model_animation_candidates") or not table_exists(cur, "assets"):
         return {
             "available": False,
-            "note": "model_animation_candidates is missing; rebuild SQLite index to get Avatar refresh blocker diagnostics.",
+            "note": "model_animation_candidates or assets table is missing; rebuild SQLite index to get Avatar refresh blocker diagnostics.",
             "byReason": [],
             "topModels": [],
         }
 
-    blocked_cte = """
+    if table_exists(cur, "temp_unity_bake_candidates"):
+        blocked_cte = """
+WITH blocked AS (
+    SELECT t.model_output,
+           COALESCE(t.blocked_reason, 'unknown') AS reason
+    FROM temp_unity_bake_candidates t
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM temp_bake_ready_animation_candidates ready
+      WHERE ready.model_output=t.model_output
+        AND ready.animation_output=t.animation_output
+    )
+)
+"""
+        bake_ready_count_sql = """
+         SELECT COUNT(*)
+         FROM temp_bake_ready_animation_candidates ready
+         WHERE ready.model_output=b.model_output
+"""
+    else:
+        blocked_cte = """
 WITH blocked AS (
     SELECT c.model_output,
            COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlockedReason'), 'unknown') AS reason
     FROM model_animation_candidates c
+    JOIN assets m ON m.kind='Model' AND m.output=c.model_output
     WHERE c.relation_source='explicit'
-      AND COALESCE(json_extract(c.raw_json, '$.productionUnityBakeBlocked'), 0)=1
+      AND COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+      AND NOT (""" + effective_bake_ready_avatar_sql("m") + """)
 )
+"""
+        bake_ready_count_sql = """
+         SELECT COUNT(*)
+         FROM model_animation_candidates c3
+         JOIN assets m3 ON m3.kind='Model' AND m3.output=c3.model_output
+         WHERE c3.model_output=b.model_output
+           AND c3.relation_source='explicit'
+           AND COALESCE(json_extract(c3.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+           AND """ + effective_bake_ready_avatar_sql("m3") + """
 """
     by_reason = rows(
         cur,
@@ -1512,11 +1543,7 @@ SELECT COALESCE(a.name, b.model_output) AS modelName,
            AND c2.relation_source='explicit'
        ) AS explicitCandidateCount,
        (
-         SELECT COUNT(*)
-         FROM model_animation_candidates c3
-         WHERE c3.model_output=b.model_output
-           AND c3.relation_source='explicit'
-           AND COALESCE(json_extract(c3.raw_json, '$.productionUnityBakeReady'), 0)=1
+""" + bake_ready_count_sql + """
        ) AS bakeReadyCandidateCount
 FROM blocked b
 LEFT JOIN assets a ON a.output=b.model_output
@@ -1528,7 +1555,7 @@ LIMIT ?;
     )
     return {
         "available": True,
-        "rule": "Counts explicit Humanoid/Muscle candidates blocked by missing production Unity Avatar metadata; sorted by likely unlock count for model Avatar refresh.",
+        "rule": "Counts explicit Humanoid/Muscle candidates still missing a current production Avatar oracle: complete HumanDescription.humanBones + skeletonBones or exact matched imported original Unity Avatar asset. Legacy productionUnityBakeReady/blocked flags are not trusted by themselves.",
         "byReason": by_reason,
         "topModels": top_models,
         "totalModelCount": sum(int(x.get("modelCount") or 0) for x in by_reason),

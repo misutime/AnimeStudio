@@ -407,6 +407,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 
 这份报告只回答“默认模型-动画候选是不是来自 Unity 确定性关系”。它不证明 Humanoid/Muscle 姿态已经能由 AnimeStudio 内部公式正确转成 glTF TRS；这类动画还必须继续看 preview/bake 验证报告。若项目阶段允许把 Unity bake 作为生产桥接路径，bake 结果仍应写回 glTF/GLB 并保留 relation_source、bakeMode 和验证状态，不能把 bake 成功当作新增或猜测模型-动画关系。
 
+深度报告里的 `modelAvatarRefreshBlockers` 用于定位仍缺生产 Avatar oracle 的模型。它按当前有效口径计算：显式 Humanoid/Muscle 候选如果已经有完整 `HumanDescription.humanBones + skeletonBones`，或已精确命中 fresh ImportedAvatar asset，就会从 blocker 中扣除。旧索引 raw 里的 `productionUnityBakeReady` / `productionUnityBakeBlocked` 只能作为历史诊断字段，不能单独决定“已 ready”或“仍缺 Avatar”。因此导入新的原始 Unity Avatar asset 后，应重新运行 `-SummaryOnly` 或完整深度报告，让 blocker 列表反映当前 oracle 状态。
+
 `library_index.db` 还会生成两张候选统计表，供浏览器、覆盖度看板和批量验证直接查询，避免每次从几百万条候选明细重新 `GROUP BY`：
 
 ```text
