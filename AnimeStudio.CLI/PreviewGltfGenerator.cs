@@ -89,6 +89,8 @@ namespace AnimeStudio.CLI
             }
 
             var dbPath = Path.Combine(libraryRoot, "library_index.db");
+            modelSelector = NormalizeLibrarySelector(libraryRoot, modelSelector);
+            animationSelector = NormalizeLibrarySelector(libraryRoot, animationSelector);
             if (!File.Exists(dbPath))
             {
                 Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
@@ -1475,6 +1477,10 @@ LIMIT 4096;";
 
         private static PreviewSelection SelectPreviewFromLibraryDb(string dbPath, string modelSelector, string animationSelector)
         {
+            var libraryRoot = Path.GetDirectoryName(Path.GetFullPath(dbPath)) ?? string.Empty;
+            modelSelector = NormalizeLibrarySelector(libraryRoot, modelSelector);
+            animationSelector = NormalizeLibrarySelector(libraryRoot, animationSelector);
+
             SQLitePCL.Batteries_V2.Init();
             using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
             connection.Open();
@@ -1539,6 +1545,54 @@ LIMIT 128;";
             }
 
             return rows.FirstOrDefault();
+        }
+
+        private static string NormalizeLibrarySelector(string libraryRoot, string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector) || string.IsNullOrWhiteSpace(libraryRoot))
+            {
+                return selector;
+            }
+
+            var parts = SplitSelectors(selector);
+            if (parts.Length == 0)
+            {
+                return selector;
+            }
+
+            return string.Join(",", parts.Select(part => NormalizeSingleLibrarySelector(libraryRoot, part)));
+        }
+
+        private static string NormalizeSingleLibrarySelector(string libraryRoot, string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return selector;
+            }
+
+            var text = selector.Trim().Trim('"');
+            try
+            {
+                if (!Path.IsPathRooted(text))
+                {
+                    return text.Replace('\\', '/');
+                }
+
+                var root = Path.GetFullPath(libraryRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var full = Path.GetFullPath(text);
+                var relative = Path.GetRelativePath(root, full);
+                if (!relative.StartsWith("..", StringComparison.Ordinal)
+                    && !Path.IsPathRooted(relative))
+                {
+                    return relative.Replace('\\', '/');
+                }
+            }
+            catch
+            {
+                return text;
+            }
+
+            return text.Replace('\\', '/');
         }
 
         private static bool IsExplicitPreviewRelation(JObject animation)

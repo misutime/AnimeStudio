@@ -4115,7 +4115,11 @@ namespace AnimeStudio.LibraryBrowser
                 || animation?.RequiresInternalHumanoidSolve == true
                 || animation?.ProductionUnityBakeReady == true
                 || string.Equals(animation?.NextAction, "generate_unity_baked_gltf", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(animation?.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(animation?.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(animation?.ProductionAnimationPath, "UnityBakeToGltf", StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(animation?.AnimationType)
+                    && (animation.AnimationType.Contains("Humanoid", StringComparison.OrdinalIgnoreCase)
+                        || animation.AnimationType.Contains("Muscle", StringComparison.OrdinalIgnoreCase)));
         }
 
         private static bool NeedsAvatarHumanDescriptionRefresh(LibraryAnimationCandidate animation)

@@ -125,6 +125,11 @@ namespace AnimeStudio.LibraryBrowser
                 return current;
             }
 
+            if (NeedsUnityBake(animation))
+            {
+                return await EnsureUnityBakeAsync(model, animation, cancellationToken, progress).ConfigureAwait(false);
+            }
+
             var directory = GetPreviewDirectory(model, animation);
             Directory.CreateDirectory(directory);
             WriteState(directory, "生成中", null, null, null);
@@ -511,7 +516,11 @@ namespace AnimeStudio.LibraryBrowser
                 || animation?.RequiresUnityBake == true
                 || animation?.RequiresInternalHumanoidSolve == true
                 || string.Equals(animation?.NextAction, "generate_unity_baked_gltf", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(animation?.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(animation?.Capability, "HumanoidBodyBakeReady", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(animation?.ProductionAnimationPath, "UnityBakeToGltf", StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(animation?.AnimationType)
+                    && (animation.AnimationType.Contains("Humanoid", StringComparison.OrdinalIgnoreCase)
+                        || animation.AnimationType.Contains("Muscle", StringComparison.OrdinalIgnoreCase)));
         }
 
         private static string BuildProgressMessage(DateTime startedAt, string line)
