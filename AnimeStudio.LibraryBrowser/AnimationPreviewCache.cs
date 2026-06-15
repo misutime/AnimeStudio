@@ -823,6 +823,7 @@ FROM animation_bake_cache;";
                         && HasTrustedUnityBakeReport(applyReport)
                         && IsUnityBakedGltf(bakedGltf);
                     var displayGltf = string.Equals(applyStatus?.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                        || ShouldHideUntrustedBakedGltf(applyStatus)
                         ? null
                         : bakedGltf;
                     var previewStatus = hasTrustedBakedGltf
@@ -920,6 +921,21 @@ FROM animation_bake_cache;";
                 null or "" => "未生成",
                 _ => status,
             };
+        }
+
+        private static bool ShouldHideUntrustedBakedGltf(UnityBakeApplyStatus applyStatus)
+        {
+            if (applyStatus == null)
+            {
+                return false;
+            }
+
+            // 原神 ImportedAvatar 流程里，旧缓存可能已经写出了 glTF，但 AnimationClip 不是
+            // Unity 工程内导入的原始 clip。这样的文件容易把辅助 clip 误当完整身体动画，
+            // 只能保留报告用于诊断，不能在 Browser 里继续开放预览入口。
+            return applyStatus.RequiresImportedAnimationClip
+                && (string.Equals(applyStatus.AnimationClipSource, "animeStudioAssets.animation.anim", StringComparison.OrdinalIgnoreCase)
+                    || string.IsNullOrWhiteSpace(applyStatus.ImportedAnimationClip));
         }
 
         private static string BuildBakeCacheMessage(string status, string cacheMessage, string bakedGltf, string applyReport, UnityBakeApplyStatus applyStatus)

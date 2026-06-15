@@ -203,6 +203,12 @@ Assert-Contains $browserBakeCache "HasTrustedUnityBakeReport(applyReport)" "Brow
 Assert-Contains $browserBakeCache "IsUnityBakedGltf(bakedGltf)" "Browser SQLite bake cache must require glTF Unity bake marker before playable."
 Assert-Contains $browserBakeCache "hasTrustedBakedGltf" "Browser SQLite bake cache may mark playable only after trusted proof."
 Assert-Contains $browserBakeCache "? new AnimationPreviewStatus" "Browser SQLite bake cache must create the playable status only through the trusted branch."
+Assert-Contains $browserBakeCache "ShouldHideUntrustedBakedGltf" "Browser SQLite bake cache must not expose stale glTF paths when imported AnimationClip proof is missing."
+
+$browserHideUntrusted = Get-MethodBodyText $browserCache "private static bool ShouldHideUntrustedBakedGltf"
+Assert-Contains $browserHideUntrusted "RequiresImportedAnimationClip" "Browser stale glTF hiding must only apply to explicit Avatar asset requests that require imported AnimationClip proof."
+Assert-Contains $browserHideUntrusted '"animeStudioAssets.animation.anim"' "Browser stale glTF hiding must catch old AnimeStudio .anim bake inputs."
+Assert-Contains $browserHideUntrusted "ImportedAnimationClip" "Browser stale glTF hiding must catch missing imported AnimationClip proof."
 
 $productionSource = Get-MethodBodyText $browserCache "private static bool IsProductionAvatarTrustSource"
 Assert-Contains $productionSource '"internal_solver"' "Browser must reject internal_solver trust sources."

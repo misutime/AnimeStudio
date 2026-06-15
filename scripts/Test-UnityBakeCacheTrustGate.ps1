@@ -120,12 +120,12 @@ Assert-Contains $processedCache "continue;" "Processed bake cache must drop untr
 Assert-Contains $processedCache "temp_unity_bake_processed_cache" "Processed bake cache must be the only source used by skipBakedCache."
 
 $preserve = Get-MethodBodyText $requestGenerator "private static bool ShouldPreserveExistingBakeCache"
-Assert-Contains $preserve '"static_pose"' "Bake cache writeback may preserve static_pose terminal diagnostics."
-Assert-Contains $preserve '"needs_review"' "Bake cache writeback may preserve needs_review terminal diagnostics."
 Assert-Contains $preserve '"baked"' "Bake cache writeback may preserve baked only after trust proof."
 Assert-Contains $preserve "IsTrustedBakedGltfPath(bakedGltfPath, libraryRoot)" "Bake cache writeback must re-check trusted baked glTF before preserving baked rows."
+Assert-NotContains $preserve '"static_pose"' "Bake cache writeback must not preserve old static_pose rows because newer ImportedAnimationClip bakes must be able to replace them."
+Assert-NotContains $preserve '"needs_review"' "Bake cache writeback must not preserve old needs_review rows because newer ImportedAnimationClip bakes must be able to replace them."
 
-$upsert = Get-MethodBodyText $requestGenerator "private static void UpsertBakeCache"
+$upsert = Get-MethodBodyText $requestGenerator "private static void UpsertBakeCacheRow"
 Assert-Contains $upsert "ShouldPreserveExistingBakeCache" "Bake cache upsert must call terminal preservation gate."
 Assert-Contains $upsert "excluded.status NOT IN ('baked', 'static_pose', 'needs_review')" "Bake cache upsert may preserve old terminal rows only against non-terminal updates."
 
