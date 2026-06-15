@@ -788,6 +788,16 @@ Library Browser 也支持同一条路径。素材库根目录可写本地配置 
 
 `unityAnimationClips` 是显式动画名到 Unity `AnimationClip` asset 的映射，也可以直接把 `.anim` 放进 bake 工程 `Assets/AnimeStudioBake/ImportedAnimationClip/`，CLI 会按当前实际要 bake 的动画名或文件名精确匹配。Ambor 这类 controller context 修正后，匹配 key 是修正后的完整身体 clip，例如 `Ani_Avatar_Girl_RunCycle`，不是用户最初点到的辅助 clip `Ani_Avatar_Girl_Bow_Ambor_RunCycle`。命中后 request 会写 `unityAssetPaths.animationClip`，Unity helper 会用 `AssetDatabase.LoadAssetAtPath<AnimationClip>` 加载并在结果里记录 `animationClipSource=unityAssetPaths.animationClip`；未命中时才回到导出的 `.anim` sidecar 导入路径。手动 `--unity_animation_clip` 只允许单动画定向 bake，批量命中多个动画时会拒绝，避免把同一个 clip 套给不同候选。
 
+新导出或重建 SQLite 后，如果素材库已经配置了 Unity bake project，CLI 会自动尝试恢复 ImportedAvatar 和 ImportedAnimationClip。AnimationClip 恢复只读取 `library_index.db` 里的 `relation_source=explicit` Humanoid/Muscle 候选；如果候选来自 AnimatorController 辅助层，会按同一 state 的 `animatorControllerContext.baseLayerClip` 恢复真正身体主 clip，不按名字、目录、骨骼数量猜测。也可以手动运行：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --recover_imported_animation_clips "D:\Assets\AS-Assets\YuanShen-Assets" `
+  --unity_project "D:\misutime\AnimeStudioUnityProject"
+```
+
+命令会把需要的 `.anim` 复制到 `Assets/AnimeStudioBake/ImportedAnimationClip/`，并写入素材库本地 `.as_browser_cache\unity_bake_settings.json` 的 `unityAnimationClips` 映射。可用 `--preview_model` 或 `--preview_animation` 做定向恢复，`--avatar_recovery_limit` 限制数量，`--avatar_recovery_force` 强制覆盖已存在文件。
+
 映射 key 可以写模型名，也可以写模型元数据里的 `avatar.name`。推荐对原神这类共用 Avatar 的 NPC 写 Avatar 名，例如 `NPC_Male_Common_ModelAvatar`；Browser 会从 `library_index.db assets.raw_json.avatar.name` 读取该模型真实 Avatar 名后再查映射，这样一个配置可以覆盖所有引用同一个 Unity Avatar 的模型。这个关系来自导出的 Unity Avatar 元数据，不是按目录或角色名前缀推断。
 
 要继续补齐原神这类库的 Avatar oracle，可以先生成恢复优先级计划。计划只读取 `assets.raw_json.avatar.name/source/pathId` 和 `model_animation_candidate_model_summary`，不会新增模型-动画关系，也不会按名称猜测绑定：

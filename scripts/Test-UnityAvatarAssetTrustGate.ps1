@@ -95,6 +95,7 @@ $builder = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Edi
 $baker = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor\AnimeStudioPlayableBaker.cs"
 $applier = Read-RepoFile "AnimeStudio.CLI\UnityBakeResultApplier.cs"
 $requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
+$animationClipRecovery = Read-RepoFile "AnimeStudio.CLI\AnimationClipAssetRecoveryExporter.cs"
 $browserCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
 $unityReadme = Read-RepoFile "AnimeStudio.UnityBake\README.md"
 $standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
@@ -149,6 +150,17 @@ $requestClipGuard = Get-MethodBodyText $requestGenerator "private static bool Va
 Assert-Contains $requestClipGuard "--unity_animation_clip" "Batch guard must protect manual Unity AnimationClip overrides."
 Assert-Contains $requestClipGuard "animationKeys.Length <= 1" "Manual Unity AnimationClip override must only allow one selected animation."
 Assert-Contains $requestClipGuard "return false" "Manual Unity AnimationClip override must reject multi-animation selections."
+
+$clipRecoveryRequests = Get-MethodBodyText $animationClipRecovery "private static List<AnimationClipRecoveryRequest> ReadRecoveryRequests"
+Assert-Contains $clipRecoveryRequests "model_animation_candidates" "Imported AnimationClip recovery must read deterministic SQLite model-animation candidates."
+Assert-Contains $clipRecoveryRequests "c.relation_source='explicit'" "Imported AnimationClip recovery must only use explicit Unity relations."
+Assert-Contains $clipRecoveryRequests "animatorControllerContext.baseLayerClip.clip.pathId" "Imported AnimationClip recovery must include AnimatorController baseLayerClip context."
+Assert-Contains $clipRecoveryRequests "ResolveActualBakeAnimation" "Imported AnimationClip recovery must resolve the actual body-driving clip before copying assets."
+
+$clipRecoveryActual = Get-MethodBodyText $animationClipRecovery "private static ActualBakeAnimation ResolveActualBakeAnimation"
+Assert-Contains $clipRecoveryActual "animatorControllerContext" "Imported AnimationClip recovery must use AnimatorController context when available."
+Assert-Contains $clipRecoveryActual "baseLayerClip" "Imported AnimationClip recovery must use baseLayerClip for auxiliary controller clips."
+Assert-Contains $clipRecoveryActual "explicitCandidateAnimation" "Imported AnimationClip recovery must keep direct explicit candidate clips when no controller base clip is present."
 
 $applyReport = Get-MethodBodyText $applier "public static string Apply"
 Assert-Contains $applyReport "unityBakeRequestedAnimationClip" "Apply report must record requested Unity AnimationClip asset."

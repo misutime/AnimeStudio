@@ -163,6 +163,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.VerifySourceIndex,
                 optionsBinder.ExportAvatarOracle,
                 optionsBinder.RecoverImportedAvatarAssets,
+                optionsBinder.RecoverImportedAnimationClips,
                 optionsBinder.RefreshAnimatorControllerContexts,
                 optionsBinder.UnityFileInspect,
                 optionsBinder.AvatarRecoveryLimit,
@@ -281,6 +282,7 @@ namespace AnimeStudio.CLI
         public FileInfo VerifySourceIndex { get; set; }
         public FileInfo ExportAvatarOracle { get; set; }
         public DirectoryInfo RecoverImportedAvatarAssets { get; set; }
+        public DirectoryInfo RecoverImportedAnimationClips { get; set; }
         public DirectoryInfo RefreshAnimatorControllerContexts { get; set; }
         public FileInfo UnityFileInspect { get; set; }
         public int AvatarRecoveryLimit { get; set; }
@@ -394,6 +396,7 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> VerifySourceIndex;
         public readonly Option<FileInfo> ExportAvatarOracle;
         public readonly Option<DirectoryInfo> RecoverImportedAvatarAssets;
+        public readonly Option<DirectoryInfo> RecoverImportedAnimationClips;
         public readonly Option<DirectoryInfo> RefreshAnimatorControllerContexts;
         public readonly Option<FileInfo> UnityFileInspect;
         public readonly Option<int> AvatarRecoveryLimit;
@@ -505,6 +508,7 @@ namespace AnimeStudio.CLI
             VerifySourceIndex = new Option<FileInfo>("--verify_source_index", "Inspect an existing unity_source_index.db and write an animation relation health report without rebuilding it.").LegalFilePathsOnly();
             ExportAvatarOracle = new Option<FileInfo>("--export_avatar_oracle", "Export one AvatarConstant oracle JSON from unity_source_index.db. Use --preview_model to select Avatar name/pathId/source and --preview_output for the output folder.").LegalFilePathsOnly();
             RecoverImportedAvatarAssets = new Option<DirectoryInfo>("--recover_imported_avatar_assets", "Recover missing original UnityEngine.Avatar assets from a Library root into the Unity bake project ImportedAvatar folder. Uses library_index.db avatar source/pathId, not guessed skeleton data.").LegalFilePathsOnly();
+            RecoverImportedAnimationClips = new Option<DirectoryInfo>("--recover_imported_animation_clips", "Recover deterministic Humanoid/Muscle AnimationClip .anim assets from a Library root into the Unity bake project ImportedAnimationClip folder. Uses explicit SQLite candidates and AnimatorController baseLayerClip context; no name or bone-count guessing.").LegalFilePathsOnly();
             RefreshAnimatorControllerContexts = new Option<DirectoryInfo>("--refresh_animator_controller_contexts", "Refresh library_index.db candidates that need AnimatorController context by importing baseLayerClip evidence from unity_file_inspect.json. Uses explicit Animator.controller relations from unity_source_index.db; no name or bone-count guessing.").LegalFilePathsOnly();
             UnityFileInspect = new Option<FileInfo>("--unity_file_inspect", "unity_file_inspect.json produced by --inspect_unity_files. Used by --refresh_animator_controller_contexts to recover AnimatorController state/layer baseLayerClip context.").LegalFilePathsOnly();
             AvatarRecoveryLimit = new Option<int>("--avatar_recovery_limit", "Maximum number of unique missing Avatar assets to recover. 0 means all selected missing avatars.");
@@ -708,6 +712,7 @@ namespace AnimeStudio.CLI
                 VerifySourceIndex = bindingContext.ParseResult.GetValueForOption(VerifySourceIndex),
                 ExportAvatarOracle = bindingContext.ParseResult.GetValueForOption(ExportAvatarOracle),
                 RecoverImportedAvatarAssets = bindingContext.ParseResult.GetValueForOption(RecoverImportedAvatarAssets),
+                RecoverImportedAnimationClips = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimationClips),
                 RefreshAnimatorControllerContexts = bindingContext.ParseResult.GetValueForOption(RefreshAnimatorControllerContexts),
                 UnityFileInspect = bindingContext.ParseResult.GetValueForOption(UnityFileInspect),
                 AvatarRecoveryLimit = bindingContext.ParseResult.GetValueForOption(AvatarRecoveryLimit),

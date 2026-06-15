@@ -279,7 +279,7 @@ namespace AnimeStudio.CLI
                     }
 
                     SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName, o.SkipSqliteFileIndex, o.SkipSqliteSidecarScan, o.SkipSqliteJsonDocuments, o.SourceIndex?.FullName);
-                    TryAutoRecoverImportedAvatarAssets(o, o.BuildSqliteIndex.FullName, null, null);
+                    TryAutoRecoverUnityBakeAssets(o, o.BuildSqliteIndex.FullName, null, null);
                     return;
                 }
 
@@ -346,6 +346,25 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.RecoverImportedAnimationClips != null)
+                {
+                    var unitySettings = ResolveUnityBakeSettings(o, o.RecoverImportedAnimationClips.FullName);
+                    if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
+                    {
+                        Logger.Error("--recover_imported_animation_clips requires a Unity bake project. Configure it once in Browser Unity settings, write .as_browser_cache\\unity_bake_settings.json, set ANIMESTUDIO_UNITY_BAKE_PROJECT, or pass --unity_project.");
+                        return;
+                    }
+
+                    AnimationClipAssetRecoveryExporter.Recover(
+                        o.RecoverImportedAnimationClips.FullName,
+                        unitySettings.UnityProject,
+                        o.PreviewAnimation ?? o.PreviewModel,
+                        o.AvatarRecoveryLimit,
+                        o.AvatarRecoveryForce,
+                        o.IndexPath?.FullName);
+                    return;
+                }
+
                 if (o.RefreshAnimatorControllerContexts != null)
                 {
                     if (o.UnityFileInspect == null || !File.Exists(o.UnityFileInspect.FullName))
@@ -364,7 +383,7 @@ namespace AnimeStudio.CLI
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -847,7 +866,7 @@ namespace AnimeStudio.CLI
                         GenerateLibraryIndexes(o.Output.FullName, skipSqliteIndex: o.SkipSqliteIndex);
                         if (!o.SkipSqliteIndex)
                         {
-                            TryAutoRecoverImportedAvatarAssets(o, o.Output.FullName, game, inputBaseFolder);
+                            TryAutoRecoverUnityBakeAssets(o, o.Output.FullName, game, inputBaseFolder);
                         }
                     }
                 }
@@ -1387,6 +1406,12 @@ namespace AnimeStudio.CLI
             }
         }
 
+        private static void TryAutoRecoverUnityBakeAssets(Options o, string libraryRoot, Game game, string sourceRoot)
+        {
+            TryAutoRecoverImportedAvatarAssets(o, libraryRoot, game, sourceRoot);
+            TryAutoRecoverImportedAnimationClips(o, libraryRoot);
+        }
+
         private static void TryAutoRecoverImportedAvatarAssets(Options o, string libraryRoot, Game game, string sourceRoot)
         {
             if (o == null || string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
@@ -1437,6 +1462,36 @@ namespace AnimeStudio.CLI
             catch (Exception e)
             {
                 Logger.Warning($"Imported Avatar asset auto recovery failed; Library export remains usable but Humanoid bake may still need Avatar metadata. {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static void TryAutoRecoverImportedAnimationClips(Options o, string libraryRoot)
+        {
+            if (o == null || string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                return;
+            }
+
+            var unitySettings = ResolveUnityBakeSettings(o, libraryRoot);
+            if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
+            {
+                Logger.Info("Imported AnimationClip auto recovery skipped because no Unity bake project is configured. Configure Browser Unity settings, .as_browser_cache\\unity_bake_settings.json, ANIMESTUDIO_UNITY_BAKE_PROJECT, or --unity_project to enable the default recovery step.");
+                return;
+            }
+
+            try
+            {
+                AnimationClipAssetRecoveryExporter.Recover(
+                    libraryRoot,
+                    unitySettings.UnityProject,
+                    selector: null,
+                    limit: 0,
+                    force: false,
+                    explicitIndexPath: o.IndexPath?.FullName);
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Imported AnimationClip auto recovery failed; Library export remains usable but Humanoid bake may still need imported AnimationClip assets. {e.GetType().Name}: {e.Message}");
             }
         }
 
