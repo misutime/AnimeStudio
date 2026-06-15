@@ -158,7 +158,7 @@ namespace AnimeStudio.LibraryBrowser
             if (!modelText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
                 || !bakerText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
                 || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
-                || !skeletonText.Contains("Request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.Ordinal))
+                || !skeletonText.Contains("request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.OrdinalIgnoreCase))
             {
                 return "UnityBakeProject 里的 AnimeStudio.UnityBake helper 版本过旧，缺少导入 Avatar asset 强校验和 importedAvatarAssetValid 证明字段。请把仓库里的 AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake 复制到 Bake 工程的 Assets 目录下后重试。当前 helper 目录："
                     + helperRoot;
