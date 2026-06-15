@@ -4440,6 +4440,17 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
+            if (animation.NeedsAnimatorControllerContext)
+            {
+                MessageBox.Show(
+                    this,
+                    "这个 AnimationClip 需要 AnimatorController 状态机上下文，不能作为独立身体动画导出 FBX。需要先恢复原始 RuntimeAnimatorController/AnimationClip，并按确定的 state 采样。",
+                    "导出 FBX 动画",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
             if (NeedsAvatarHumanDescriptionRefresh(animation))
             {
                 MessageBox.Show(this, "该动画缺少生产 Unity bake 所需的 Avatar 元数据，不能导出可信 FBX 动画。", "导出 FBX 动画", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -5371,6 +5382,13 @@ namespace AnimeStudio.LibraryBrowser
                     + "骨骼路径、结构兼容、名称或人工定向匹配只能用于诊断，不能当作素材库默认绑定。"
                     + Environment.NewLine
                     + $"关系来源: {EmptyAsUnknown(animation.RelationSource)}";
+            }
+
+            if (animation.NeedsAnimatorControllerContext)
+            {
+                return "当前 AnimationClip 需要 AnimatorController 状态机上下文，不能脱离 Layer/BlendTree/State 单独生成可信身体动画。"
+                    + Environment.NewLine
+                    + "下一步需要恢复原始 RuntimeAnimatorController/AnimationClip，并按 Unity 确定 state 采样。";
             }
 
             if (string.IsNullOrWhiteSpace(model.OutputPath) || !File.Exists(model.OutputPath))

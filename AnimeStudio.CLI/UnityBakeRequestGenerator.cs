@@ -685,6 +685,9 @@ namespace AnimeStudio.CLI
                     // 这两个路径必须是 Unity 工程里的 Assets/... 路径；Unity helper 不按游戏名猜资源。
                     modelPrefab = unityModelPrefab,
                     animationClip = unityAnimationClip,
+                    // 预留给原始 RuntimeAnimatorController asset。Ambor 这类 BlendTree 叶子 clip
+                    // 必须通过 Controller state 采样，不能再把单个 .anim 当完整身体动画。
+                    animatorController = (string)null,
                     // 原神等缺少完整 HumanDescription.skeletonBones 的资源，需要显式导入原始 UnityEngine.Avatar。
                     // 默认不填，避免影响 VRising/Freedunk 等普通 Unity 项目的既有路径。
                     avatarAsset = unityAvatarAsset,
@@ -716,6 +719,7 @@ namespace AnimeStudio.CLI
                         relationSource = (string)animation?["relationSource"],
                         confidence = (string)animation?["confidence"],
                         score = (int?)animation?["score"] ?? 0,
+                        animatorControllerContext = animation?["animatorControllerContext"] as JObject,
                     },
                 },
                 validation = new

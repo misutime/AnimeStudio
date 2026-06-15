@@ -864,6 +864,7 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 ["standaloneBodyBakeReady"] = standaloneBodyBakeReady,
                 ["standaloneBodyBakeStatus"] = S(animation, "standaloneBodyBakeStatus"),
                 ["standaloneBodyBakeReason"] = S(animation, "standaloneBodyBakeReason"),
+                ["animatorControllerContext"] = relation.AnimatorControllerContext,
                 ["partialDirectGltf"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver,
                 ["partialDirectGltfReason"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver
                     ? "Animation has deterministic Transform TRS curves, but full Humanoid/Muscle bake is blocked by missing Avatar HumanBone mapping or reference pose."
@@ -3202,7 +3203,7 @@ WHERE s.explicit_model_count > 0;";
 
         private sealed record SourceObject(string Type, string Name);
 
-        private sealed record SourceAnimationRelation(SourceKey ClipKey, string Relation, string Reason);
+        private sealed record SourceAnimationRelation(SourceKey ClipKey, string Relation, string Reason, JObject AnimatorControllerContext = null);
 
         private sealed class SourceAnimationGraph
         {
@@ -3214,6 +3215,7 @@ WHERE s.explicit_model_count > 0;";
             private readonly Dictionary<SourceKey, List<SourceKey>> _animatorControllers = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _animationClips = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _controllerClips = new();
+            private readonly Dictionary<SourceKey, List<SourceAnimationRelation>> _controllerClipRelations = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _overrideBaseControllers = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _overrideOriginalClips = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _overrideClips = new();
@@ -3269,11 +3271,15 @@ WHERE s.explicit_model_count > 0;";
                 var seen = new HashSet<SourceKey>();
                 if (string.Equals(modelObject.Type, "Animator", StringComparison.OrdinalIgnoreCase))
                 {
-                    foreach (var clip in FindAnimatorClips(modelKey))
+                    foreach (var relation in FindAnimatorClips(modelKey))
                     {
-                        if (seen.Add(clip))
+                        if (seen.Add(relation.ClipKey))
                         {
-                            yield return new SourceAnimationRelation(clip, "animator.controller.clip", "Model source is an Animator with an explicit RuntimeAnimatorController.");
+                            yield return relation with
+                            {
+                                Relation = "animator.controller.clip",
+                                Reason = "Model source is an Animator with an explicit RuntimeAnimatorController.",
+                            };
                         }
                     }
                     yield break;
@@ -3326,9 +3332,13 @@ WHERE s.explicit_model_count > 0;";
 
                     if (string.Equals(componentObject.Type, "Animator", StringComparison.OrdinalIgnoreCase))
                     {
-                        foreach (var clip in FindAnimatorClips(component))
+                        foreach (var relation in FindAnimatorClips(component))
                         {
-                            AddHierarchyRelation(result, seen, new SourceAnimationRelation(clip, "gameObject.hierarchy.animator.controller.clip", $"Animator '{componentObject.Name}' is attached to the exported GameObject hierarchy."));
+                            AddHierarchyRelation(result, seen, relation with
+                            {
+                                Relation = "gameObject.hierarchy.animator.controller.clip",
+                                Reason = $"Animator '{componentObject.Name}' is attached to the exported GameObject hierarchy.",
+                            });
                         }
                     }
                     else if (string.Equals(componentObject.Type, "Animation", StringComparison.OrdinalIgnoreCase))
@@ -3391,11 +3401,15 @@ WHERE s.explicit_model_count > 0;";
 
                             if (string.Equals(componentObject.Type, "Animator", StringComparison.OrdinalIgnoreCase))
                             {
-                                foreach (var clip in FindAnimatorClips(component))
+                                foreach (var relation in FindAnimatorClips(component))
                                 {
-                                    if (seen.Add(clip))
+                                    if (seen.Add(relation.ClipKey))
                                     {
-                                        yield return new SourceAnimationRelation(clip, "gameObject.ancestor.animator.controller.clip", $"Ancestor Animator '{componentObject.Name}' controls the exported GameObject hierarchy.");
+                                        yield return relation with
+                                        {
+                                            Relation = "gameObject.ancestor.animator.controller.clip",
+                                            Reason = $"Ancestor Animator '{componentObject.Name}' controls the exported GameObject hierarchy.",
+                                        };
                                     }
                                 }
                             }
@@ -3447,18 +3461,18 @@ WHERE s.explicit_model_count > 0;";
                 yield return Path.GetFileName(normalized);
             }
 
-            private IEnumerable<SourceKey> FindAnimatorClips(SourceKey animator)
+            private IEnumerable<SourceAnimationRelation> FindAnimatorClips(SourceKey animator)
             {
                 foreach (var controller in GetMany(_animatorControllers, animator))
                 {
-                    foreach (var clip in FindControllerClips(controller, new HashSet<SourceKey>()))
+                    foreach (var relation in FindControllerClips(controller, new HashSet<SourceKey>()))
                     {
-                        yield return clip;
+                        yield return relation;
                     }
                 }
             }
 
-            private IEnumerable<SourceKey> FindControllerClips(SourceKey controller, HashSet<SourceKey> visited)
+            private IEnumerable<SourceAnimationRelation> FindControllerClips(SourceKey controller, HashSet<SourceKey> visited)
             {
                 if (!visited.Add(controller))
                 {
@@ -3492,18 +3506,18 @@ WHERE s.explicit_model_count > 0;";
                     }
                 }
 
-                foreach (var clip in GetMany(_controllerClips, controller))
+                foreach (var relation in GetControllerClipRelations(controller))
                 {
-                    yield return clip;
+                    yield return relation;
                 }
 
                 foreach (var baseController in baseControllers)
                 {
-                    foreach (var clip in FindControllerClips(baseController, visited))
+                    foreach (var relation in FindControllerClips(baseController, visited))
                     {
-                        if (!overriddenOriginalClips.Contains(clip))
+                        if (!overriddenOriginalClips.Contains(relation.ClipKey))
                         {
-                            yield return clip;
+                            yield return relation;
                         }
                     }
                 }
@@ -3515,10 +3529,21 @@ WHERE s.explicit_model_count > 0;";
                         var selected = pair.OverrideClip.IsValid ? pair.OverrideClip : pair.OriginalClip;
                         if (selected.IsValid)
                         {
-                            yield return selected;
+                            yield return new SourceAnimationRelation(selected, "animatorOverrideController.clipPair", "AnimatorOverrideController deterministically selected this override clip.");
                         }
                     }
                 }
+            }
+
+            private IEnumerable<SourceAnimationRelation> GetControllerClipRelations(SourceKey controller)
+            {
+                if (_controllerClipRelations.TryGetValue(controller, out var relations))
+                {
+                    return relations;
+                }
+
+                return GetMany(_controllerClips, controller)
+                    .Select(clip => new SourceAnimationRelation(clip, "animatorController.clip", "AnimatorController explicitly references this AnimationClip."));
             }
 
             private void LoadObjects(SqliteConnection connection)
@@ -3581,7 +3606,7 @@ WHERE type IN ('GameObject','Animator','Animation','AnimatorController','Animato
                 long count = 0;
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
-SELECT relation, from_file, from_path_id, to_file, to_path_id, from_type, from_name
+SELECT relation, from_file, from_path_id, to_file, to_path_id, from_type, from_name, raw_json
 FROM source_relations
 WHERE relation IN (
   'component.gameObject',
@@ -3634,6 +3659,11 @@ WHERE relation IN (
                             break;
                         case "animatorController.clip":
                             Add(_controllerClips, from, to);
+                            Add(_controllerClipRelations, from, new SourceAnimationRelation(
+                                to,
+                                "animatorController.clip",
+                                "AnimatorController explicitly references this AnimationClip.",
+                                TryReadAnimatorControllerContext(reader.IsDBNull(7) ? null : reader.GetString(7))));
                             break;
                         case "animatorOverrideController.baseController":
                             Add(_overrideBaseControllers, from, to);
@@ -3736,6 +3766,64 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
                 }
 
                 list.Add(value);
+            }
+
+            private static void Add(Dictionary<SourceKey, List<SourceAnimationRelation>> map, SourceKey key, SourceAnimationRelation value)
+            {
+                if (!map.TryGetValue(key, out var list))
+                {
+                    list = new List<SourceAnimationRelation>();
+                    map[key] = list;
+                }
+
+                list.Add(value);
+            }
+
+            private static JObject TryReadAnimatorControllerContext(string rawJson)
+            {
+                if (string.IsNullOrWhiteSpace(rawJson))
+                {
+                    return null;
+                }
+
+                try
+                {
+                    var details = JObject.Parse(rawJson)["details"] as JObject;
+                    if (details == null)
+                    {
+                        return null;
+                    }
+
+                    return new JObject
+                    {
+                        ["source"] = details["source"],
+                        ["controllerClipIndex"] = details["controllerClipIndex"],
+                        ["layers"] = details["layers"],
+                        ["stateMachineIndex"] = details["stateMachineIndex"],
+                        ["stateIndex"] = details["stateIndex"],
+                        ["stateName"] = details["stateName"],
+                        ["statePath"] = details["statePath"],
+                        ["stateFullPath"] = details["stateFullPath"],
+                        ["stateSpeed"] = details["stateSpeed"],
+                        ["stateCycleOffset"] = details["stateCycleOffset"],
+                        ["stateLoop"] = details["stateLoop"],
+                        ["stateMirror"] = details["stateMirror"],
+                        ["blendTreeIndex"] = details["blendTreeIndex"],
+                        ["nodeIndex"] = details["nodeIndex"],
+                        ["nodeBlendType"] = details["nodeBlendType"],
+                        ["nodeBlendEvent"] = details["nodeBlendEvent"],
+                        ["nodeBlendEventY"] = details["nodeBlendEventY"],
+                        ["nodeClipId"] = details["nodeClipId"],
+                        ["nodeClipIndex"] = details["nodeClipIndex"],
+                        ["nodeDuration"] = details["nodeDuration"],
+                        ["nodeCycleOffset"] = details["nodeCycleOffset"],
+                        ["nodeMirror"] = details["nodeMirror"],
+                    };
+                }
+                catch
+                {
+                    return null;
+                }
             }
 
             private static bool TryReadOverrideClipPair(string rawJson, out OverrideClipPair pair)

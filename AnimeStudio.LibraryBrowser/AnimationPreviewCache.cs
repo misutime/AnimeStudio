@@ -249,6 +249,17 @@ namespace AnimeStudio.LibraryBrowser
                 return status;
             }
 
+            if (animation.NeedsAnimatorControllerContext)
+            {
+                var status = new AnimationPreviewStatus(
+                    "需状态机上下文",
+                    null,
+                    null,
+                    "这个 AnimationClip 是 AnimatorController 状态机里的片段，不能脱离 Layer/BlendTree/State 单独烘焙。需要先恢复原始 RuntimeAnimatorController/AnimationClip，并按确定的 state 采样。");
+                WriteState(directory, status.Status, status.GltfPath, status.ValidationPath, status.Message);
+                return status;
+            }
+
             var current = GetStatus(model, animation);
             if (string.Equals(current.Status, "可播放", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(current.GltfPath)
@@ -524,6 +535,11 @@ namespace AnimeStudio.LibraryBrowser
 
         private static bool NeedsUnityBake(LibraryAnimationCandidate animation)
         {
+            if (animation?.NeedsAnimatorControllerContext == true)
+            {
+                return false;
+            }
+
             return animation?.RequiresHumanoidBake == true
                 || animation?.RequiresUnityBake == true
                 || animation?.RequiresInternalHumanoidSolve == true
