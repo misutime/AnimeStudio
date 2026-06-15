@@ -130,6 +130,9 @@ Assert-Contains $browserExplicit "RelationSource" "Browser explicit candidate ch
 Assert-NotContains $browserExplicit "Confidence" "Browser explicit candidate check must not use Confidence."
 Assert-NotContains $browserIndex "OR mar.confidence = 'explicit_unity_reference'" "Browser old relation query must not add default candidates by confidence."
 
+$browserUsableCandidate = Get-TextAfterMarker $browserCandidate "public bool IsUsableCandidate =>" 650
+Assert-Contains $browserUsableCandidate "IsExplicit" "Browser usable candidate counts must not include structural/targeted fallback relations."
+
 $browserFindCli = Get-MethodBodyText $browserMain "private static CliRunLauncher FindCliLauncher"
 Assert-Contains $browserFindCli "BuildSqliteIndexArguments" "Browser CLI launcher must use the shared SQLite rebuild argument builder."
 

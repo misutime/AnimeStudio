@@ -65,7 +65,7 @@ namespace AnimeStudio.LibraryBrowser
             || string.Equals(NextAction, "refresh_avatar_human_description", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(ProductionUnityBakeBlockedReason, "missing_human_description_human_bones", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(ProductionUnityBakeBlockedReason, "avatar_constant_oracle_diagnostic_only", System.StringComparison.OrdinalIgnoreCase));
-        public bool IsUsableCandidate => !NeedsProductionAvatarRefresh &&
+        public bool IsUsableCandidate => IsExplicit && !NeedsProductionAvatarRefresh &&
             (!IsUnreal ||
              ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&
               !IsMetadataOnly &&
