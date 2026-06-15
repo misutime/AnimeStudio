@@ -37,11 +37,6 @@ namespace AnimeStudio.CLI
             }
 
             var result = JObject.Parse(File.ReadAllText(resultPath));
-            if (!string.Equals((string)result["status"], "ok", StringComparison.OrdinalIgnoreCase))
-            {
-                Logger.Error($"Unity bake result is not ok: {(string)result["message"]}");
-                return null;
-            }
 
             var sourceGltf = (string)request["animeStudioAssets"]?["model"]?["gltf"];
             if (string.IsNullOrWhiteSpace(sourceGltf) || !File.Exists(sourceGltf))
@@ -52,10 +47,28 @@ namespace AnimeStudio.CLI
 
             var clipName = (string)result["clipName"] ?? (string)request["animeStudioAssets"]?["animation"]?["name"] ?? "UnityBaked";
             outputGltfPath = ResolveOutputPath(requestPath, outputGltfPath, sourceGltf, (string)request["animeStudioAssets"]?["model"]?["name"], clipName);
+            var outputDir = Path.GetDirectoryName(outputGltfPath);
+            if (!string.Equals((string)result["status"], "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                var failureMessage = $"Unity bake result is not ok: {(string)result["message"]}";
+                WriteFailureReport(outputDir, sourceGltf, outputGltfPath, requestPath, resultPath, clipName, failureMessage, result);
+                Logger.Error(failureMessage);
+                return null;
+            }
+
+            var requiresHumanoidBake = (bool?)request["animeStudioAssets"]?["animation"]?["requiresHumanoidBake"] ?? false;
+            var unityClipIsHumanMotion = (bool?)result["isHumanMotion"] ?? false;
+            if (requiresHumanoidBake && !unityClipIsHumanMotion)
+            {
+                var failureMessage = "Unity bake rejected this Humanoid/Muscle animation because Unity reported isHumanMotion=false for the imported clip. The current .anim input was not sampled as a real Humanoid/Muscle body animation, so writing a baked glTF would preserve a misleading static/default pose.";
+                WriteFailureReport(outputDir, sourceGltf, outputGltfPath, requestPath, resultPath, clipName, failureMessage, result);
+                Logger.Error(failureMessage);
+                return null;
+            }
+
             CopyModelFolder(sourceGltf, outputGltfPath);
 
             var gltf = JObject.Parse(File.ReadAllText(outputGltfPath));
-            var outputDir = Path.GetDirectoryName(outputGltfPath);
             var bufferFile = ResolveMainBufferFile(gltf, outputDir);
             if (bufferFile == null)
             {
@@ -97,7 +110,6 @@ namespace AnimeStudio.CLI
             var firstPoseChangedTracks = 0;
             var coreBodyFirstPoseChangedTracks = 0;
             var unityRestPoseTracks = 0;
-            var requiresHumanoidBake = (bool?)request["animeStudioAssets"]?["animation"]?["requiresHumanoidBake"] ?? false;
             var humanoidDeltaBase = "rest_pose";
             var trackMotionReports = new List<TrackMotionReport>();
             var skippedTracks = new List<string>();
@@ -219,7 +231,6 @@ namespace AnimeStudio.CLI
             File.WriteAllText(outputGltfPath, JsonConvert.SerializeObject(gltf, Formatting.Indented));
             var skinReport = BuildSkinAnimationReport(gltf);
             var avatarTrust = BuildAvatarTrustReport(request, result);
-            var unityClipIsHumanMotion = (bool?)result["isHumanMotion"] ?? false;
             var status = skippedTracks.Count == 0 && skinReport.InvalidTargetCount == 0
                 ? (frameVaryingTracks > 0 ? "ok" : "static_pose")
                 : "warning";
@@ -294,6 +305,43 @@ namespace AnimeStudio.CLI
             Logger.Info($"Baked glTF preview: {outputGltfPath}");
             Logger.Info($"Baked apply report: {reportPath}");
             return outputGltfPath;
+        }
+
+        private static void WriteFailureReport(
+            string outputDir,
+            string sourceGltf,
+            string outputGltfPath,
+            string requestPath,
+            string resultPath,
+            string clipName,
+            string message,
+            JObject result)
+        {
+            if (string.IsNullOrWhiteSpace(outputDir))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(outputDir);
+            var report = new
+            {
+                generatedAt = DateTime.UtcNow.ToString("O"),
+                status = "failed",
+                message,
+                sourceGltf,
+                outputGltf = outputGltfPath,
+                request = requestPath,
+                result = resultPath,
+                clipName,
+                unityClipIsHumanMotion = (bool?)result?["isHumanMotion"] ?? false,
+                unityBakeHelperVersion = (int?)result?["helperVersion"] ?? 1,
+                unityBakeRequestedAvatarAsset = (string)result?["requestedAvatarAsset"],
+                unityBakeImportedAvatarAsset = (string)result?["importedAvatarAsset"],
+                unityBakeImportedAvatarAssetValid = (bool?)result?["importedAvatarAssetValid"] ?? false,
+            };
+            var reportPath = Path.Combine(outputDir, "unity_bake_apply_report.json");
+            File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
+            Logger.Info($"Baked apply report: {reportPath}");
         }
 
         private static AvatarTrustReport BuildAvatarTrustReport(JObject request, JObject result)

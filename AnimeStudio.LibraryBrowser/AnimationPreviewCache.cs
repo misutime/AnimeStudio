@@ -805,13 +805,16 @@ FROM animation_bake_cache;";
                         && File.Exists(bakedGltf)
                         && HasTrustedUnityBakeReport(applyReport)
                         && IsUnityBakedGltf(bakedGltf);
+                    var displayGltf = string.Equals(applyStatus?.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : bakedGltf;
                     var previewStatus = hasTrustedBakedGltf
                         ? new AnimationPreviewStatus("可播放", bakedGltf, applyReport ?? resultPath, message)
                         : new AnimationPreviewStatus(
                             FormatBakeCacheStatus(status, bakedGltf, applyStatus),
-                            bakedGltf,
+                            displayGltf,
                             applyReport ?? resultPath,
-                            message ?? BuildUntrustedBakeCacheMessage(status, bakedGltf, applyReport, applyStatus));
+                            BuildBakeCacheMessage(status, message, bakedGltf, applyReport, applyStatus));
 
                     var key = BuildBakeCacheKey(modelOutput, animationOutput);
                     result[key] = result.TryGetValue(key, out var existing)
@@ -887,6 +890,10 @@ FROM animation_bake_cache;";
             {
                 return "需人工验收";
             }
+            if (string.Equals(applyStatus?.Status, "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return "烘焙失败";
+            }
 
             return status switch
             {
@@ -896,6 +903,17 @@ FROM animation_bake_cache;";
                 null or "" => "未生成",
                 _ => status,
             };
+        }
+
+        private static string BuildBakeCacheMessage(string status, string cacheMessage, string bakedGltf, string applyReport, UnityBakeApplyStatus applyStatus)
+        {
+            if (string.Equals(applyStatus?.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(applyStatus.Message))
+            {
+                return applyStatus.Message;
+            }
+
+            return cacheMessage ?? BuildUntrustedBakeCacheMessage(status, bakedGltf, applyReport, applyStatus);
         }
 
         private static string BuildUntrustedBakeCacheMessage(string status, string bakedGltf, string applyReport, UnityBakeApplyStatus applyStatus)

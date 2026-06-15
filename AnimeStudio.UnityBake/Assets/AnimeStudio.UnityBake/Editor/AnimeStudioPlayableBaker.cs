@@ -28,6 +28,14 @@ namespace AnimeStudio.UnityBake
             {
                 return Error(request, $"AnimationClip not found or could not be imported: {request.unityAssetPaths.animationClip}");
             }
+            if (request.animeStudioAssets?.animation?.requiresHumanoidBake == true && !clip.isHumanMotion)
+            {
+                // Humanoid/Muscle 动画如果没有被 Unity 导入成 humanMotion，
+                // PlayableGraph 只能采样到普通 Transform 曲线，身体主动作会丢失。
+                return Error(
+                    request,
+                    "Humanoid/Muscle production bake requires Unity to import the clip as humanMotion, but imported clip.isHumanMotion=false. Refusing to write a misleading baked glTF; recover or reference the original Unity AnimationClip asset instead of the exported .anim fallback.");
+            }
             var clipFilterStats = ApplyDiagnosticClipFilter(ref clip);
             Avatar explicitAvatar;
             try

@@ -804,9 +804,10 @@ namespace AnimeStudio.CLI
             if (!modelText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
                 || !bakerText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
                 || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
+                || !bakerText.Contains("requires Unity to import the clip as humanMotion", StringComparison.Ordinal)
                 || !skeletonText.Contains("request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.OrdinalIgnoreCase))
             {
-                return "Unity project has an outdated AnimeStudio.UnityBake helper. Copy AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake into the Unity project's Assets directory so imported Avatar asset proof is written before trusted bake statistics are accepted: " + helperRoot;
+                return "Unity project has an outdated AnimeStudio.UnityBake helper. Copy AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake into the Unity project's Assets directory so imported Avatar asset proof and Humanoid humanMotion guards are written before trusted bake statistics are accepted: " + helperRoot;
             }
 
             return null;
@@ -2791,12 +2792,16 @@ EXISTS (
         {
             var modelOutput = CanonicalizeLibraryOutput((string)item["modelOutput"], libraryRoot);
             var animationOutput = CanonicalizeLibraryOutput((string)item["animationOutput"], libraryRoot);
+            var incomingStatus = (string)item["status"] ?? "failed";
+            var incomingMessage = (string)item["message"];
             var preserveExistingTerminal = ShouldPreserveExistingBakeCache(
                 connection,
                 transaction,
                 modelOutput,
                 animationOutput,
-                libraryRoot);
+                libraryRoot,
+                incomingStatus,
+                incomingMessage);
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
@@ -2828,7 +2833,7 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
     updated_utc=excluded.updated_utc;";
             command.Parameters.AddWithValue("$modelOutput", modelOutput);
             command.Parameters.AddWithValue("$animationOutput", animationOutput);
-            command.Parameters.AddWithValue("$status", (string)item["status"] ?? "failed");
+            command.Parameters.AddWithValue("$status", incomingStatus);
             command.Parameters.AddWithValue("$requestPath", DbValue((string)item["request"]));
             command.Parameters.AddWithValue("$resultPath", DbValue((string)item["result"]));
             command.Parameters.AddWithValue("$bakedGltfPath", DbValue((string)item["bakedGltf"]));
@@ -2845,8 +2850,15 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
             SqliteTransaction transaction,
             string modelOutput,
             string animationOutput,
-            string libraryRoot)
+            string libraryRoot,
+            string incomingStatus,
+            string incomingMessage)
         {
+            if (IsHardHumanoidBakeFailure(incomingStatus, incomingMessage))
+            {
+                return false;
+            }
+
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
@@ -2872,6 +2884,20 @@ LIMIT 1;";
 
             return string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase)
                 && IsTrustedBakedGltfPath(bakedGltfPath, libraryRoot);
+        }
+
+        private static bool IsHardHumanoidBakeFailure(string status, string message)
+        {
+            if (!string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(message))
+            {
+                return false;
+            }
+
+            // 这类失败说明 Unity 没有把 Humanoid/Muscle clip 当 humanMotion 采样。
+            // 旧的 needs_review 半跪/静态姿态缓存不能继续保护，否则 Browser 会一直打开错误 glTF。
+            return message.IndexOf("isHumanMotion=false", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("not sampled as a real Humanoid/Muscle", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static object DbValue(string value)
@@ -3597,11 +3623,23 @@ LIMIT 32;";
                 {
                     var report = JObject.Parse(File.ReadAllText(applyReport));
                     var outputGltf = (string)report["outputGltf"];
+                    var status = (string)report["status"];
+                    if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new BatchBakeApplyInfo(
+                            null,
+                            status,
+                            (string)report["message"],
+                            (int?)report["frameVaryingTracks"] ?? 0,
+                            (int?)report["frameVaryingChannels"] ?? 0,
+                            (int?)report["firstPoseChangedTracks"] ?? 0,
+                            (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                    }
                     if (!string.IsNullOrWhiteSpace(outputGltf) && File.Exists(outputGltf))
                     {
                         return new BatchBakeApplyInfo(
                             outputGltf,
-                            (string)report["status"],
+                            status,
                             (string)report["message"],
                             (int?)report["frameVaryingTracks"] ?? 0,
                             (int?)report["frameVaryingChannels"] ?? 0,
@@ -3612,6 +3650,30 @@ LIMIT 32;";
                 catch (Exception e)
                 {
                     Logger.Warning($"Unable to read Unity bake apply report: {applyReport}; {e.Message}");
+                }
+            }
+
+            var resultPath = Path.Combine(itemOutput, "unity_bake_result.json");
+            if (File.Exists(resultPath))
+            {
+                try
+                {
+                    var result = JObject.Parse(File.ReadAllText(resultPath));
+                    if (!string.Equals((string)result["status"], "ok", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new BatchBakeApplyInfo(
+                            null,
+                            "failed",
+                            (string)result["message"],
+                            0,
+                            0,
+                            0,
+                            0);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Logger.Warning($"Unable to read Unity bake result: {resultPath}; {e.Message}");
                 }
             }
 
