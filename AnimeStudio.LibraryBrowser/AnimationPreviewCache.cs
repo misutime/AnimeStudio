@@ -238,6 +238,7 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var directory = GetPreviewDirectory(model, animation);
+            var config = LibraryBrowserSettings.LoadEffective(_root);
             if (animation?.IsExplicit != true)
             {
                 var status = new AnimationPreviewStatus(
@@ -249,7 +250,7 @@ namespace AnimeStudio.LibraryBrowser
                 return status;
             }
 
-            if (animation.NeedsAnimatorControllerContext)
+            if (animation.NeedsAnimatorControllerContext && string.IsNullOrWhiteSpace(config.UnityFileInspect))
             {
                 var status = new AnimationPreviewStatus(
                     "需状态机上下文",
@@ -269,7 +270,6 @@ namespace AnimeStudio.LibraryBrowser
                 return current;
             }
 
-            var config = LibraryBrowserSettings.LoadEffective(_root);
             var configError = config.ValidateUnityBake();
             if (!string.IsNullOrWhiteSpace(configError))
             {
@@ -312,7 +312,8 @@ namespace AnimeStudio.LibraryBrowser
                 config.UnityProject,
                 config.UnityEditor,
                 null,
-                unityAvatarAsset);
+                unityAvatarAsset,
+                config.UnityFileInspect);
 
             var startedAt = DateTime.UtcNow;
             var startInfo = new ProcessStartInfo
@@ -1573,7 +1574,7 @@ FROM animation_bake_cache;";
                     "--preview_animation", animation,
                     "--preview_output", output,
                 },
-                (libraryRoot, model, animation, output, unityProject, unityEditor, bakedGltf, unityAvatarAsset) =>
+                (libraryRoot, model, animation, output, unityProject, unityEditor, bakedGltf, unityAvatarAsset, unityFileInspect) =>
                 {
                     var args = new List<string>
                     {
@@ -1593,6 +1594,11 @@ FROM animation_bake_cache;";
                     {
                         args.Add("--unity_avatar_asset");
                         args.Add(unityAvatarAsset);
+                    }
+                    if (!string.IsNullOrWhiteSpace(unityFileInspect) && File.Exists(unityFileInspect))
+                    {
+                        args.Add("--unity_file_inspect");
+                        args.Add(unityFileInspect);
                     }
 
                     return args.ToArray();
@@ -1629,7 +1635,7 @@ FROM animation_bake_cache;";
         private sealed record CliLauncher(
             string FileName,
             Func<string, string, string, string, string[]> BuildArguments,
-            Func<string, string, string, string, string, string, string, string, string[]> BuildUnityBakeArguments);
+            Func<string, string, string, string, string, string, string, string, string, string[]> BuildUnityBakeArguments);
 
         private sealed record ExternalLauncher(
             string FileName,

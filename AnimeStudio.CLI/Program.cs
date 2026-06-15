@@ -181,6 +181,7 @@ namespace AnimeStudio.CLI
 
                 if (o.BakeAnimationPreviewsFromLibrary != null)
                 {
+                    TryPrepareAnimatorControllerBakeContext(o, o.BakeAnimationPreviewsFromLibrary.FullName);
                     UnityBakeRequestGenerator.GenerateBatchFromLibrary(
                         o.BakeAnimationPreviewsFromLibrary.FullName,
                         o.PreviewModel,
@@ -1413,6 +1414,56 @@ namespace AnimeStudio.CLI
         {
             TryAutoRecoverImportedAvatarAssets(o, libraryRoot, game, sourceRoot);
             TryAutoRecoverImportedAnimationClips(o, libraryRoot);
+        }
+
+        private static void TryPrepareAnimatorControllerBakeContext(Options o, string libraryRoot)
+        {
+            if (o == null || string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                return;
+            }
+
+            if (o.UnityFileInspect == null || !File.Exists(o.UnityFileInspect.FullName))
+            {
+                return;
+            }
+
+            var unitySettings = ResolveUnityBakeSettings(o, libraryRoot);
+            if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
+            {
+                Logger.Info("AnimatorController context preparation skipped because no Unity bake project is configured.");
+                return;
+            }
+
+            try
+            {
+                // 这一步只使用 unity_file_inspect.json 中的 AnimatorController state/blend-tree
+                // 和 unity_source_index.db 的 Animator.controller 显式关系，不按名字猜动画。
+                AnimatorControllerContextRefresher.Refresh(
+                    libraryRoot,
+                    o.UnityFileInspect.FullName,
+                    o.SourceIndex?.FullName,
+                    o.IndexPath?.FullName,
+                    o.PreviewModel,
+                    o.PackAnimations ?? o.PreviewAnimation);
+
+                // 如果选中 clip 被切到了同状态 baseLayerClip，这里把实际要采样的
+                // 原始 Unity AnimationClip asset 放进 bake 工程，保证 helper 能得到 isHumanMotion=true。
+                AnimationClipAssetRecoveryExporter.Recover(
+                    libraryRoot,
+                    unitySettings.UnityProject,
+                    o.PreviewModel,
+                    o.PackAnimations ?? o.PreviewAnimation,
+                    limit: Math.Max(1, o.PreviewValidationLimit <= 0 ? 1 : o.PreviewValidationLimit),
+                    force: false,
+                    explicitIndexPath: o.IndexPath?.FullName);
+            }
+            catch (Exception e)
+            {
+                var message = $"AnimatorController context preparation failed. {e.GetType().Name}: {e.Message}";
+                Logger.Error(message);
+                throw new InvalidOperationException(message, e);
+            }
         }
 
         private static void TryAutoRecoverImportedAvatarAssets(Options o, string libraryRoot, Game game, string sourceRoot)

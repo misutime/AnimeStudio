@@ -95,9 +95,11 @@ $builder = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Edi
 $baker = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor\AnimeStudioPlayableBaker.cs"
 $applier = Read-RepoFile "AnimeStudio.CLI\UnityBakeResultApplier.cs"
 $requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
+$program = Read-RepoFile "AnimeStudio.CLI\Program.cs"
 $animationClipRecovery = Read-RepoFile "AnimeStudio.CLI\AnimationClipAssetRecoveryExporter.cs"
 $controllerContextRefresh = Read-RepoFile "AnimeStudio.CLI\AnimatorControllerContextRefresher.cs"
 $browserCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
+$browserSettings = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryBrowserSettings.cs"
 $unityReadme = Read-RepoFile "AnimeStudio.UnityBake\README.md"
 $standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
 
@@ -177,6 +179,16 @@ Assert-Contains $controllerRefresh "blockedReasonCounts" "AnimatorController con
 Assert-Contains $controllerRefresh "blockedItemsSample" "AnimatorController context refresh report must include blocked item samples."
 Assert-Contains $controllerRefresh "missing_animator_controller_relation" "AnimatorController context refresh must distinguish missing Animator.controller relations."
 
+$programMain = Get-MethodBodyText $program "public static void Main"
+Assert-Before $programMain "TryPrepareAnimatorControllerBakeContext" "UnityBakeRequestGenerator.GenerateBatchFromLibrary" "CLI batch Unity bake must prepare AnimatorController context before generating requests."
+
+$programPrepareContext = Get-MethodBodyText $program "private static void TryPrepareAnimatorControllerBakeContext"
+Assert-Contains $programPrepareContext "o.UnityFileInspect" "CLI AnimatorController context preparation must require unity_file_inspect.json."
+Assert-Contains $programPrepareContext "AnimatorControllerContextRefresher.Refresh" "CLI AnimatorController context preparation must refresh deterministic controller metadata."
+Assert-Contains $programPrepareContext "AnimationClipAssetRecoveryExporter.Recover" "CLI AnimatorController context preparation must recover the actual Unity AnimationClip asset before bake."
+Assert-Contains $programPrepareContext "o.PackAnimations ?? o.PreviewAnimation" "CLI AnimatorController context preparation must use the current selected animation filter."
+Assert-Contains $programPrepareContext "throw new InvalidOperationException" "CLI AnimatorController context preparation must fail instead of silently continuing with stale metadata."
+
 $batchCacheWrite = Get-MethodBodyText $requestGenerator "private static void UpsertBakeCache"
 Assert-Contains $batchCacheWrite "requestedAnimationOutput" "Batch Unity bake cache must also record the original user-selected AnimatorController clip."
 Assert-Contains $batchCacheWrite "UpsertBakeCacheRow" "Batch Unity bake cache must write an alias row for auxiliary clip -> baseLayerClip bake results."
@@ -203,6 +215,19 @@ $browserAnimationClipTrust = Get-MethodBodyText $browserCache "private static bo
 Assert-Contains $browserAnimationClipTrust "ReportRequestHasExplicitAvatarAsset(root)" "Browser imported AnimationClip trust must only be mandatory for explicit Avatar asset requests."
 Assert-Contains $browserAnimationClipTrust '"unityAssetPaths.animationClip"' "Browser imported AnimationClip trust must require Unity AnimationClip asset source."
 Assert-Contains $browserAnimationClipTrust '"unityBakeImportedAnimationClip"' "Browser imported AnimationClip trust must require imported AnimationClip proof."
+
+$browserEnsureUnityBake = Get-MethodBodyText $browserCache "public async Task<AnimationPreviewStatus> EnsureUnityBakeAsync"
+Assert-Contains $browserEnsureUnityBake "var config = LibraryBrowserSettings.LoadEffective(_root)" "Browser Unity bake must load Unity settings before deciding AnimatorController context readiness."
+Assert-Contains $browserEnsureUnityBake "animation.NeedsAnimatorControllerContext && string.IsNullOrWhiteSpace(config.UnityFileInspect)" "Browser must only block AnimatorController-context clips when no unity_file_inspect.json is available."
+Assert-Contains $browserEnsureUnityBake "config.UnityFileInspect" "Browser Unity bake must pass unity_file_inspect.json into the CLI request."
+
+$browserBuildUnityArgs = Get-MethodBodyText $browserCache "private static CliLauncher BuildExeLauncher"
+Assert-Contains $browserBuildUnityArgs "--unity_file_inspect" "Browser CLI launcher must pass --unity_file_inspect when available."
+Assert-Contains $browserBuildUnityArgs "File.Exists(unityFileInspect)" "Browser CLI launcher must only pass existing unity_file_inspect.json files."
+
+Assert-Contains $browserSettings "UnityFileInspect" "Browser settings must keep a configured unity_file_inspect.json path."
+Assert-Contains $browserSettings "ANIMESTUDIO_UNITY_FILE_INSPECT" "Browser settings must allow an environment-provided unity_file_inspect.json path."
+Assert-Contains $browserSettings "DiscoverUnityFileInspect" "Browser settings must auto-discover library diagnostics unity_file_inspect.json files."
 
 $browserBakeCache = Get-MethodBodyText $browserCache "private Dictionary<string, AnimationPreviewStatus> LoadSqliteBakeCacheCore"
 Assert-Contains $browserBakeCache "HasTrustedUnityBakeReport(applyReport)" "Browser SQLite bake cache must require trusted apply report before playable."

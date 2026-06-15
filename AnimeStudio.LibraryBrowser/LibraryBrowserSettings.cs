@@ -12,6 +12,7 @@ namespace AnimeStudio.LibraryBrowser
 
         public string UnityProject { get; init; }
         public string UnityEditor { get; init; }
+        public string UnityFileInspect { get; init; }
         public IReadOnlyDictionary<string, string> UnityAvatarAssets { get; init; } =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public IReadOnlyDictionary<string, string> UnityAnimationClips { get; init; } =
@@ -48,11 +49,17 @@ namespace AnimeStudio.LibraryBrowser
                 global?.UnityEditor,
                 FindDefaultUnityEditor(),
                 Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_EDITOR")));
+            var unityFileInspect = FirstExistingFile(
+                local?.UnityFileInspect,
+                global?.UnityFileInspect,
+                Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_FILE_INSPECT"),
+                DiscoverUnityFileInspect(root));
 
             return new LibraryBrowserSettings
             {
                 UnityProject = unityProject,
                 UnityEditor = unityEditor,
+                UnityFileInspect = unityFileInspect,
                 UnityAvatarAssets = MergeAvatarAssets(
                     DiscoverImportedAvatarAssets(unityProject, root),
                     FilterConfiguredImportedAvatarAssets(unityProject, root, global?.UnityAvatarAssets),
@@ -76,6 +83,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 ["unityProject"] = settings?.UnityProject ?? string.Empty,
                 ["unityEditor"] = NormalizeUnityEditorPath(settings?.UnityEditor) ?? string.Empty,
+                ["unityFileInspect"] = settings?.UnityFileInspect ?? string.Empty,
             };
             WriteStringMap(node, "unityAvatarAssets", settings?.UnityAvatarAssets);
             WriteStringMap(node, "unityAnimationClips", settings?.UnityAnimationClips);
@@ -281,6 +289,7 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     UnityProject = ReadNodeString(node, "unityProject"),
                     UnityEditor = NormalizeUnityEditorPath(ReadNodeString(node, "unityEditor")),
+                    UnityFileInspect = ReadNodeString(node, "unityFileInspect"),
                     UnityAvatarAssets = ReadStringMap(node, "unityAvatarAssets"),
                     UnityAnimationClips = ReadStringMap(node, "unityAnimationClips"),
                 };
@@ -301,6 +310,45 @@ namespace AnimeStudio.LibraryBrowser
         private static string FirstNotEmpty(params string[] values)
         {
             return values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+        }
+
+        private static string FirstExistingFile(params string[] values)
+        {
+            return values?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x.Trim().Trim('"'))
+                .FirstOrDefault(File.Exists);
+        }
+
+        private static string DiscoverUnityFileInspect(string root)
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            {
+                return null;
+            }
+
+            var candidates = new List<string>();
+            var direct = Path.Combine(root, "unity_file_inspect.json");
+            if (File.Exists(direct))
+            {
+                candidates.Add(direct);
+            }
+
+            var diagnostics = Path.Combine(root, ".as_browser_cache", "diagnostics");
+            if (Directory.Exists(diagnostics))
+            {
+                candidates.AddRange(Directory.EnumerateFiles(diagnostics, "unity_file_inspect.json", SearchOption.AllDirectories));
+            }
+
+            candidates.AddRange(Directory.EnumerateDirectories(root, "Diagnostics_*", SearchOption.TopDirectoryOnly)
+                .Select(dir => Path.Combine(dir, "unity_file_inspect.json"))
+                .Where(File.Exists));
+
+            return candidates
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Select(file => file.FullName)
+                .FirstOrDefault();
         }
 
         private string NormalizeUnityAssetPath(string value)
