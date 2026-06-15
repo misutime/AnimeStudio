@@ -358,7 +358,8 @@ namespace AnimeStudio.CLI
                     AnimationClipAssetRecoveryExporter.Recover(
                         o.RecoverImportedAnimationClips.FullName,
                         unitySettings.UnityProject,
-                        o.PreviewAnimation ?? o.PreviewModel,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
                         o.AvatarRecoveryLimit,
                         o.AvatarRecoveryForce,
                         o.IndexPath?.FullName);
@@ -377,7 +378,9 @@ namespace AnimeStudio.CLI
                         o.RefreshAnimatorControllerContexts.FullName,
                         o.UnityFileInspect.FullName,
                         o.SourceIndex?.FullName,
-                        o.IndexPath?.FullName);
+                        o.IndexPath?.FullName,
+                        o.PreviewModel,
+                        o.PreviewAnimation);
                     return;
                 }
 
@@ -1484,7 +1487,8 @@ namespace AnimeStudio.CLI
                 AnimationClipAssetRecoveryExporter.Recover(
                     libraryRoot,
                     unitySettings.UnityProject,
-                    selector: null,
+                    modelSelector: null,
+                    animationSelector: null,
                     limit: 0,
                     force: false,
                     explicitIndexPath: o.IndexPath?.FullName);

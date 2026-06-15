@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -16,7 +17,8 @@ namespace AnimeStudio.CLI
         public static string Recover(
             string libraryRoot,
             string unityProject,
-            string selector,
+            string modelSelector,
+            string animationSelector,
             int limit,
             bool force,
             string explicitIndexPath = null)
@@ -49,7 +51,7 @@ namespace AnimeStudio.CLI
             Directory.CreateDirectory(reportDir);
             var reportPath = Path.Combine(reportDir, "imported_animation_clip_recovery.json");
 
-            var requests = ReadRecoveryRequests(dbPath, libraryPath, importedRoot, selector, limit, force);
+            var requests = ReadRecoveryRequests(dbPath, libraryPath, importedRoot, modelSelector, animationSelector, limit, force);
             var results = new JArray();
             var recoveredMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var request in requests)
@@ -109,7 +111,8 @@ namespace AnimeStudio.CLI
             string dbPath,
             string libraryRoot,
             string importedRoot,
-            string selector,
+            string modelSelector,
+            string animationSelector,
             int limit,
             bool force)
         {
@@ -124,6 +127,8 @@ FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 WHERE c.relation_source='explicit'
+  AND ($modelSelector='' OR m.name LIKE $modelLike OR m.output LIKE $modelLike)
+  AND ($animationSelector='' OR a.name LIKE $animationLike OR a.output LIKE $animationLike)
   AND (
     COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
     OR COALESCE(json_extract(c.raw_json, '$.hasMuscleClip'), 0)=1
@@ -131,6 +136,10 @@ WHERE c.relation_source='explicit'
     OR COALESCE(json_extract(c.raw_json, '$.humanoid.requiresUnityBake'), 0)=1
     OR json_extract(c.raw_json, '$.animatorControllerContext.baseLayerClip.clip.pathId') IS NOT NULL
   );";
+            command.Parameters.AddWithValue("$modelSelector", string.IsNullOrWhiteSpace(modelSelector) ? "" : modelSelector);
+            command.Parameters.AddWithValue("$animationSelector", string.IsNullOrWhiteSpace(animationSelector) ? "" : animationSelector);
+            command.Parameters.AddWithValue("$modelLike", SelectorLikePattern(modelSelector));
+            command.Parameters.AddWithValue("$animationLike", SelectorLikePattern(animationSelector));
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -156,7 +165,8 @@ WHERE c.relation_source='explicit'
                     continue;
                 }
 
-                if (!MatchesSelector(selector, modelName, modelOutput, candidateName, candidateOutput, actual.Name, actual.OutputPath))
+                if (!MatchesSelector(modelSelector, modelName, modelOutput)
+                    || !MatchesSelector(animationSelector, candidateName, candidateOutput, actual.Name, actual.OutputPath))
                 {
                     continue;
                 }
@@ -306,8 +316,51 @@ WHERE c.relation_source='explicit'
                 return true;
             }
 
-            return values.Any(value => !string.IsNullOrWhiteSpace(value)
-                && value.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0);
+            foreach (var value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+                if (value.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+
+                try
+                {
+                    if (Regex.IsMatch(value, selector, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // selector 不是合法正则时，普通包含匹配已经覆盖手工输入场景。
+                }
+            }
+
+            return false;
+        }
+
+        private static string SelectorLikePattern(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return "%";
+            }
+
+            var normalized = selector.Trim();
+            if (normalized.StartsWith("^", StringComparison.Ordinal))
+            {
+                normalized = normalized[1..];
+            }
+            if (normalized.EndsWith("$", StringComparison.Ordinal))
+            {
+                normalized = normalized[..^1];
+            }
+            normalized = normalized.Replace(".*", "%").Replace("*", "%");
+            return "%" + normalized.Replace("'", "''") + "%";
         }
 
         private static string ResolveLibraryPath(string libraryRoot, string path)

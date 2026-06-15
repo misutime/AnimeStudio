@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -11,7 +12,13 @@ namespace AnimeStudio.CLI
 {
     internal static class AnimatorControllerContextRefresher
     {
-        public static string Refresh(string libraryRoot, string unityFileInspectPath, string sourceIndexPath = null, string indexPath = null)
+        public static string Refresh(
+            string libraryRoot,
+            string unityFileInspectPath,
+            string sourceIndexPath = null,
+            string indexPath = null,
+            string modelSelector = null,
+            string animationSelector = null)
         {
             if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
             {
@@ -47,7 +54,7 @@ namespace AnimeStudio.CLI
             using var connection = new SqliteConnection($"Data Source={dbPath}");
             connection.Open();
 
-            var rows = ReadBlockedCandidateRows(connection);
+            var rows = ReadBlockedCandidateRows(connection, modelSelector, animationSelector);
             var changed = 0;
             var matched = 0;
             var blockedReasonCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -190,16 +197,30 @@ namespace AnimeStudio.CLI
             blockedItems.Add(item);
         }
 
-        private static List<CandidateRow> ReadBlockedCandidateRows(SqliteConnection connection)
+        private static List<CandidateRow> ReadBlockedCandidateRows(SqliteConnection connection, string modelSelector, string animationSelector)
         {
             var result = new List<CandidateRow>();
+            var modelOutputs = SelectMatchingAssetOutputs(connection, "Model", modelSelector, 4096);
+            var animationOutputs = SelectMatchingAssetOutputs(connection, "Animation", animationSelector, 8192);
+            if (modelOutputs != null && modelOutputs.Count == 0)
+            {
+                return result;
+            }
+            if (animationOutputs != null && animationOutputs.Count == 0)
+            {
+                return result;
+            }
+
             using var command = connection.CreateCommand();
+            var modelFilterSql = AddOutputFilterParameters(command, "modelOutput", modelOutputs, "c.model_output");
+            var animationFilterSql = AddOutputFilterParameters(command, "animationOutput", animationOutputs, "c.animation_output");
             command.CommandText = @"
-SELECT c.id, c.model_output, c.animation_output, c.raw_json, m.raw_json, a.raw_json
+SELECT c.id, c.model_output, c.animation_output, c.raw_json, m.raw_json, a.raw_json, m.name, a.name
 FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 WHERE c.relation_source='explicit'
+" + modelFilterSql + animationFilterSql + @"
   AND (
     (
       json_extract(c.raw_json, '$.animatorControllerContext.baseLayerClip.clip.pathId') IS NULL
@@ -207,6 +228,14 @@ WHERE c.relation_source='explicit'
         json_extract(c.raw_json, '$.productionAnimationPath')='NeedsAnimatorControllerContext'
         OR json_extract(c.raw_json, '$.productionUnityBakeBlockedReason')='requires_animator_controller_context'
         OR json_extract(c.raw_json, '$.nextAction')='inspect_animator_controller_context'
+        OR (
+          json_extract(c.raw_json, '$.productionAnimationPath')='NeedsUnityAvatarMetadata'
+          AND (
+            COALESCE(json_extract(a.raw_json, '$.hasMuscleClip'), 0)=1
+            OR COALESCE(json_extract(a.raw_json, '$.humanoid.hasMuscleClip'), 0)=1
+            OR json_extract(a.raw_json, '$.animationType') LIKE '%Humanoid%'
+          )
+        )
       )
     )
     OR (
@@ -217,16 +246,139 @@ WHERE c.relation_source='explicit'
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
+                var modelOutput = reader.GetString(1);
+                var animationOutput = reader.GetString(2);
+                var modelName = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var animationName = reader.IsDBNull(7) ? null : reader.GetString(7);
+                if (!MatchesSelector(modelSelector, modelName, modelOutput)
+                    || !MatchesSelector(animationSelector, animationName, animationOutput))
+                {
+                    continue;
+                }
+
                 result.Add(new CandidateRow(
                     reader.GetInt64(0),
-                    reader.GetString(1),
-                    reader.GetString(2),
+                    modelOutput,
+                    animationOutput,
                     JObject.Parse(reader.GetString(3)),
                     JObject.Parse(reader.GetString(4)),
                     JObject.Parse(reader.GetString(5))));
             }
 
             return result;
+        }
+
+        private static HashSet<string> SelectMatchingAssetOutputs(SqliteConnection connection, string kind, string selector, int limit)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return null;
+            }
+
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name, output
+FROM assets
+WHERE kind=$kind
+  AND (name LIKE $like OR output LIKE $like)
+ORDER BY name COLLATE NOCASE
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$kind", kind);
+            command.Parameters.AddWithValue("$like", SelectorLikePattern(selector));
+            command.Parameters.AddWithValue("$limit", Math.Max(1, limit));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.IsDBNull(0) ? null : reader.GetString(0);
+                var output = reader.IsDBNull(1) ? null : reader.GetString(1);
+                if (string.IsNullOrWhiteSpace(output) || !MatchesSelector(selector, name, output))
+                {
+                    continue;
+                }
+
+                result.Add(output);
+            }
+
+            return result;
+        }
+
+        private static string AddOutputFilterParameters(SqliteCommand command, string prefix, HashSet<string> outputs, string column)
+        {
+            if (outputs == null)
+            {
+                return string.Empty;
+            }
+            if (outputs.Count == 0)
+            {
+                return " AND 1=0";
+            }
+
+            var names = new List<string>();
+            var index = 0;
+            foreach (var output in outputs)
+            {
+                var parameterName = "$" + prefix + index.ToString(CultureInfo.InvariantCulture);
+                command.Parameters.AddWithValue(parameterName, output);
+                names.Add(parameterName);
+                index++;
+            }
+
+            return $" AND {column} IN ({string.Join(",", names)})";
+        }
+
+        private static string SelectorLikePattern(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return "%";
+            }
+
+            var normalized = selector.Trim();
+            if (normalized.StartsWith("^", StringComparison.Ordinal))
+            {
+                normalized = normalized[1..];
+            }
+            if (normalized.EndsWith("$", StringComparison.Ordinal))
+            {
+                normalized = normalized[..^1];
+            }
+            normalized = normalized.Replace(".*", "%").Replace("*", "%");
+            return "%" + normalized.Replace("'", "''") + "%";
+        }
+
+        private static bool MatchesSelector(string selector, params string[] values)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return true;
+            }
+
+            foreach (var value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+                if (value.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+
+                try
+                {
+                    if (Regex.IsMatch(value, selector, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // selector 不是合法正则时，上面的普通包含匹配已经覆盖手工输入场景。
+                }
+            }
+
+            return false;
         }
 
         private static JObject RefreshCandidateJson(
