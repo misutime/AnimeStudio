@@ -9,31 +9,6 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal static class LibraryIndexReader
     {
-        private static readonly string[] LibraryMarkerFiles =
-        {
-            "LIBRARY_README.md",
-            "asset_summary.json",
-            "model_animations.json",
-            "model_animations.compact.json",
-            "animation_bindings.jsonl",
-            "export_manifest.jsonl",
-            "unity_relations.jsonl",
-            "library_index.db"
-        };
-
-        private static readonly HashSet<string> TextureExtensions = new(StringComparer.OrdinalIgnoreCase)
-        {
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".bmp",
-            ".tga",
-            ".dds",
-            ".ktx",
-            ".ktx2",
-            ".webp"
-        };
-
         public static void ValidateLibraryRoot(string root)
         {
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
@@ -41,18 +16,19 @@ namespace AnimeStudio.LibraryBrowser
                 throw new DirectoryNotFoundException("请选择一个存在的素材库目录。");
             }
 
-            var catalogPath = Path.Combine(root, "asset_catalog.jsonl");
-            if (!File.Exists(catalogPath))
+            var dbPath = Path.Combine(root, "library_index.db");
+            if (!File.Exists(dbPath))
             {
-                throw new FileNotFoundException("没有找到 asset_catalog.jsonl。请选择 AnimeStudio 导出的 Library 根目录。", catalogPath);
+                throw new FileNotFoundException(
+                    "没有找到 library_index.db。AnimeStudio.LibraryBrowser 生产模式只读取 SQLite 索引，请重新导出或重建素材库索引。",
+                    dbPath);
             }
 
             var hasModelsDirectory = Directory.Exists(Path.Combine(root, "Models"));
-            var hasLibraryMarker = LibraryMarkerFiles.Any(x => File.Exists(Path.Combine(root, x)));
-            if (!hasModelsDirectory && !hasLibraryMarker)
+            if (!hasModelsDirectory)
             {
                 throw new InvalidDataException(
-                    "这个目录只有 asset_catalog.jsonl，缺少 Models/ 或 Library 索引/说明文件。" +
+                    "这个目录有 library_index.db，但缺少 Models/。" +
                     "请确认选择的是 AnimeStudio 导出的素材库根目录，而不是单独拷出的索引文件目录。");
             }
         }
@@ -62,138 +38,25 @@ namespace AnimeStudio.LibraryBrowser
             ValidateLibraryRoot(root);
 
             var coverageByOutput = LoadUnrealModelCoverage(root);
-            var sqliteModels = TryLoadModelsFromSqlite(root, coverageByOutput);
-            if (sqliteModels != null)
-            {
-                AddTextureFiles(root, sqliteModels);
-                return sqliteModels;
-            }
-
-            var catalogPath = Path.Combine(root, "asset_catalog.jsonl");
-            var models = new List<LibraryModelItem>();
-            foreach (var line in File.ReadLines(catalogPath))
-            {
-                if (string.IsNullOrWhiteSpace(line))
-                {
-                    continue;
-                }
-
-                using var document = JsonDocument.Parse(line);
-                var obj = document.RootElement;
-                var kind = ReadString(obj, "kind") ?? "";
-                var sourceType = ReadString(obj, "sourceType") ?? "";
-                var resourceKind = ReadString(obj, "resourceKind") ?? "Unknown";
-                var isTexture = IsTextureCatalogEntry(kind, sourceType, resourceKind, obj);
-                if (!string.Equals(kind, "Model", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase)
-                    && !isTexture)
-                {
-                    continue;
-                }
-
-                var output = ReadString(obj, "output");
-                if (string.IsNullOrWhiteSpace(output))
-                {
-                    continue;
-                }
-
-                var isVfx = string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase);
-                if (isVfx)
-                {
-                    output = LibraryPathResolver.ResolveExistingDirectory(root, output);
-                    if (!Directory.Exists(output))
-                    {
-                        continue;
-                    }
-                }
-                else if (!File.Exists(output))
-                {
-                    output = LibraryPathResolver.ResolveExistingFile(root, output);
-                    if (!File.Exists(output))
-                    {
-                        continue;
-                    }
-                }
-
-                var modelPreview = LibraryPathResolver.ResolveExistingFile(root, ReadString(obj, "modelPreview") ?? "");
-                coverageByOutput.TryGetValue(NormalizePath(output), out var coverage);
-
-                models.Add(new LibraryModelItem
-                {
-                    AssetKind = kind,
-                    Name = ReadString(obj, "name") ?? Path.GetFileNameWithoutExtension(output) ?? "",
-                    ResourceKind = resourceKind,
-                    VfxCategory = ReadString(obj, "vfxCategory") ?? "",
-                    Confidence = ReadString(obj, "confidence") ?? "",
-                    Status = ReadString(obj, "status") ?? "",
-                    ValidationStatus = coverage?.ValidationStatus ?? "",
-                    LibraryRole = ReadString(obj, "libraryRole") ?? "",
-                    SourceType = sourceType,
-                    Source = ReadString(obj, "source") ?? "",
-                    ObjectPath = ReadString(obj, "objectPath") ?? coverage?.ObjectPath ?? "",
-                    PathId = ReadInt64(obj, "pathId"),
-                    OutputPath = output,
-                    ModelPreviewPath = modelPreview ?? "",
-                    MeshCount = ReadInt32(obj, "meshCount"),
-                    VertexCount = ReadInt32(obj, "vertexCount"),
-                    MaterialCount = ReadInt32(obj, "materialCount", coverage?.MaterialCount ?? 0),
-                    TextureCount = ReadInt32(obj, "textureCount", coverage?.TextureCount ?? 0),
-                    ComponentCount = ReadInt32(obj, "componentCount"),
-                    MaterialRefCount = ReadInt32(obj, "materialRefCount"),
-                    TextureRefCount = ReadInt32(obj, "textureRefCount"),
-                    TexturePreviewCount = ReadInt32(obj, "texturePreviewCount"),
-                    MeshRefCount = ReadInt32(obj, "meshRefCount"),
-                    OccurrenceCount = Math.Max(1, ReadInt32(obj, "occurrenceCount")),
-                    BoneCount = ReadInt32(obj, "boneCount"),
-                    HasSkin = coverage?.HasSkin ?? false,
-                    HasSkeletonPath = coverage?.HasSkeletonPath ?? false,
-                    IsStaticModel = coverage?.IsStatic ?? false,
-                    ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
-                    SourceIndexObjectCount = coverage?.SourceIndexObjectCount ?? 0,
-                    AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
-                    IsTaskOrProp = coverage?.IsTaskOrProp ?? false,
-                    IsPathOnlyTask = coverage?.IsPathOnlyTask ?? false,
-                    MissingMaterials = coverage?.MissingMaterials ?? false,
-                    NoExternalTextureSlots = coverage?.NoExternalTextureSlots ?? false,
-                    NeedsReview = coverage?.NeedsReview ?? false,
-                    ReviewReasons = coverage?.ReviewReasons ?? Array.Empty<string>(),
-                    RelationNeedsReview = coverage?.RelationNeedsReview ?? false,
-                    RelationReviewReasons = coverage?.RelationReviewReasons ?? Array.Empty<string>(),
-                    BonePaths = ReadStringArray(obj, "bonePaths"),
-                    NodePaths = ReadStringArray(obj, "nodePaths"),
-                    Signals = ReadStringArray(obj, "signals"),
-                    TaskSignals = coverage?.TaskSignals ?? Array.Empty<string>(),
-                    VfxTexturePreviewPaths = ReadTexturePreviewPaths(root, obj, output),
-                    VfxPreviewHintsJson = ReadRawJson(obj, "previewHints")
-                });
-            }
-
-            AddTextureFiles(root, models);
-            return models;
+            return LoadModelsFromSqlite(root, coverageByOutput);
         }
 
-        private static List<LibraryModelItem> TryLoadModelsFromSqlite(
+        private static List<LibraryModelItem> LoadModelsFromSqlite(
             string root,
             IReadOnlyDictionary<string, UnrealModelCoverage> coverageByOutput)
         {
             var dbPath = Path.Combine(root, "library_index.db");
-            if (!File.Exists(dbPath))
+
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+            connection.Open();
+            if (!HasTable(connection, "assets") || !HasColumn(connection, "assets", "raw_json"))
             {
-                return null;
+                throw new InvalidDataException("library_index.db 缺少 assets.raw_json，不能作为 Browser 生产索引读取。");
             }
 
-            try
-            {
-                SQLitePCL.Batteries_V2.Init();
-                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
-                connection.Open();
-                if (!HasTable(connection, "assets") || !HasColumn(connection, "assets", "raw_json"))
-                {
-                    return null;
-                }
-
-                using var command = connection.CreateCommand();
-                command.CommandText = @"
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
 SELECT kind, resource_kind, name, source_type, source, path_id, output,
        json_extract(raw_json, '$.libraryRole'),
        json_extract(raw_json, '$.confidence'),
@@ -222,104 +85,99 @@ WHERE kind IN ('Model', 'VFX', 'Texture')
    OR resource_kind LIKE '%Texture%'
 ORDER BY kind, resource_kind, name;";
 
-                var models = new List<LibraryModelItem>();
-                using var reader = command.ExecuteReader();
-                while (reader.Read())
+            var models = new List<LibraryModelItem>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var kind = ReadSqliteString(reader, 0) ?? "";
+                var resourceKind = ReadSqliteString(reader, 1) ?? "Unknown";
+                var sourceType = ReadSqliteString(reader, 3) ?? "";
+                var isTexture = IsTextureCatalogEntry(kind, sourceType, resourceKind);
+                if (!string.Equals(kind, "Model", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase)
+                    && !isTexture)
                 {
-                    var kind = ReadSqliteString(reader, 0) ?? "";
-                    var resourceKind = ReadSqliteString(reader, 1) ?? "Unknown";
-                    var sourceType = ReadSqliteString(reader, 3) ?? "";
-                    var isTexture = IsTextureCatalogEntry(kind, sourceType, resourceKind);
-                    if (!string.Equals(kind, "Model", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase)
-                        && !isTexture)
-                    {
-                        continue;
-                    }
-
-                    var output = ReadSqliteString(reader, 6);
-                    if (string.IsNullOrWhiteSpace(output))
-                    {
-                        continue;
-                    }
-
-                    var isVfx = string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase);
-                    if (isVfx)
-                    {
-                        output = LibraryPathResolver.ResolveExistingDirectory(root, output);
-                        if (!Directory.Exists(output))
-                        {
-                            continue;
-                        }
-                    }
-                    else if (!File.Exists(output))
-                    {
-                        output = LibraryPathResolver.ResolveExistingFile(root, output);
-                        if (!File.Exists(output))
-                        {
-                            continue;
-                        }
-                    }
-
-                    var modelPreview = LibraryPathResolver.ResolveExistingFile(root, ReadSqliteString(reader, 10) ?? "");
-                    UnrealModelCoverage coverage = null;
-                    coverageByOutput?.TryGetValue(NormalizePath(output), out coverage);
-                    models.Add(new LibraryModelItem
-                    {
-                        AssetKind = kind,
-                        Name = ReadSqliteString(reader, 2) ?? Path.GetFileNameWithoutExtension(output) ?? "",
-                        ResourceKind = resourceKind,
-                        VfxCategory = ReadSqliteString(reader, 12) ?? "",
-                        Confidence = ReadSqliteString(reader, 8) ?? "",
-                        Status = ReadSqliteString(reader, 9) ?? "",
-                        ValidationStatus = coverage?.ValidationStatus ?? "",
-                        LibraryRole = ReadSqliteString(reader, 7) ?? "",
-                        SourceType = sourceType,
-                        Source = ReadSqliteString(reader, 4) ?? "",
-                        ObjectPath = ReadSqliteString(reader, 11) ?? coverage?.ObjectPath ?? "",
-                        PathId = ReadSqliteInt64(reader, 5),
-                        OutputPath = output,
-                        ModelPreviewPath = modelPreview ?? "",
-                        MeshCount = ReadSqliteInt32(reader, 13),
-                        VertexCount = ReadSqliteInt32(reader, 14),
-                        MaterialCount = ReadSqliteInt32(reader, 15, coverage?.MaterialCount ?? 0),
-                        TextureCount = ReadSqliteInt32(reader, 16, coverage?.TextureCount ?? 0),
-                        ComponentCount = ReadSqliteInt32(reader, 17),
-                        MaterialRefCount = ReadSqliteInt32(reader, 18),
-                        TextureRefCount = ReadSqliteInt32(reader, 19),
-                        TexturePreviewCount = ReadSqliteInt32(reader, 20),
-                        MeshRefCount = ReadSqliteInt32(reader, 21),
-                        OccurrenceCount = Math.Max(1, ReadSqliteInt32(reader, 22)),
-                        BoneCount = ReadSqliteInt32(reader, 23),
-                        HasSkin = coverage?.HasSkin ?? false,
-                        HasSkeletonPath = coverage?.HasSkeletonPath ?? false,
-                        IsStaticModel = coverage?.IsStatic ?? false,
-                        ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
-                        SourceIndexObjectCount = coverage?.SourceIndexObjectCount ?? 0,
-                        AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
-                        IsTaskOrProp = coverage?.IsTaskOrProp ?? false,
-                        IsPathOnlyTask = coverage?.IsPathOnlyTask ?? false,
-                        MissingMaterials = coverage?.MissingMaterials ?? false,
-                        NoExternalTextureSlots = coverage?.NoExternalTextureSlots ?? false,
-                        NeedsReview = coverage?.NeedsReview ?? false,
-                        ReviewReasons = coverage?.ReviewReasons ?? Array.Empty<string>(),
-                        RelationNeedsReview = coverage?.RelationNeedsReview ?? false,
-                        RelationReviewReasons = coverage?.RelationReviewReasons ?? Array.Empty<string>(),
-                        BonePaths = ReadJsonStringArray(ReadSqliteString(reader, 24)),
-                        NodePaths = ReadJsonStringArray(ReadSqliteString(reader, 25)),
-                        Signals = ReadJsonStringArray(ReadSqliteString(reader, 26)),
-                        TaskSignals = coverage?.TaskSignals ?? Array.Empty<string>(),
-                        VfxTexturePreviewPaths = Array.Empty<string>(),
-                        VfxPreviewHintsJson = ReadSqliteString(reader, 27) ?? ""
-                    });
+                    continue;
                 }
 
-                return models;
+                var output = ReadSqliteString(reader, 6);
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    continue;
+                }
+
+                var isVfx = string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase);
+                if (isVfx)
+                {
+                    output = LibraryPathResolver.ResolveExistingDirectory(root, output);
+                    if (!Directory.Exists(output))
+                    {
+                        continue;
+                    }
+                }
+                else if (!File.Exists(output))
+                {
+                    output = LibraryPathResolver.ResolveExistingFile(root, output);
+                    if (!File.Exists(output))
+                    {
+                        continue;
+                    }
+                }
+
+                var modelPreview = LibraryPathResolver.ResolveExistingFile(root, ReadSqliteString(reader, 10) ?? "");
+                UnrealModelCoverage coverage = null;
+                coverageByOutput?.TryGetValue(NormalizePath(output), out coverage);
+                models.Add(new LibraryModelItem
+                {
+                    AssetKind = kind,
+                    Name = ReadSqliteString(reader, 2) ?? Path.GetFileNameWithoutExtension(output) ?? "",
+                    ResourceKind = resourceKind,
+                    VfxCategory = ReadSqliteString(reader, 12) ?? "",
+                    Confidence = ReadSqliteString(reader, 8) ?? "",
+                    Status = ReadSqliteString(reader, 9) ?? "",
+                    ValidationStatus = coverage?.ValidationStatus ?? "",
+                    LibraryRole = ReadSqliteString(reader, 7) ?? "",
+                    SourceType = sourceType,
+                    Source = ReadSqliteString(reader, 4) ?? "",
+                    ObjectPath = ReadSqliteString(reader, 11) ?? coverage?.ObjectPath ?? "",
+                    PathId = ReadSqliteInt64(reader, 5),
+                    OutputPath = output,
+                    ModelPreviewPath = modelPreview ?? "",
+                    MeshCount = ReadSqliteInt32(reader, 13),
+                    VertexCount = ReadSqliteInt32(reader, 14),
+                    MaterialCount = ReadSqliteInt32(reader, 15, coverage?.MaterialCount ?? 0),
+                    TextureCount = ReadSqliteInt32(reader, 16, coverage?.TextureCount ?? 0),
+                    ComponentCount = ReadSqliteInt32(reader, 17),
+                    MaterialRefCount = ReadSqliteInt32(reader, 18),
+                    TextureRefCount = ReadSqliteInt32(reader, 19),
+                    TexturePreviewCount = ReadSqliteInt32(reader, 20),
+                    MeshRefCount = ReadSqliteInt32(reader, 21),
+                    OccurrenceCount = Math.Max(1, ReadSqliteInt32(reader, 22)),
+                    BoneCount = ReadSqliteInt32(reader, 23),
+                    HasSkin = coverage?.HasSkin ?? false,
+                    HasSkeletonPath = coverage?.HasSkeletonPath ?? false,
+                    IsStaticModel = coverage?.IsStatic ?? false,
+                    ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
+                    SourceIndexObjectCount = coverage?.SourceIndexObjectCount ?? 0,
+                    AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
+                    IsTaskOrProp = coverage?.IsTaskOrProp ?? false,
+                    IsPathOnlyTask = coverage?.IsPathOnlyTask ?? false,
+                    MissingMaterials = coverage?.MissingMaterials ?? false,
+                    NoExternalTextureSlots = coverage?.NoExternalTextureSlots ?? false,
+                    NeedsReview = coverage?.NeedsReview ?? false,
+                    ReviewReasons = coverage?.ReviewReasons ?? Array.Empty<string>(),
+                    RelationNeedsReview = coverage?.RelationNeedsReview ?? false,
+                    RelationReviewReasons = coverage?.RelationReviewReasons ?? Array.Empty<string>(),
+                    BonePaths = ReadJsonStringArray(ReadSqliteString(reader, 24)),
+                    NodePaths = ReadJsonStringArray(ReadSqliteString(reader, 25)),
+                    Signals = ReadJsonStringArray(ReadSqliteString(reader, 26)),
+                    TaskSignals = coverage?.TaskSignals ?? Array.Empty<string>(),
+                    VfxTexturePreviewPaths = Array.Empty<string>(),
+                    VfxPreviewHintsJson = ReadSqliteString(reader, 27) ?? ""
+                });
             }
-            catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
-            {
-                return null;
-            }
+
+            return models;
         }
 
         private static Dictionary<string, UnrealModelCoverage> LoadUnrealModelCoverage(string root)
@@ -515,70 +373,6 @@ FROM model_coverage;";
             {
                 return null;
             }
-        }
-
-        private static void AddTextureFiles(string root, List<LibraryModelItem> models)
-        {
-            var textureRoot = Path.Combine(root, "Textures");
-            if (!Directory.Exists(textureRoot))
-            {
-                return;
-            }
-
-            var existing = models
-                .Where(x => !string.IsNullOrWhiteSpace(x.OutputPath))
-                .Select(x => NormalizePath(x.OutputPath))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var file in Directory.EnumerateFiles(textureRoot, "*.*", SearchOption.AllDirectories))
-            {
-                var relative = Path.GetRelativePath(textureRoot, file);
-                if (relative.StartsWith("_Shared" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                    || relative.StartsWith("_Shared" + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (!TextureExtensions.Contains(Path.GetExtension(file)) || !existing.Add(NormalizePath(file)))
-                {
-                    continue;
-                }
-
-                var parts = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                var bucket = parts.Length > 1 ? parts[0] : "Textures";
-                models.Add(new LibraryModelItem
-                {
-                    AssetKind = "Texture",
-                    Name = Path.GetFileNameWithoutExtension(file) ?? "",
-                    ResourceKind = bucket,
-                    SourceType = "TextureFile",
-                    Source = file,
-                    OutputPath = file,
-                    ModelPreviewPath = file,
-                    TextureCount = 1,
-                    OccurrenceCount = 1,
-                    Status = "file_scan_fallback"
-                });
-            }
-        }
-
-        private static bool IsTextureCatalogEntry(string kind, string sourceType, string resourceKind, JsonElement obj)
-        {
-            if (string.Equals(kind, "VfxTexturePreviewTexture", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (string.Equals(kind, "Texture", StringComparison.OrdinalIgnoreCase)
-                || Contains(kind, "Texture2DArray")
-                || Contains(kind, "MaterialTexture"))
-            {
-                return true;
-            }
-
-            return string.Equals(sourceType, "Texture2D", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(sourceType, "Texture2DArray", StringComparison.OrdinalIgnoreCase)
-                || Contains(resourceKind, "Texture");
         }
 
         private static bool IsTextureCatalogEntry(string kind, string sourceType, string resourceKind)
