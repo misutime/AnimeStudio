@@ -278,6 +278,7 @@ namespace AnimeStudio.CLI
                     }
 
                     SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName, o.SkipSqliteFileIndex, o.SkipSqliteSidecarScan, o.SkipSqliteJsonDocuments, o.SourceIndex?.FullName);
+                    TryAutoRecoverImportedAvatarAssets(o, o.BuildSqliteIndex.FullName, null, null);
                     return;
                 }
 
@@ -297,9 +298,49 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.RecoverImportedAvatarAssets != null)
+                {
+                    if (string.IsNullOrWhiteSpace(o.GameName))
+                    {
+                        Logger.Error("--recover_imported_avatar_assets requires --game.");
+                        Console.WriteLine(GameManager.SupportedGames());
+                        return;
+                    }
+
+                    var recoveryGame = GameManager.GetGame(o.GameName);
+                    if (recoveryGame == null)
+                    {
+                        Logger.Error("Invalid Game !!");
+                        Console.WriteLine(GameManager.SupportedGames());
+                        return;
+                    }
+
+                    if (recoveryGame is UnityCNGame recoveryUnityCNGame)
+                    {
+                        UnityCN.SetKey(recoveryUnityCNGame.Key);
+                        Logger.Info($"[UnityCN] Selected Key is {recoveryUnityCNGame.Key.Name} - {recoveryUnityCNGame.Key.Key}");
+                    }
+
+                    Studio.Game = recoveryGame;
+                    AvatarAssetRecoveryExporter.Recover(
+                        o.RecoverImportedAvatarAssets.FullName,
+                        o.UnityProject?.FullName,
+                        o.UnityEditor?.FullName,
+                        recoveryGame,
+                        o.UnityVersion,
+                        o.PreviewSourceRoot?.FullName,
+                        o.PreviewModel,
+                        o.AvatarRecoveryLimit,
+                        o.AvatarRecoveryForce,
+                        o.RunUnityBake,
+                        o.IndexPath?.FullName
+                    );
+                    return;
+                }
+
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -780,6 +821,10 @@ namespace AnimeStudio.CLI
                             Logger.Info("Skipping library SQLite index build because --skip_sqlite_index is set.");
                         }
                         GenerateLibraryIndexes(o.Output.FullName, skipSqliteIndex: o.SkipSqliteIndex);
+                        if (!o.SkipSqliteIndex)
+                        {
+                            TryAutoRecoverImportedAvatarAssets(o, o.Output.FullName, game, inputBaseFolder);
+                        }
                     }
                 }
                 if (Properties.Settings.Default.scrapeMonos)
@@ -1281,6 +1326,58 @@ namespace AnimeStudio.CLI
             catch
             {
                 return 0;
+            }
+        }
+
+        private static void TryAutoRecoverImportedAvatarAssets(Options o, string libraryRoot, Game game, string sourceRoot)
+        {
+            if (o == null || string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                return;
+            }
+
+            if (o.UnityProject == null || string.IsNullOrWhiteSpace(o.UnityProject.FullName))
+            {
+                Logger.Info("Imported Avatar asset auto recovery skipped because --unity_project was not provided. Browser can still run recovery later from the Library root.");
+                return;
+            }
+
+            var effectiveGame = game;
+            if (effectiveGame == null)
+            {
+                if (string.IsNullOrWhiteSpace(o.GameName))
+                {
+                    Logger.Warning("Imported Avatar asset auto recovery skipped because --game is missing.");
+                    return;
+                }
+
+                effectiveGame = GameManager.GetGame(o.GameName);
+            }
+
+            if (effectiveGame == null)
+            {
+                Logger.Warning("Imported Avatar asset auto recovery skipped because the game profile is invalid.");
+                return;
+            }
+
+            try
+            {
+                AvatarAssetRecoveryExporter.Recover(
+                    libraryRoot,
+                    o.UnityProject.FullName,
+                    o.UnityEditor?.FullName,
+                    effectiveGame,
+                    o.UnityVersion,
+                    o.PreviewSourceRoot?.FullName ?? sourceRoot,
+                    selector: null,
+                    limit: 0,
+                    force: false,
+                    runProbe: o.UnityEditor != null,
+                    explicitIndexPath: o.IndexPath?.FullName);
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Imported Avatar asset auto recovery failed; Library export remains usable but Humanoid bake may still need Avatar metadata. {e.GetType().Name}: {e.Message}");
             }
         }
 

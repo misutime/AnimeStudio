@@ -53,8 +53,8 @@ namespace AnimeStudio.LibraryBrowser
                 UnityEditor = unityEditor,
                 UnityAvatarAssets = MergeAvatarAssets(
                     DiscoverImportedAvatarAssets(unityProject, root),
-                    global?.UnityAvatarAssets,
-                    local?.UnityAvatarAssets),
+                    FilterConfiguredImportedAvatarAssets(unityProject, root, global?.UnityAvatarAssets),
+                    FilterConfiguredImportedAvatarAssets(unityProject, root, local?.UnityAvatarAssets)),
             };
         }
 
@@ -351,6 +351,10 @@ namespace AnimeStudio.LibraryBrowser
                 .Select(path => new FileInfo(path))
                 .ToArray();
             var validProbeKeys = LoadFreshImportedAvatarProbeKeys(libraryRoot, assetFiles);
+            if (assetFiles.Length > 0 && validProbeKeys == null)
+            {
+                return result;
+            }
             foreach (var file in assetFiles)
             {
                 var name = Path.GetFileNameWithoutExtension(file.FullName);
@@ -496,6 +500,71 @@ namespace AnimeStudio.LibraryBrowser
                 AddStringMap(result, map);
             }
             return result;
+        }
+
+        private static IReadOnlyDictionary<string, string> FilterConfiguredImportedAvatarAssets(
+            string unityProject,
+            string libraryRoot,
+            IReadOnlyDictionary<string, string> map)
+        {
+            if (map == null || map.Count == 0)
+            {
+                return map;
+            }
+
+            var importedDir = string.IsNullOrWhiteSpace(unityProject)
+                ? null
+                : Path.Combine(unityProject, "Assets", "AnimeStudioBake", "ImportedAvatar");
+            if (string.IsNullOrWhiteSpace(importedDir) || !Directory.Exists(importedDir))
+            {
+                return map;
+            }
+
+            var assetFiles = Directory.EnumerateFiles(importedDir, "*.asset", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .ToArray();
+            var validProbeKeys = LoadFreshImportedAvatarProbeKeys(libraryRoot, assetFiles);
+            if (validProbeKeys == null)
+            {
+                var withoutUnverifiedImported = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in map)
+                {
+                    var value = pair.Value?.Trim().Replace('\\', '/');
+                    if (!string.IsNullOrWhiteSpace(pair.Key)
+                        && !string.IsNullOrWhiteSpace(pair.Value)
+                        && (value == null || !value.StartsWith("Assets/AnimeStudioBake/ImportedAvatar/", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        withoutUnverifiedImported[pair.Key.Trim()] = pair.Value.Trim();
+                    }
+                }
+                return withoutUnverifiedImported;
+            }
+
+            var filtered = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in map)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                {
+                    continue;
+                }
+
+                var value = pair.Value.Trim().Replace('\\', '/');
+                if (!value.StartsWith("Assets/AnimeStudioBake/ImportedAvatar/", StringComparison.OrdinalIgnoreCase))
+                {
+                    filtered[pair.Key.Trim()] = pair.Value.Trim();
+                    continue;
+                }
+
+                var name = Path.GetFileNameWithoutExtension(value);
+                if (validProbeKeys.Contains(name)
+                    || (name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase)
+                        && validProbeKeys.Contains(name[..^"_ModelAvatar".Length])))
+                {
+                    filtered[pair.Key.Trim()] = pair.Value.Trim();
+                }
+            }
+
+            return filtered;
         }
 
         private static void AddStringMap(Dictionary<string, string> target, IReadOnlyDictionary<string, string> source)

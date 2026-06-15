@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Data.Sqlite;
 
 namespace AnimeStudio.LibraryBrowser
 {
@@ -42,6 +43,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly ToolStripMenuItem _refreshAnimationFastSummaryItem = new("快速摘要");
         private readonly ToolStripMenuItem _refreshAnimationSummaryItem = new("烘焙摘要");
         private readonly ToolStripMenuItem _writeAvatarRecoveryPlanItem = new("Avatar恢复计划");
+        private readonly ToolStripMenuItem _recoverImportedAvatarAssetsItem = new("恢复AvatarAsset");
         private readonly ToolStripMenuItem _probeImportedAvatarAssetsItem = new("验证AvatarAsset");
         private readonly ToolStripButton _rebuildAnimationIndexButton = new("重建动画索引");
         private readonly ToolStripButton _unitySettingsButton = new("Unity设置");
@@ -178,12 +180,14 @@ namespace AnimeStudio.LibraryBrowser
                 _refreshAnimationSummaryItem,
                 new ToolStripSeparator(),
                 _writeAvatarRecoveryPlanItem,
+                _recoverImportedAvatarAssetsItem,
                 _probeImportedAvatarAssetsItem,
             });
             _refreshAnimationFastSummaryItem.ToolTipText = "运行 FastSummary，只读取根目录 bake cache、ImportedAvatar asset 和最近批次报告，不扫描大型 SQLite 候选表。";
             _refreshAnimationGateFastItem.ToolTipText = "运行 GateOnly 动画关系门禁，检查默认候选是否全部来自 Unity 显式关系，并确认候选表 schema 已禁止写入非显式关系。";
             _refreshAnimationSummaryItem.ToolTipText = "运行 SummaryOnly 覆盖诊断；如果已配置 Unity Bake Project，会同步统计 ImportedAvatar oracle 覆盖。";
             _writeAvatarRecoveryPlanItem.ToolTipText = "生成 OnlyMissing Avatar asset 恢复计划，列出仍缺 ImportedAvatar oracle 的 Unity Avatar 对象。";
+            _recoverImportedAvatarAssetsItem.ToolTipText = "从当前素材库的 Unity avatar source/pathId 自动恢复 ImportedAvatar/*.asset，并用 Unity 验证后接入 Browser。";
             _probeImportedAvatarAssetsItem.ToolTipText = "用 Unity AssetDatabase 批量验证 ImportedAvatar/*.asset 是否都是有效 Humanoid Avatar。";
             _rebuildAnimationIndexButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
             _rebuildAnimationIndexButton.ToolTipText = "只重建 library_index.db 的结构化索引和显式动画候选，不重新导出模型、贴图或动画。";
@@ -585,6 +589,7 @@ namespace AnimeStudio.LibraryBrowser
             _refreshAnimationGateFastItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.GateOnly);
             _refreshAnimationSummaryItem.Click += async (_, _) => await RefreshAnimationGateAsync(AnimationDiagnosticsMode.SummaryOnly);
             _writeAvatarRecoveryPlanItem.Click += async (_, _) => await WriteAvatarRecoveryPlanAsync();
+            _recoverImportedAvatarAssetsItem.Click += async (_, _) => await RecoverImportedAvatarAssetsAsync();
             _probeImportedAvatarAssetsItem.Click += async (_, _) => await ProbeImportedAvatarAssetsAsync();
             _rebuildAnimationIndexButton.Click += async (_, _) => await RebuildAnimationIndexAsync();
             _unitySettingsButton.Click += (_, _) => ConfigureUnitySettings();
@@ -1314,6 +1319,88 @@ namespace AnimeStudio.LibraryBrowser
                     : MessageBoxIcon.Warning);
         }
 
+        private async Task RecoverImportedAvatarAssetsAsync()
+        {
+            if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
+            {
+                MessageBox.Show(this, "请先选择素材库。", "恢复AvatarAsset", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var settings = LibraryBrowserSettings.LoadEffective(_root);
+            var settingsError = settings?.ValidateUnityBake();
+            if (!string.IsNullOrWhiteSpace(settingsError))
+            {
+                MessageBox.Show(this, settingsError, "恢复AvatarAsset", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var gameName = ReadSourceIndexGameName(_root);
+            if (string.IsNullOrWhiteSpace(gameName))
+            {
+                MessageBox.Show(
+                    this,
+                    "没有从 unity_source_index.db 读到 game metadata，无法确定应该用哪个 Unity/game 加载规则恢复 Avatar。请先重建源索引，或用 CLI 显式传入 --game。",
+                    "恢复AvatarAsset",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var launcher = FindCliLauncher();
+            if (string.IsNullOrWhiteSpace(launcher.FileName))
+            {
+                MessageBox.Show(this, "没有找到 AnimeStudio.CLI，无法恢复 AvatarAsset。", "恢复AvatarAsset", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                this,
+                "这会从 library_index.db 记录的 Unity avatar source/pathId 恢复 ImportedAvatar/*.asset，随后用 Unity 验证并只接入有效 Humanoid Avatar。无效 Avatar 会被移到 InvalidImportedAvatar，不会用于 bake。\n\n是否继续？",
+                "恢复AvatarAsset",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+
+            _refreshAnimationGateButton.Enabled = false;
+            UpdateStatus("正在恢复AvatarAsset");
+
+            ProcessRunResult result;
+            try
+            {
+                result = await RunRecoverImportedAvatarAssetsAsync(
+                    launcher,
+                    _root,
+                    gameName,
+                    settings!.UnityProject,
+                    settings.UnityEditor);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "恢复AvatarAsset失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("恢复AvatarAsset失败");
+                return;
+            }
+            finally
+            {
+                _refreshAnimationGateButton.Enabled = true;
+            }
+
+            await OpenLibraryAsync(_root);
+            await RefreshAnimationGateAsync(AnimationDiagnosticsMode.FastSummary);
+            var title = result.ExitCode == 0 ? "AvatarAsset恢复完成" : $"AvatarAsset恢复退出码 {result.ExitCode}";
+            UpdateStatus(title);
+            MessageBox.Show(
+                this,
+                TrimProcessOutput(result.CombinedOutput),
+                title,
+                MessageBoxButtons.OK,
+                result.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
         private async Task RebuildAnimationIndexAsync()
         {
             if (string.IsNullOrWhiteSpace(_root) || !Directory.Exists(_root))
@@ -1409,6 +1496,28 @@ namespace AnimeStudio.LibraryBrowser
             return Path.Combine(libraryRoot, "unity_source_index.db");
         }
 
+        private static string ReadSourceIndexGameName(string libraryRoot)
+        {
+            var sourceIndex = ResolveSourceIndexForAnimationRebuild(libraryRoot);
+            if (string.IsNullOrWhiteSpace(sourceIndex) || !File.Exists(sourceIndex))
+            {
+                return "";
+            }
+
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={sourceIndex};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT value FROM metadata WHERE key='game' LIMIT 1;";
+                return command.ExecuteScalar() as string ?? "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
         private static async Task<ProcessRunResult> RunBuildSqliteIndexAsync(CliRunLauncher launcher, string libraryRoot, string sourceIndex)
         {
             var startInfo = new ProcessStartInfo
@@ -1421,6 +1530,39 @@ namespace AnimeStudio.LibraryBrowser
                 CreateNoWindow = true,
             };
             foreach (var arg in launcher.BuildSqliteIndexArguments(libraryRoot, sourceIndex))
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 AnimeStudio.CLI。");
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            var combined = string.IsNullOrWhiteSpace(error)
+                ? output
+                : output + Environment.NewLine + error;
+            return new ProcessRunResult(process.ExitCode, combined);
+        }
+
+        private static async Task<ProcessRunResult> RunRecoverImportedAvatarAssetsAsync(
+            CliRunLauncher launcher,
+            string libraryRoot,
+            string gameName,
+            string unityProject,
+            string unityEditor)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = launcher.FileName,
+                WorkingDirectory = launcher.WorkingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            foreach (var arg in launcher.RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor))
             {
                 startInfo.ArgumentList.Add(arg);
             }
@@ -1450,14 +1592,18 @@ namespace AnimeStudio.LibraryBrowser
                 if (File.Exists(exe))
                 {
                     return new CliRunLauncher(exe, root, (libraryRoot, sourceIndex) =>
-                        BuildSqliteIndexArguments(libraryRoot, sourceIndex));
+                        BuildSqliteIndexArguments(libraryRoot, sourceIndex),
+                        (libraryRoot, gameName, unityProject, unityEditor) =>
+                            RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor));
                 }
 
                 var project = Path.Combine(root, "AnimeStudio.CLI", "AnimeStudio.CLI.csproj");
                 if (File.Exists(project))
                 {
                     return new CliRunLauncher("dotnet", root, (libraryRoot, sourceIndex) =>
-                        BuildSqliteIndexArguments(libraryRoot, sourceIndex, project));
+                        BuildSqliteIndexArguments(libraryRoot, sourceIndex, project),
+                        (libraryRoot, gameName, unityProject, unityEditor) =>
+                            RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor, project));
                 }
             }
 
@@ -1465,7 +1611,9 @@ namespace AnimeStudio.LibraryBrowser
             if (File.Exists(siblingExe))
             {
                 return new CliRunLauncher(siblingExe, AppContext.BaseDirectory, (libraryRoot, sourceIndex) =>
-                    BuildSqliteIndexArguments(libraryRoot, sourceIndex));
+                    BuildSqliteIndexArguments(libraryRoot, sourceIndex),
+                    (libraryRoot, gameName, unityProject, unityEditor) =>
+                        RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor));
             }
 
             return default;
@@ -1498,6 +1646,41 @@ namespace AnimeStudio.LibraryBrowser
                 && !string.Equals(Path.GetFullPath(sourceIndex), Path.GetFullPath(Path.Combine(libraryRoot, "unity_source_index.db")), StringComparison.OrdinalIgnoreCase))
             {
                 args.AddRange(new[] { "--source_index", sourceIndex });
+            }
+
+            return args.ToArray();
+        }
+
+        private static string[] RecoverImportedAvatarArguments(
+            string libraryRoot,
+            string gameName,
+            string unityProject,
+            string unityEditor,
+            string project = null)
+        {
+            var args = new List<string>();
+            if (!string.IsNullOrWhiteSpace(project))
+            {
+                args.AddRange(new[]
+                {
+                    "run",
+                    "--project", project,
+                    "-f", "net9.0-windows",
+                    "--",
+                });
+            }
+
+            args.AddRange(new[]
+            {
+                "--recover_imported_avatar_assets", libraryRoot,
+                "--game", gameName,
+                "--unity_project", unityProject,
+                "--run_unity_bake",
+            });
+
+            if (!string.IsNullOrWhiteSpace(unityEditor))
+            {
+                args.AddRange(new[] { "--unity_editor", unityEditor });
             }
 
             return args.ToArray();
@@ -1703,7 +1886,8 @@ namespace AnimeStudio.LibraryBrowser
         private readonly record struct CliRunLauncher(
             string FileName,
             string WorkingDirectory,
-            Func<string, string, string[]> BuildSqliteIndexArguments);
+            Func<string, string, string[]> BuildSqliteIndexArguments,
+            Func<string, string, string, string, string[]> RecoverImportedAvatarArguments);
 
         private void RebuildRecentMenu()
         {

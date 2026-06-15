@@ -161,6 +161,9 @@ namespace AnimeStudio.CLI
                 optionsBinder.BuildSourceSqliteIndex,
                 optionsBinder.VerifySourceIndex,
                 optionsBinder.ExportAvatarOracle,
+                optionsBinder.RecoverImportedAvatarAssets,
+                optionsBinder.AvatarRecoveryLimit,
+                optionsBinder.AvatarRecoveryForce,
                 optionsBinder.DumpUnityBlockChunks,
                 optionsBinder.RequireFreshSourceAnimationRelations,
                 optionsBinder.SourceIndex,
@@ -273,6 +276,9 @@ namespace AnimeStudio.CLI
         public bool BuildSourceSqliteIndex { get; set; }
         public FileInfo VerifySourceIndex { get; set; }
         public FileInfo ExportAvatarOracle { get; set; }
+        public DirectoryInfo RecoverImportedAvatarAssets { get; set; }
+        public int AvatarRecoveryLimit { get; set; }
+        public bool AvatarRecoveryForce { get; set; }
         public bool DumpUnityBlockChunks { get; set; }
         public bool RequireFreshSourceAnimationRelations { get; set; }
         public FileInfo SourceIndex { get; set; }
@@ -380,6 +386,9 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> BuildSourceSqliteIndex;
         public readonly Option<FileInfo> VerifySourceIndex;
         public readonly Option<FileInfo> ExportAvatarOracle;
+        public readonly Option<DirectoryInfo> RecoverImportedAvatarAssets;
+        public readonly Option<int> AvatarRecoveryLimit;
+        public readonly Option<bool> AvatarRecoveryForce;
         public readonly Option<bool> DumpUnityBlockChunks;
         public readonly Option<bool> RequireFreshSourceAnimationRelations;
         public readonly Option<FileInfo> SourceIndex;
@@ -485,6 +494,9 @@ namespace AnimeStudio.CLI
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
             VerifySourceIndex = new Option<FileInfo>("--verify_source_index", "Inspect an existing unity_source_index.db and write an animation relation health report without rebuilding it.").LegalFilePathsOnly();
             ExportAvatarOracle = new Option<FileInfo>("--export_avatar_oracle", "Export one AvatarConstant oracle JSON from unity_source_index.db. Use --preview_model to select Avatar name/pathId/source and --preview_output for the output folder.").LegalFilePathsOnly();
+            RecoverImportedAvatarAssets = new Option<DirectoryInfo>("--recover_imported_avatar_assets", "Recover missing original UnityEngine.Avatar assets from a Library root into the Unity bake project ImportedAvatar folder. Uses library_index.db avatar source/pathId, not guessed skeleton data.").LegalFilePathsOnly();
+            AvatarRecoveryLimit = new Option<int>("--avatar_recovery_limit", "Maximum number of unique missing Avatar assets to recover. 0 means all selected missing avatars.");
+            AvatarRecoveryForce = new Option<bool>("--avatar_recovery_force", "Rewrite imported Avatar .asset files even when they already exist.");
             DumpUnityBlockChunks = new Option<bool>("--dump_unity_block_chunks", "Diagnostic only: decrypt a block container such as .blk and write its inner Unity/MHY chunks for Unity Editor load probes.");
             RequireFreshSourceAnimationRelations = new Option<bool>("--require_fresh_source_animation_relations", "Fail source-index verification or SQLite Library rebuild when AnimatorOverrideController overrideSet/clipPair markers are missing. Use this for production deterministic animation builds.");
             SourceIndex = new Option<FileInfo>("--source_index", "SQLite Unity source index used by Library export or --build_sqlite_index for dependency resolution. Prefer unity_source_index.db over legacy CAB maps for full exports.").LegalFilePathsOnly();
@@ -682,6 +694,9 @@ namespace AnimeStudio.CLI
                 BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
                 VerifySourceIndex = bindingContext.ParseResult.GetValueForOption(VerifySourceIndex),
                 ExportAvatarOracle = bindingContext.ParseResult.GetValueForOption(ExportAvatarOracle),
+                RecoverImportedAvatarAssets = bindingContext.ParseResult.GetValueForOption(RecoverImportedAvatarAssets),
+                AvatarRecoveryLimit = bindingContext.ParseResult.GetValueForOption(AvatarRecoveryLimit),
+                AvatarRecoveryForce = bindingContext.ParseResult.GetValueForOption(AvatarRecoveryForce),
                 DumpUnityBlockChunks = bindingContext.ParseResult.GetValueForOption(DumpUnityBlockChunks),
                 RequireFreshSourceAnimationRelations = bindingContext.ParseResult.GetValueForOption(RequireFreshSourceAnimationRelations),
                 SourceIndex = bindingContext.ParseResult.GetValueForOption(SourceIndex),

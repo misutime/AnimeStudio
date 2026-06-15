@@ -804,7 +804,7 @@ namespace AnimeStudio.CLI
             if (!modelText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
                 || !bakerText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
                 || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
-                || !skeletonText.Contains("Request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.Ordinal))
+                || !skeletonText.Contains("request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.OrdinalIgnoreCase))
             {
                 return "Unity project has an outdated AnimeStudio.UnityBake helper. Copy AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake into the Unity project's Assets directory so imported Avatar asset proof is written before trusted bake statistics are accepted: " + helperRoot;
             }
@@ -2288,6 +2288,10 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 .Select(path => new FileInfo(path))
                 .ToArray();
             var validProbeKeys = LoadFreshImportedAvatarProbeKeys(libraryRoot, assetFiles);
+            if (assetFiles.Length > 0 && validProbeKeys == null)
+            {
+                return result;
+            }
             foreach (var file in assetFiles)
             {
                 var name = Path.GetFileNameWithoutExtension(file.FullName);
