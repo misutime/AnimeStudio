@@ -142,6 +142,11 @@ Assert-Contains $uniqueGenerator "terminalDiagnosticCandidates" "Unity bake requ
 Assert-Contains $uniqueGenerator "uniquePendingUnityBakeCandidates" "Unity bake request summary must keep pending counts visible."
 Assert-Contains $uniqueGenerator "uniqueTrustedBakedCandidates" "Unity bake request summary must separate trusted baked from raw baked."
 
+$batchApplyInfo = Get-MethodBodyText $requestGenerator "private static BatchBakeApplyInfo ReadBatchBakeApplyInfo"
+Assert-Contains $batchApplyInfo "unity_bake_result.json" "Unity bake batch report must read failed Unity helper result JSON even when no BakedPreview was written."
+Assert-Contains $batchApplyInfo '(string)result["message"]' "Unity bake batch report must preserve failed Unity helper messages for Browser diagnostics."
+Assert-Contains $batchApplyInfo "Directory.Exists(bakedPreviewDir)" "Unity bake batch report may use BakedPreview only when it exists."
+
 $trustedIndex = Get-MethodBodyText $libraryIndexBuilder "private static bool IsTrustedBakedGltfPath"
 Assert-Contains $trustedIndex '"frameVaryingTracks"' "SQLite summary must require frame-varying tracks for trusted baked rows."
 Assert-Contains $trustedIndex "IsTrustedAvatarBake(report)" "SQLite summary must require Avatar trust for trusted baked rows."

@@ -4042,47 +4042,53 @@ LIMIT 32;";
         private static BatchBakeApplyInfo ReadBatchBakeApplyInfo(string itemOutput)
         {
             var bakedPreviewDir = Path.Combine(itemOutput, "BakedPreview");
-            if (!Directory.Exists(bakedPreviewDir))
+            if (Directory.Exists(bakedPreviewDir))
             {
-                return new BatchBakeApplyInfo(null, null, null, 0, 0, 0, 0);
-            }
-
-            // UnityBakeResultApplier 会复制原始模型 glTF，再写出带动画名的新 glTF。
-            // 批量报告必须记录 apply report 里的最终输出，不能随手拿目录里的第一个 glTF。
-            var applyReport = Path.Combine(bakedPreviewDir, "unity_bake_apply_report.json");
-            if (File.Exists(applyReport))
-            {
-                try
+                // UnityBakeResultApplier 会复制原始模型 glTF，再写出带动画名的新 glTF。
+                // 批量报告必须记录 apply report 里的最终输出，不能随手拿目录里的第一个 glTF。
+                var applyReport = Path.Combine(bakedPreviewDir, "unity_bake_apply_report.json");
+                if (File.Exists(applyReport))
                 {
-                    var report = JObject.Parse(File.ReadAllText(applyReport));
-                    var outputGltf = (string)report["outputGltf"];
-                    var status = (string)report["status"];
-                    if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+                    try
                     {
-                        return new BatchBakeApplyInfo(
-                            null,
-                            status,
-                            (string)report["message"],
-                            (int?)report["frameVaryingTracks"] ?? 0,
-                            (int?)report["frameVaryingChannels"] ?? 0,
-                            (int?)report["firstPoseChangedTracks"] ?? 0,
-                            (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                        var report = JObject.Parse(File.ReadAllText(applyReport));
+                        var outputGltf = (string)report["outputGltf"];
+                        var status = (string)report["status"];
+                        if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return new BatchBakeApplyInfo(
+                                null,
+                                status,
+                                (string)report["message"],
+                                (int?)report["frameVaryingTracks"] ?? 0,
+                                (int?)report["frameVaryingChannels"] ?? 0,
+                                (int?)report["firstPoseChangedTracks"] ?? 0,
+                                (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                        }
+                        if (!string.IsNullOrWhiteSpace(outputGltf) && File.Exists(outputGltf))
+                        {
+                            return new BatchBakeApplyInfo(
+                                outputGltf,
+                                status,
+                                (string)report["message"],
+                                (int?)report["frameVaryingTracks"] ?? 0,
+                                (int?)report["frameVaryingChannels"] ?? 0,
+                                (int?)report["firstPoseChangedTracks"] ?? 0,
+                                (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                        }
                     }
-                    if (!string.IsNullOrWhiteSpace(outputGltf) && File.Exists(outputGltf))
+                    catch (Exception e)
                     {
-                        return new BatchBakeApplyInfo(
-                            outputGltf,
-                            status,
-                            (string)report["message"],
-                            (int?)report["frameVaryingTracks"] ?? 0,
-                            (int?)report["frameVaryingChannels"] ?? 0,
-                            (int?)report["firstPoseChangedTracks"] ?? 0,
-                            (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                        Logger.Warning($"Unable to read Unity bake apply report: {applyReport}; {e.Message}");
                     }
                 }
-                catch (Exception e)
+
+                var fallback = Directory.EnumerateFiles(bakedPreviewDir, "*.gltf", SearchOption.TopDirectoryOnly)
+                    .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
+                    .FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(fallback))
                 {
-                    Logger.Warning($"Unable to read Unity bake apply report: {applyReport}; {e.Message}");
+                    return new BatchBakeApplyInfo(fallback, "unknown", null, 0, 0, 0, 0);
                 }
             }
 
@@ -4110,10 +4116,7 @@ LIMIT 32;";
                 }
             }
 
-            var fallback = Directory.EnumerateFiles(bakedPreviewDir, "*.gltf", SearchOption.TopDirectoryOnly)
-                .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
-                .FirstOrDefault();
-            return new BatchBakeApplyInfo(fallback, string.IsNullOrWhiteSpace(fallback) ? null : "unknown", null, 0, 0, 0, 0);
+            return new BatchBakeApplyInfo(null, null, null, 0, 0, 0, 0);
         }
 
         private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
