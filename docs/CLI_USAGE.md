@@ -371,7 +371,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -SummaryOnly
 ```
 
-如果只是阶段性确认“根目录 bake cache 摘要还在、bake 工程里 ImportedAvatar asset 能被看到、最近批次报告在哪里”，可以用 `-FastSummary`。这个模式不扫描大型 SQLite 候选表，适合原神这类 10GB 级 `library_index.db` 的快速验收入口；它不会替代 `-GateOnly` / `-SummaryOnly` / 完整模式的确定性关系门禁：
+如果只是阶段性确认“根目录 bake cache 摘要还在、ImportedAvatar 统计是否仍 fresh、最近批次报告在哪里”，可以用 `-FastSummary`。这个模式不扫描大型 SQLite 候选表，适合原神这类 10GB 级 `library_index.db` 的快速验收入口；它不会替代 `-GateOnly` / `-SummaryOnly` / 完整模式的确定性关系门禁：
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass `
@@ -382,7 +382,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
   -FastSummary
 ```
 
-`-FastSummary` 会优先读取根目录 `animation_bake_cache_summary.json`、`sqlite_index_summary.json`、`Assets/AnimeStudioBake/ImportedAvatar/*.asset`、最近的 `ImportedAvatarProbe*/imported_avatar_probe_batch.json` 和 `.as_browser_cache/unity_bake_batch_reports/*.json`。旧库里的 summary JSON 如果因为历史编码问题读坏，脚本会把读取错误写进报告，而不是中断整个快速验收。维护这个 PowerShell 脚本时，新增在 PowerShell 主体里的字符串应保持 ASCII；中文说明优先写到 Markdown 文档或 Python 生成内容里，避免 Windows PowerShell 5 按 ANSI 解析 UTF-8 无 BOM 文件时误报语法错误。
+`-FastSummary` 会优先读取根目录 `animation_bake_cache_summary.json`、`sqlite_index_summary.json`、`Assets/AnimeStudioBake/ImportedAvatar/*.asset`、最近的 `ImportedAvatarProbe*/imported_avatar_probe_batch.json` 和 `.as_browser_cache/unity_bake_batch_reports/*.json`。如果传入 `-UnityProject`，脚本会现场扫描 bake 工程里的 ImportedAvatar 文件；如果没有传 `-UnityProject`，但根目录 bake cache 已记录 fresh 的 ImportedAvatar 探针统计，FastSummary 会沿用 cache 里的文件数、可信文件数和 probe freshness，避免把“没有现场扫描 Unity 工程”误报成 Avatar asset 为 0。这只复用已经写入 cache 的确定性统计，不新增模型-动画关系，也不猜测 Avatar oracle。旧库里的 summary JSON 如果因为历史编码问题读坏，脚本会把读取错误写进报告，而不是中断整个快速验收。维护这个 PowerShell 脚本时，新增在 PowerShell 主体里的字符串应保持 ASCII；中文说明优先写到 Markdown 文档或 Python 生成内容里，避免 Windows PowerShell 5 按 ANSI 解析 UTF-8 无 BOM 文件时误报语法错误。
 
 如果读取到 ImportedAvatar probe，FastSummary 会写出 `importedAvatarProbeFreshness`：`fresh` 表示 probe 的 asset 数量与当前 `ImportedAvatar` 目录一致，且报告不早于目录内最新 `.asset`；`stale` / `mismatch` 表示恢复或替换过 Avatar asset 后还没重新验证，Browser 会提示重新运行“验证AvatarAsset”。这个 freshness 只保护 Avatar oracle 验证报告的新鲜度，不会新增或修改模型-动画关系。
 
