@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -5525,6 +5526,7 @@ namespace AnimeStudio.LibraryBrowser
 
         private static void OpenPathWithF3d(string path)
         {
+            path = PreparePathForF3d(path);
             var f3d = FindF3dForOpen();
             var startInfo = new ProcessStartInfo
             {
@@ -5537,6 +5539,49 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             Process.Start(startInfo);
+        }
+
+        private static string PreparePathForF3d(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || path.Length < 240 || !File.Exists(path))
+            {
+                return path;
+            }
+
+            try
+            {
+                var sourceDirectory = Path.GetDirectoryName(path);
+                if (string.IsNullOrWhiteSpace(sourceDirectory) || !Directory.Exists(sourceDirectory))
+                {
+                    return path;
+                }
+
+                var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(path))).ToLowerInvariant()[..20];
+                var targetDirectory = Path.Combine(Path.GetTempPath(), "AnimeStudioF3DOpenCache", hash);
+                MirrorDirectoryForF3d(sourceDirectory, targetDirectory);
+                var mirroredPath = Path.Combine(targetDirectory, Path.GetFileName(path));
+                return File.Exists(mirroredPath) ? mirroredPath : path;
+            }
+            catch
+            {
+                return path;
+            }
+        }
+
+        private static void MirrorDirectoryForF3d(string sourceDirectory, string targetDirectory)
+        {
+            Directory.CreateDirectory(targetDirectory);
+            foreach (var directory in Directory.EnumerateDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
+            {
+                Directory.CreateDirectory(Path.Combine(targetDirectory, Path.GetRelativePath(sourceDirectory, directory)));
+            }
+
+            foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(targetDirectory, Path.GetRelativePath(sourceDirectory, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(target) ?? targetDirectory);
+                File.Copy(file, target, overwrite: true);
+            }
         }
 
         private static string FindF3dForOpen()

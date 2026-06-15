@@ -286,7 +286,7 @@ namespace AnimeStudio.LibraryBrowser
                 return status;
             }
 
-            var output = Path.Combine(directory, "unity_bake");
+            var output = GetUnityBakeOutputDirectory(model, animation);
             Directory.CreateDirectory(output);
             var unityAvatarAsset = config.ResolveUnityAvatarAsset(
                 model.Name,
@@ -1157,6 +1157,16 @@ FROM animation_bake_cache;";
             var raw = $"{PreviewCacheVersion}|{model.StableKey}|{animation.Name}|{animation.BestPath}|{animation.Source}";
             var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(raw))).ToLowerInvariant();
             return Path.Combine(_cacheRoot, model.StableKey, hash);
+        }
+
+        private string GetUnityBakeOutputDirectory(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            // Unity bake 输出里还会创建 “模型__动画/BakedPreview/文件名.gltf”。
+            // 如果继续放在 animation_previews/<modelHash>/<animationHash>/unity_bake 下，
+            // 原神这类长命名资源很容易超过部分 Windows 程序仍在使用的 260 字符路径限制。
+            var raw = $"{PreviewCacheVersion}|unity-bake|{model.StableKey}|{animation.Name}|{animation.BestPath}|{animation.Source}";
+            var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(raw))).ToLowerInvariant()[..20];
+            return Path.Combine(_root, ".as_browser_cache", "unity_bake_previews", hash);
         }
 
         private void WriteState(string directory, string status, string gltf, string validation, string message)
