@@ -13,6 +13,8 @@ namespace AnimeStudio.CLI
 {
     public static class SQLiteLibraryIndexBuilder
     {
+        private const int SummaryQueryTimeoutSeconds = 60;
+
         private static readonly string[] JsonDocumentNames =
         {
             "model_animations.json",
@@ -23,6 +25,20 @@ namespace AnimeStudio.CLI
             "library_summary.json",
             "audio_library_summary.json",
             "texture2darray_summary.json"
+        };
+
+        private static readonly HashSet<string> TextureFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".bmp",
+            ".tga",
+            ".dds",
+            ".ktx",
+            ".ktx2",
+            ".webp",
+            ".rawtex"
         };
 
         public static string Build(string exportRoot, string indexPath = null, bool skipFileIndex = false, bool skipSidecarScan = false, bool skipJsonDocuments = false, string sourceIndexPath = null)
@@ -76,7 +92,10 @@ namespace AnimeStudio.CLI
             InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。SQLite v1 indexes exported Library/AudioLibrary artifacts; raw Unity source graph indexing will extend this schema later.");
 
-            counts["assets"] = RunCountStage("asset catalog", () => ImportAssetCatalog(connection, transaction, root));
+            var assetCatalogRows = RunCountStage("asset catalog", () => ImportAssetCatalog(connection, transaction, root));
+            counts["textureAssets"] = RunCountStage("texture assets", () => ImportTextureAssets(connection, transaction, root));
+            counts["assets"] = assetCatalogRows + counts["textureAssets"];
+            counts["assetCatalog"] = assetCatalogRows;
             counts["modelBindingPaths"] = RunCountStage("model binding paths", () => ImportModelBindingPaths(connection, transaction, root));
             counts["unityAssets"] = 0;
             counts["unityRelations"] = 0;
@@ -420,6 +439,98 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 count++;
             }
             return count;
+        }
+
+        private static long ImportTextureAssets(SqliteConnection connection, SqliteTransaction transaction, string root)
+        {
+            var textureRoot = Path.Combine(root, "Textures");
+            if (!Directory.Exists(textureRoot))
+            {
+                return 0;
+            }
+
+            var existingOutputs = LoadExistingAssetOutputKeys(connection, root);
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, raw_json)
+VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $rawJson);";
+            var p = AddParameters(command, "$kind", "$resourceKind", "$name", "$sourceType", "$container", "$source", "$pathId", "$output", "$audioKind", "$animationType", "$skeletonHash", "$rawJson");
+
+            long count = 0;
+            foreach (var file in Directory.EnumerateFiles(textureRoot, "*", SearchOption.AllDirectories))
+            {
+                var extension = Path.GetExtension(file);
+                if (!TextureFileExtensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var relativeOutput = MakeRelative(root, file);
+                var outputKey = NormalizeAssetOutputKey(root, relativeOutput);
+                if (!existingOutputs.Add(outputKey))
+                {
+                    continue;
+                }
+
+                var textureRelative = MakeRelative(textureRoot, file);
+                var bucket = GetTextureBucket(textureRelative);
+                var info = new FileInfo(file);
+                var raw = new JObject
+                {
+                    ["kind"] = "Texture",
+                    ["resourceKind"] = bucket,
+                    ["name"] = Path.GetFileNameWithoutExtension(file) ?? "",
+                    ["sourceType"] = "TextureFile",
+                    ["source"] = relativeOutput,
+                    ["output"] = relativeOutput,
+                    ["modelPreview"] = relativeOutput,
+                    ["texturePath"] = textureRelative.Replace('\\', '/'),
+                    ["extension"] = extension.TrimStart('.').ToLowerInvariant(),
+                    ["fileSize"] = info.Length,
+                    ["indexedFrom"] = "texture_directory_index",
+                    ["status"] = "exported_texture_file"
+                };
+
+                Set(p, "$kind", "Texture");
+                Set(p, "$resourceKind", bucket);
+                Set(p, "$name", Path.GetFileNameWithoutExtension(file) ?? "");
+                Set(p, "$sourceType", "TextureFile");
+                Set(p, "$container", null);
+                Set(p, "$source", relativeOutput);
+                Set(p, "$pathId", null);
+                Set(p, "$output", relativeOutput);
+                Set(p, "$audioKind", null);
+                Set(p, "$animationType", null);
+                Set(p, "$skeletonHash", null);
+                Set(p, "$rawJson", raw.ToString(Formatting.None));
+                command.ExecuteNonQuery();
+                count++;
+            }
+
+            return count;
+        }
+
+        private static HashSet<string> LoadExistingAssetOutputKeys(SqliteConnection connection, string root)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT output FROM assets WHERE output IS NOT NULL AND output <> '';";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(NormalizeAssetOutputKey(root, reader.GetString(0)));
+            }
+
+            return result;
+        }
+
+        private static string GetTextureBucket(string textureRelativePath)
+        {
+            var parts = (textureRelativePath ?? string.Empty)
+                .Replace('\\', '/')
+                .Split('/', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length > 1 ? parts[0] : "Textures";
         }
 
         private static long ImportModelBindingPaths(SqliteConnection connection, SqliteTransaction transaction, string root)
@@ -1302,6 +1413,7 @@ GROUP BY animation_output;", transaction);
         private static void WriteSummary(SqliteConnection connection, string root, string dbPath, Dictionary<string, long> counts, bool skipFileIndex, bool skipSidecarScan, string sourceIndexPath)
         {
             var summaryPath = GetSQLiteSummaryPath(root, dbPath);
+            var animationRelationCoverage = BuildAnimationRelationCoverageSummarySafely(connection, root, skipSidecarScan, sourceIndexPath);
             var summary = new JObject
             {
                 ["schemaVersion"] = 1,
@@ -1315,7 +1427,7 @@ GROUP BY animation_output;", transaction);
                     ? "本次重建跳过 files 表，用于快速刷新模型-动画关系、sidecar 能力和源索引健康检查。需要完整文件浏览/审计时重新运行不带 --skip_sqlite_file_index 的 build。"
                     : "本次包含 files 表，适合完整文件浏览和审计；大型素材库会明显增加重建时间。",
                 ["counts"] = JObject.FromObject(counts),
-                ["animationRelationCoverage"] = BuildAnimationRelationCoverageSummary(connection, root, skipSidecarScan, sourceIndexPath)
+                ["animationRelationCoverage"] = animationRelationCoverage
             };
             File.WriteAllText(summaryPath, summary.ToString(Formatting.Indented));
 
@@ -1329,6 +1441,24 @@ GROUP BY animation_output;", transaction);
                 "桌面工具默认优先读取 SQLite。高频查询，例如模型列表、动画 binding path 定向匹配、缩略图状态、筛选统计，应尽量走 SQLite 索引；JSON/JSONL 保留给人工排查、兼容旧流程和重新建库。\n\n" +
                 "主要表：`assets`、`unity_assets`、`unity_relations`、`animation_bindings`、`animation_binding_paths`、`export_manifest`、`json_documents`、`files`。每条结构化记录都尽量保留 `raw_json`，方便后续无损迁移。\n\n" +
                 "音频说明：当前 AudioLibrary 可以导出原始 `.fsb` 等文件；FMOD/native 转 WAV 作为后续批量转换阶段，不阻塞索引与素材库建设。\n");
+        }
+
+        private static JObject BuildAnimationRelationCoverageSummarySafely(SqliteConnection connection, string root, bool skipSidecarScan, string sourceIndexPath)
+        {
+            try
+            {
+                return BuildAnimationRelationCoverageSummary(connection, root, skipSidecarScan, sourceIndexPath);
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"SQLite summary animation relation coverage failed: {e.GetType().Name}: {e.Message}");
+                return new JObject
+                {
+                    ["status"] = "error",
+                    ["error"] = e.GetType().Name + ": " + e.Message,
+                    ["note"] = "SQLite DB 已完成写入；仅动画关系覆盖摘要统计失败。可稍后单独诊断 summary 查询，不应阻塞素材库生产索引。"
+                };
+            }
         }
 
         private static string GetSQLiteSummaryPath(string root, string dbPath)
@@ -1570,6 +1700,7 @@ WHERE kind='Model'
             var avatarConstantOracleModels = 0L;
             using (var command = connection.CreateCommand())
             {
+                command.CommandTimeout = SummaryQueryTimeoutSeconds;
                 command.CommandText = modelAvatarSql;
                 using var reader = command.ExecuteReader();
                 if (reader.Read())
@@ -1877,6 +2008,7 @@ ORDER BY count DESC;"),
         {
             var count = 0L;
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -1897,6 +2029,7 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
         {
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.status, bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -1932,6 +2065,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
         {
             var count = 0L;
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -1955,6 +2089,7 @@ WHERE bc.status='failed'
         {
             var count = 0L;
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -1977,6 +2112,7 @@ WHERE bc.status='baked'
         {
             var count = 0L;
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -1997,6 +2133,7 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
         {
             var count = 0L;
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -2021,6 +2158,7 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
         {
             var groups = new Dictionary<string, UniqueBakeCacheEntry>(StringComparer.OrdinalIgnoreCase);
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
 SELECT bc.model_output, bc.animation_output, bc.status, bc.baked_gltf_path
 FROM animation_bake_cache bc
@@ -2369,6 +2507,7 @@ EXISTS (
         private static long SourceRelationCount(SqliteConnection connection, string relation)
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = "SELECT COUNT(*) FROM source_relations WHERE relation=$relation;";
             command.Parameters.AddWithValue("$relation", relation);
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
@@ -2377,6 +2516,7 @@ EXISTS (
         private static long SourceRelationTargetCountPositive(SqliteConnection connection, string relation)
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = "SELECT COUNT(*) FROM source_relations WHERE relation=$relation AND COALESCE(target_count, 0) > 0;";
             command.Parameters.AddWithValue("$relation", relation);
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
@@ -2385,6 +2525,7 @@ EXISTS (
         private static long SourceScalarLong(SqliteConnection connection, string sql)
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = sql;
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
         }
@@ -2392,6 +2533,7 @@ EXISTS (
         private static string SourceScalarString(SqliteConnection connection, string sql)
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = sql;
             return command.ExecuteScalar() as string;
         }
@@ -2400,6 +2542,7 @@ EXISTS (
         {
             var result = new JArray();
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = @"
 SELECT COALESCE(a.resource_kind, '(null)') AS resource_kind,
        COUNT(*) AS total,
@@ -2430,6 +2573,7 @@ ORDER BY with_explicit DESC, total DESC;";
             var rows = new List<(string Output, string AnimationAsset, long CandidateCount)>();
             using (var command = connection.CreateCommand())
             {
+                command.CommandTimeout = SummaryQueryTimeoutSeconds;
                 command.CommandText = @"
 SELECT a.output,
        json_extract(a.raw_json, '$.animationAsset') AS animation_asset,
@@ -2837,6 +2981,7 @@ WHERE s.explicit_model_count > 0;";
         {
             var result = new JArray();
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = sql;
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -2854,6 +2999,7 @@ WHERE s.explicit_model_count > 0;";
         {
             var result = new List<long>();
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = sql;
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -2866,6 +3012,7 @@ WHERE s.explicit_model_count > 0;";
         private static long ScalarLong(SqliteConnection connection, string sql)
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = sql;
             return command.ExecuteScalar() is long value ? value : 0;
         }
@@ -2992,6 +3139,19 @@ WHERE s.explicit_model_count > 0;";
         private static string MakeRelative(string root, string path)
         {
             return Path.GetRelativePath(root, path).Replace('\\', '/');
+        }
+
+        private static string NormalizeAssetOutputKey(string root, string output)
+        {
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return string.Empty;
+            }
+
+            var fullPath = Path.IsPathRooted(output)
+                ? output
+                : Path.Combine(root, output);
+            return Path.GetFullPath(fullPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
 
         private static SourceKey KeyFromRelation(SqliteDataReader reader, int fileOrdinal, int pathIdOrdinal)
