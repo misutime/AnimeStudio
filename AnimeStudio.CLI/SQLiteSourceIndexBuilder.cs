@@ -848,6 +848,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                 {
                     var state = states[stateIndex];
                     var trees = state.m_BlendTreeConstantArray ?? new List<BlendTreeConstant>();
+                    var baseLayerClipsByNode = BuildBaseLayerClipsByNode(controller, trees);
                     for (var treeIndex = 0; treeIndex < trees.Count; treeIndex++)
                     {
                         var nodes = trees[treeIndex].m_NodeArray ?? new List<BlendTreeNodeConstant>();
@@ -866,10 +867,14 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 
                             // AnimatorController 里的 node.m_ClipID 在原神这类资源里是 m_AnimationClips 的槽位。
                             // 记录 state/blend/node 上下文，避免后续把叶子 clip 误当完整动作。
+                            var baseLayerClip = treeIndex > 0 && baseLayerClipsByNode.TryGetValue(nodeIndex, out var baseClip)
+                                ? baseClip
+                                : null;
                             AddPPtrRelation(connection, transaction, counts, "animatorController.clip", controller, clipPtr.m_FileID, clipPtr.m_PathID, "AnimationClip", new
                             {
                                 source = "AnimatorController.m_Controller.stateMachine.blendTree.node",
                                 controllerClipIndex = clipSlot,
+                                baseLayerClip,
                                 layers = layerContexts.Select(layer => new
                                 {
                                     layerIndex = layer.LayerIndex,
@@ -929,6 +934,35 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     hasStateMachineNodeContext = false,
                 });
             }
+        }
+
+        private static Dictionary<int, JObject> BuildBaseLayerClipsByNode(AnimatorController controller, List<BlendTreeConstant> trees)
+        {
+            var result = new Dictionary<int, JObject>();
+            if (trees == null || trees.Count == 0)
+            {
+                return result;
+            }
+
+            var nodes = trees[0].m_NodeArray ?? new List<BlendTreeNodeConstant>();
+            for (var nodeIndex = 0; nodeIndex < nodes.Count; nodeIndex++)
+            {
+                var node = nodes[nodeIndex];
+                if (!TryGetAnimatorControllerClipSlot(controller, node.m_ClipID, out var clipSlot, out var clipPtr))
+                {
+                    continue;
+                }
+
+                result[nodeIndex] = new JObject
+                {
+                    ["controllerClipIndex"] = clipSlot,
+                    ["nodeIndex"] = nodeIndex,
+                    ["nodeClipId"] = node.m_ClipID,
+                    ["clip"] = DescribePPtr(controller.assetsFile, clipPtr.m_FileID, clipPtr.m_PathID, "AnimationClip"),
+                };
+            }
+
+            return result;
         }
 
         private static Dictionary<int, List<AnimatorControllerLayerContext>> BuildAnimatorControllerLayerMap(AnimatorController controller)

@@ -1420,6 +1420,7 @@ LIMIT $queryLimit;";
                 animation["score"] = (int?)relation["score"] ?? 100;
                 animation["candidate"] = relation;
                 animation["requiresHumanoidBake"] = true;
+                animation = ResolveAnimatorControllerBaseLayerAnimation(connection, animation, relation, libraryRoot) ?? animation;
                 ResolveBatchCandidatePaths(model, animation, libraryRoot);
                 if (!allowSuppliedAvatarAsset
                     && !ModelHasBakeReadyAvatar(model)
@@ -1445,6 +1446,57 @@ LIMIT $queryLimit;";
             return diversifyModels
                 ? DiversifySelectionsByModel(result, Math.Max(1, limit))
                 : result.Take(Math.Max(1, limit));
+        }
+
+        private static JObject ResolveAnimatorControllerBaseLayerAnimation(
+            SqliteConnection connection,
+            JObject requestedAnimation,
+            JObject relation,
+            string libraryRoot)
+        {
+            var baseClip = relation?["animatorControllerContext"]?["baseLayerClip"]?["clip"] as JObject;
+            var basePathId = (long?)baseClip?["pathId"];
+            if (basePathId == null)
+            {
+                return null;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT output, raw_json
+FROM assets
+WHERE kind='Animation'
+  AND json_extract(raw_json, '$.pathId')=$pathId
+ORDER BY name COLLATE NOCASE
+LIMIT 1;";
+            command.Parameters.AddWithValue("$pathId", basePathId.Value);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            var baseOutput = reader.IsDBNull(0) ? null : reader.GetString(0);
+            var baseAnimation = JObject.Parse(reader.GetString(1));
+            baseAnimation["relation"] = (string)relation["relation"] ?? (string)relation["relationSource"] ?? "library.sqlite.candidate";
+            baseAnimation["relationSource"] = (string)relation["relationSource"] ?? "explicit";
+            baseAnimation["confidence"] = (string)relation["confidence"] ?? "explicit_unity_source_index";
+            baseAnimation["score"] = (int?)relation["score"] ?? 100;
+            baseAnimation["candidate"] = relation;
+            baseAnimation["requiresHumanoidBake"] = true;
+            baseAnimation["animatorControllerRequestedClip"] = new JObject
+            {
+                ["name"] = requestedAnimation?["name"],
+                ["output"] = requestedAnimation?["output"],
+                ["pathId"] = requestedAnimation?["pathId"],
+                ["reason"] = "Selected clip is an AnimatorController auxiliary layer; baseLayerClip is used as the deterministic body-driving AnimationClip.",
+            };
+            if (!string.IsNullOrWhiteSpace(baseOutput))
+            {
+                baseAnimation["output"] = ResolveSourcePath(baseOutput, libraryRoot);
+            }
+
+            return baseAnimation;
         }
 
         private static IEnumerable<PreviewSelection> DiversifySelectionsByModel(
@@ -2881,6 +2933,7 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
     OR COALESCE(json_extract({raw}, '$.requiresInternalHumanoidSolve'), 0)=1
     OR COALESCE(json_extract({raw}, '$.fullHumanoidBakeRequired'), 0)=1
     OR COALESCE(json_extract({raw}, '$.productionUnityBakeReady'), 0)=1
+    OR json_extract({raw}, '$.animatorControllerContext.baseLayerClip.clip.pathId') IS NOT NULL
   )";
         }
 

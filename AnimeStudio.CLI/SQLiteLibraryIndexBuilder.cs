@@ -3798,6 +3798,7 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
                     {
                         ["source"] = details["source"],
                         ["controllerClipIndex"] = details["controllerClipIndex"],
+                        ["baseLayerClip"] = details["baseLayerClip"],
                         ["layers"] = details["layers"],
                         ["stateMachineIndex"] = details["stateMachineIndex"],
                         ["stateIndex"] = details["stateIndex"],
