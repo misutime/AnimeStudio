@@ -300,6 +300,13 @@ namespace AnimeStudio.CLI
 
                 if (o.RecoverImportedAvatarAssets != null)
                 {
+                    var unitySettings = ResolveUnityBakeSettings(o, o.RecoverImportedAvatarAssets.FullName);
+                    if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
+                    {
+                        Logger.Error("--recover_imported_avatar_assets requires a Unity bake project. Configure it once in Browser Unity settings, write .as_browser_cache\\unity_bake_settings.json, set ANIMESTUDIO_UNITY_BAKE_PROJECT, or pass --unity_project.");
+                        return;
+                    }
+
                     if (string.IsNullOrWhiteSpace(o.GameName))
                     {
                         Logger.Error("--recover_imported_avatar_assets requires --game.");
@@ -324,15 +331,15 @@ namespace AnimeStudio.CLI
                     Studio.Game = recoveryGame;
                     AvatarAssetRecoveryExporter.Recover(
                         o.RecoverImportedAvatarAssets.FullName,
-                        o.UnityProject?.FullName,
-                        o.UnityEditor?.FullName,
+                        unitySettings.UnityProject,
+                        unitySettings.UnityEditor,
                         recoveryGame,
                         o.UnityVersion,
                         o.PreviewSourceRoot?.FullName,
                         o.PreviewModel,
                         o.AvatarRecoveryLimit,
                         o.AvatarRecoveryForce,
-                        o.RunUnityBake,
+                        o.RunUnityBake || !string.IsNullOrWhiteSpace(unitySettings.UnityEditor),
                         o.IndexPath?.FullName
                     );
                     return;
@@ -1336,9 +1343,10 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            if (o.UnityProject == null || string.IsNullOrWhiteSpace(o.UnityProject.FullName))
+            var unitySettings = ResolveUnityBakeSettings(o, libraryRoot);
+            if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
             {
-                Logger.Info("Imported Avatar asset auto recovery skipped because --unity_project was not provided. Browser can still run recovery later from the Library root.");
+                Logger.Info("Imported Avatar asset auto recovery skipped because no Unity bake project is configured. Configure Browser Unity settings, .as_browser_cache\\unity_bake_settings.json, ANIMESTUDIO_UNITY_BAKE_PROJECT, or --unity_project to enable the default recovery step.");
                 return;
             }
 
@@ -1364,21 +1372,174 @@ namespace AnimeStudio.CLI
             {
                 AvatarAssetRecoveryExporter.Recover(
                     libraryRoot,
-                    o.UnityProject.FullName,
-                    o.UnityEditor?.FullName,
+                    unitySettings.UnityProject,
+                    unitySettings.UnityEditor,
                     effectiveGame,
                     o.UnityVersion,
                     o.PreviewSourceRoot?.FullName ?? sourceRoot,
                     selector: null,
                     limit: 0,
                     force: false,
-                    runProbe: o.UnityEditor != null,
+                    runProbe: !string.IsNullOrWhiteSpace(unitySettings.UnityEditor),
                     explicitIndexPath: o.IndexPath?.FullName);
             }
             catch (Exception e)
             {
                 Logger.Warning($"Imported Avatar asset auto recovery failed; Library export remains usable but Humanoid bake may still need Avatar metadata. {e.GetType().Name}: {e.Message}");
             }
+        }
+
+        private static UnityBakeSettings ResolveUnityBakeSettings(Options o, string libraryRoot)
+        {
+            var local = LoadUnityBakeSettings(string.IsNullOrWhiteSpace(libraryRoot)
+                ? null
+                : Path.Combine(libraryRoot, ".as_browser_cache", "unity_bake_settings.json"));
+            var global = LoadUnityBakeSettings(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "AnimeStudio",
+                "LibraryBrowser",
+                "settings.json"));
+
+            var unityProject = FirstNotEmpty(
+                o?.UnityProject?.FullName,
+                local.UnityProject,
+                global.UnityProject,
+                Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_BAKE_PROJECT"),
+                FindDefaultUnityBakeProject());
+            if (!IsValidUnityBakeProject(unityProject))
+            {
+                unityProject = null;
+            }
+
+            var unityEditor = NormalizeUnityEditorPath(FirstNotEmpty(
+                o?.UnityEditor?.FullName,
+                local.UnityEditor,
+                global.UnityEditor,
+                Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_EDITOR"),
+                FindDefaultUnityEditor()));
+
+            return new UnityBakeSettings(unityProject, unityEditor);
+        }
+
+        private static UnityBakeSettings LoadUnityBakeSettings(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return UnityBakeSettings.Empty;
+            }
+
+            try
+            {
+                var json = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(path));
+                return new UnityBakeSettings(
+                    (string)json["unityProject"],
+                    NormalizeUnityEditorPath((string)json["unityEditor"]));
+            }
+            catch
+            {
+                return UnityBakeSettings.Empty;
+            }
+        }
+
+        private static string FirstNotEmpty(params string[] values)
+        {
+            return values?.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+        }
+
+        private static string NormalizeUnityEditorPath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var path = value.Trim().Trim('"');
+            if (File.Exists(path))
+            {
+                return Path.GetFullPath(path);
+            }
+
+            if (Directory.Exists(path))
+            {
+                var direct = Path.Combine(path, "Unity.exe");
+                if (File.Exists(direct))
+                {
+                    return Path.GetFullPath(direct);
+                }
+
+                var editor = Path.Combine(path, "Editor", "Unity.exe");
+                if (File.Exists(editor))
+                {
+                    return Path.GetFullPath(editor);
+                }
+            }
+
+            return null;
+        }
+
+        private static string FindDefaultUnityEditor()
+        {
+            var hubRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "Unity",
+                "Hub",
+                "Editor");
+            if (Directory.Exists(hubRoot))
+            {
+                var hubEditor = Directory.EnumerateDirectories(hubRoot)
+                    .Select(dir => new
+                    {
+                        Path = Path.Combine(dir, "Editor", "Unity.exe"),
+                        Modified = Directory.GetLastWriteTimeUtc(dir),
+                    })
+                    .Where(x => File.Exists(x.Path))
+                    .OrderByDescending(x => x.Modified)
+                    .Select(x => x.Path)
+                    .FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(hubEditor))
+                {
+                    return hubEditor;
+                }
+            }
+
+            var legacy = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "Unity",
+                "Editor",
+                "Unity.exe");
+            return File.Exists(legacy) ? legacy : null;
+        }
+
+        private static string FindDefaultUnityBakeProject()
+        {
+            var candidates = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AnimeStudioUnityProject"),
+                @"D:\misutime\AnimeStudioUnityProject",
+            };
+            return candidates.FirstOrDefault(IsValidUnityBakeProject);
+        }
+
+        private static bool IsValidUnityBakeProject(string path)
+        {
+            return !string.IsNullOrWhiteSpace(path)
+                && Directory.Exists(path)
+                && File.Exists(Path.Combine(path, "ProjectSettings", "ProjectSettings.asset"))
+                && File.Exists(Path.Combine(path, "Assets", "AnimeStudio.UnityBake", "Editor", "AnimeStudioBakeCli.cs"));
+        }
+
+        private readonly struct UnityBakeSettings
+        {
+            public static readonly UnityBakeSettings Empty = new(null, null);
+
+            public UnityBakeSettings(string unityProject, string unityEditor)
+            {
+                UnityProject = unityProject;
+                UnityEditor = unityEditor;
+            }
+
+            public string UnityProject { get; }
+            public string UnityEditor { get; }
         }
 
         private static IDisposable StartLibraryLoadHeartbeat(

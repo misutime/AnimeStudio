@@ -22,7 +22,7 @@ dotnet run --project AnimeStudio.CLI/AnimeStudio.CLI.csproj -f net9.0-windows --
   --run_unity_bake
 ```
 
-正常 Library 导出或 `--build_sqlite_index` 后，如果命令里提供了 `--unity_project`，CLI 会自动尝试恢复 ImportedAvatar。提供 `--unity_editor` 时会自动跑 Unity probe，并只接入验证通过的 Avatar。已隔离到 `InvalidImportedAvatar` 的 Avatar 默认不会重复恢复；需要重新验证时再显式使用强制恢复参数。
+正常 Library 导出或 `--build_sqlite_index` 后，CLI 会默认尝试恢复 ImportedAvatar。Unity bake 工程和 Unity Editor 的来源优先级为：命令行参数、素材库 `.as_browser_cache/unity_bake_settings.json`、Browser 全局设置、环境变量、默认工程路径。找到 Unity Editor 时会自动跑 Unity probe，并只接入验证通过的 Avatar。已隔离到 `InvalidImportedAvatar` 的 Avatar 默认不会重复恢复；需要重新验证时再显式使用强制恢复参数。
 
 ## Browser 行为
 
