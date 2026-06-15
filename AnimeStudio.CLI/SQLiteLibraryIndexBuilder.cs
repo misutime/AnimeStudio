@@ -805,11 +805,12 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
         {
             var animationRequiresHumanoidSolve = RequiresHumanoidBake(animation);
             var standaloneBodyBakeReady = IsStandaloneBodyBakeReady(animation);
-            var requiresAnimatorControllerContext = animationRequiresHumanoidSolve && !standaloneBodyBakeReady;
+            var hasAnimatorControllerBodyClip = HasAnimatorControllerBodyClip(relation);
+            var requiresAnimatorControllerContext = animationRequiresHumanoidSolve && !standaloneBodyBakeReady && !hasAnimatorControllerBodyClip;
             var hasDirectTransformPreview = HasDirectTransformPreview(animation);
             var modelHasInternalHumanoidSolver = HasCompleteInternalHumanoidSolver(model);
             var modelHasProductionUnityBakeAvatar = HasProductionUnityBakeAvatar(model);
-            var standaloneHumanoidBakeRequired = animationRequiresHumanoidSolve && standaloneBodyBakeReady;
+            var standaloneHumanoidBakeRequired = animationRequiresHumanoidSolve && (standaloneBodyBakeReady || hasAnimatorControllerBodyClip);
             var requiresInternalHumanoidSolve = standaloneHumanoidBakeRequired && modelHasInternalHumanoidSolver;
             var fullHumanoidBakeBlocked = standaloneHumanoidBakeRequired && !modelHasProductionUnityBakeAvatar;
             var canRequestUnityBake = standaloneHumanoidBakeRequired && modelHasProductionUnityBakeAvatar;
@@ -865,6 +866,7 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 ["standaloneBodyBakeStatus"] = S(animation, "standaloneBodyBakeStatus"),
                 ["standaloneBodyBakeReason"] = S(animation, "standaloneBodyBakeReason"),
                 ["animatorControllerContext"] = relation.AnimatorControllerContext,
+                ["animatorControllerBodyClipReady"] = hasAnimatorControllerBodyClip,
                 ["partialDirectGltf"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver,
                 ["partialDirectGltfReason"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver
                     ? "Animation has deterministic Transform TRS curves, but full Humanoid/Muscle bake is blocked by missing Avatar HumanBone mapping or reference pose."
@@ -872,6 +874,15 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 ["nextAction"] = nextAction,
                 ["matchReason"] = relation.Reason,
             };
+        }
+
+        private static bool HasAnimatorControllerBodyClip(SourceAnimationRelation relation)
+        {
+            // 原神这类 controller 常把同一个状态拆成身体主动作层 + 角色附件/叠加层。
+            // 只有源索引明确记录同状态 baseLayerClip 时，才允许把辅助 clip 接到身体主 clip 去做 Unity bake。
+            // 这里不按名称、骨骼数量或目录猜测，避免把普通 root/accessory clip 误升级为可烘焙身体动画。
+            var clip = relation?.AnimatorControllerContext?["baseLayerClip"]?["clip"] as JObject;
+            return (long?)clip?["pathId"] != null;
         }
 
         private static bool IsStandaloneBodyBakeReady(JObject animation)

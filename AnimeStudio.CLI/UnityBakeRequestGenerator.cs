@@ -1120,6 +1120,14 @@ namespace AnimeStudio.CLI
         {
             reason = null;
             var candidate = animation?["candidate"] as JObject;
+            if ((long?)candidate?["animatorControllerContext"]?["baseLayerClip"]?["clip"]?["pathId"] != null
+                && animation?["animatorControllerRequestedClip"] is JObject)
+            {
+                // 选中的原 clip 可能是 AnimatorController 的附件/叠加层，所以它本身会标记为
+                // standaloneBodyBakeReady=false。只要 request 已经切换到同状态的 baseLayerClip，
+                // 后续门禁应检查身体主 clip，而不是继续用原辅助 clip 拦截。
+                return false;
+            }
             if (IsFalse(animation?["standaloneBodyBakeReady"]) || IsFalse(candidate?["standaloneBodyBakeReady"]))
             {
                 reason = (string)animation?["standaloneBodyBakeReason"]
@@ -1258,7 +1266,7 @@ LIMIT 1;";
             CreateTempOutputTable(connection, "temp_unity_bake_models", modelOutputs);
             CreateTempOutputTable(connection, "temp_unity_bake_animations", animationOutputs);
             CreateTempImportedAvatarAssetKeys(connection, importedAvatarAssets);
-            CreateTempUnityBakeAvatarReadyModelTable(connection);
+            CreateTempUnityBakeAvatarReadyModelTable(connection, modelOutputs);
             var hasBakeCache = skipBakedCache && BakeCacheTableExists(connection);
             if (hasBakeCache)
             {
@@ -2713,7 +2721,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             transaction.Commit();
         }
 
-        private static void CreateTempUnityBakeAvatarReadyModelTable(SqliteConnection connection)
+        private static void CreateTempUnityBakeAvatarReadyModelTable(SqliteConnection connection, IReadOnlyCollection<string> modelOutputs = null)
         {
             using (var drop = connection.CreateCommand())
             {
@@ -2725,11 +2733,15 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             {
                 // 先把“有可信 Avatar 来源”的模型收敛成小表，后面的几百万候选只做 output 命中。
                 // ImportedAvatar 仍然只用精确 key 匹配，不做 contains 模糊匹配。
+                var modelFilterSql = modelOutputs != null
+                    ? "AND m.output IN (SELECT output FROM temp_unity_bake_models)"
+                    : "";
                 create.CommandText = @"
 CREATE TEMP TABLE temp_unity_bake_avatar_ready_models AS
 SELECT m.output AS output
 FROM assets m
 WHERE m.kind='Model'
+  " + modelFilterSql + @"
   AND (
     " + EffectiveBakeReadyAvatarSql("m") + @"
   );";

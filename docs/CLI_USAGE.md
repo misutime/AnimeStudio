@@ -1041,6 +1041,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 `requiresHumanoidBake=true` 的候选还必须通过 Unity 的 `AnimationClip.isHumanMotion` 检查。即使模型已经有可信 `unityAssetPaths.avatarAsset`，如果导入到 bake 工程里的 `.anim` 被 Unity 报告为 `isHumanMotion=false`，PlayableGraph 只会采样普通 Transform 曲线，Humanoid/Muscle 身体主动作不会被真实驱动。这种结果会被直接标为 `failed`，不会再写出或打开 baked glTF；需要回到原始 Unity AnimationClip asset 恢复/引用链路继续修，而不能把半跪、入地、静态默认姿态当作“需人工验收”产物。
 
+AnimatorController 多层状态要区分“身体主动作”和“角色专属辅助层”。例如原神角色 controller 里同一个 state 可能同时引用通用 Humanoid 身体 clip 和角色发型、服装、武器等辅助 clip；后者单独 bake 会出现半身入地、动作语义不符或 pose-only。生产索引只有在源索引从同一个 AnimatorController state / blend tree node 明确解析出 `animatorControllerContext.baseLayerClip.clip.pathId` 时，才允许把用户选中的辅助 clip 切到同状态的身体主 clip 生成 Unity bake request。这个切换仍然来自 Unity 状态机结构，不按动画名、骨骼数量或目录猜测；没有 `baseLayerClip` 的候选继续显示“需 AnimatorController 上下文”，不能进入主线 bake。
+
 `--preview_validation_limit 0` 写 `status=summary_only` 批次报告时，会复用刚刷新的 `animation_bake_cache_summary.json` 里的候选分母和 Avatar 来源字段，避免为了 Browser 状态再重复扫描几百万显式候选。
 
 读取旧 `unity_bake_apply_report.json` 时，Browser、CLI 摘要和覆盖率脚本会按当前规则重新判断 Avatar 信任来源：`internal_solver`、`avatar_constant`、`oracle` 这类来源即使旧报告写了 `TrustedProductionBake=true`，也只算诊断结果，不再计入可信可播放 baked 动画；显式 `unityAssetPaths.avatarAsset` 请求还必须看到 `imported_unity_avatar_asset` 来源和有效导入 Avatar 证明。
