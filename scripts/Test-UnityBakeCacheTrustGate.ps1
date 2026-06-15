@@ -112,10 +112,11 @@ Assert-Contains $skipSelector "AND NOT EXISTS" "Unity bake batch selector must k
 Assert-NotContains $skipSelector "bc.status='baked')" "Unity bake batch selector must not skip raw baked cache rows without trust proof."
 
 $processedCache = Get-MethodBodyText $requestGenerator "private static void CreateTempProcessedBakeCacheTable"
-Assert-Contains $processedCache "status IN ('baked', 'static_pose', 'needs_review')" "Processed bake cache may only start from terminal bake statuses."
+Assert-Contains $processedCache "status IN ('baked', 'static_pose', 'needs_review', 'needs_animator_controller_context')" "Processed bake cache may only start from terminal bake statuses."
 Assert-Contains $processedCache "IsTrustedBakedGltfPath(bakedGltf, libraryRoot)" "Processed bake cache must re-check trusted baked glTF before skipping baked rows."
 Assert-Contains $processedCache "IsStaticPoseBakedGltfPath(bakedGltf, libraryRoot)" "Processed bake cache may skip static_pose only after report proof."
 Assert-Contains $processedCache "IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)" "Processed bake cache may skip needs_review only after report proof."
+Assert-Contains $processedCache "IsAnimatorControllerContextCacheStatus(status, message)" "Processed bake cache may skip controller-context blockers only after message proof."
 Assert-Contains $processedCache "continue;" "Processed bake cache must drop untrusted terminal-looking rows."
 Assert-Contains $processedCache "temp_unity_bake_processed_cache" "Processed bake cache must be the only source used by skipBakedCache."
 
@@ -137,7 +138,9 @@ Assert-Contains $trustedGenerator "UsesFirstSampleHumanoidDelta(report)" "Unity 
 $uniqueGenerator = Get-MethodBodyText $requestGenerator "private static JObject BuildUniqueBakeCacheCounts"
 Assert-Contains $uniqueGenerator "IsTrustedBakedGltfPath(bakedGltf, libraryRoot)" "Unity bake request summary unique counts must recompute trusted baked proof."
 Assert-Contains $uniqueGenerator "IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)" "Unity bake request summary must treat needs_review as terminal diagnostics."
+Assert-Contains $uniqueGenerator "IsAnimatorControllerContextCacheStatus(status, message)" "Unity bake request summary must treat controller-context blockers as terminal diagnostics."
 Assert-Contains $uniqueGenerator "uniqueNeedsReviewCandidates" "Unity bake request summary must expose needs_review terminal counts."
+Assert-Contains $uniqueGenerator "uniqueAnimatorControllerContextCandidates" "Unity bake request summary must expose controller-context terminal counts."
 Assert-Contains $uniqueGenerator "terminalDiagnosticCandidates" "Unity bake request summary pending count must subtract terminal diagnostics."
 Assert-Contains $uniqueGenerator "uniquePendingUnityBakeCandidates" "Unity bake request summary must keep pending counts visible."
 Assert-Contains $uniqueGenerator "uniqueTrustedBakedCandidates" "Unity bake request summary must separate trusted baked from raw baked."
@@ -145,6 +148,7 @@ Assert-Contains $uniqueGenerator "uniqueTrustedBakedCandidates" "Unity bake requ
 $batchApplyInfo = Get-MethodBodyText $requestGenerator "private static BatchBakeApplyInfo ReadBatchBakeApplyInfo"
 Assert-Contains $batchApplyInfo "unity_bake_result.json" "Unity bake batch report must read failed Unity helper result JSON even when no BakedPreview was written."
 Assert-Contains $batchApplyInfo '(string)result["message"]' "Unity bake batch report must preserve failed Unity helper messages for Browser diagnostics."
+Assert-Contains $batchApplyInfo "needs_animator_controller_context" "Unity bake batch report must classify humanMotion=false failures as controller-context blockers."
 Assert-Contains $batchApplyInfo "Directory.Exists(bakedPreviewDir)" "Unity bake batch report may use BakedPreview only when it exists."
 
 $trustedIndex = Get-MethodBodyText $libraryIndexBuilder "private static bool IsTrustedBakedGltfPath"
@@ -161,7 +165,9 @@ Assert-NotContains $sqliteBakeReadyAvatar '$.avatar.internalSolver' "SQLite prod
 $uniqueIndex = Get-MethodBodyText $libraryIndexBuilder "private static JObject BuildUniqueBakeCacheCounts"
 Assert-Contains $uniqueIndex "IsTrustedBakedGltfPath(bakedGltf, libraryRoot)" "SQLite summary unique counts must recompute trusted baked proof."
 Assert-Contains $uniqueIndex "IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)" "SQLite summary must treat needs_review as terminal diagnostics."
+Assert-Contains $uniqueIndex "IsAnimatorControllerContextCacheStatus(status, message)" "SQLite summary must treat controller-context blockers as terminal diagnostics."
 Assert-Contains $uniqueIndex "uniqueNeedsReviewCandidates" "SQLite summary must expose needs_review terminal counts."
+Assert-Contains $uniqueIndex "uniqueAnimatorControllerContextCandidates" "SQLite summary must expose controller-context terminal counts."
 Assert-Contains $uniqueIndex "terminalDiagnosticCandidates" "SQLite summary pending count must subtract terminal diagnostics."
 Assert-Contains $uniqueIndex "uniquePendingUnityBakeCandidates" "SQLite summary must keep untrusted baked rows pending."
 Assert-Contains $uniqueIndex "uniqueTrustedBakedCandidates" "SQLite summary must separate trusted baked from raw baked."
@@ -226,6 +232,7 @@ Assert-Contains $browserEnsureBake "BuildUntrustedBakeCacheMessage" "Browser sin
 $browserFormatBakeStatus = Get-MethodBodyText $libraryBrowserPreviewCache "private static string FormatBakeCacheStatus"
 Assert-Contains $browserFormatBakeStatus "NeedsAnimatorControllerContext" "Browser bake status must classify humanMotion=false failures as controller-context blockers."
 Assert-Contains $browserFormatBakeStatus "AnimatorController" "Browser bake status must expose controller-context blockers explicitly."
+Assert-Contains $browserFormatBakeStatus "needs_animator_controller_context" "Browser bake status must map raw controller-context cache status."
 
 $avatarBlockers = Get-TextBetweenMarkers $coverageScript "def model_avatar_refresh_blockers" "def main():"
 Assert-Contains $avatarBlockers "temp_bake_ready_animation_candidates" "Coverage blocker diagnostics must subtract currently bake-ready Avatar oracle candidates."

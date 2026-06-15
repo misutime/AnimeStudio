@@ -239,7 +239,7 @@ namespace AnimeStudio.CLI
                         WriteNoOpBakeBatchReport(dbPath, libraryRoot, output, runUnityBake, cachedSelections.Length);
                         TryCompactBakeCache(dbPath, libraryRoot);
                         TryWriteBakeCacheSummary(dbPath, output, libraryRoot, fullScan: false, unityProject);
-                        Logger.Info($"Unity bake batch has no pending candidates because {cachedSelections.Length} matching candidate(s) in this batch window are already processed by trusted bake, static_pose, or needs_review. Use --preview_validation_force to rebuild them.");
+                        Logger.Info($"Unity bake batch has no pending candidates because {cachedSelections.Length} matching candidate(s) in this batch window are already processed by trusted bake, static_pose, needs_review, or needs_animator_controller_context. Use --preview_validation_force to rebuild them.");
                         return;
                     }
                 }
@@ -338,6 +338,7 @@ namespace AnimeStudio.CLI
                 var needsReview = string.Equals(bakeApply.Status, "needs_review", StringComparison.OrdinalIgnoreCase)
                     && !string.IsNullOrWhiteSpace(bakedGltf)
                     && File.Exists(bakedGltf);
+                var needsAnimatorControllerContext = NeedsAnimatorControllerContext(bakeApply.Message);
                 if (requestWritten)
                 {
                     requestsWritten++;
@@ -350,7 +351,7 @@ namespace AnimeStudio.CLI
                 items.Add(new JObject
                 {
                     ["status"] = runUnityBake
-                        ? (bakedOk ? "baked" : staticPose ? "static_pose" : needsReview ? "needs_review" : "failed")
+                        ? (bakedOk ? "baked" : staticPose ? "static_pose" : needsReview ? "needs_review" : needsAnimatorControllerContext ? "needs_animator_controller_context" : "failed")
                         : (requestWritten ? "request_written" : "failed"),
                     ["model"] = modelName,
                     ["animation"] = animationName,
@@ -429,7 +430,7 @@ namespace AnimeStudio.CLI
                 ["libraryIndex"] = dbPath,
                 ["mode"] = "UnityBakeToGltfProduction",
                 ["status"] = "noop_all_cached",
-                ["rule"] = "Only relation_source=explicit Humanoid/Muscle candidates are selected. Matching candidates in this batch window were already processed by trusted bake, static_pose, or needs_review and skipped.",
+                ["rule"] = "Only relation_source=explicit Humanoid/Muscle candidates are selected. Matching candidates in this batch window were already processed by trusted bake, static_pose, needs_review, or needs_animator_controller_context and skipped.",
                 ["requested"] = 0,
                 ["requestsWritten"] = 0,
                 ["bakedCompleted"] = 0,
@@ -1662,7 +1663,8 @@ CREATE TABLE IF NOT EXISTS animation_bake_cache (
                     .Where(x => !BakeCacheRowAssetsExist(x, libraryRoot)
                         && !string.Equals(x.Status, "baked", StringComparison.OrdinalIgnoreCase)
                         && !string.Equals(x.Status, "static_pose", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(x.Status, "needs_review", StringComparison.OrdinalIgnoreCase))
+                        && !string.Equals(x.Status, "needs_review", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(x.Status, "needs_animator_controller_context", StringComparison.OrdinalIgnoreCase))
                     .Select(x => x.RowId)
                     .ToHashSet();
                 var requestOnlyRowIds = rows
@@ -1769,6 +1771,10 @@ FROM animation_bake_cache;";
                 || string.Equals(row.Status, "needs_review", StringComparison.OrdinalIgnoreCase))
             {
                 return string.IsNullOrWhiteSpace(row.BakedGltfPath) ? 70 : 90;
+            }
+            if (string.Equals(row.Status, "needs_animator_controller_context", StringComparison.OrdinalIgnoreCase))
+            {
+                return 70;
             }
             if (string.Equals(row.Status, "request_written", StringComparison.OrdinalIgnoreCase))
             {
@@ -2116,6 +2122,10 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             {
                 return "needs_review";
             }
+            if (string.Equals(status, "needs_animator_controller_context", StringComparison.OrdinalIgnoreCase))
+            {
+                return "needs_animator_controller_context";
+            }
             if (string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase))
             {
                 return "untrusted_baked";
@@ -2381,7 +2391,7 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             var groups = new Dictionary<string, UniqueBakeCacheEntry>(StringComparer.OrdinalIgnoreCase);
             using var command = connection.CreateCommand();
             command.CommandText = $@"
-SELECT bc.model_output, bc.animation_output, bc.status, bc.baked_gltf_path
+SELECT bc.model_output, bc.animation_output, bc.status, bc.baked_gltf_path, bc.message
 FROM animation_bake_cache bc
 WHERE {BuildBakeReadyCacheWhere("bc")};";
             using var reader = command.ExecuteReader();
@@ -2406,6 +2416,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 entry.RowCount++;
                 var status = reader.IsDBNull(2) ? null : reader.GetString(2);
                 var bakedGltf = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var message = reader.IsDBNull(4) ? null : reader.GetString(4);
                 var hasTrustedBakedGltf = IsTrustedBakedGltfPath(bakedGltf, libraryRoot);
                 if (hasTrustedBakedGltf)
                 {
@@ -2419,6 +2430,10 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 else if (IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot))
                 {
                     entry.HasNeedsReview = true;
+                }
+                else if (IsAnimatorControllerContextCacheStatus(status, message))
+                {
+                    entry.HasNeedsAnimatorControllerContext = true;
                 }
                 else if (string.Equals(status, "request_written", StringComparison.OrdinalIgnoreCase))
                 {
@@ -2441,10 +2456,11 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             var uniqueBakedMissingGltfCandidates = groups.Values.Count(x => x.HasBaked && !x.HasTrustedBaked);
             var uniqueStaticPoseCandidates = groups.Values.Count(x => !x.HasTrustedBaked && x.HasStaticPose);
             var uniqueNeedsReviewCandidates = groups.Values.Count(x => !x.HasTrustedBaked && !x.HasStaticPose && x.HasNeedsReview);
-            var uniqueFailedCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && x.HasFailed);
-            var uniqueRequestWrittenCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasFailed && x.HasRequestWritten);
+            var uniqueAnimatorControllerContextCandidates = groups.Values.Count(x => !x.HasTrustedBaked && !x.HasStaticPose && !x.HasNeedsReview && x.HasNeedsAnimatorControllerContext);
+            var uniqueFailedCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasNeedsAnimatorControllerContext && x.HasFailed);
+            var uniqueRequestWrittenCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasNeedsAnimatorControllerContext && !x.HasFailed && x.HasRequestWritten);
             var duplicateCacheRows = groups.Values.Sum(x => Math.Max(0, x.RowCount - 1));
-            var terminalDiagnosticCandidates = uniqueStaticPoseCandidates + uniqueNeedsReviewCandidates;
+            var terminalDiagnosticCandidates = uniqueStaticPoseCandidates + uniqueNeedsReviewCandidates + uniqueAnimatorControllerContextCandidates;
 
             return new JObject
             {
@@ -2454,6 +2470,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 ["uniqueTrustedBakedCandidates"] = uniqueTrustedBakedCandidates,
                 ["uniqueStaticPoseCandidates"] = uniqueStaticPoseCandidates,
                 ["uniqueNeedsReviewCandidates"] = uniqueNeedsReviewCandidates,
+                ["uniqueAnimatorControllerContextCandidates"] = uniqueAnimatorControllerContextCandidates,
                 ["uniqueBakedMissingGltfCandidates"] = uniqueBakedMissingGltfCandidates,
                 ["uniqueFailedCandidates"] = uniqueFailedCandidates,
                 ["duplicateCacheRows"] = duplicateCacheRows,
@@ -3387,6 +3404,7 @@ LIMIT 1;";
             public bool HasTrustedBaked { get; set; }
             public bool HasStaticPose { get; set; }
             public bool HasNeedsReview { get; set; }
+            public bool HasNeedsAnimatorControllerContext { get; set; }
             public bool HasBakedMissingGltf { get; set; }
             public bool HasFailed { get; set; }
         }
@@ -3417,20 +3435,23 @@ DELETE FROM temp_unity_bake_processed_cache;";
             using (var select = connection.CreateCommand())
             {
                 select.CommandText = @"
-SELECT model_output, animation_output, baked_gltf_path
+SELECT model_output, animation_output, baked_gltf_path, status, message
 FROM animation_bake_cache
-WHERE status IN ('baked', 'static_pose', 'needs_review')
+WHERE status IN ('baked', 'static_pose', 'needs_review', 'needs_animator_controller_context')
   AND COALESCE(model_output, '')<>''
   AND COALESCE(animation_output, '')<>'';";
                 using var reader = select.ExecuteReader();
                 while (reader.Read())
                 {
                     var bakedGltf = reader.IsDBNull(2) ? null : reader.GetString(2);
+                    var status = reader.IsDBNull(3) ? null : reader.GetString(3);
+                    var message = reader.IsDBNull(4) ? null : reader.GetString(4);
                     // static_pose / needs_review 是已经确认的终态诊断结果，默认批量续跑时也应跳过；
                     // 需要重新验证时用 --preview_validation_force 显式重烘焙。
                     if (!IsTrustedBakedGltfPath(bakedGltf, libraryRoot)
                         && !IsStaticPoseBakedGltfPath(bakedGltf, libraryRoot)
-                        && !IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot))
+                        && !IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot)
+                        && !IsAnimatorControllerContextCacheStatus(status, message))
                     {
                         continue;
                     }
@@ -4103,7 +4124,9 @@ LIMIT 32;";
                     {
                         return new BatchBakeApplyInfo(
                             null,
-                            "failed",
+                            NeedsAnimatorControllerContext((string)result["message"])
+                                ? "needs_animator_controller_context"
+                                : "failed",
                             (string)result["message"],
                             0,
                             0,
@@ -4121,6 +4144,25 @@ LIMIT 32;";
         }
 
         private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
+
+        private static bool IsAnimatorControllerContextCacheStatus(string status, string message)
+        {
+            return string.Equals(status, "needs_animator_controller_context", StringComparison.OrdinalIgnoreCase)
+                && NeedsAnimatorControllerContext(message);
+        }
+
+        private static bool NeedsAnimatorControllerContext(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return false;
+            }
+
+            return message.IndexOf("isHumanMotion=false", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("AnimatorController auxiliary", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("non-body layer", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("baseLayerClip", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         private sealed record PreviewSelection(JObject Model, JObject Animation);
 

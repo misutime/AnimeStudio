@@ -926,6 +926,7 @@ FROM animation_bake_cache;";
                 "request_written" => "已生成请求",
                 "failed" => "烘焙失败",
                 "baked" => "已烘焙但需重建",
+                "needs_animator_controller_context" => "需 AnimatorController 上下文",
                 null or "" => "未生成",
                 _ => status,
             };

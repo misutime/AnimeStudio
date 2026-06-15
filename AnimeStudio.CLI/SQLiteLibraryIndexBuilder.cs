@@ -2072,7 +2072,7 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             using var command = connection.CreateCommand();
             command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
-SELECT bc.status, bc.baked_gltf_path
+SELECT bc.status, bc.baked_gltf_path, bc.message
 FROM animation_bake_cache bc
 WHERE {BuildBakeReadyCacheWhere("bc")};";
             using var reader = command.ExecuteReader();
@@ -2080,15 +2080,18 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             {
                 var status = reader.IsDBNull(0) ? "" : reader.GetString(0);
                 var bakedGltfPath = reader.IsDBNull(1) ? null : reader.GetString(1);
+                var message = reader.IsDBNull(2) ? null : reader.GetString(2);
                 var key = IsTrustedBakedGltfPath(bakedGltfPath, libraryRoot)
                     ? "trusted_baked"
                     : IsStaticPoseBakedGltfPath(bakedGltfPath, libraryRoot)
                         ? "static_pose"
                         : IsNeedsReviewBakedGltfPath(bakedGltfPath, libraryRoot)
                             ? "needs_review"
-                            : string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase)
-                                ? "untrusted_baked"
-                                : string.IsNullOrWhiteSpace(status) ? "<null>" : status;
+                            : IsAnimatorControllerContextCacheStatus(status, message)
+                                ? "needs_animator_controller_context"
+                                : string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase)
+                                    ? "untrusted_baked"
+                                    : string.IsNullOrWhiteSpace(status) ? "<null>" : status;
                 counts[key] = counts.TryGetValue(key, out var current) ? current + 1 : 1;
             }
 
@@ -2201,7 +2204,7 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             using var command = connection.CreateCommand();
             command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = $@"
-SELECT bc.model_output, bc.animation_output, bc.status, bc.baked_gltf_path
+SELECT bc.model_output, bc.animation_output, bc.status, bc.baked_gltf_path, bc.message
 FROM animation_bake_cache bc
 WHERE {BuildBakeReadyCacheWhere("bc")};";
             using var reader = command.ExecuteReader();
@@ -2226,6 +2229,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 entry.RowCount++;
                 var status = reader.IsDBNull(2) ? null : reader.GetString(2);
                 var bakedGltf = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var message = reader.IsDBNull(4) ? null : reader.GetString(4);
                 var hasTrustedBakedGltf = IsTrustedBakedGltfPath(bakedGltf, libraryRoot);
                 if (hasTrustedBakedGltf)
                 {
@@ -2239,6 +2243,10 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 else if (IsNeedsReviewBakedGltfPath(bakedGltf, libraryRoot))
                 {
                     entry.HasNeedsReview = true;
+                }
+                else if (IsAnimatorControllerContextCacheStatus(status, message))
+                {
+                    entry.HasNeedsAnimatorControllerContext = true;
                 }
                 else if (string.Equals(status, "request_written", StringComparison.OrdinalIgnoreCase))
                 {
@@ -2260,10 +2268,11 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             var uniqueBakedMissingGltfCandidates = groups.Values.Count(x => x.HasBaked && !x.HasTrustedBaked);
             var uniqueStaticPoseCandidates = groups.Values.Count(x => !x.HasTrustedBaked && x.HasStaticPose);
             var uniqueNeedsReviewCandidates = groups.Values.Count(x => !x.HasTrustedBaked && !x.HasStaticPose && x.HasNeedsReview);
-            var uniqueFailedCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && x.HasFailed);
-            var uniqueRequestWrittenCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasFailed && x.HasRequestWritten);
+            var uniqueAnimatorControllerContextCandidates = groups.Values.Count(x => !x.HasTrustedBaked && !x.HasStaticPose && !x.HasNeedsReview && x.HasNeedsAnimatorControllerContext);
+            var uniqueFailedCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasNeedsAnimatorControllerContext && x.HasFailed);
+            var uniqueRequestWrittenCandidates = groups.Values.Count(x => !x.HasBaked && !x.HasStaticPose && !x.HasNeedsReview && !x.HasNeedsAnimatorControllerContext && !x.HasFailed && x.HasRequestWritten);
             var duplicateCacheRows = groups.Values.Sum(x => Math.Max(0, x.RowCount - 1));
-            var terminalDiagnosticCandidates = uniqueStaticPoseCandidates + uniqueNeedsReviewCandidates;
+            var terminalDiagnosticCandidates = uniqueStaticPoseCandidates + uniqueNeedsReviewCandidates + uniqueAnimatorControllerContextCandidates;
 
             return new JObject
             {
@@ -2273,6 +2282,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 ["uniqueTrustedBakedCandidates"] = uniqueTrustedBakedCandidates,
                 ["uniqueStaticPoseCandidates"] = uniqueStaticPoseCandidates,
                 ["uniqueNeedsReviewCandidates"] = uniqueNeedsReviewCandidates,
+                ["uniqueAnimatorControllerContextCandidates"] = uniqueAnimatorControllerContextCandidates,
                 ["uniqueBakedMissingGltfCandidates"] = uniqueBakedMissingGltfCandidates,
                 ["uniqueFailedCandidates"] = uniqueFailedCandidates,
                 ["duplicateCacheRows"] = duplicateCacheRows,
@@ -2368,6 +2378,25 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             {
                 return false;
             }
+        }
+
+        private static bool IsAnimatorControllerContextCacheStatus(string status, string message)
+        {
+            return string.Equals(status, "needs_animator_controller_context", StringComparison.OrdinalIgnoreCase)
+                && NeedsAnimatorControllerContext(message);
+        }
+
+        private static bool NeedsAnimatorControllerContext(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return false;
+            }
+
+            return message.IndexOf("isHumanMotion=false", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("AnimatorController auxiliary", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("non-body layer", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("baseLayerClip", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool IsTrustedAvatarBake(JObject report)
@@ -2542,6 +2571,7 @@ EXISTS (
             public bool HasTrustedBaked { get; set; }
             public bool HasStaticPose { get; set; }
             public bool HasNeedsReview { get; set; }
+            public bool HasNeedsAnimatorControllerContext { get; set; }
             public bool HasFailed { get; set; }
         }
 
