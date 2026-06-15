@@ -154,11 +154,14 @@ namespace AnimeStudio.UnityBake
     public sealed class AnimeStudioBakeResult
     {
         public int version = 1;
-        public int helperVersion = 2;
+        public int helperVersion = 3;
         public string status;
         public string message;
         public string modelPrefab;
         public string animationClip;
+        public string requestedAnimationClip;
+        public string importedAnimationClip;
+        public string animationClipSource;
         public string modelName;
         public string clipName;
         public float clipLength;

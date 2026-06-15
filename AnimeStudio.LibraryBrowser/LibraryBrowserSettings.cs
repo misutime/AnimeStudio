@@ -156,11 +156,15 @@ namespace AnimeStudio.LibraryBrowser
             var bakerText = File.ReadAllText(bakerPath);
             var skeletonText = File.ReadAllText(skeletonPath);
             if (!modelText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
+                || !modelText.Contains("importedAnimationClip", StringComparison.Ordinal)
+                || !modelText.Contains("animationClipSource", StringComparison.Ordinal)
                 || !bakerText.Contains("importedAvatarAssetValid", StringComparison.Ordinal)
+                || !bakerText.Contains("AnimationClipLoadResult", StringComparison.Ordinal)
+                || !bakerText.Contains("animationClipSource", StringComparison.Ordinal)
                 || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
                 || !skeletonText.Contains("request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.OrdinalIgnoreCase))
             {
-                return "UnityBakeProject 里的 AnimeStudio.UnityBake helper 版本过旧，缺少导入 Avatar asset 强校验和 importedAvatarAssetValid 证明字段。请把仓库里的 AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake 复制到 Bake 工程的 Assets 目录下后重试。当前 helper 目录："
+                return "UnityBakeProject 里的 AnimeStudio.UnityBake helper 版本过旧，缺少导入 Avatar asset 强校验或 AnimationClip 来源证明字段。请把仓库里的 AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake 复制到 Bake 工程的 Assets 目录下后重试。当前 helper 目录："
                     + helperRoot;
             }
 

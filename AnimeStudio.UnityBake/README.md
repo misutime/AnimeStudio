@@ -59,4 +59,6 @@ powershell -ExecutionPolicy Bypass -File scripts\Test-UnityImportedAvatarAssets.
 
 没有显式 Avatar asset 时，helper 才允许使用原始 prefab 的 `Animator.avatar`，或用完整 `HumanDescription.humanBones + skeletonBones` 构建 Avatar。旧库里只有 `AvatarConstant/internalSolver` 或 glTF rest pose 的路径只能作为诊断/恢复输入，不能当成可信生产 bake。
 
+helper v3 会在 `unity_bake_result.json` 里同时记录 `requestedAnimationClip`、`importedAnimationClip` 和 `animationClipSource`。这用于区分 request 直接引用的 Unity `AnimationClip` asset，和 AnimeStudio 复制到 `Assets/AnimeStudioBake/Imported` 后由 Unity 导入的 `.anim` sidecar；排查 Ambor 这类 AnimatorController 辅助 clip 时，必须能确认真正进入 PlayableGraph 的 clip 是控制器上下文修正后的完整身体 clip，而不是原始局部辅助 clip。
+
 Humanoid/Muscle 的生产验收必须使用原始 Unity prefab 的 `Animator.avatar`、导出索引里完整保留的 `HumanDescription.humanBones` + `HumanDescription.skeletonBones`，或从打包 Unity 对象恢复出的原始 `UnityEngine.Avatar` asset。只有 `AvatarConstant/internalSolver` 或 glTF rest pose 时，输出必须标记为诊断结果，不能算作可信动画。

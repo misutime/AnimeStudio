@@ -23,10 +23,11 @@ namespace AnimeStudio.UnityBake
             var prefab = string.IsNullOrWhiteSpace(request.unityAssetPaths.modelPrefab)
                 ? null
                 : AssetDatabase.LoadAssetAtPath<GameObject>(request.unityAssetPaths.modelPrefab);
-            var clip = LoadAnimationClip(request);
+            var clipLoad = LoadAnimationClip(request);
+            var clip = clipLoad != null ? clipLoad.clip : null;
             if (clip == null)
             {
-                return Error(request, $"AnimationClip not found or could not be imported: {request.unityAssetPaths.animationClip}");
+                return Error(request, $"AnimationClip not found or could not be imported: {request.unityAssetPaths.animationClip ?? request.animeStudioAssets?.animation?.anim}");
             }
             if (request.animeStudioAssets?.animation?.requiresHumanoidBake == true && !clip.isHumanMotion)
             {
@@ -171,7 +172,10 @@ namespace AnimeStudio.UnityBake
                     status = "ok",
                     message = "Unity Animator/PlayableGraph bake completed.",
                     modelPrefab = request.unityAssetPaths.modelPrefab,
-                    animationClip = request.unityAssetPaths.animationClip,
+                    animationClip = clipLoad.assetPath,
+                    requestedAnimationClip = AnimeStudioGltfSkeletonBuilder.NormalizeUnityAssetPath(request.unityAssetPaths.animationClip),
+                    importedAnimationClip = clipLoad.assetPath,
+                    animationClipSource = clipLoad.source,
                     modelName = prefab != null ? prefab.name : instance.name,
                     clipName = clip.name,
                     clipLength = clip.length,
@@ -235,14 +239,20 @@ namespace AnimeStudio.UnityBake
             return fallback;
         }
 
-        private static AnimationClip LoadAnimationClip(AnimeStudioBakeRequest request)
+        private static AnimationClipLoadResult LoadAnimationClip(AnimeStudioBakeRequest request)
         {
             if (!string.IsNullOrWhiteSpace(request.unityAssetPaths.animationClip))
             {
-                var existing = AssetDatabase.LoadAssetAtPath<AnimationClip>(request.unityAssetPaths.animationClip);
+                var assetPath = AnimeStudioGltfSkeletonBuilder.NormalizeUnityAssetPath(request.unityAssetPaths.animationClip);
+                var existing = AssetDatabase.LoadAssetAtPath<AnimationClip>(assetPath);
                 if (existing != null)
                 {
-                    return existing;
+                    return new AnimationClipLoadResult
+                    {
+                        clip = existing,
+                        assetPath = assetPath,
+                        source = "unityAssetPaths.animationClip",
+                    };
                 }
             }
 
@@ -259,7 +269,15 @@ namespace AnimeStudio.UnityBake
             File.Copy(sourceAnim, targetPath, overwrite: true);
             AssetDatabase.ImportAsset(targetPath, ImportAssetOptions.ForceUpdate);
             AssetDatabase.Refresh();
-            return AssetDatabase.LoadAssetAtPath<AnimationClip>(targetPath);
+            var imported = AssetDatabase.LoadAssetAtPath<AnimationClip>(targetPath);
+            return imported == null
+                ? null
+                : new AnimationClipLoadResult
+                {
+                    clip = imported,
+                    assetPath = targetPath,
+                    source = "animeStudioAssets.animation.anim",
+                };
         }
 
         private static ClipFilterStats ApplyDiagnosticClipFilter(ref AnimationClip clip)
@@ -344,6 +362,13 @@ namespace AnimeStudio.UnityBake
             public int removedObjectReferenceCurveCount;
         }
 
+        private sealed class AnimationClipLoadResult
+        {
+            public AnimationClip clip;
+            public string assetPath;
+            public string source;
+        }
+
         private static AnimeStudioBakeResult Error(AnimeStudioBakeRequest request, string message)
         {
             return new AnimeStudioBakeResult
@@ -352,6 +377,7 @@ namespace AnimeStudio.UnityBake
                 message = message,
                 modelPrefab = request?.unityAssetPaths?.modelPrefab,
                 animationClip = request?.unityAssetPaths?.animationClip,
+                requestedAnimationClip = AnimeStudioGltfSkeletonBuilder.NormalizeUnityAssetPath(request?.unityAssetPaths?.animationClip),
             };
         }
 
