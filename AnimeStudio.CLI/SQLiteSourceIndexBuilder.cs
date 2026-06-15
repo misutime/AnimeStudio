@@ -771,10 +771,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     }
                     break;
                 case AnimatorController controller:
-                    foreach (var ptr in controller.m_AnimationClips ?? Enumerable.Empty<PPtr<AnimationClip>>())
-                    {
-                        AddPPtrRelation(connection, transaction, counts, "animatorController.clip", controller, ptr.m_FileID, ptr.m_PathID, "AnimationClip", null);
-                    }
+                    WriteAnimatorControllerClipRelations(connection, transaction, controller, counts);
                     break;
                 case AnimatorOverrideController overrideController:
                     AddPPtrRelation(connection, transaction, counts, "animatorOverrideController.baseController", overrideController, overrideController.m_Controller.m_FileID, overrideController.m_Controller.m_PathID, "RuntimeAnimatorController", null);
@@ -830,6 +827,186 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             {
                 AddPPtrRelation(connection, transaction, counts, "renderer.material", renderer, ptr.m_FileID, ptr.m_PathID, "Material", null);
             }
+        }
+
+        private static void WriteAnimatorControllerClipRelations(SqliteConnection connection, SqliteTransaction transaction, AnimatorController controller, Dictionary<string, long> counts)
+        {
+            var clips = controller.m_AnimationClips ?? new List<PPtr<AnimationClip>>();
+            var usedClipSlots = new HashSet<int>();
+            var stateMachines = controller.m_Controller?.m_StateMachineArray ?? new List<StateMachineConstant>();
+            var layerMap = BuildAnimatorControllerLayerMap(controller);
+
+            for (var machineIndex = 0; machineIndex < stateMachines.Count; machineIndex++)
+            {
+                var machine = stateMachines[machineIndex];
+                var states = machine.m_StateConstantArray ?? new List<StateConstant>();
+                var layers = layerMap.TryGetValue(machineIndex, out var mappedLayers)
+                    ? mappedLayers
+                    : new List<AnimatorControllerLayerContext>();
+
+                for (var stateIndex = 0; stateIndex < states.Count; stateIndex++)
+                {
+                    var state = states[stateIndex];
+                    var trees = state.m_BlendTreeConstantArray ?? new List<BlendTreeConstant>();
+                    for (var treeIndex = 0; treeIndex < trees.Count; treeIndex++)
+                    {
+                        var nodes = trees[treeIndex].m_NodeArray ?? new List<BlendTreeNodeConstant>();
+                        for (var nodeIndex = 0; nodeIndex < nodes.Count; nodeIndex++)
+                        {
+                            var node = nodes[nodeIndex];
+                            if (!TryGetAnimatorControllerClipSlot(controller, node.m_ClipID, out var clipSlot, out var clipPtr))
+                            {
+                                continue;
+                            }
+
+                            usedClipSlots.Add(clipSlot);
+                            var layerContexts = layers.Count > 0
+                                ? layers
+                                : new List<AnimatorControllerLayerContext> { new AnimatorControllerLayerContext(-1, 0, 0, 0, 1f, false, false) };
+
+                            // AnimatorController 里的 node.m_ClipID 在原神这类资源里是 m_AnimationClips 的槽位。
+                            // 记录 state/blend/node 上下文，避免后续把叶子 clip 误当完整动作。
+                            AddPPtrRelation(connection, transaction, counts, "animatorController.clip", controller, clipPtr.m_FileID, clipPtr.m_PathID, "AnimationClip", new
+                            {
+                                source = "AnimatorController.m_Controller.stateMachine.blendTree.node",
+                                controllerClipIndex = clipSlot,
+                                layers = layerContexts.Select(layer => new
+                                {
+                                    layerIndex = layer.LayerIndex,
+                                    layerStateMachineIndex = layer.StateMachineIndex,
+                                    layerStateMachineMotionSetIndex = layer.StateMachineMotionSetIndex,
+                                    layerBinding = layer.Binding,
+                                    layerBlendingMode = layer.BlendingMode,
+                                    layerDefaultWeight = layer.DefaultWeight,
+                                    layerIKPass = layer.IKPass,
+                                    layerSyncedLayerAffectsTiming = layer.SyncedLayerAffectsTiming,
+                                }).ToArray(),
+                                stateMachineIndex = machineIndex,
+                                stateIndex,
+                                stateName = TryGetTos(controller, state.m_NameID),
+                                stateNameId = state.m_NameID,
+                                statePath = TryGetTos(controller, state.m_PathID),
+                                statePathId = state.m_PathID,
+                                stateFullPath = TryGetTos(controller, state.m_FullPathID),
+                                stateFullPathId = state.m_FullPathID,
+                                stateSpeed = state.m_Speed,
+                                stateCycleOffset = state.m_CycleOffset,
+                                stateLoop = state.m_Loop,
+                                stateMirror = state.m_Mirror,
+                                stateBlendTreeIndexArray = state.m_BlendTreeConstantIndexArray,
+                                blendTreeIndex = treeIndex,
+                                nodeIndex,
+                                nodeBlendType = node.m_BlendType,
+                                nodeBlendEvent = TryGetTos(controller, node.m_BlendEventID),
+                                nodeBlendEventId = node.m_BlendEventID,
+                                nodeBlendEventY = TryGetTos(controller, node.m_BlendEventYID),
+                                nodeBlendEventYId = node.m_BlendEventYID,
+                                nodeChildIndices = node.m_ChildIndices,
+                                nodeChildThresholds = node.m_ChildThresholdArray,
+                                nodeClipId = node.m_ClipID,
+                                nodeClipIndex = node.m_ClipIndex,
+                                nodeDuration = node.m_Duration,
+                                nodeCycleOffset = node.m_CycleOffset,
+                                nodeMirror = node.m_Mirror,
+                            });
+                        }
+                    }
+                }
+            }
+
+            for (var index = 0; index < clips.Count; index++)
+            {
+                if (usedClipSlots.Contains(index))
+                {
+                    continue;
+                }
+
+                var ptr = clips[index];
+                AddPPtrRelation(connection, transaction, counts, "animatorController.clip", controller, ptr.m_FileID, ptr.m_PathID, "AnimationClip", new
+                {
+                    source = "AnimatorController.m_AnimationClips",
+                    controllerClipIndex = index,
+                    hasStateMachineNodeContext = false,
+                });
+            }
+        }
+
+        private static Dictionary<int, List<AnimatorControllerLayerContext>> BuildAnimatorControllerLayerMap(AnimatorController controller)
+        {
+            var result = new Dictionary<int, List<AnimatorControllerLayerContext>>();
+            var layers = controller.m_Controller?.m_LayerArray ?? new List<LayerConstant>();
+            for (var index = 0; index < layers.Count; index++)
+            {
+                var layer = layers[index];
+                var machineIndex = unchecked((int)layer.m_StateMachineIndex);
+                if (!result.TryGetValue(machineIndex, out var list))
+                {
+                    list = new List<AnimatorControllerLayerContext>();
+                    result[machineIndex] = list;
+                }
+
+                list.Add(new AnimatorControllerLayerContext(
+                    index,
+                    machineIndex,
+                    unchecked((int)layer.m_StateMachineMotionSetIndex),
+                    layer.m_Binding,
+                    layer.m_DefaultWeight,
+                    layer.m_IKPass,
+                    layer.m_SyncedLayerAffectsTiming,
+                    layer.m_LayerBlendingMode));
+            }
+
+            return result;
+        }
+
+        private static bool TryGetAnimatorControllerClipSlot(AnimatorController controller, uint clipId, out int clipSlot, out PPtr<AnimationClip> clipPtr)
+        {
+            var clips = controller.m_AnimationClips ?? new List<PPtr<AnimationClip>>();
+            if (clipId <= int.MaxValue)
+            {
+                var index = unchecked((int)clipId);
+                if (index >= 0 && index < clips.Count)
+                {
+                    clipSlot = index;
+                    clipPtr = clips[index];
+                    return true;
+                }
+            }
+
+            clipSlot = -1;
+            clipPtr = default;
+            return false;
+        }
+
+        private static string TryGetTos(AnimatorController controller, uint id)
+        {
+            return controller.m_TOS != null && controller.m_TOS.TryGetValue(id, out var value)
+                ? value
+                : null;
+        }
+
+        private sealed class AnimatorControllerLayerContext
+        {
+            public AnimatorControllerLayerContext(int layerIndex, int stateMachineIndex, int stateMachineMotionSetIndex, uint binding, float defaultWeight, bool ikPass, bool syncedLayerAffectsTiming, int blendingMode = 0)
+            {
+                LayerIndex = layerIndex;
+                StateMachineIndex = stateMachineIndex;
+                StateMachineMotionSetIndex = stateMachineMotionSetIndex;
+                Binding = binding;
+                DefaultWeight = defaultWeight;
+                IKPass = ikPass;
+                SyncedLayerAffectsTiming = syncedLayerAffectsTiming;
+                BlendingMode = blendingMode;
+            }
+
+            public int LayerIndex { get; }
+            public int StateMachineIndex { get; }
+            public int StateMachineMotionSetIndex { get; }
+            public uint Binding { get; }
+            public float DefaultWeight { get; }
+            public bool IKPass { get; }
+            public bool SyncedLayerAffectsTiming { get; }
+            public int BlendingMode { get; }
         }
 
         private static int TryWriteLightweightRendererRelations(

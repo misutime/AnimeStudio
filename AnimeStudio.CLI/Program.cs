@@ -1069,6 +1069,8 @@ namespace AnimeStudio.CLI
                                 childThresholds = node.m_ChildThresholdArray,
                                 clipId = node.m_ClipID,
                                 clip = TryGetTos(controller, node.m_ClipID),
+                                clipSlot = TryGetAnimatorControllerClipSlot(controller, node.m_ClipID),
+                                clipPPtr = DescribeAnimatorControllerClipSlot(controller, node.m_ClipID),
                                 clipIndex = node.m_ClipIndex,
                                 duration = node.m_Duration,
                                 cycleOffset = node.m_CycleOffset,
@@ -1077,6 +1079,38 @@ namespace AnimeStudio.CLI
                         }).ToArray() ?? Array.Empty<object>(),
                     }).ToArray() ?? Array.Empty<object>(),
                 }).ToArray(),
+            };
+        }
+
+        private static int? TryGetAnimatorControllerClipSlot(AnimatorController controller, uint clipId)
+        {
+            var clips = controller.m_AnimationClips ?? new List<PPtr<AnimationClip>>();
+            if (clipId <= int.MaxValue)
+            {
+                var index = unchecked((int)clipId);
+                if (index >= 0 && index < clips.Count)
+                {
+                    return index;
+                }
+            }
+
+            return null;
+        }
+
+        private static object DescribeAnimatorControllerClipSlot(AnimatorController controller, uint clipId)
+        {
+            var slot = TryGetAnimatorControllerClipSlot(controller, clipId);
+            if (slot == null)
+            {
+                return null;
+            }
+
+            var ptr = controller.m_AnimationClips[slot.Value];
+            return new
+            {
+                index = slot.Value,
+                fileId = ptr.m_FileID,
+                pathId = ptr.m_PathID,
             };
         }
 
