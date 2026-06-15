@@ -131,10 +131,20 @@ Assert-NotContains $browserExplicit "Confidence" "Browser explicit candidate che
 Assert-NotContains $browserIndex "OR mar.confidence = 'explicit_unity_reference'" "Browser old relation query must not add default candidates by confidence."
 
 $browserFindCli = Get-MethodBodyText $browserMain "private static CliRunLauncher FindCliLauncher"
-Assert-Contains $browserFindCli '"--build_sqlite_index", libraryRoot' "Browser rebuild animation index must rebuild SQLite from the selected library root."
-Assert-Contains $browserFindCli '"--require_fresh_source_animation_relations"' "Browser rebuild animation index must fail on stale source animation relations."
-Assert-Contains $browserFindCli '"--skip_sqlite_file_index"' "Browser rebuild animation index should avoid expensive file scans by default."
-Assert-Contains $browserFindCli '"--skip_sqlite_json_documents"' "Browser rebuild animation index should avoid copying large JSON documents by default."
+Assert-Contains $browserFindCli "BuildSqliteIndexArguments" "Browser CLI launcher must use the shared SQLite rebuild argument builder."
+
+$browserResolveSourceIndex = Get-MethodBodyText $browserMain "private static string ResolveSourceIndexForAnimationRebuild"
+Assert-Contains $browserResolveSourceIndex "PreferredSourceIndexPath" "Browser rebuild animation index must reuse the sourceIndex recorded by sqlite_index_summary.json when available."
+Assert-Contains $browserResolveSourceIndex "File.Exists(fromSummary)" "Browser rebuild animation index must only reuse an existing recorded source index."
+Assert-Contains $browserResolveSourceIndex 'Path.Combine(libraryRoot, "unity_source_index.db")' "Browser rebuild animation index must fall back to the library-root source index."
+
+$browserBuildSqliteArgs = Get-MethodBodyText $browserMain "private static string[] BuildSqliteIndexArguments"
+Assert-Contains $browserBuildSqliteArgs '"--build_sqlite_index", libraryRoot' "Browser rebuild animation index must rebuild SQLite from the selected library root."
+Assert-Contains $browserBuildSqliteArgs '"--require_fresh_source_animation_relations"' "Browser rebuild animation index must fail on stale source animation relations."
+Assert-Contains $browserBuildSqliteArgs '"--skip_sqlite_file_index"' "Browser rebuild animation index should avoid expensive file scans by default."
+Assert-Contains $browserBuildSqliteArgs '"--skip_sqlite_json_documents"' "Browser rebuild animation index should avoid copying large JSON documents by default."
+Assert-Contains $browserBuildSqliteArgs '"--source_index"' "Browser rebuild animation index must pass external source indexes to CLI explicitly."
+Assert-Contains $browserBuildSqliteArgs "Path.GetFullPath(sourceIndex)" "Browser rebuild animation index must compare source index paths before adding --source_index."
 
 $programBuildSqlite = Get-TextAfterMarker $program "if (o.BuildSqliteIndex != null)" 750
 Assert-Contains $programBuildSqlite "o.SourceIndex?.FullName ?? Path.Combine(o.BuildSqliteIndex.FullName, `"unity_source_index.db`")" "CLI --build_sqlite_index must let explicit --source_index override the library-root source index."

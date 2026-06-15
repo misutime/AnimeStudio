@@ -560,7 +560,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --require_fresh_source_animation_relations
 ```
 
-注意：Browser 顶部“重建动画索引”按钮只读取素材库根目录的 `unity_source_index.db`。旁路 fresh 源索引必须用上面的 CLI 命令显式传 `--source_index`，否则会重新消费根目录旧索引，导致 OverrideController 精确关系和候选覆盖没有真正刷新。
+注意：Browser 顶部“重建动画索引”按钮会优先复用 `sqlite_index_summary.json` 记录的 `sourceIndex`；没有可用记录时才读取素材库根目录的 `unity_source_index.db`。旁路 fresh 源索引第一次接入仍应使用上面的 CLI 命令显式传 `--source_index`，这样 summary 会记录实际源索引，后续 Browser 重建才会继续使用它，避免重新消费根目录旧索引。
 
 `unity_source_index.db` 和 `library_index.db` 的定位不同：
 

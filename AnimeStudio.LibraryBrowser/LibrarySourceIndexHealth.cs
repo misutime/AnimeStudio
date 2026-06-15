@@ -6,15 +6,16 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class LibrarySourceIndexHealth
     {
-        public static LibrarySourceIndexHealth Empty { get; } = new("missing", false, "", "", "");
+        public static LibrarySourceIndexHealth Empty { get; } = new("missing", false, "", "", "", "");
 
-        public LibrarySourceIndexHealth(string status, bool staleOverridePairIndex, string note, string reportPath, string sourceRoot)
+        public LibrarySourceIndexHealth(string status, bool staleOverridePairIndex, string note, string reportPath, string sourceRoot, string preferredSourceIndexPath)
         {
             Status = string.IsNullOrWhiteSpace(status) ? "unknown" : status;
             StaleOverridePairIndex = staleOverridePairIndex;
             Note = note ?? "";
             ReportPath = reportPath ?? "";
             SourceRoot = sourceRoot ?? "";
+            PreferredSourceIndexPath = preferredSourceIndexPath ?? "";
         }
 
         public string Status { get; }
@@ -22,6 +23,7 @@ namespace AnimeStudio.LibraryBrowser
         public string Note { get; }
         public string ReportPath { get; }
         public string SourceRoot { get; }
+        public string PreferredSourceIndexPath { get; }
         public bool HasWarning => StaleOverridePairIndex || string.Equals(Status, "warning", StringComparison.OrdinalIgnoreCase);
 
         public string ShortLabel()
@@ -51,6 +53,11 @@ namespace AnimeStudio.LibraryBrowser
             if (!string.IsNullOrWhiteSpace(SourceRoot))
             {
                 text += $"源索引记录源目录: {SourceRoot}{Environment.NewLine}";
+            }
+
+            if (!string.IsNullOrWhiteSpace(PreferredSourceIndexPath))
+            {
+                text += $"重建优先源索引: {PreferredSourceIndexPath}{Environment.NewLine}";
             }
 
             if (!string.IsNullOrWhiteSpace(Note))
@@ -90,6 +97,7 @@ namespace AnimeStudio.LibraryBrowser
                 false,
                 "没有找到源索引动画关系健康报告。生产重建前建议运行 --verify_source_index。",
                 "",
+                "",
                 "");
         }
 
@@ -112,7 +120,8 @@ namespace AnimeStudio.LibraryBrowser
                     ReadBool(relationHealth, "staleOverridePairIndex"),
                     ReadString(relationHealth, "note"),
                     path,
-                    metadata.ValueKind == JsonValueKind.Object ? ReadString(metadata, "sourceRoot") : "");
+                    metadata.ValueKind == JsonValueKind.Object ? ReadString(metadata, "sourceRoot") : "",
+                    "");
                 return true;
             }
             catch
@@ -139,12 +148,14 @@ namespace AnimeStudio.LibraryBrowser
                     return false;
                 }
 
+                var sourceIndex = ReadString(relationHealth, "sourceIndex");
                 health = new LibrarySourceIndexHealth(
                     ReadString(relationHealth, "status"),
                     ReadBool(relationHealth, "staleOverridePairIndex"),
                     ReadString(relationHealth, "note"),
                     path,
-                    ReadString(relationHealth, "sourceIndex"));
+                    "",
+                    sourceIndex);
                 return true;
             }
             catch

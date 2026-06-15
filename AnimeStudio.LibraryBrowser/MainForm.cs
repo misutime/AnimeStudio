@@ -1322,12 +1322,12 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
-            var sourceIndex = Path.Combine(_root, "unity_source_index.db");
+            var sourceIndex = ResolveSourceIndexForAnimationRebuild(_root);
             if (!File.Exists(sourceIndex))
             {
                 MessageBox.Show(
                     this,
-                    "素材库根目录缺少 unity_source_index.db，不能从 Unity 确定性关系重建动画候选。请先用完整 Unity 源目录重建源索引；如果你已经有旁路 fresh 源索引，请用 CLI 的 --build_sqlite_index 加 --source_index 显式重建。",
+                    "没有找到可用于重建的 unity_source_index.db。请先用完整 Unity 源目录重建源索引；如果你已经有旁路 fresh 源索引，请先用 CLI 的 --build_sqlite_index 加 --source_index 显式重建一次，让 sqlite_index_summary.json 记录实际源索引。",
                     "重建动画索引",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -1343,7 +1343,9 @@ namespace AnimeStudio.LibraryBrowser
 
             var confirm = MessageBox.Show(
                 this,
-                "这会覆盖当前素材库的 library_index.db，并刷新显式动画候选和候选表 schema。不会重新导出模型、贴图或动画。\n\n大型库可能需要一段时间；运行期间请不要再打开同一个 library_index.db。是否继续？",
+                "这会覆盖当前素材库的 library_index.db，并刷新显式动画候选和候选表 schema。不会重新导出模型、贴图或动画。"
+                + "\n\n使用源索引: " + sourceIndex
+                + "\n\n大型库可能需要一段时间；运行期间请不要再打开同一个 library_index.db。是否继续？",
                 "重建动画索引",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
@@ -1359,7 +1361,7 @@ namespace AnimeStudio.LibraryBrowser
             ProcessRunResult result;
             try
             {
-                result = await RunBuildSqliteIndexAsync(launcher, _root);
+                result = await RunBuildSqliteIndexAsync(launcher, _root, sourceIndex);
             }
             catch (Exception ex)
             {
@@ -1396,7 +1398,18 @@ namespace AnimeStudio.LibraryBrowser
                 MessageBoxIcon.Information);
         }
 
-        private static async Task<ProcessRunResult> RunBuildSqliteIndexAsync(CliRunLauncher launcher, string libraryRoot)
+        private static string ResolveSourceIndexForAnimationRebuild(string libraryRoot)
+        {
+            var fromSummary = LibrarySourceIndexHealth.Load(libraryRoot).PreferredSourceIndexPath;
+            if (!string.IsNullOrWhiteSpace(fromSummary) && File.Exists(fromSummary))
+            {
+                return fromSummary;
+            }
+
+            return Path.Combine(libraryRoot, "unity_source_index.db");
+        }
+
+        private static async Task<ProcessRunResult> RunBuildSqliteIndexAsync(CliRunLauncher launcher, string libraryRoot, string sourceIndex)
         {
             var startInfo = new ProcessStartInfo
             {
@@ -1407,7 +1420,7 @@ namespace AnimeStudio.LibraryBrowser
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            foreach (var arg in launcher.BuildSqliteIndexArguments(libraryRoot))
+            foreach (var arg in launcher.BuildSqliteIndexArguments(libraryRoot, sourceIndex))
             {
                 startInfo.ArgumentList.Add(arg);
             }
@@ -1436,48 +1449,58 @@ namespace AnimeStudio.LibraryBrowser
                 var exe = Path.Combine(root, "AnimeStudio.CLI", "bin", "Debug", "net9.0-windows", "AnimeStudio.CLI.exe");
                 if (File.Exists(exe))
                 {
-                    return new CliRunLauncher(exe, root, libraryRoot => new[]
-                    {
-                        "--build_sqlite_index", libraryRoot,
-                        "--require_fresh_source_animation_relations",
-                        "--skip_sqlite_file_index",
-                        "--skip_sqlite_sidecar_scan",
-                        "--skip_sqlite_json_documents",
-                    });
+                    return new CliRunLauncher(exe, root, (libraryRoot, sourceIndex) =>
+                        BuildSqliteIndexArguments(libraryRoot, sourceIndex));
                 }
 
                 var project = Path.Combine(root, "AnimeStudio.CLI", "AnimeStudio.CLI.csproj");
                 if (File.Exists(project))
                 {
-                    return new CliRunLauncher("dotnet", root, libraryRoot => new[]
-                    {
-                        "run",
-                        "--project", project,
-                        "-f", "net9.0-windows",
-                        "--",
-                        "--build_sqlite_index", libraryRoot,
-                        "--require_fresh_source_animation_relations",
-                        "--skip_sqlite_file_index",
-                        "--skip_sqlite_sidecar_scan",
-                        "--skip_sqlite_json_documents",
-                    });
+                    return new CliRunLauncher("dotnet", root, (libraryRoot, sourceIndex) =>
+                        BuildSqliteIndexArguments(libraryRoot, sourceIndex, project));
                 }
             }
 
             var siblingExe = Path.Combine(AppContext.BaseDirectory, "AnimeStudio.CLI.exe");
             if (File.Exists(siblingExe))
             {
-                return new CliRunLauncher(siblingExe, AppContext.BaseDirectory, libraryRoot => new[]
-                {
-                    "--build_sqlite_index", libraryRoot,
-                    "--require_fresh_source_animation_relations",
-                    "--skip_sqlite_file_index",
-                    "--skip_sqlite_sidecar_scan",
-                    "--skip_sqlite_json_documents",
-                });
+                return new CliRunLauncher(siblingExe, AppContext.BaseDirectory, (libraryRoot, sourceIndex) =>
+                    BuildSqliteIndexArguments(libraryRoot, sourceIndex));
             }
 
             return default;
+        }
+
+        private static string[] BuildSqliteIndexArguments(string libraryRoot, string sourceIndex, string project = null)
+        {
+            var args = new List<string>();
+            if (!string.IsNullOrWhiteSpace(project))
+            {
+                args.AddRange(new[]
+                {
+                    "run",
+                    "--project", project,
+                    "-f", "net9.0-windows",
+                    "--",
+                });
+            }
+
+            args.AddRange(new[]
+            {
+                "--build_sqlite_index", libraryRoot,
+                "--require_fresh_source_animation_relations",
+                "--skip_sqlite_file_index",
+                "--skip_sqlite_sidecar_scan",
+                "--skip_sqlite_json_documents",
+            });
+
+            if (!string.IsNullOrWhiteSpace(sourceIndex)
+                && !string.Equals(Path.GetFullPath(sourceIndex), Path.GetFullPath(Path.Combine(libraryRoot, "unity_source_index.db")), StringComparison.OrdinalIgnoreCase))
+            {
+                args.AddRange(new[] { "--source_index", sourceIndex });
+            }
+
+            return args.ToArray();
         }
 
         private static async Task<ProcessRunResult> RunDeterministicAnimationGateAsync(
@@ -1680,7 +1703,7 @@ namespace AnimeStudio.LibraryBrowser
         private readonly record struct CliRunLauncher(
             string FileName,
             string WorkingDirectory,
-            Func<string, string[]> BuildSqliteIndexArguments);
+            Func<string, string, string[]> BuildSqliteIndexArguments);
 
         private void RebuildRecentMenu()
         {
