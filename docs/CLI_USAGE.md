@@ -776,11 +776,17 @@ Library Browser 也支持同一条路径。素材库根目录可写本地配置 
   "unityAvatarAssets": {
     "NPC_Male_Standard_Model": "Assets/AnimeStudioBake/ImportedAvatar/NPC_Male_Common_ModelAvatar.asset",
     "Avatar_Boy_Bow_Gorou": "Assets/AnimeStudioBake/ImportedAvatar/Avatar_Boy_Bow_Gorou_ModelAvatar.asset"
+  },
+  "unityAnimationClips": {
+    "Ani_Avatar_Girl_RunCycle": "Assets/AnimeStudioBake/ImportedAnimationClip/Ani_Avatar_Girl_RunCycle.anim",
+    "Ani_Avatar_Girl_Channel01Loop": "Assets/AnimeStudioBake/ImportedAnimationClip/Ani_Avatar_Girl_Channel01Loop.anim"
   }
 }
 ```
 
 `unityAvatarAssets` 是显式模型名到 Avatar asset 的映射。没有命中的模型不会自动套用这些 Avatar，因此 VRising、Freedunk 等普通 Unity 库仍走默认 `Animator.avatar` / HumanDescription 路径。
+
+`unityAnimationClips` 是显式动画名到 Unity `AnimationClip` asset 的映射，也可以直接把 `.anim` 放进 bake 工程 `Assets/AnimeStudioBake/ImportedAnimationClip/`，CLI 会按当前实际要 bake 的动画名或文件名精确匹配。Ambor 这类 controller context 修正后，匹配 key 是修正后的完整身体 clip，例如 `Ani_Avatar_Girl_RunCycle`，不是用户最初点到的辅助 clip `Ani_Avatar_Girl_Bow_Ambor_RunCycle`。命中后 request 会写 `unityAssetPaths.animationClip`，Unity helper 会用 `AssetDatabase.LoadAssetAtPath<AnimationClip>` 加载并在结果里记录 `animationClipSource=unityAssetPaths.animationClip`；未命中时才回到导出的 `.anim` sidecar 导入路径。手动 `--unity_animation_clip` 只允许单动画定向 bake，批量命中多个动画时会拒绝，避免把同一个 clip 套给不同候选。
 
 映射 key 可以写模型名，也可以写模型元数据里的 `avatar.name`。推荐对原神这类共用 Avatar 的 NPC 写 Avatar 名，例如 `NPC_Male_Common_ModelAvatar`；Browser 会从 `library_index.db assets.raw_json.avatar.name` 读取该模型真实 Avatar 名后再查映射，这样一个配置可以覆盖所有引用同一个 Unity Avatar 的模型。这个关系来自导出的 Unity Avatar 元数据，不是按目录或角色名前缀推断。
 

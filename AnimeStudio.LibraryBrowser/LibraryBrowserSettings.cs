@@ -14,6 +14,8 @@ namespace AnimeStudio.LibraryBrowser
         public string UnityEditor { get; init; }
         public IReadOnlyDictionary<string, string> UnityAvatarAssets { get; init; } =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public IReadOnlyDictionary<string, string> UnityAnimationClips { get; init; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         public static string GlobalSettingsPath
         {
@@ -55,6 +57,9 @@ namespace AnimeStudio.LibraryBrowser
                     DiscoverImportedAvatarAssets(unityProject, root),
                     FilterConfiguredImportedAvatarAssets(unityProject, root, global?.UnityAvatarAssets),
                     FilterConfiguredImportedAvatarAssets(unityProject, root, local?.UnityAvatarAssets)),
+                UnityAnimationClips = MergeStringMaps(
+                    global?.UnityAnimationClips,
+                    local?.UnityAnimationClips),
             };
         }
 
@@ -73,6 +78,7 @@ namespace AnimeStudio.LibraryBrowser
                 ["unityEditor"] = NormalizeUnityEditorPath(settings?.UnityEditor) ?? string.Empty,
             };
             WriteStringMap(node, "unityAvatarAssets", settings?.UnityAvatarAssets);
+            WriteStringMap(node, "unityAnimationClips", settings?.UnityAnimationClips);
             File.WriteAllText(path, node.ToJsonString(new System.Text.Json.JsonSerializerOptions
             {
                 WriteIndented = true,
@@ -276,6 +282,7 @@ namespace AnimeStudio.LibraryBrowser
                     UnityProject = ReadNodeString(node, "unityProject"),
                     UnityEditor = NormalizeUnityEditorPath(ReadNodeString(node, "unityEditor")),
                     UnityAvatarAssets = ReadStringMap(node, "unityAvatarAssets"),
+                    UnityAnimationClips = ReadStringMap(node, "unityAnimationClips"),
                 };
             }
             catch
@@ -496,6 +503,12 @@ namespace AnimeStudio.LibraryBrowser
         }
 
         private static IReadOnlyDictionary<string, string> MergeAvatarAssets(
+            params IReadOnlyDictionary<string, string>[] maps)
+        {
+            return MergeStringMaps(maps);
+        }
+
+        private static IReadOnlyDictionary<string, string> MergeStringMaps(
             params IReadOnlyDictionary<string, string>[] maps)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

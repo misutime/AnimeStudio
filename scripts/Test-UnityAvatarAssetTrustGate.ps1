@@ -94,6 +94,7 @@ function Get-MethodBodyText {
 $builder = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor\AnimeStudioGltfSkeletonBuilder.cs"
 $baker = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Editor\AnimeStudioPlayableBaker.cs"
 $applier = Read-RepoFile "AnimeStudio.CLI\UnityBakeResultApplier.cs"
+$requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
 $browserCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
 $unityReadme = Read-RepoFile "AnimeStudio.UnityBake\README.md"
 $standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
@@ -134,6 +135,25 @@ $importedValid = Get-MethodBodyText $applier "private static bool IsImportedAvat
 Assert-Contains $importedValid 'result["importedAvatarAssetValid"]' "Applier must prefer importedAvatarAssetValid proof."
 Assert-Contains $importedValid 'result["rigRestPoseSource"]' "Applier may only use legacy imported rest-pose proof as compatibility evidence."
 Assert-Contains $importedValid '"imported_unity_avatar_asset"' "Imported Avatar proof must name imported_unity_avatar_asset."
+
+$requestResolveClip = Get-MethodBodyText $requestGenerator "private static AnimationClipAssetResolution ResolveUnityAnimationClipForSelection"
+Assert-Contains $requestResolveClip "unityAssetPaths.animationClip" "Request generator must write explicit Unity AnimationClip asset paths when available."
+Assert-Contains $requestResolveClip "animeStudioAssets.animation.anim" "Request generator must keep sidecar fallback traceable when no Unity AnimationClip asset is available."
+
+$requestDiscoverClip = Get-MethodBodyText $requestGenerator "private static IReadOnlyDictionary<string, string> DiscoverImportedAnimationClips"
+Assert-Contains $requestDiscoverClip "ImportedAnimationClip" "Request generator must scan ImportedAnimationClip assets."
+Assert-Contains $requestDiscoverClip "*.anim" "ImportedAnimationClip scan must be limited to Unity .anim assets."
+Assert-Contains $requestDiscoverClip "unityAnimationClips" "Request generator must read explicit unityAnimationClips settings."
+
+$requestClipGuard = Get-MethodBodyText $requestGenerator "private static bool ValidateSuppliedUnityAnimationClipSelections"
+Assert-Contains $requestClipGuard "--unity_animation_clip" "Batch guard must protect manual Unity AnimationClip overrides."
+Assert-Contains $requestClipGuard "animationKeys.Length <= 1" "Manual Unity AnimationClip override must only allow one selected animation."
+Assert-Contains $requestClipGuard "return false" "Manual Unity AnimationClip override must reject multi-animation selections."
+
+$applyReport = Get-MethodBodyText $applier "public static string Apply"
+Assert-Contains $applyReport "unityBakeRequestedAnimationClip" "Apply report must record requested Unity AnimationClip asset."
+Assert-Contains $applyReport "unityBakeImportedAnimationClip" "Apply report must record imported Unity AnimationClip asset."
+Assert-Contains $applyReport "unityBakeAnimationClipSource" "Apply report must record AnimationClip source."
 
 $browserTrust = Get-MethodBodyText $browserCache "private static bool AvatarTrustSourceMatchesExplicitRequest"
 Assert-Contains $browserTrust "ReportRequestHasExplicitAvatarAsset(root)" "Browser trust must inspect explicit Avatar asset requests."

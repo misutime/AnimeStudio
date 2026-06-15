@@ -112,6 +112,7 @@ namespace AnimeStudio.CLI
                 return;
             }
             var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
+            var importedAnimationClips = DiscoverImportedAnimationClips(unityProject, libraryRoot);
             var selection = SelectExplicitCandidateFromLibraryDb(
                 dbPath,
                 modelSelector,
@@ -131,6 +132,7 @@ namespace AnimeStudio.CLI
             }
 
             var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets).AssetPath;
+            var effectiveUnityAnimationClip = ResolveUnityAnimationClipForSelection(selection, unityAnimationClip, importedAnimationClips).AssetPath;
             ResolveSelectionLibraryPaths(selection, libraryRoot);
             GenerateSelection(
                 dbPath,
@@ -140,7 +142,7 @@ namespace AnimeStudio.CLI
                 unityProject,
                 unityEditor,
                 unityModelPrefab,
-                unityAnimationClip,
+                effectiveUnityAnimationClip,
                 effectiveUnityAvatarAsset,
                 unityBakeOutput,
                 frameRate,
@@ -207,6 +209,7 @@ namespace AnimeStudio.CLI
                 return;
             }
             var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
+            var importedAnimationClips = DiscoverImportedAnimationClips(unityProject, libraryRoot);
 
             var selections = SelectExplicitBakeCandidatesFromLibraryDb(
                     dbPath,
@@ -270,6 +273,10 @@ namespace AnimeStudio.CLI
             {
                 return;
             }
+            if (!ValidateSuppliedUnityAnimationClipSelections(unityAnimationClip, selections))
+            {
+                return;
+            }
 
             var items = new JArray();
             var requestsWritten = 0;
@@ -283,6 +290,8 @@ namespace AnimeStudio.CLI
                 var itemFbx = BuildBatchFbxPath(bakedFbxOutput, output, modelName, animationName);
                 var avatarResolution = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets);
                 var effectiveUnityAvatarAsset = avatarResolution.AssetPath;
+                var animationClipResolution = ResolveUnityAnimationClipForSelection(selection, unityAnimationClip, importedAnimationClips);
+                var effectiveUnityAnimationClip = animationClipResolution.AssetPath;
 
                 var requestPath = GenerateSelection(
                     dbPath,
@@ -292,7 +301,7 @@ namespace AnimeStudio.CLI
                     unityProject,
                     unityEditor,
                     unityModelPrefab,
-                    unityAnimationClip,
+                    effectiveUnityAnimationClip,
                     effectiveUnityAvatarAsset,
                     null,
                     frameRate,
@@ -345,6 +354,9 @@ namespace AnimeStudio.CLI
                     ["unityAvatarAsset"] = effectiveUnityAvatarAsset,
                     ["avatarSource"] = avatarResolution.Source,
                     ["avatarMatchKey"] = avatarResolution.MatchKey,
+                    ["unityAnimationClip"] = effectiveUnityAnimationClip,
+                    ["animationClipSource"] = animationClipResolution.Source,
+                    ["animationClipMatchKey"] = animationClipResolution.MatchKey,
                     ["request"] = requestPath,
                     ["result"] = resultPath,
                     ["bakedGltf"] = bakedGltf,
@@ -373,6 +385,9 @@ namespace AnimeStudio.CLI
                 ["avatarAssetCounts"] = CountReportItemsByString(items, "unityAvatarAsset"),
                 ["avatarSourceCounts"] = CountReportItemsByString(items, "avatarSource"),
                 ["avatarMatchKeyCounts"] = CountReportItemsByString(items, "avatarMatchKey"),
+                ["animationClipAssetCounts"] = CountReportItemsByString(items, "unityAnimationClip"),
+                ["animationClipSourceCounts"] = CountReportItemsByString(items, "animationClipSource"),
+                ["animationClipMatchKeyCounts"] = CountReportItemsByString(items, "animationClipMatchKey"),
                 ["items"] = items,
             };
             var reportPath = Path.Combine(output, "unity_bake_batch_report.json");
@@ -720,6 +735,7 @@ namespace AnimeStudio.CLI
                         confidence = (string)animation?["confidence"],
                         score = (int?)animation?["score"] ?? 0,
                         animatorControllerContext = animation?["animatorControllerContext"] as JObject,
+                        animatorControllerRequestedClip = animation?["animatorControllerRequestedClip"] as JObject,
                     },
                 },
                 validation = new
@@ -1496,6 +1512,7 @@ LIMIT 1;";
             baseAnimation["score"] = (int?)relation["score"] ?? 100;
             baseAnimation["candidate"] = relation;
             baseAnimation["requiresHumanoidBake"] = true;
+            baseAnimation["animatorControllerContext"] = relation["animatorControllerContext"]?.DeepClone();
             baseAnimation["animatorControllerRequestedClip"] = new JObject
             {
                 ["name"] = requestedAnimation?["name"],
@@ -2503,6 +2520,126 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             return result;
         }
 
+        private static IReadOnlyDictionary<string, string> DiscoverImportedAnimationClips(string unityProject, string libraryRoot = null)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            AddStringMap(result, LoadUnityBakeStringMap(libraryRoot, "unityAnimationClips"));
+            if (string.IsNullOrWhiteSpace(unityProject))
+            {
+                return result;
+            }
+
+            var directory = Path.Combine(unityProject, "Assets", "AnimeStudioBake", "ImportedAnimationClip");
+            if (!Directory.Exists(directory))
+            {
+                return result;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(directory, "*.anim", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                var unityPath = Path.GetRelativePath(unityProject, file).Replace('\\', '/');
+                if (!unityPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // ImportedAnimationClip 只用文件名精确匹配当前已经选中的 AnimationClip。
+                // 它不参与模型-动画候选生成，也不做 contains 模糊匹配。
+                result[name] = unityPath;
+                result[Path.GetFileName(file)] = unityPath;
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyDictionary<string, string> LoadUnityBakeStringMap(string libraryRoot, string propertyName)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var localSettings = string.IsNullOrWhiteSpace(libraryRoot)
+                ? null
+                : LoadJsonObject(Path.Combine(libraryRoot, ".as_browser_cache", "unity_bake_settings.json"));
+            var globalSettings = LoadJsonObject(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "AnimeStudio",
+                "LibraryBrowser",
+                "settings.json"));
+
+            AddStringMap(result, ReadStringMap(globalSettings, propertyName));
+            AddStringMap(result, ReadStringMap(localSettings, propertyName));
+            return result;
+        }
+
+        private static JObject LoadJsonObject(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return null;
+            }
+
+            try
+            {
+                return JObject.Parse(File.ReadAllText(path));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static IReadOnlyDictionary<string, string> ReadStringMap(JObject node, string propertyName)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (node?[propertyName] is not JObject map)
+            {
+                return result;
+            }
+
+            foreach (var pair in map.Properties())
+            {
+                var value = (string)pair.Value;
+                if (!string.IsNullOrWhiteSpace(pair.Name) && !string.IsNullOrWhiteSpace(value))
+                {
+                    result[pair.Name.Trim()] = NormalizeUnityAssetPath(value);
+                }
+            }
+
+            return result;
+        }
+
+        private static void AddStringMap(Dictionary<string, string> target, IReadOnlyDictionary<string, string> source)
+        {
+            if (target == null || source == null)
+            {
+                return;
+            }
+
+            foreach (var pair in source)
+            {
+                if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+                {
+                    target[pair.Key.Trim()] = NormalizeUnityAssetPath(pair.Value);
+                }
+            }
+        }
+
+        private static string NormalizeUnityAssetPath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var text = value.Trim().Trim('"').Replace('\\', '/');
+            var assetsIndex = text.IndexOf("Assets/", StringComparison.OrdinalIgnoreCase);
+            return assetsIndex >= 0 ? text[assetsIndex..] : text;
+        }
+
         private static JObject BuildImportedAvatarReadinessSummary(
             string unityProject,
             string libraryRoot,
@@ -2829,6 +2966,68 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
         }
 
+        private static AnimationClipAssetResolution ResolveUnityAnimationClipForSelection(
+            PreviewSelection selection,
+            string suppliedUnityAnimationClip,
+            IReadOnlyDictionary<string, string> importedAnimationClips)
+        {
+            if (!string.IsNullOrWhiteSpace(suppliedUnityAnimationClip))
+            {
+                return new AnimationClipAssetResolution(
+                    NormalizeUnityAssetPath(suppliedUnityAnimationClip),
+                    "unityAssetPaths.animationClip",
+                    "--unity_animation_clip");
+            }
+
+            var resolved = ResolveUnityAnimationClipDetails(selection?.Animation as JObject, importedAnimationClips);
+            if (!string.IsNullOrWhiteSpace(resolved.AssetPath))
+            {
+                return resolved;
+            }
+
+            return new AnimationClipAssetResolution(null, "animeStudioAssets.animation.anim", null);
+        }
+
+        private static AnimationClipAssetResolution ResolveUnityAnimationClipDetails(
+            JObject animation,
+            IReadOnlyDictionary<string, string> importedAnimationClips)
+        {
+            if (animation == null || importedAnimationClips == null || importedAnimationClips.Count == 0)
+            {
+                return new AnimationClipAssetResolution(null, "animeStudioAssets.animation.anim", null);
+            }
+
+            foreach (var key in BuildUnityAnimationClipLookupKeys(animation))
+            {
+                if (importedAnimationClips.TryGetValue(key, out var value))
+                {
+                    return new AnimationClipAssetResolution(value, "unityAssetPaths.animationClip", key);
+                }
+            }
+
+            return new AnimationClipAssetResolution(null, "animeStudioAssets.animation.anim", null);
+        }
+
+        private static IEnumerable<string> BuildUnityAnimationClipLookupKeys(JObject animation)
+        {
+            var name = (string)animation?["name"];
+            var output = (string)animation?["output"];
+            var animationAsset = (string)animation?["animationAsset"];
+            var fileName = string.IsNullOrWhiteSpace(output) ? null : Path.GetFileName(output);
+            var stem = string.IsNullOrWhiteSpace(fileName) ? null : Path.GetFileNameWithoutExtension(fileName);
+            var sidecarFileName = string.IsNullOrWhiteSpace(animationAsset) ? null : Path.GetFileName(animationAsset);
+            var sidecarStem = string.IsNullOrWhiteSpace(sidecarFileName) ? null : Path.GetFileNameWithoutExtension(sidecarFileName);
+            if (!string.IsNullOrWhiteSpace(sidecarStem)
+                && sidecarStem.EndsWith(".animation_asset", StringComparison.OrdinalIgnoreCase))
+            {
+                sidecarStem = sidecarStem[..^".animation_asset".Length];
+            }
+
+            return new[] { name, stem, fileName, sidecarStem, sidecarFileName }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
         private static bool ValidateSuppliedUnityAvatarAssetScope(string modelSelector, string suppliedUnityAvatarAsset)
         {
             if (string.IsNullOrWhiteSpace(suppliedUnityAvatarAsset))
@@ -2845,6 +3044,33 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
                 "--unity_avatar_asset 是单模型诊断/定向预览入口，不能在未指定 --preview_model 时参与批量选择。"
                 + " 多模型生产 bake 请把恢复出的 Avatar 放入 Unity Bake Project/Assets/AnimeStudioBake/ImportedAvatar，"
                 + "让工具按模型 Avatar 名/模型名精确匹配。");
+            return false;
+        }
+
+        private static bool ValidateSuppliedUnityAnimationClipSelections(
+            string suppliedUnityAnimationClip,
+            IReadOnlyCollection<PreviewSelection> selections)
+        {
+            if (string.IsNullOrWhiteSpace(suppliedUnityAnimationClip) || selections == null || selections.Count <= 1)
+            {
+                return true;
+            }
+
+            var animationKeys = selections
+                .Select(x => (string)x?.Animation?["output"] ?? (string)x?.Animation?["name"] ?? "")
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(2)
+                .ToArray();
+            if (animationKeys.Length <= 1)
+            {
+                return true;
+            }
+
+            Logger.Error(
+                "--unity_animation_clip 只允许用于单个 AnimationClip 的定向 bake。当前选择命中了多个动画，"
+                + "继续执行会把同一个 Unity AnimationClip 强行套到不同动画候选上。"
+                + " 请收紧 --preview_animation，或使用 ImportedAnimationClip 目录/配置让每个动画精确匹配自己的原始 clip asset。");
             return false;
         }
 
@@ -3864,6 +4090,8 @@ LIMIT 32;";
         private sealed record PreviewSelection(JObject Model, JObject Animation);
 
         private sealed record AvatarAssetResolution(string AssetPath, string Source, string MatchKey);
+
+        private sealed record AnimationClipAssetResolution(string AssetPath, string Source, string MatchKey);
 
         private sealed record BatchBakeApplyInfo(
             string BakedGltfPath,

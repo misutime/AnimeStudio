@@ -299,6 +299,9 @@ namespace AnimeStudio.CLI
                 unityBakeRequestedAvatarAsset = (string)result["requestedAvatarAsset"],
                 unityBakeImportedAvatarAsset = (string)result["importedAvatarAsset"],
                 unityBakeImportedAvatarAssetValid = (bool?)result["importedAvatarAssetValid"] ?? false,
+                unityBakeRequestedAnimationClip = (string)result["requestedAnimationClip"],
+                unityBakeImportedAnimationClip = (string)result["importedAnimationClip"],
+                unityBakeAnimationClipSource = (string)result["animationClipSource"],
                 suppressedHumanoidRootRotationTrackCount = suppressedHumanoidRootRotationTracks.Count,
                 suppressedHumanoidRootRotationTracks = suppressedHumanoidRootRotationTracks.Take(32).ToArray(),
                 staticPoseTracks = Math.Max(0, writtenTracks - frameVaryingTracks),
@@ -352,6 +355,9 @@ namespace AnimeStudio.CLI
                 unityBakeRequestedAvatarAsset = (string)result?["requestedAvatarAsset"],
                 unityBakeImportedAvatarAsset = (string)result?["importedAvatarAsset"],
                 unityBakeImportedAvatarAssetValid = (bool?)result?["importedAvatarAssetValid"] ?? false,
+                unityBakeRequestedAnimationClip = (string)result?["requestedAnimationClip"],
+                unityBakeImportedAnimationClip = (string)result?["importedAnimationClip"],
+                unityBakeAnimationClipSource = (string)result?["animationClipSource"],
             };
             var reportPath = Path.Combine(outputDir, "unity_bake_apply_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
