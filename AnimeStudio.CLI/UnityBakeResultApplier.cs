@@ -223,6 +223,19 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
+            if (requiresHumanoidBake
+                && coreBodyFrameVaryingTracks == 0
+                && IsStandaloneIncompleteHumanoidClip(request, out var incompleteReason))
+            {
+                var failureMessage =
+                    "Unity bake rejected this Humanoid/Muscle animation because the selected AnimationClip does not contain standalone body-driving motion. "
+                    + incompleteReason
+                    + " This clip is still a deterministic Unity reference, but it must be sampled through its AnimatorController/blend/layer context or combined with the body-driving clip; baking it alone would produce a misleading pose/root/accessory-only glTF.";
+                WriteFailureReport(outputDir, sourceGltf, outputGltfPath, requestPath, resultPath, clipName, failureMessage, result);
+                Logger.Error(failureMessage);
+                return null;
+            }
+
             // 预览文件只保留当前烘焙动画，避免 F3D/Blender 默认播放旧的表情或辅助动画，
             // 让用户打开文件时看到的就是这次选择的模型 + 动作。
             gltf["animations"] = new JArray(animation);
@@ -323,6 +336,7 @@ namespace AnimeStudio.CLI
             }
 
             Directory.CreateDirectory(outputDir);
+            DeleteStaleFailedGltf(outputDir, outputGltfPath);
             var report = new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
@@ -342,6 +356,114 @@ namespace AnimeStudio.CLI
             var reportPath = Path.Combine(outputDir, "unity_bake_apply_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
             Logger.Info($"Baked apply report: {reportPath}");
+        }
+
+        private static void DeleteStaleFailedGltf(string outputDir, string outputGltfPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputDir) || string.IsNullOrWhiteSpace(outputGltfPath))
+            {
+                return;
+            }
+
+            var fullOutputDir = Path.GetFullPath(outputDir);
+            var fullGltfPath = Path.GetFullPath(outputGltfPath);
+            if (!fullGltfPath.StartsWith(fullOutputDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(Path.GetDirectoryName(fullGltfPath), fullOutputDir, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (File.Exists(fullGltfPath))
+            {
+                File.Delete(fullGltfPath);
+            }
+        }
+
+        private static bool IsStandaloneIncompleteHumanoidClip(JObject request, out string reason)
+        {
+            reason = null;
+            var animationAsset = (string)request["animeStudioAssets"]?["animation"]?["animationAsset"];
+            if (string.IsNullOrWhiteSpace(animationAsset) || !File.Exists(animationAsset))
+            {
+                return false;
+            }
+
+            JObject sidecar;
+            try
+            {
+                sidecar = JObject.Parse(File.ReadAllText(animationAsset));
+            }
+            catch
+            {
+                return false;
+            }
+
+            var hasMuscleClip = (bool?)sidecar["humanoid"]?["hasMuscleClip"] ?? false;
+            var muscleBindingCount = (int?)sidecar["humanoid"]?["muscleBindingCount"] ?? 0;
+            if (!hasMuscleClip || muscleBindingCount > 7)
+            {
+                return false;
+            }
+
+            var bodyTransformBindingCount = sidecar["bindings"]?
+                .OfType<JObject>()
+                .Count(IsCoreBodyTransformBinding) ?? 0;
+            if (bodyTransformBindingCount > 0)
+            {
+                return false;
+            }
+
+            reason = $"Animation sidecar reports only {muscleBindingCount} Humanoid/root curve(s) and no core body Transform bindings.";
+            return true;
+        }
+
+        private static bool IsCoreBodyTransformBinding(JObject binding)
+        {
+            if (!string.Equals((string)binding["typeID"], "Transform", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var path = ((string)binding["path"])?.Replace('\\', '/').Trim();
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            var last = path.Split('/').LastOrDefault()?.Trim();
+            if (string.IsNullOrWhiteSpace(last))
+            {
+                return false;
+            }
+
+            // 只把真正人体主骨骼算作 standalone 身体驱动。
+            // 附件路径可能挂在 Head/Spine/Thigh 下，最后一级通常带 + 或附件名，
+            // 不能因此误判为完整身体动画。
+            var normalized = last.Replace("_", " ").Replace("-", " ");
+            var coreNames = new[]
+            {
+                "Bip001 Pelvis",
+                "Bip001 Spine",
+                "Bip001 Spine1",
+                "Bip001 Spine2",
+                "Bip001 Neck",
+                "Bip001 Head",
+                "Bip001 L Clavicle",
+                "Bip001 R Clavicle",
+                "Bip001 L UpperArm",
+                "Bip001 R UpperArm",
+                "Bip001 L Forearm",
+                "Bip001 R Forearm",
+                "Bip001 L Hand",
+                "Bip001 R Hand",
+                "Bip001 L Thigh",
+                "Bip001 R Thigh",
+                "Bip001 L Calf",
+                "Bip001 R Calf",
+                "Bip001 L Foot",
+                "Bip001 R Foot",
+            };
+            return coreNames.Any(x => string.Equals(normalized, x, StringComparison.OrdinalIgnoreCase));
         }
 
         private static AvatarTrustReport BuildAvatarTrustReport(JObject request, JObject result)

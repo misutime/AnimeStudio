@@ -199,6 +199,8 @@ apply 和后续统计读取阶段也必须遵守同一优先级：只要 request
 
 Unity bake 只能作用在已经来自 Unity 显式关系的候选上，不能用来新增或猜测模型-动画绑定。报告必须保留 `relation_source=explicit`、`baked=true` / `bakeMode`、request/result 路径和 glTF 验证状态。内部 Humanoid/Muscle 求解器保留现有代码和文档作为后续研究基础，但默认流程不得把近似 muscle 求解、骨架数量兼容或名称匹配伪装成已验证可复用身体动画。
 
+`AnimatorController` 对 `AnimationClip` 的显式引用，只说明这个 clip 参与了 Unity 状态机，不等于它一定是可单独播放的完整身体动画。有些角色私有 clip 只包含 root motion、附件、头发、衣摆、表情或上层叠加姿态，真正的身体动作来自同一状态的其他 layer、blend tree、override 或基础 clip。遇到这种 clip 时，Browser/CLI 必须标记为“需要 AnimatorController 上下文”或直接失败，不能生成看似成功但身体钻地、静态定格或动作语义不符的 glTF。生产级修复方向是恢复并采样原始 AnimatorController 状态、layer、blend tree 和 override 组合，而不是把单个不完整 clip 硬当完整动作。
+
 动画候选必须严格验证：
 
 - 有效动画应能驱动目标模型的可见 mesh、bone、blendshape 或 transform。
