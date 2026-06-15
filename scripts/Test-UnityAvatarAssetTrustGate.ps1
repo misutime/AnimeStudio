@@ -152,6 +152,9 @@ Assert-Contains $requestClipGuard "--unity_animation_clip" "Batch guard must pro
 Assert-Contains $requestClipGuard "animationKeys.Length <= 1" "Manual Unity AnimationClip override must only allow one selected animation."
 Assert-Contains $requestClipGuard "return false" "Manual Unity AnimationClip override must reject multi-animation selections."
 
+$requestBatch = Get-MethodBodyText $requestGenerator "public static void GenerateBatchFromLibrary"
+Assert-Contains $requestBatch "TryDescribeBlockedExplicitCandidate" "Batch Unity bake must explain blocked AnimatorController-context candidates before generic no-match errors."
+
 $clipRecoveryRequests = Get-MethodBodyText $animationClipRecovery "private static List<AnimationClipRecoveryRequest> ReadRecoveryRequests"
 Assert-Contains $clipRecoveryRequests "model_animation_candidates" "Imported AnimationClip recovery must read deterministic SQLite model-animation candidates."
 Assert-Contains $clipRecoveryRequests "c.relation_source='explicit'" "Imported AnimationClip recovery must only use explicit Unity relations."

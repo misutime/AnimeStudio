@@ -266,6 +266,13 @@ namespace AnimeStudio.CLI
                     }
                 }
 
+                var blockedCandidate = TryDescribeBlockedExplicitCandidate(dbPath, modelSelector, animationSelector);
+                if (!string.IsNullOrWhiteSpace(blockedCandidate))
+                {
+                    Logger.Error(blockedCandidate);
+                    return;
+                }
+
                 Logger.Error("No explicit Humanoid/Muscle model-animation candidate matched the Unity bake batch selectors.");
                 return;
             }
