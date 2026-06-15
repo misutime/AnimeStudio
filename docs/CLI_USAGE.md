@@ -560,6 +560,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --require_fresh_source_animation_relations
 ```
 
+注意：Browser 顶部“重建动画索引”按钮只读取素材库根目录的 `unity_source_index.db`。旁路 fresh 源索引必须用上面的 CLI 命令显式传 `--source_index`，否则会重新消费根目录旧索引，导致 OverrideController 精确关系和候选覆盖没有真正刷新。
+
 `unity_source_index.db` 和 `library_index.db` 的定位不同：
 
 - `unity_source_index.db`：面向完整 Unity 源目录，记录源文件、SerializedFile、Object、external CAB/PPtr、Unity 组件关系、AnimationClip binding。不导出素材。

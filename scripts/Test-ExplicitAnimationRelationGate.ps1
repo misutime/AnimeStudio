@@ -95,6 +95,7 @@ function Get-TextAfterMarker {
 $preview = Read-RepoFile "AnimeStudio.CLI\PreviewGltfGenerator.cs"
 $bake = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
 $sqlite = Read-RepoFile "AnimeStudio.CLI\SQLiteLibraryIndexBuilder.cs"
+$program = Read-RepoFile "AnimeStudio.CLI\Program.cs"
 $browserCandidate = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationCandidate.cs"
 $browserIndex = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationIndex.cs"
 $browserMain = Read-RepoFile "AnimeStudio.LibraryBrowser\MainForm.cs"
@@ -119,7 +120,10 @@ Assert-Contains $sqliteGate '"explicit"' "SQLite compact import gate must accept
 Assert-NotContains $sqliteGate "explicit_unity_reference" "SQLite compact import gate must not fall back to old confidence values."
 Assert-NotContains $sqlite "OR mar.confidence = 'explicit_unity_reference'" "Old SQLite queries must not add default candidates by confidence."
 Assert-NotContains $sqlite "兼容旧 source_index：旧表只有 originalClip/overrideClip" "SQLite source graph must not infer AnimatorOverrideController clip pairs from separated legacy relations."
-Assert-Contains $sqlite "不能猜 pair" "SQLite source graph must explicitly reject legacy separated AnimatorOverrideController relations."
+$overrideControllerGate = Get-TextAfterMarker $sqlite "if (isOverrideController && baseControllers.Length > 0 && overridePairs.Length == 0)" 900
+Assert-Contains $overrideControllerGate "hasSeparatedOverrideRefs" "SQLite source graph must detect legacy separated AnimatorOverrideController references."
+Assert-Contains $overrideControllerGate "_skippedStaleOverrideControllers++" "SQLite source graph must count stale AnimatorOverrideController relations."
+Assert-Contains $overrideControllerGate "yield break;" "SQLite source graph must reject stale AnimatorOverrideController relations instead of expanding base controller clips."
 
 $browserExplicit = Get-TextAfterMarker $browserCandidate "public bool IsExplicit =>" 450
 Assert-Contains $browserExplicit "RelationSource" "Browser explicit candidate check must read RelationSource."
@@ -132,12 +136,19 @@ Assert-Contains $browserFindCli '"--require_fresh_source_animation_relations"' "
 Assert-Contains $browserFindCli '"--skip_sqlite_file_index"' "Browser rebuild animation index should avoid expensive file scans by default."
 Assert-Contains $browserFindCli '"--skip_sqlite_json_documents"' "Browser rebuild animation index should avoid copying large JSON documents by default."
 
-Assert-Contains $browserDoc 'confidence=explicit_unity_reference`' "Browser animation preview doc must mention old confidence values."
+$programBuildSqlite = Get-TextAfterMarker $program "if (o.BuildSqliteIndex != null)" 750
+Assert-Contains $programBuildSqlite "o.SourceIndex?.FullName ?? Path.Combine(o.BuildSqliteIndex.FullName, `"unity_source_index.db`")" "CLI --build_sqlite_index must let explicit --source_index override the library-root source index."
+Assert-Contains $programBuildSqlite "SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName, o.SkipSqliteFileIndex, o.SkipSqliteSidecarScan, o.SkipSqliteJsonDocuments, o.SourceIndex?.FullName)" "CLI --build_sqlite_index must pass explicit --source_index into the SQLite library builder."
+
+Assert-Contains $browserDoc 'explicit_unity_reference' "Browser animation preview doc must mention old confidence values."
 Assert-Contains $browserDoc 'relationSource=explicit' "Browser animation preview doc must require relationSource=explicit."
+Assert-Contains $browserDoc 'Browser' "Browser doc must mention the in-app rebuild behavior."
+Assert-Contains $browserDoc '--source_index <FreshUnitySourceIndex>' "Browser doc must tell users to pass external fresh source indexes through CLI."
 Assert-Contains $standards 'model_animations.json' "Project standards must mention default model animation candidates."
 Assert-Contains $standards 'SQLite' "Project standards must mention SQLite animation candidates."
 Assert-Contains $standards 'unityAssetPaths.avatarAsset' "Project standards must keep imported Avatar asset oracle rules."
-Assert-Contains $cliUsage '半旧 separated 场景验证只有分离的 `originalClip/overrideClip` 时不会产出候选' "CLI docs must say separated legacy OverrideController relations are skipped."
-Assert-NotContains $cliUsage '半旧 separated 场景验证只有分离的 `originalClip/overrideClip` 时可兼容恢复' "CLI docs must not claim separated legacy OverrideController relations are production-compatible."
+Assert-Contains $cliUsage 'originalClip/overrideClip' "CLI docs must mention legacy separated OverrideController relations."
+Assert-Contains $cliUsage '--source_index' "CLI docs must tell users to pass external fresh source indexes explicitly."
+Assert-NotContains $cliUsage 'originalClip/overrideClip` 时可兼容恢复' "CLI docs must not claim separated legacy OverrideController relations are production-compatible."
 
 Write-Output "OK: explicit animation relation gates have no confidence/structural fallback."

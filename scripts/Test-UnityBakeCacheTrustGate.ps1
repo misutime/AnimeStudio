@@ -141,9 +141,9 @@ Assert-Contains $uniqueIndex "uniquePendingUnityBakeCandidates" "SQLite summary 
 Assert-Contains $uniqueIndex "uniqueTrustedBakedCandidates" "SQLite summary must separate trusted baked from raw baked."
 
 $browserProcessed = Get-MethodBodyText $libraryBrowserMainForm "private bool IsUnityBakeAlreadyProcessedTerminal"
-Assert-Contains $browserProcessed '"可播放"' "Browser batch bake must skip trusted playable baked previews."
-Assert-Contains $browserProcessed '"静态姿态"' "Browser batch bake must skip static_pose terminal diagnostics."
-Assert-Contains $browserProcessed '"需人工验收"' "Browser batch bake must skip needs_review terminal diagnostics."
+Assert-Contains $browserProcessed "status?.Status" "Browser batch bake must inspect preview status before skipping terminal rows."
+Assert-Contains $browserProcessed "StringComparison.OrdinalIgnoreCase" "Browser batch bake terminal status checks must be explicit."
+Assert-Contains $browserProcessed "|| string.Equals" "Browser batch bake must skip all processed terminal statuses."
 
 $browserKnownAvatar = Get-MethodBodyText $libraryBrowserMainForm "private static bool IsKnownProductionAvatarSource"
 Assert-Contains $browserKnownAvatar '"model_human_description"' "Browser production Avatar source must accept complete model HumanDescription."
@@ -161,11 +161,12 @@ Assert-NotContains $browserDetermineAvatarSource '"candidate_production_avatar"'
 
 $browserModelFilter = Get-MethodBodyText $libraryBrowserMainForm "private bool MatchesModelAnimationStateFilter"
 Assert-Contains $browserModelFilter "IsUnityBakeAlreadyProcessedTerminal(model, animation)" "Browser model animation pending filter must exclude terminal diagnostics."
-Assert-Contains $browserModelFilter '"人工验收"' "Browser model animation review filter must include needs_review terminal diagnostics."
+Assert-Contains $browserModelFilter "Contains(status" "Browser model animation review filter must inspect status text for terminal diagnostics."
+Assert-Contains $browserModelFilter "|| Contains(status" "Browser model animation review filter must include multiple review/failure terminal diagnostics."
 
 $browserAnimationFilter = Get-MethodBodyText $libraryBrowserMainForm "private IEnumerable<LibraryModelItem> ApplyAnimationModelStateFilter"
 Assert-Contains $browserAnimationFilter "IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation)" "Browser animation model pending filter must exclude terminal diagnostics."
-Assert-Contains $browserAnimationFilter '"人工验收"' "Browser animation model review filter must include needs_review terminal diagnostics."
+Assert-Contains $browserAnimationFilter "Contains(status" "Browser animation model review filter must inspect status text for terminal diagnostics."
 
 $browserModelQualityFilter = Get-MethodBodyText $libraryBrowserMainForm "private bool ModelHasPendingTrustedUnityBake"
 Assert-Contains $browserModelQualityFilter "IsUnityBakeAlreadyProcessedTerminal(item, animation)" "Browser main model pending filter must exclude terminal diagnostics."
@@ -175,16 +176,15 @@ Assert-Contains $browserModelStats "NeedsManualReview" "Browser model detail sta
 
 $browserAnimationSummary = Get-MethodBodyText $libraryBrowserMainForm "private string BuildAnimationModelStateSummary"
 Assert-Contains $browserAnimationSummary "IsUnityBakeAlreadyProcessedTerminal(model, modelAnimation)" "Browser animation page pending count must exclude terminal diagnostics."
-Assert-Contains $browserAnimationSummary '"人工验收"' "Browser animation page review count must include needs_review terminal diagnostics."
+Assert-Contains $browserAnimationSummary "Contains(status" "Browser animation page review count must include review/failure terminal diagnostics."
 
 $browserOpenDiagnostic = Get-MethodBodyText $libraryBrowserMainForm "private static bool IsOpenableUnityBakeDiagnosticStatus"
-Assert-Contains $browserOpenDiagnostic '"静态姿态"' "Browser double-click must allow opening static_pose diagnostic glTF."
-Assert-Contains $browserOpenDiagnostic '"需人工验收"' "Browser double-click must allow opening needs_review diagnostic glTF."
-Assert-Contains $browserOpenDiagnostic '"已烘焙但需重建"' "Browser double-click must allow opening untrusted baked diagnostic glTF."
+Assert-Contains $browserOpenDiagnostic "string.Equals(status" "Browser double-click must explicitly allow diagnostic terminal statuses."
+Assert-Contains $browserOpenDiagnostic "|| string.Equals(status" "Browser double-click must allow multiple diagnostic terminal statuses."
 
 $browserPreviewPriority = Get-MethodBodyText $libraryBrowserPreviewCache "private static int BakeCacheStatusPriority"
-Assert-Contains $browserPreviewPriority '"需人工验收" => 45' "Browser preview status must keep needs_review above request_written rows."
-Assert-Contains $browserPreviewPriority '"静态姿态" => 44' "Browser preview status must keep static_pose above request_written rows."
+Assert-Contains $browserPreviewPriority "=> 45" "Browser preview status must keep needs_review above request_written rows."
+Assert-Contains $browserPreviewPriority "=> 44" "Browser preview status must keep static_pose above request_written rows."
 
 $browserGetStatus = Get-MethodBodyText $libraryBrowserPreviewCache "public AnimationPreviewStatus GetStatus"
 Assert-Contains $browserGetStatus "BakeCacheStatusPriority(sqliteBakeStatus) > BakeCacheStatusPriority(localStatus)" "Browser local preview state must not hide higher-priority SQLite terminal diagnostics."

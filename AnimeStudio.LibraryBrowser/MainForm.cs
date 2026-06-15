@@ -1327,7 +1327,7 @@ namespace AnimeStudio.LibraryBrowser
             {
                 MessageBox.Show(
                     this,
-                    "素材库根目录缺少 unity_source_index.db，不能从 Unity 确定性关系重建动画候选。请先用完整 Unity 源目录重建源索引。",
+                    "素材库根目录缺少 unity_source_index.db，不能从 Unity 确定性关系重建动画候选。请先用完整 Unity 源目录重建源索引；如果你已经有旁路 fresh 源索引，请用 CLI 的 --build_sqlite_index 加 --source_index 显式重建。",
                     "重建动画索引",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);

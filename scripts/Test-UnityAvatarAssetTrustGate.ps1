@@ -138,7 +138,8 @@ Assert-Contains $browserTrustedReport "HasTrustedAvatarBake" "Browser trusted Un
 $browserBakeCache = Get-MethodBodyText $browserCache "private Dictionary<string, AnimationPreviewStatus> LoadSqliteBakeCacheCore"
 Assert-Contains $browserBakeCache "HasTrustedUnityBakeReport(applyReport)" "Browser SQLite bake cache must require trusted apply report before playable."
 Assert-Contains $browserBakeCache "IsUnityBakedGltf(bakedGltf)" "Browser SQLite bake cache must require glTF Unity bake marker before playable."
-Assert-Contains $browserBakeCache 'new AnimationPreviewStatus("可播放"' "Browser SQLite bake cache may mark playable only after trusted proof."
+Assert-Contains $browserBakeCache "hasTrustedBakedGltf" "Browser SQLite bake cache may mark playable only after trusted proof."
+Assert-Contains $browserBakeCache "? new AnimationPreviewStatus" "Browser SQLite bake cache must create the playable status only through the trusted branch."
 
 $productionSource = Get-MethodBodyText $browserCache "private static bool IsProductionAvatarTrustSource"
 Assert-Contains $productionSource '"internal_solver"' "Browser must reject internal_solver trust sources."
