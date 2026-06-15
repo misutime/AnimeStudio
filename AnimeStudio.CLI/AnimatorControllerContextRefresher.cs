@@ -50,6 +50,8 @@ namespace AnimeStudio.CLI
             var rows = ReadBlockedCandidateRows(connection);
             var changed = 0;
             var matched = 0;
+            var blockedReasonCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var blockedItems = new JArray();
             using var transaction = connection.BeginTransaction();
             using var update = connection.CreateCommand();
             update.Transaction = transaction;
@@ -68,6 +70,7 @@ namespace AnimeStudio.CLI
                 var animationPathId = (long?)row.Animation?["pathId"];
                 if (animationPathId == null)
                 {
+                    AddBlockedItem(blockedItems, blockedReasonCounts, row, "missing_animation_path_id", null);
                     continue;
                 }
 
@@ -75,10 +78,23 @@ namespace AnimeStudio.CLI
                 var modelSource = S(row.Model, "source") ?? S(row.Model, "sourceFile");
                 if (modelPathId == null || string.IsNullOrWhiteSpace(modelSource))
                 {
+                    AddBlockedItem(blockedItems, blockedReasonCounts, row, "missing_model_path_id_or_source", null);
                     continue;
                 }
 
-                foreach (var controllerPathId in controllerResolver.FindControllerPathIds(modelSource, modelPathId.Value))
+                var controllerPathIds = controllerResolver.FindControllerPathIds(modelSource, modelPathId.Value);
+                if (controllerPathIds.Count == 0)
+                {
+                    AddBlockedItem(blockedItems, blockedReasonCounts, row, "missing_animator_controller_relation", new JObject
+                    {
+                        ["modelSource"] = modelSource,
+                        ["modelPathId"] = modelPathId.Value,
+                    });
+                    continue;
+                }
+
+                var rowChanged = false;
+                foreach (var controllerPathId in controllerPathIds)
                 {
                     if (!contexts.TryGetValue((controllerPathId, animationPathId.Value), out var context))
                     {
@@ -101,7 +117,19 @@ namespace AnimeStudio.CLI
                     cacheAnimation.Value = row.AnimationOutput;
                     deleteCache.ExecuteNonQuery();
                     changed++;
+                    rowChanged = true;
                     break;
+                }
+
+                if (!rowChanged)
+                {
+                    AddBlockedItem(blockedItems, blockedReasonCounts, row, "controller_context_not_found_in_inspect", new JObject
+                    {
+                        ["modelSource"] = modelSource,
+                        ["modelPathId"] = modelPathId.Value,
+                        ["animationPathId"] = animationPathId.Value,
+                        ["controllerPathIds"] = new JArray(controllerPathIds),
+                    });
                 }
             }
 
@@ -119,12 +147,47 @@ namespace AnimeStudio.CLI
                 ["blockedCandidateRows"] = rows.Count,
                 ["matchedRows"] = matched,
                 ["refreshedRows"] = changed,
+                ["blockedReasonCounts"] = JObject.FromObject(blockedReasonCounts),
+                // 只写前 200 条，避免原神这类大库报告变成另一个巨型索引。
+                ["blockedItemsSample"] = blockedItems,
                 ["rule"] = "只用 Unity Animator.controller 显式关系和 AnimatorController state/blend tree 同 node 的 baseLayerClip 修复辅助层 Humanoid clip；不按名称、骨骼数量或目录猜测。",
             };
             var reportPath = Path.Combine(root, "animator_controller_context_refresh.json");
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
             Logger.Info($"AnimatorController context refresh updated {changed} candidate row(s). Report: {reportPath}");
             return reportPath;
+        }
+
+        private static void AddBlockedItem(
+            JArray blockedItems,
+            Dictionary<string, int> blockedReasonCounts,
+            CandidateRow row,
+            string reason,
+            JObject details)
+        {
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                blockedReasonCounts[reason] = blockedReasonCounts.TryGetValue(reason, out var count)
+                    ? count + 1
+                    : 1;
+            }
+
+            if (blockedItems == null || blockedItems.Count >= 200)
+            {
+                return;
+            }
+
+            var item = new JObject
+            {
+                ["modelOutput"] = row.ModelOutput,
+                ["animationOutput"] = row.AnimationOutput,
+                ["reason"] = reason,
+            };
+            if (details != null)
+            {
+                item["details"] = details;
+            }
+            blockedItems.Add(item);
         }
 
         private static List<CandidateRow> ReadBlockedCandidateRows(SqliteConnection connection)

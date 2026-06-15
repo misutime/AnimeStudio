@@ -96,6 +96,7 @@ $baker = Read-RepoFile "AnimeStudio.UnityBake\Assets\AnimeStudio.UnityBake\Edito
 $applier = Read-RepoFile "AnimeStudio.CLI\UnityBakeResultApplier.cs"
 $requestGenerator = Read-RepoFile "AnimeStudio.CLI\UnityBakeRequestGenerator.cs"
 $animationClipRecovery = Read-RepoFile "AnimeStudio.CLI\AnimationClipAssetRecoveryExporter.cs"
+$controllerContextRefresh = Read-RepoFile "AnimeStudio.CLI\AnimatorControllerContextRefresher.cs"
 $browserCache = Read-RepoFile "AnimeStudio.LibraryBrowser\AnimationPreviewCache.cs"
 $unityReadme = Read-RepoFile "AnimeStudio.UnityBake\README.md"
 $standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
@@ -161,6 +162,11 @@ $clipRecoveryActual = Get-MethodBodyText $animationClipRecovery "private static 
 Assert-Contains $clipRecoveryActual "animatorControllerContext" "Imported AnimationClip recovery must use AnimatorController context when available."
 Assert-Contains $clipRecoveryActual "baseLayerClip" "Imported AnimationClip recovery must use baseLayerClip for auxiliary controller clips."
 Assert-Contains $clipRecoveryActual "explicitCandidateAnimation" "Imported AnimationClip recovery must keep direct explicit candidate clips when no controller base clip is present."
+
+$controllerRefresh = Get-MethodBodyText $controllerContextRefresh "public static string Refresh"
+Assert-Contains $controllerRefresh "blockedReasonCounts" "AnimatorController context refresh report must expose blocked reason counts."
+Assert-Contains $controllerRefresh "blockedItemsSample" "AnimatorController context refresh report must include blocked item samples."
+Assert-Contains $controllerRefresh "missing_animator_controller_relation" "AnimatorController context refresh must distinguish missing Animator.controller relations."
 
 $batchCacheWrite = Get-MethodBodyText $requestGenerator "private static void UpsertBakeCache"
 Assert-Contains $batchCacheWrite "requestedAnimationOutput" "Batch Unity bake cache must also record the original user-selected AnimatorController clip."
