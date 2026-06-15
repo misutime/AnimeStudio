@@ -272,6 +272,41 @@ namespace AnimeStudio.LibraryBrowser
                 var libraryIndex = ReadString(root, "libraryIndex");
                 var usesDefaultIndex = string.IsNullOrWhiteSpace(libraryIndex)
                     || PathsEqual(libraryIndex, defaultIndex);
+                var fastImportedAvatarFileCount = ReadInt64(root, "importedAvatarAssetCount");
+                if (isFastSummary && fastImportedAvatarFileCount == 0)
+                {
+                    fastImportedAvatarFileCount = ReadInt64(bake, "importedAvatarAssetFileCount");
+                }
+                var fastImportedAvatarTrustedFileCount = ReadInt64(root, "importedAvatarTrustedAssetCount");
+                if (isFastSummary && fastImportedAvatarTrustedFileCount == 0)
+                {
+                    fastImportedAvatarTrustedFileCount = ReadInt64(bake, "importedAvatarAssetTrustedFileCount");
+                }
+                var fastImportedAvatarProbeFreshness = ReadString(root, "importedAvatarProbeFreshness");
+                if (isFastSummary && string.IsNullOrWhiteSpace(fastImportedAvatarProbeFreshness))
+                {
+                    fastImportedAvatarProbeFreshness = ReadString(bake, "importedAvatarProbeFreshness");
+                }
+                var fastImportedAvatarProbeTotal = ReadInt64(root, "importedAvatarProbeTotalAssets");
+                if (isFastSummary && fastImportedAvatarProbeTotal == 0)
+                {
+                    fastImportedAvatarProbeTotal = fastImportedAvatarFileCount;
+                }
+                var fastImportedAvatarProbeValid = ReadInt64(root, "importedAvatarProbeValidHumanAvatars");
+                if (isFastSummary && fastImportedAvatarProbeValid == 0)
+                {
+                    fastImportedAvatarProbeValid = ReadInt64(bake, "importedAvatarProbeValidHumanAvatars");
+                }
+                var fastImportedAvatarProbeInvalid = ReadInt64(root, "importedAvatarProbeInvalidAssets");
+                if (isFastSummary && fastImportedAvatarProbeInvalid == 0)
+                {
+                    fastImportedAvatarProbeInvalid = ReadInt64(bake, "importedAvatarProbeInvalidAssets");
+                }
+                var fastImportedAvatarProbeError = ReadString(root, "importedAvatarProbeError");
+                if (isFastSummary && string.IsNullOrWhiteSpace(fastImportedAvatarProbeError))
+                {
+                    fastImportedAvatarProbeError = ReadString(bake, "importedAvatarProbeError");
+                }
                 return new LibraryDeterministicAnimationSummary(
                     true,
                     path,
@@ -291,22 +326,22 @@ namespace AnimeStudio.LibraryBrowser
                     ReadInt64(bake, "effectiveBakeReadyExplicitUnityBakeCandidates", "bakeReadyExplicitUnityBakeCandidates"),
                     ReadDouble(bake, "effectiveBakeReadyExplicitUnityBakeCoveragePercent", "bakeReadyExplicitUnityBakeCoveragePercent"),
                     isFastSummary
-                        ? ReadInt64(root, "importedAvatarAssetCount")
+                        ? fastImportedAvatarFileCount
                         : ReadInt64(importedAvatarReadiness, "fileCount"),
                     isFastSummary
-                        ? ReadInt64(root, "importedAvatarAssetCount")
+                        ? fastImportedAvatarTrustedFileCount
                         : ReadInt64(importedAvatarReadiness, "trustedFileCount"),
                     ReadInt64(bake, "importedAvatarAssetKeyCount") != 0
                         ? ReadInt64(bake, "importedAvatarAssetKeyCount")
                         : ReadInt64(importedAvatarReadiness, "keyCount"),
                     ReadInt64(bake, "uniqueImportedAvatarAssetBakeReadyExplicitUnityBakeCandidates", "importedAvatarAssetBakeReadyExplicitUnityBakeCandidates"),
                     isFastSummary ? ReadString(root, "importedAvatarProbeStatus") : ReadString(importedAvatarReadiness, "probeStatus"),
-                    isFastSummary ? ReadString(root, "importedAvatarProbeFreshness") : ReadString(importedAvatarReadiness, "probeFreshness"),
+                    isFastSummary ? fastImportedAvatarProbeFreshness : ReadString(importedAvatarReadiness, "probeFreshness"),
                     !isFastSummary && ReadBool(importedAvatarReadiness, "probeEnforced"),
-                    isFastSummary ? ReadInt64(root, "importedAvatarProbeTotalAssets") : ReadInt64(importedAvatarReadiness, "fileCount"),
-                    isFastSummary ? ReadInt64(root, "importedAvatarProbeValidHumanAvatars") : ReadInt64(importedAvatarReadiness, "probeValidHumanAvatars"),
-                    isFastSummary ? ReadInt64(root, "importedAvatarProbeInvalidAssets") : ReadInt64(importedAvatarReadiness, "probeInvalidAssets"),
-                    isFastSummary ? ReadString(root, "importedAvatarProbeError") : ReadString(importedAvatarReadiness, "probeError"),
+                    isFastSummary ? fastImportedAvatarProbeTotal : ReadInt64(importedAvatarReadiness, "fileCount"),
+                    isFastSummary ? fastImportedAvatarProbeValid : ReadInt64(importedAvatarReadiness, "probeValidHumanAvatars"),
+                    isFastSummary ? fastImportedAvatarProbeInvalid : ReadInt64(importedAvatarReadiness, "probeInvalidAssets"),
+                    isFastSummary ? fastImportedAvatarProbeError : ReadString(importedAvatarReadiness, "probeError"),
                     isFastSummary && ReadBool(root, "cacheSummaryPresent"),
                     isFastSummary ? ReadString(root, "cacheSummaryFreshness") : "",
                     isFastSummary ? ReadString(root, "cacheSummaryFreshnessNote") : "",

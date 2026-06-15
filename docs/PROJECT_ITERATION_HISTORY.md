@@ -328,6 +328,7 @@ Freedunk 验证过一批动画：
 - 这条 ImportedAvatar 路径已经用原神 NPCMale idle、Gorou 跑步/瞄准，以及后续多样本人工预览确认可作为阶段性主线。
 - 普通 Unity 项目仍优先使用原始 prefab / Animator.avatar / 完整 HumanDescription；原神这类缺可信 Avatar 的项目走 ImportedAvatar oracle。两条路径都必须来自 Unity 确定性数据，不能退回骨骼数量、名称或当前姿态猜测。
 - 旧索引里的 `productionUnityBakeReady` / `candidate_production_avatar` 不能单独当作可信 Avatar 证明。Browser 和 SQLite 摘要必须重新验证当前模型有完整 HumanDescription，或 request/settings 有显式导入的原始 Avatar asset；`AvatarConstant` / `internalSolver` 只能继续作为诊断和恢复线索。
+- 2026-06-15 用户人工验收新一批 ImportedAvatar bake 样本正常后，FastSummary 也修正为 Windows PowerShell 5.1 显式 UTF-8 读取 JSON，并在未传 `-UnityProject` 时沿用根目录 bake cache 中已经验证的 ImportedAvatar 统计，避免把“没有现场扫描 Unity 工程”误报成 Avatar asset 为 0 或 probe mismatch。
 - `AnimatorOverrideController` 也必须使用当前源索引里的 `animatorOverrideController.clipPair` 精确关系。旧源索引只有分离的 `originalClip` / `overrideClip` 时，不能再推断 pair 或继承/替换关系；应跳过这批候选并提示重建 `unity_source_index.db`。
 
 ### 动画语义匹配

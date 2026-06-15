@@ -42,7 +42,7 @@ if ([string]::IsNullOrWhiteSpace($SourceIndex)) {
     $sqliteSummary = Join-Path $LibraryPath "sqlite_index_summary.json"
     if (Test-Path -LiteralPath $sqliteSummary) {
         try {
-            $summaryText = Get-Content -LiteralPath $sqliteSummary -Raw
+            $summaryText = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8
             $summarySourceIndex = ""
             $match = [regex]::Match(
                 $summaryText,
@@ -122,6 +122,42 @@ function Try-Read-DateTimeOffset($Value) {
     }
 }
 
+function Read-Object-Value($Object, [string]$Name) {
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) {
+        return $null
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+
+    return $property.Value
+}
+
+function Read-Object-Long($Object, [string]$Name) {
+    $value = Read-Object-Value $Object $Name
+    if ($null -eq $value) {
+        return 0
+    }
+
+    try {
+        return [int64]$value
+    }
+    catch {
+        return 0
+    }
+}
+
+function Read-Object-String($Object, [string]$Name) {
+    $value = Read-Object-Value $Object $Name
+    if ($null -eq $value) {
+        return $null
+    }
+
+    return [string]$value
+}
+
 if ($FastSummary) {
     $libraryFullPath = if ($SelfTest) { $LibraryPath } else { (Resolve-Path -LiteralPath $LibraryPath).Path }
     $cacheSummaryPath = Join-Path $libraryFullPath "animation_bake_cache_summary.json"
@@ -132,7 +168,7 @@ if ($FastSummary) {
     $sqliteSummaryError = $null
     if (Test-Path -LiteralPath $cacheSummaryPath) {
         try {
-            $cacheSummary = Get-Content -LiteralPath $cacheSummaryPath -Raw | ConvertFrom-Json
+            $cacheSummary = Get-Content -LiteralPath $cacheSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
         }
         catch {
             $cacheSummaryError = Limit-Text $_.Exception.Message
@@ -140,7 +176,7 @@ if ($FastSummary) {
     }
     if (Test-Path -LiteralPath $sqliteSummaryPath) {
         try {
-            $sqliteSummary = Get-Content -LiteralPath $sqliteSummaryPath -Raw | ConvertFrom-Json
+            $sqliteSummary = Get-Content -LiteralPath $sqliteSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
         }
         catch {
             $sqliteSummaryError = Limit-Text $_.Exception.Message
@@ -178,7 +214,7 @@ if ($FastSummary) {
     if ($importedAvatarProbeCandidates.Count -gt 0) {
         $importedAvatarProbePath = $importedAvatarProbeCandidates[0].FullName
         try {
-            $importedAvatarProbe = Get-Content -LiteralPath $importedAvatarProbePath -Raw | ConvertFrom-Json
+            $importedAvatarProbe = Get-Content -LiteralPath $importedAvatarProbePath -Raw -Encoding UTF8 | ConvertFrom-Json
         }
         catch {
             $importedAvatarProbeError = Limit-Text $_.Exception.Message
@@ -201,6 +237,30 @@ if ($FastSummary) {
         else {
             $importedAvatarProbeFreshness = "fresh"
         }
+    }
+
+    $cacheImportedAvatarAssetCount = Read-Object-Long $cacheSummary "importedAvatarAssetFileCount"
+    $cacheImportedAvatarTrustedAssetCount = Read-Object-Long $cacheSummary "importedAvatarAssetTrustedFileCount"
+    $cacheImportedAvatarProbeFreshness = Read-Object-String $cacheSummary "importedAvatarProbeFreshness"
+    $cacheImportedAvatarProbeValid = Read-Object-Long $cacheSummary "importedAvatarProbeValidHumanAvatars"
+    $cacheImportedAvatarProbeInvalid = Read-Object-Long $cacheSummary "importedAvatarProbeInvalidAssets"
+    $cacheImportedAvatarProbeError = Read-Object-String $cacheSummary "importedAvatarProbeError"
+    $importedAvatarAssetCountSource = "unityProject"
+    $reportedImportedAvatarAssetCount = $importedAvatarFiles.Count
+    $reportedImportedAvatarTrustedAssetCount = $importedAvatarFiles.Count
+    $reportedImportedAvatarProbeFreshness = $importedAvatarProbeFreshness
+    $reportedImportedAvatarProbeValid = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
+    $reportedImportedAvatarProbeInvalid = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.invalidAssets } else { $null }
+    $reportedImportedAvatarProbeError = $importedAvatarProbeError
+    if ([string]::IsNullOrWhiteSpace($UnityProject) -and $cacheImportedAvatarAssetCount -gt 0) {
+        # FastSummary 不强制传 Unity 工程；这种情况下沿用根目录 cache 里已验证过的 Avatar asset 统计。
+        $importedAvatarAssetCountSource = "bakeCache"
+        $reportedImportedAvatarAssetCount = $cacheImportedAvatarAssetCount
+        $reportedImportedAvatarTrustedAssetCount = $cacheImportedAvatarTrustedAssetCount
+        $reportedImportedAvatarProbeFreshness = $cacheImportedAvatarProbeFreshness
+        $reportedImportedAvatarProbeValid = $cacheImportedAvatarProbeValid
+        $reportedImportedAvatarProbeInvalid = $cacheImportedAvatarProbeInvalid
+        $reportedImportedAvatarProbeError = $cacheImportedAvatarProbeError
     }
 
     $batchReportDir = Join-Path $libraryFullPath ".as_browser_cache\unity_bake_batch_reports"
@@ -255,16 +315,18 @@ if ($FastSummary) {
         sqliteSummaryCreatedUtc = if ($null -ne $sqliteSummary) { $sqliteSummary.createdUtc } else { $null }
         unityProject = $UnityProject
         importedAvatarRoot = $importedAvatarRoot
-        importedAvatarAssetCount = $importedAvatarFiles.Count
+        importedAvatarAssetCount = $reportedImportedAvatarAssetCount
+        importedAvatarTrustedAssetCount = $reportedImportedAvatarTrustedAssetCount
+        importedAvatarAssetCountSource = $importedAvatarAssetCountSource
         importedAvatarAssetSamples = @($importedAvatarFiles | Select-Object -First 12 -ExpandProperty FullName)
         importedAvatarLatestWriteUtc = $importedAvatarLatestWriteUtc
         importedAvatarProbeReportPath = $importedAvatarProbePath
-        importedAvatarProbeFreshness = $importedAvatarProbeFreshness
+        importedAvatarProbeFreshness = $reportedImportedAvatarProbeFreshness
         importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
-        importedAvatarProbeTotalAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.totalAssets } else { $null }
-        importedAvatarProbeValidHumanAvatars = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
-        importedAvatarProbeInvalidAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.invalidAssets } else { $null }
-        importedAvatarProbeError = $importedAvatarProbeError
+        importedAvatarProbeTotalAssets = $reportedImportedAvatarAssetCount
+        importedAvatarProbeValidHumanAvatars = $reportedImportedAvatarProbeValid
+        importedAvatarProbeInvalidAssets = $reportedImportedAvatarProbeInvalid
+        importedAvatarProbeError = $reportedImportedAvatarProbeError
         latestBatchReports = @($latestBatchReports)
         animationBakeCacheSummary = $cacheSummary
         sqliteIndexSummary = $sqliteSummary
@@ -285,15 +347,20 @@ if ($FastSummary) {
     if ($cacheSummaryFreshnessNote) {
         $md.Add(("- Cache summary note: {0}" -f $cacheSummaryFreshnessNote))
     }
-    $md.Add(("- Imported Avatar assets: {0}" -f $importedAvatarFiles.Count))
+    if ($importedAvatarAssetCountSource -eq "bakeCache") {
+        $md.Add(("- Imported Avatar assets: {0} (from bake cache; pass -UnityProject to rescan files)" -f $reportedImportedAvatarAssetCount))
+    }
+    else {
+        $md.Add(("- Imported Avatar assets: {0}" -f $reportedImportedAvatarAssetCount))
+    }
     if ($importedAvatarProbePath) {
         $md.Add(("- Imported Avatar probe: {0}" -f $importedAvatarProbePath))
         if ($importedAvatarProbeError) {
             $md.Add(("- Imported Avatar probe read error: {0}" -f $importedAvatarProbeError))
         }
         elseif ($null -ne $importedAvatarProbe) {
-            $md.Add(("- Imported Avatar probe status: {0}, valid human: {1}, invalid: {2}" -f $importedAvatarProbe.status, $importedAvatarProbe.validHumanAvatars, $importedAvatarProbe.invalidAssets))
-            $md.Add(("- Imported Avatar probe freshness: {0}" -f $importedAvatarProbeFreshness))
+            $md.Add(("- Imported Avatar probe status: {0}, valid human: {1}, invalid: {2}" -f $importedAvatarProbe.status, $reportedImportedAvatarProbeValid, $reportedImportedAvatarProbeInvalid))
+            $md.Add(("- Imported Avatar probe freshness: {0}" -f $reportedImportedAvatarProbeFreshness))
         }
     }
     if ($cacheSummaryPath -and (Test-Path -LiteralPath $cacheSummaryPath)) {
@@ -334,11 +401,11 @@ if ($FastSummary) {
         mode = "fastSummary"
         cacheSummaryPresent = ($null -ne $cacheSummary)
         cacheSummaryFreshness = $cacheSummaryFreshness
-        importedAvatarAssetCount = $importedAvatarFiles.Count
-        importedAvatarProbeFreshness = $importedAvatarProbeFreshness
+        importedAvatarAssetCount = $reportedImportedAvatarAssetCount
+        importedAvatarProbeFreshness = $reportedImportedAvatarProbeFreshness
         importedAvatarProbeStatus = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.status } else { $null }
-        importedAvatarProbeValidHumanAvatars = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.validHumanAvatars } else { $null }
-        importedAvatarProbeInvalidAssets = if ($null -ne $importedAvatarProbe) { $importedAvatarProbe.invalidAssets } else { $null }
+        importedAvatarProbeValidHumanAvatars = $reportedImportedAvatarProbeValid
+        importedAvatarProbeInvalidAssets = $reportedImportedAvatarProbeInvalid
         latestBatchReportCount = $latestBatchReports.Count
         json = $jsonPath
         markdown = $mdPath
