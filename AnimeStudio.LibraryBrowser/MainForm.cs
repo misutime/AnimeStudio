@@ -4540,6 +4540,17 @@ namespace AnimeStudio.LibraryBrowser
                 return;
             }
 
+            if (animation.NeedsAnimatorControllerContext)
+            {
+                MessageBox.Show(
+                    this,
+                    "这个 AnimationClip 只有 root motion、附件或叠加层数据，不能脱离 AnimatorController 单独烘焙成可信身体动画。请等待后续恢复 AnimatorController 状态机/Layer/BlendTree 后再生成预览。",
+                    "需要 AnimatorController 上下文",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
             if (NeedsAvatarHumanDescriptionRefresh(animation))
             {
                 MessageBox.Show(
