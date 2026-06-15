@@ -77,6 +77,11 @@ namespace AnimeStudio.CLI
             if (process.ExitCode == 0 && !string.Equals(blenderOutputFbx, originalOutputFbx, StringComparison.OrdinalIgnoreCase) && File.Exists(blenderOutputFbx))
             {
                 File.Copy(blenderOutputFbx, originalOutputFbx, true);
+                var stagedTextureDir = Path.Combine(Path.GetDirectoryName(blenderOutputFbx) ?? stagedOutputDir, "Textures");
+                if (Directory.Exists(stagedTextureDir))
+                {
+                    CopyDirectory(stagedTextureDir, Path.Combine(outputDir, "Textures"));
+                }
             }
 
             var ok = process.ExitCode == 0 && File.Exists(originalOutputFbx);
@@ -150,6 +155,7 @@ namespace AnimeStudio.CLI
             var gltfLiteral = JsonConvert.SerializeObject(Path.GetFullPath(inputGltf));
             var fbxLiteral = JsonConvert.SerializeObject(Path.GetFullPath(outputFbx));
             var reportLiteral = JsonConvert.SerializeObject(Path.GetFullPath(reportPath));
+            var textureDirLiteral = JsonConvert.SerializeObject(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outputFbx)) ?? Directory.GetCurrentDirectory(), "Textures"));
             var skeletonOnlyLiteral = skeletonOnly ? "True" : "False";
             var objectTypesLiteral = skeletonOnly
                 ? "{'ARMATURE', 'EMPTY'}"
@@ -158,11 +164,12 @@ namespace AnimeStudio.CLI
                 ? "obj.type in {'ARMATURE', 'EMPTY'}"
                 : "obj.type in {'ARMATURE', 'MESH', 'EMPTY'}";
             return $@"
-import bpy, json
+import bpy, json, os, shutil
 
 input_gltf = {gltfLiteral}
 output_fbx = {fbxLiteral}
 report_path = {reportLiteral}
+texture_sidecar_dir = {textureDirLiteral}
 skeleton_only = {skeletonOnlyLiteral}
 
 bpy.ops.object.select_all(action='SELECT')
@@ -185,6 +192,59 @@ for obj in scene.objects:
 
 selected_objects = [o for o in scene.objects if o.select_get()]
 
+copied_textures = []
+if not skeleton_only:
+    os.makedirs(texture_sidecar_dir, exist_ok=True)
+    seen_images = {{}}
+    for mat in bpy.data.materials:
+        if not mat.use_nodes or not mat.node_tree:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.type != 'TEX_IMAGE' or not node.image:
+                continue
+            image = node.image
+            if image.name in seen_images:
+                node.image = seen_images[image.name]
+                continue
+            safe_name = image.name
+            for invalid_char in '<>:""/\\\\|?*':
+                safe_name = safe_name.replace(invalid_char, '_')
+            if not os.path.splitext(safe_name)[1]:
+                safe_name += '.png'
+            target = os.path.join(texture_sidecar_dir, safe_name)
+            index = 1
+            base, ext = os.path.splitext(target)
+            while os.path.exists(target) and image.filepath and os.path.abspath(bpy.path.abspath(image.filepath)) != os.path.abspath(target):
+                target = f'{{base}}_{{index}}{{ext}}'
+                index += 1
+
+            source = bpy.path.abspath(image.filepath) if image.filepath else ''
+            if source and os.path.exists(source):
+                shutil.copy2(source, target)
+            else:
+                image.save_render(target)
+
+            image.filepath = target
+            image.filepath_raw = target
+            seen_images[image.name] = image
+            copied_textures.append(target)
+
+    for mat in bpy.data.materials:
+        if not mat.use_nodes or not mat.node_tree:
+            continue
+        image_node = None
+        principled_node = None
+        for node in mat.node_tree.nodes:
+            if node.type == 'TEX_IMAGE' and node.image and image_node is None:
+                image_node = node
+            elif node.type == 'BSDF_PRINCIPLED':
+                principled_node = node
+        if image_node and principled_node and 'Base Color' in principled_node.inputs:
+            base_color = principled_node.inputs['Base Color']
+            for link in list(base_color.links):
+                mat.node_tree.links.remove(link)
+            mat.node_tree.links.new(image_node.outputs['Color'], base_color)
+
 bpy.ops.export_scene.fbx(
     filepath=output_fbx,
     use_selection=True,
@@ -194,8 +254,8 @@ bpy.ops.export_scene.fbx(
     bake_anim_use_nla_strips=False,
     bake_anim_use_all_actions=True,
     add_leaf_bones=False,
-    path_mode='COPY',
-    embed_textures=True,
+    path_mode='RELATIVE',
+    embed_textures=False,
 )
 
 report = {{
@@ -210,6 +270,8 @@ report = {{
     'selectedArmatures': len([o for o in selected_objects if o.type == 'ARMATURE']),
     'selectedEmpties': len([o for o in selected_objects if o.type == 'EMPTY']),
     'skeletonOnly': skeleton_only,
+    'textureSidecarDir': None if skeleton_only else texture_sidecar_dir,
+    'copiedTextures': copied_textures,
     'actions': actions,
     'frameStart': scene.frame_start,
     'frameEnd': scene.frame_end,
