@@ -3629,6 +3629,11 @@ namespace AnimeStudio.LibraryBrowser
 
             var preview = _previewCache?.GetStatus(model, animation);
             var status = preview?.Status ?? "未生成";
+            if (animation.NeedsAnimatorControllerContext
+                && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
+            {
+                return "需 AnimatorController 上下文";
+            }
             if (NeedsAvatarHumanDescriptionRefresh(animation)
                 && string.Equals(status, "未生成", StringComparison.OrdinalIgnoreCase))
             {
@@ -3663,6 +3668,8 @@ namespace AnimeStudio.LibraryBrowser
                     && HasOriginalAvatarOracle(animation),
                 "需Avatar元数据" => !animation.IsUnreal
                     && NeedsAvatarHumanDescriptionRefresh(animation),
+                "需上下文" => !animation.IsUnreal
+                    && animation.NeedsAnimatorControllerContext,
                 "失败/需复查" => Contains(status, "失败")
                     || Contains(status, "需重建")
                     || Contains(status, "需复查")
@@ -4056,6 +4063,10 @@ namespace AnimeStudio.LibraryBrowser
                 {
                     return "需 Avatar 元数据";
                 }
+                if (animation.NeedsAnimatorControllerContext)
+                {
+                    return "需 AnimatorController 上下文";
+                }
                 if (RequiresUnityBake(animation))
                 {
                     return FormatUnityBakeCapability(animation);
@@ -4080,6 +4091,10 @@ namespace AnimeStudio.LibraryBrowser
             if (NeedsAvatarHumanDescriptionRefresh(animation))
             {
                 return "需 Avatar 元数据";
+            }
+            if (animation.NeedsAnimatorControllerContext)
+            {
+                return "需 AnimatorController 上下文";
             }
             if (RequiresUnityBake(animation))
             {
@@ -4188,6 +4203,11 @@ namespace AnimeStudio.LibraryBrowser
 
         private static bool RequiresUnityBake(LibraryAnimationCandidate animation)
         {
+            if (animation?.NeedsAnimatorControllerContext == true)
+            {
+                return false;
+            }
+
             return animation?.RequiresUnityBake == true
                 || animation?.RequiresInternalHumanoidSolve == true
                 || animation?.ProductionUnityBakeReady == true
@@ -4202,6 +4222,10 @@ namespace AnimeStudio.LibraryBrowser
         private static bool NeedsAvatarHumanDescriptionRefresh(LibraryAnimationCandidate animation)
         {
             if (animation == null || animation.ProductionUnityBakeReady)
+            {
+                return false;
+            }
+            if (animation.NeedsAnimatorControllerContext)
             {
                 return false;
             }

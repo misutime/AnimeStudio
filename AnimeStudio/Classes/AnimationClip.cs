@@ -716,7 +716,7 @@ namespace AnimeStudio
         }
     }
 
-    public class HandPose
+    public class HandPose : IYAMLExportable
     {
         public XForm m_GrabX;
         public float[] m_DoFArray;
@@ -749,9 +749,21 @@ namespace AnimeStudio
 
             return handPose;
         }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_GrabX), m_GrabX.ExportYAML(version));
+            node.Add(nameof(m_DoFArray), (m_DoFArray ?? Array.Empty<float>()).ExportYAML());
+            node.Add(nameof(m_Override), m_Override);
+            node.Add(nameof(m_CloseOpen), m_CloseOpen);
+            node.Add(nameof(m_InOut), m_InOut);
+            node.Add(nameof(m_Grab), m_Grab);
+            return node;
+        }
     }
 
-    public class HumanGoal
+    public class HumanGoal : IYAMLExportable
     {
         public XForm m_X;
         public float m_WeightT;
@@ -788,6 +800,17 @@ namespace AnimeStudio
             var m_HintWeightR = reader.ReadSingle();
 
             return humanGoal;
+        }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_X), m_X.ExportYAML(version));
+            node.Add(nameof(m_WeightT), m_WeightT);
+            node.Add(nameof(m_WeightR), m_WeightR);
+            node.Add(nameof(m_HintT), m_HintT.ExportYAML(version));
+            node.Add(nameof(m_HintWeightT), m_HintWeightT);
+            return node;
         }
     }
 
@@ -853,6 +876,23 @@ namespace AnimeStudio
             reader.Position += 4;
 
             return humanPose;
+        }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_RootX), m_RootX.ExportYAML(version));
+            node.Add(nameof(m_LookAtPosition), m_LookAtPosition.ExportYAML(version));
+            node.Add(nameof(m_LookAtWeight), m_LookAtWeight.ExportYAML(version));
+            node.Add(nameof(m_GoalArray), (m_GoalArray ?? new List<HumanGoal>()).ExportYAML(version));
+            node.Add(nameof(m_LeftHandPose), (m_LeftHandPose ?? new HandPose()).ExportYAML(version));
+            node.Add(nameof(m_RightHandPose), (m_RightHandPose ?? new HandPose()).ExportYAML(version));
+            node.Add(nameof(m_DoFArray), (m_DoFArray ?? Array.Empty<float>()).ExportYAML());
+            if (version[0] > 5 || (version[0] == 5 && version[1] >= 2))
+            {
+                node.Add(nameof(m_TDoFArray), (m_TDoFArray ?? Array.Empty<Vector3>()).ExportYAML(version));
+            }
+            return node;
         }
     }
 
@@ -1058,6 +1098,14 @@ namespace AnimeStudio
             return streamedClip;
         }
 
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(data), (data ?? Array.Empty<uint>()).ExportYAML(false));
+            node.Add(nameof(curveCount), curveCount);
+            return node;
+        }
+
         public class StreamedCurveKey
         {
             public int index;
@@ -1187,6 +1235,17 @@ namespace AnimeStudio
             reader.Position = pos;
 
             return denseClip;
+        }
+
+        public virtual YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_FrameCount), m_FrameCount);
+            node.Add(nameof(m_CurveCount), m_CurveCount);
+            node.Add(nameof(m_SampleRate), m_SampleRate);
+            node.Add(nameof(m_BeginTime), m_BeginTime);
+            node.Add(nameof(m_SampleArray), (m_SampleArray ?? Array.Empty<float>()).ExportYAML());
+            return node;
         }
     }
     public class ACLDenseClip : DenseClip
@@ -1337,9 +1396,16 @@ namespace AnimeStudio
 
             return constantClip;
         }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(data), (data ?? Array.Empty<float>()).ExportYAML());
+            return node;
+        }
     }
 
-    public class ValueConstant
+    public class ValueConstant : IYAMLExportable
     {
         public uint m_ID;
         public uint m_TypeID;
@@ -1357,11 +1423,29 @@ namespace AnimeStudio
             m_Type = reader.ReadUInt32();
             m_Index = reader.ReadUInt32();
         }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_ID), m_ID);
+            if (version[0] < 5 || (version[0] == 5 && version[1] < 5))
+            {
+                node.Add(nameof(m_TypeID), m_TypeID);
+            }
+            node.Add(nameof(m_Type), m_Type);
+            node.Add(nameof(m_Index), m_Index);
+            return node;
+        }
     }
 
     public class ValueArrayConstant
     {
         public List<ValueConstant> m_ValueArray;
+
+        public ValueArrayConstant()
+        {
+            m_ValueArray = new List<ValueConstant>();
+        }
 
         public ValueArrayConstant(ObjectReader reader)
         {
@@ -1371,6 +1455,13 @@ namespace AnimeStudio
             {
                 m_ValueArray.Add(new ValueConstant(reader));
             }
+        }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_ValueArray), (m_ValueArray ?? new List<ValueConstant>()).ExportYAML(version));
+            return node;
         }
     }
 
@@ -1446,6 +1537,24 @@ namespace AnimeStudio
             return clip;
         }
 
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_StreamedClip), (m_StreamedClip ?? new StreamedClip()).ExportYAML(version));
+            node.Add(nameof(m_DenseClip), (m_DenseClip ?? new DenseClip()).ExportYAML(version));
+            if (version[0] > 4 || (version[0] == 4 && version[1] >= 3))
+            {
+                node.Add(nameof(m_ConstantClip), (m_ConstantClip ?? new ConstantClip()).ExportYAML(version));
+            }
+            if (version[0] < 2018 || (version[0] == 2018 && version[1] < 3))
+            {
+                var bindingNode = new YAMLMappingNode();
+                bindingNode.Add("data", (m_Binding ?? new ValueArrayConstant()).ExportYAML(version));
+                node.Add(nameof(m_Binding), bindingNode);
+            }
+            return node;
+        }
+
         public AnimationClipBindingConstant ConvertValueArrayToGenericBinding()
         {
             var bindings = new AnimationClipBindingConstant();
@@ -1491,7 +1600,7 @@ namespace AnimeStudio
         }
     }
 
-    public class ValueDelta
+    public class ValueDelta : IYAMLExportable
     {
         public float m_Start;
         public float m_Stop;
@@ -1500,6 +1609,14 @@ namespace AnimeStudio
         {
             m_Start = reader.ReadSingle();
             m_Stop = reader.ReadSingle();
+        }
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(m_Start), m_Start);
+            node.Add(nameof(m_Stop), m_Stop);
+            return node;
         }
     }
 
@@ -1692,6 +1809,59 @@ namespace AnimeStudio
             return clipMuscleConstant;
         }
         public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.AddSerializedVersion(ToSerializedVersion(version));
+            if (m_DeltaPose != null)
+            {
+                node.Add(nameof(m_DeltaPose), m_DeltaPose.ExportYAML(version));
+            }
+            node.Add(nameof(m_StartX), m_StartX.ExportYAML(version));
+            if (version[0] > 5 || (version[0] == 5 && version[1] >= 5))
+            {
+                node.Add(nameof(m_StopX), m_StopX.ExportYAML(version));
+            }
+            node.Add(nameof(m_LeftFootStartX), m_LeftFootStartX.ExportYAML(version));
+            node.Add(nameof(m_RightFootStartX), m_RightFootStartX.ExportYAML(version));
+            if (version[0] < 5)
+            {
+                node.Add(nameof(m_MotionStartX), m_MotionStartX.ExportYAML(version));
+                node.Add(nameof(m_MotionStopX), m_MotionStopX.ExportYAML(version));
+            }
+            node.Add(nameof(m_AverageSpeed), m_AverageSpeed.ExportYAML(version));
+            var clipNode = new YAMLMappingNode();
+            clipNode.Add("data", (m_Clip ?? new Clip()).ExportYAML(version));
+            node.Add(nameof(m_Clip), clipNode);
+            node.Add(nameof(m_StartTime), m_StartTime);
+            node.Add(nameof(m_StopTime), m_StopTime);
+            node.Add(nameof(m_OrientationOffsetY), m_OrientationOffsetY);
+            node.Add(nameof(m_Level), m_Level);
+            node.Add(nameof(m_CycleOffset), m_CycleOffset);
+            node.Add(nameof(m_AverageAngularSpeed), m_AverageAngularSpeed);
+            node.Add(nameof(m_IndexArray), (m_IndexArray ?? Array.Empty<int>()).ExportYAML(false));
+            node.Add(nameof(m_ValueArrayDelta), (m_ValueArrayDelta ?? new List<ValueDelta>()).ExportYAML(version));
+            if (version[0] > 5 || (version[0] == 5 && version[1] >= 3))
+            {
+                node.Add(nameof(m_ValueArrayReferencePose), (m_ValueArrayReferencePose ?? Array.Empty<float>()).ExportYAML());
+            }
+            node.Add(nameof(m_Mirror), m_Mirror);
+            node.Add(nameof(m_LoopTime), m_LoopTime);
+            node.Add(nameof(m_LoopBlend), m_LoopBlend);
+            node.Add(nameof(m_LoopBlendOrientation), m_LoopBlendOrientation);
+            node.Add(nameof(m_LoopBlendPositionY), m_LoopBlendPositionY);
+            node.Add(nameof(m_LoopBlendPositionXZ), m_LoopBlendPositionXZ);
+            if (version[0] > 5 || (version[0] == 5 && version[1] >= 5))
+            {
+                node.Add(nameof(m_StartAtOrigin), m_StartAtOrigin);
+            }
+            node.Add(nameof(m_KeepOriginalOrientation), m_KeepOriginalOrientation);
+            node.Add(nameof(m_KeepOriginalPositionY), m_KeepOriginalPositionY);
+            node.Add(nameof(m_KeepOriginalPositionXZ), m_KeepOriginalPositionXZ);
+            node.Add(nameof(m_HeightFromFeet), m_HeightFromFeet);
+            return node;
+        }
+
+        public YAMLNode ExportClipSettingsYAML(int[] version)
         {
             var node = new YAMLMappingNode();
             node.AddSerializedVersion(ToSerializedVersion(version));

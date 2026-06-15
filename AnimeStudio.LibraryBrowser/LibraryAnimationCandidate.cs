@@ -61,10 +61,14 @@ namespace AnimeStudio.LibraryBrowser
         public bool IsMetadataOnly => string.Equals(ExportStatus, "metadata", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(Format, "json", System.StringComparison.OrdinalIgnoreCase)
             || BestPath.EndsWith(".metadata.json", System.StringComparison.OrdinalIgnoreCase);
-        public bool NeedsProductionAvatarRefresh => !ProductionUnityBakeReady && (ProductionUnityBakeBlocked
+        public bool NeedsProductionAvatarRefresh => !ProductionUnityBakeReady && !NeedsAnimatorControllerContext && (ProductionUnityBakeBlocked
             || string.Equals(NextAction, "refresh_avatar_human_description", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(ProductionUnityBakeBlockedReason, "missing_human_description_human_bones", System.StringComparison.OrdinalIgnoreCase)
             || string.Equals(ProductionUnityBakeBlockedReason, "avatar_constant_oracle_diagnostic_only", System.StringComparison.OrdinalIgnoreCase));
+        public bool NeedsAnimatorControllerContext =>
+            string.Equals(NextAction, "inspect_animator_controller_context", System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ProductionAnimationPath, "NeedsAnimatorControllerContext", System.StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ProductionUnityBakeBlockedReason, "requires_animator_controller_context", System.StringComparison.OrdinalIgnoreCase);
         public bool IsUsableCandidate => IsExplicit && !NeedsProductionAvatarRefresh &&
             (!IsUnreal ||
              ((string.IsNullOrWhiteSpace(ExportStatus) || string.Equals(ExportStatus, "ok", System.StringComparison.OrdinalIgnoreCase)) &&

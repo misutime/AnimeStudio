@@ -197,8 +197,13 @@ namespace AnimeStudio
             node.Add(nameof(clip.m_SampleRate), clip.m_SampleRate);
             node.Add(nameof(clip.m_WrapMode), clip.m_WrapMode);
             node.Add(nameof(clip.m_Bounds), clip.m_Bounds.ExportYAML(version));
+            if (version[0] >= 4)
+            {
+                node.Add(nameof(clip.m_MuscleClipSize), clip.m_MuscleClipSize);
+                node.Add(nameof(clip.m_MuscleClip), clip.m_MuscleClip != null ? clip.m_MuscleClip.ExportYAML(version) : new YAMLMappingNode());
+            }
             node.Add(nameof(clip.m_ClipBindingConstant), clip.m_ClipBindingConstant.ExportYAML(version));
-            node.Add("m_AnimationClipSettings", clip.m_MuscleClip != null ? clip.m_MuscleClip.ExportYAML(version) : new YAMLMappingNode());
+            node.Add("m_AnimationClipSettings", clip.m_MuscleClip != null ? clip.m_MuscleClip.ExportClipSettingsYAML(version) : new YAMLMappingNode());
             node.Add(nameof(clip.m_Events), clip.m_Events.ExportYAML(version));
             return node;
         }

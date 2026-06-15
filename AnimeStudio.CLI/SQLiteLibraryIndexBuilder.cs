@@ -804,17 +804,27 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
         private static JObject BuildExplicitSourceCandidateJson(JObject model, JObject animation, SourceAnimationRelation relation)
         {
             var animationRequiresHumanoidSolve = RequiresHumanoidBake(animation);
+            var standaloneBodyBakeReady = IsStandaloneBodyBakeReady(animation);
+            var requiresAnimatorControllerContext = animationRequiresHumanoidSolve && !standaloneBodyBakeReady;
             var hasDirectTransformPreview = HasDirectTransformPreview(animation);
             var modelHasInternalHumanoidSolver = HasCompleteInternalHumanoidSolver(model);
             var modelHasProductionUnityBakeAvatar = HasProductionUnityBakeAvatar(model);
-            var requiresInternalHumanoidSolve = animationRequiresHumanoidSolve && modelHasInternalHumanoidSolver;
-            var fullHumanoidBakeBlocked = animationRequiresHumanoidSolve && !modelHasProductionUnityBakeAvatar;
-            var canRequestUnityBake = animationRequiresHumanoidSolve && modelHasProductionUnityBakeAvatar;
-            var missingInternalHumanoidSolver = animationRequiresHumanoidSolve && !modelHasInternalHumanoidSolver && !hasDirectTransformPreview;
-            var missingProductionAvatar = animationRequiresHumanoidSolve && !modelHasProductionUnityBakeAvatar;
-            var nextAction = missingInternalHumanoidSolver
+            var standaloneHumanoidBakeRequired = animationRequiresHumanoidSolve && standaloneBodyBakeReady;
+            var requiresInternalHumanoidSolve = standaloneHumanoidBakeRequired && modelHasInternalHumanoidSolver;
+            var fullHumanoidBakeBlocked = standaloneHumanoidBakeRequired && !modelHasProductionUnityBakeAvatar;
+            var canRequestUnityBake = standaloneHumanoidBakeRequired && modelHasProductionUnityBakeAvatar;
+            var missingInternalHumanoidSolver = standaloneHumanoidBakeRequired && !modelHasInternalHumanoidSolver && !hasDirectTransformPreview;
+            var missingProductionAvatar = standaloneHumanoidBakeRequired && !modelHasProductionUnityBakeAvatar;
+            var productionBlockedReason = requiresAnimatorControllerContext
+                ? "requires_animator_controller_context"
+                : missingProductionAvatar
+                    ? GetProductionUnityBakeAvatarMissingReason(model)
+                    : null;
+            var nextAction = requiresAnimatorControllerContext
+                ? "inspect_animator_controller_context"
+                : missingInternalHumanoidSolver
                 ? "inspect_missing_humanoid_avatar"
-                : animationRequiresHumanoidSolve
+                : standaloneHumanoidBakeRequired
                     ? modelHasProductionUnityBakeAvatar
                         ? "generate_unity_baked_gltf"
                         : "refresh_avatar_human_description"
@@ -829,13 +839,13 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 ["confidence"] = "explicit_unity_source_index",
                 ["legacyUnityBakeSupported"] = canRequestUnityBake,
                 ["requiresUnityBake"] = canRequestUnityBake,
-                ["fullHumanoidBakeRequired"] = animationRequiresHumanoidSolve,
+                ["fullHumanoidBakeRequired"] = standaloneHumanoidBakeRequired,
                 ["productionUnityBakeReady"] = canRequestUnityBake,
-                ["productionUnityBakeBlocked"] = missingProductionAvatar,
-                ["productionUnityBakeBlockedReason"] = missingProductionAvatar
-                    ? GetProductionUnityBakeAvatarMissingReason(model)
-                    : null,
-                ["productionAnimationPath"] = animationRequiresHumanoidSolve
+                ["productionUnityBakeBlocked"] = requiresAnimatorControllerContext || missingProductionAvatar,
+                ["productionUnityBakeBlockedReason"] = productionBlockedReason,
+                ["productionAnimationPath"] = requiresAnimatorControllerContext
+                    ? "NeedsAnimatorControllerContext"
+                    : standaloneHumanoidBakeRequired
                     ? modelHasProductionUnityBakeAvatar
                         ? "UnityBakeToGltf"
                         : "NeedsUnityAvatarMetadata"
@@ -845,17 +855,36 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 ["missingInternalHumanoidSolverReason"] = missingInternalHumanoidSolver
                     ? GetInternalHumanoidSolverMissingReason(model)
                     : null,
-                ["fullHumanoidBakeBlocked"] = fullHumanoidBakeBlocked,
-                ["fullHumanoidBakeBlockedReason"] = fullHumanoidBakeBlocked
-                    ? GetProductionUnityBakeAvatarMissingReason(model)
-                    : null,
-                ["partialDirectGltf"] = animationRequiresHumanoidSolve && hasDirectTransformPreview && !modelHasInternalHumanoidSolver,
-                ["partialDirectGltfReason"] = animationRequiresHumanoidSolve && hasDirectTransformPreview && !modelHasInternalHumanoidSolver
+                ["fullHumanoidBakeBlocked"] = requiresAnimatorControllerContext || fullHumanoidBakeBlocked,
+                ["fullHumanoidBakeBlockedReason"] = requiresAnimatorControllerContext
+                    ? "requires_animator_controller_context"
+                    : fullHumanoidBakeBlocked
+                        ? GetProductionUnityBakeAvatarMissingReason(model)
+                        : null,
+                ["standaloneBodyBakeReady"] = standaloneBodyBakeReady,
+                ["standaloneBodyBakeStatus"] = S(animation, "standaloneBodyBakeStatus"),
+                ["standaloneBodyBakeReason"] = S(animation, "standaloneBodyBakeReason"),
+                ["partialDirectGltf"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver,
+                ["partialDirectGltfReason"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver
                     ? "Animation has deterministic Transform TRS curves, but full Humanoid/Muscle bake is blocked by missing Avatar HumanBone mapping or reference pose."
                     : null,
                 ["nextAction"] = nextAction,
                 ["matchReason"] = relation.Reason,
             };
+        }
+
+        private static bool IsStandaloneBodyBakeReady(JObject animation)
+        {
+            var token = animation?["standaloneBodyBakeReady"];
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                // 旧库没有这个字段时保持兼容；重新导出/重建索引后才启用严格门禁。
+                return true;
+            }
+
+            return token.Type == JTokenType.Boolean
+                ? token.Value<bool>()
+                : bool.TryParse(token.ToString(), out var value) && value;
         }
 
         private static bool HasDirectTransformPreview(JObject animation)

@@ -120,6 +120,12 @@ namespace AnimeStudio.CLI
                 importedAvatarAssets);
             if (selection == null)
             {
+                var blockedMessage = TryDescribeBlockedExplicitCandidate(dbPath, modelSelector, animationSelector);
+                if (!string.IsNullOrWhiteSpace(blockedMessage))
+                {
+                    Logger.Error(blockedMessage);
+                    return;
+                }
                 Logger.Error("No explicit model-animation candidate matched the SQLite Unity bake request selectors.");
                 return;
             }
@@ -613,6 +619,14 @@ namespace AnimeStudio.CLI
             }
 
             var requiresHumanoidBake = (bool?)animation?["requiresHumanoidBake"] ?? false;
+            if (requiresHumanoidBake && IsStandaloneBodyBakeBlocked(animation, out var standaloneBlockReason))
+            {
+                Logger.Error(
+                    "Selected Humanoid animation is an explicit Unity relation, but it is not a standalone body animation. " +
+                    standaloneBlockReason + " Restore/sample the AnimatorController layer/blend context before baking this clip."
+                );
+                return null;
+            }
             var avatar = PrepareAvatarForUnityBake(model?["avatar"] as JObject, requiresHumanoidBake, unityModelPrefab, unityAvatarAsset);
             var humanBones = avatar?["humanBones"]?.Values<string>()?
                 .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -1098,6 +1112,60 @@ namespace AnimeStudio.CLI
             return string.Equals((string)animation?["relationSource"], "explicit", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsStandaloneBodyBakeBlocked(JObject animation, out string reason)
+        {
+            reason = null;
+            var candidate = animation?["candidate"] as JObject;
+            if (IsFalse(animation?["standaloneBodyBakeReady"]) || IsFalse(candidate?["standaloneBodyBakeReady"]))
+            {
+                reason = (string)animation?["standaloneBodyBakeReason"]
+                    ?? (string)candidate?["standaloneBodyBakeReason"]
+                    ?? (string)candidate?["productionUnityBakeBlockedReason"]
+                    ?? "AnimationClip requires AnimatorController context.";
+                return true;
+            }
+
+            var animationAsset = (string)animation?["animationAsset"];
+            if (string.IsNullOrWhiteSpace(animationAsset) || !File.Exists(animationAsset))
+            {
+                return false;
+            }
+
+            try
+            {
+                var sidecar = JObject.Parse(File.ReadAllText(animationAsset));
+                if (IsFalse(sidecar["standaloneBodyBakeReady"]))
+                {
+                    reason = (string)sidecar["standaloneBodyBakeReason"]
+                        ?? "AnimationClip sidecar marks it as requiring AnimatorController context.";
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        private static bool IsFalse(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return false;
+            }
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>() == false;
+            }
+            if (token.Type == JTokenType.Integer)
+            {
+                return token.Value<int>() == 0;
+            }
+            return bool.TryParse(token.ToString(), out var value) && value == false;
+        }
+
         private static PreviewSelection SelectExplicitCandidateFromLibraryDb(
             string dbPath,
             string modelSelector,
@@ -1113,6 +1181,47 @@ namespace AnimeStudio.CLI
                     allowSuppliedAvatarAsset: allowSuppliedAvatarAsset,
                     importedAvatarAssets: importedAvatarAssets)
                 .FirstOrDefault();
+        }
+
+        private static string TryDescribeBlockedExplicitCandidate(string dbPath, string modelSelector, string animationSelector)
+        {
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT m.name, a.name, json_extract(c.raw_json, '$.productionUnityBakeBlockedReason')
+FROM model_animation_candidates c
+JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
+WHERE c.relation_source='explicit'
+  AND json_extract(c.raw_json, '$.productionAnimationPath')='NeedsAnimatorControllerContext'
+  AND ($model='' OR m.name LIKE $model OR m.output LIKE $model)
+  AND ($animation='' OR a.name LIKE $animation OR a.output LIKE $animation)
+LIMIT 1;";
+                command.Parameters.AddWithValue("$model", string.IsNullOrWhiteSpace(modelSelector) ? "" : "%" + EscapeLike(modelSelector) + "%");
+                command.Parameters.AddWithValue("$animation", string.IsNullOrWhiteSpace(animationSelector) ? "" : "%" + EscapeLike(animationSelector) + "%");
+                using var reader = command.ExecuteReader();
+                if (!reader.Read())
+                {
+                    return null;
+                }
+
+                var model = reader.IsDBNull(0) ? "(unknown model)" : reader.GetString(0);
+                var animation = reader.IsDBNull(1) ? "(unknown animation)" : reader.GetString(1);
+                var reason = reader.IsDBNull(2) ? "requires_animator_controller_context" : reader.GetString(2);
+                return $"Selected explicit Unity candidate is blocked before bake: {model} + {animation} requires AnimatorController context. Reason: {reason}. Baking this single AnimationClip would produce a misleading root/accessory/static pose result.";
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string EscapeLike(string value)
+        {
+            return value ?? string.Empty;
         }
 
         private static IEnumerable<PreviewSelection> SelectExplicitBakeCandidatesFromLibraryDb(

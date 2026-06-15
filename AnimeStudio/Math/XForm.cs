@@ -67,5 +67,14 @@ namespace AnimeStudio
         }
 
         public static XForm Zero => new XForm(Vector3.Zero, Quaternion.Zero, Vector3.One);
+
+        public YAMLNode ExportYAML(int[] version)
+        {
+            var node = new YAMLMappingNode();
+            node.Add(nameof(t), t.ExportYAML(version));
+            node.Add(nameof(q), q.ExportYAML(version));
+            node.Add(nameof(s), s.ExportYAML(version));
+            return node;
+        }
     }
 }

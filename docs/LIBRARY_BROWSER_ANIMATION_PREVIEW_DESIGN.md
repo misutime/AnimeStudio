@@ -29,6 +29,8 @@ Library Browser 的目标是快速浏览 AnimeStudio 导出的可用素材库：
 
 显式关系只证明“Unity 状态机引用过这个 clip”，不自动证明“这个 clip 可以脱离状态机单独播放”。如果 `AnimationClip` 只包含 root motion、附件、头发、衣摆、表情、上层叠加姿态，或者导入 Unity 后 `clip.isHumanMotion=false`，Browser 不能把它烘焙成可播放 glTF。此时应显示失败或“需 AnimatorController 上下文”，并保留报告给用户判断；真正修复方向是恢复 AnimatorController 的 state/layer/blend tree/override 组合后整体采样。
 
+判定主体骨骼 Transform binding 时只能看绑定路径的最后一级节点。附件曲线经常挂在 `Pelvis/Spine/Head/Thigh` 等人体骨骼下面，例如 hair、ear、eye、tooth、bag、cloth、breast 等；不能因为上层路径包含主体骨骼名，就把它算作完整身体驱动。若 Humanoid binding 只有 `MotionT.*` / `MotionQ.*` 这类 root motion，且没有真正主体骨骼 Transform binding，应标为 `requires_animator_controller_context`，禁止生成独立 Unity bake 预览。
+
 ### 第二层：选中模型后的定向匹配
 
 对没有显式关系的模型，Browser 在用户选中模型后才做定向匹配：

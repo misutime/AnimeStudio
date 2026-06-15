@@ -3396,6 +3396,10 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 legacy = clip.m_Legacy,
                 wrapMode = clip.m_WrapMode,
                 animationType = animationInfo.animationType,
+                hasMuscleClip = animationInfo.hasMuscleClip,
+                standaloneBodyBakeReady = animationInfo.standaloneBodyBakeReady,
+                standaloneBodyBakeStatus = animationInfo.standaloneBodyBakeStatus,
+                standaloneBodyBakeReason = animationInfo.standaloneBodyBakeReason,
                 classificationNotes = animationInfo.classificationNotes,
                 bindingSummary = new
                 {
@@ -4057,6 +4061,9 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 legacy = item.Asset is AnimationClip legacyClip ? legacyClip.m_Legacy : (bool?)null,
                 animationType = animationInfo?.animationType,
                 hasMuscleClip = animationInfo?.hasMuscleClip,
+                standaloneBodyBakeReady = animationInfo?.standaloneBodyBakeReady,
+                standaloneBodyBakeStatus = animationInfo?.standaloneBodyBakeStatus,
+                standaloneBodyBakeReason = animationInfo?.standaloneBodyBakeReason,
                 transformBindingCount = animationInfo?.transformBindingCount,
                 coreTransformBindingCount = animationInfo?.coreTransformBindingCount,
                 humanoidBindingCount = animationInfo?.humanoidBindingCount,
@@ -4108,6 +4115,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             var blendShapeBindingCount = bindings.Count(x => x.typeID == ClassIDType.SkinnedMeshRenderer)
                 + (clip.m_FloatCurves?.Count(x => x.classID == ClassIDType.SkinnedMeshRenderer) ?? 0);
             var humanoidBindingCount = bindings.Count(x => x.typeID == ClassIDType.Animator);
+            var rootMotionHumanoidBindingCount = bindings.Count(IsRootMotionHumanoidBinding);
             var unknownBindingCount = bindings.Count(x => x.typeID != ClassIDType.Transform && x.typeID != ClassIDType.SkinnedMeshRenderer && x.typeID != ClassIDType.Animator);
             var hasMuscleClip = clip.m_MuscleClip != null;
             var notes = new List<string>();
@@ -4161,9 +4169,22 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 animationType = "UnknownAnimation";
             }
 
+            var standalone = ClassifyStandaloneBodyBakeReadiness(
+                hasMuscleClip,
+                humanoidBindingCount,
+                rootMotionHumanoidBindingCount,
+                coreTransformCount);
+            if (!standalone.ready && (hasMuscleClip || humanoidBindingCount > 0))
+            {
+                notes.Add(standalone.reason);
+            }
+
             return new AnimationClipInfo(
                 animationType,
                 hasMuscleClip,
+                standalone.ready,
+                standalone.status,
+                standalone.reason,
                 transformBindingCount,
                 coreTransformCount,
                 humanoidBindingCount,
@@ -4177,6 +4198,53 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 transformPaths.Take(64).ToArray(),
                 notes.ToArray()
             );
+        }
+
+        private static (bool ready, string status, string reason) ClassifyStandaloneBodyBakeReadiness(
+            bool hasMuscleClip,
+            int humanoidBindingCount,
+            int rootMotionHumanoidBindingCount,
+            int coreTransformBindingCount)
+        {
+            if (!hasMuscleClip && humanoidBindingCount == 0)
+            {
+                return (true, "not_humanoid_body_bake", null);
+            }
+
+            if (coreTransformBindingCount >= 3)
+            {
+                return (true, "standalone_body_transform_bindings", null);
+            }
+
+            if (humanoidBindingCount > rootMotionHumanoidBindingCount)
+            {
+                return (true, "standalone_humanoid_muscle_bindings", null);
+            }
+
+            // 这类 clip 仍然是 Unity 显式引用，但它自己只携带 root motion
+            // 或附件曲线。强行当完整身体动作 bake 会生成入地、静态或语义错误的 glTF。
+            return (
+                false,
+                "requires_animator_controller_context",
+                "AnimationClip only exposes root-motion Humanoid bindings or auxiliary Transform bindings; sample it through AnimatorController/layer/blend context before treating it as a standalone body animation.");
+        }
+
+        private static bool IsRootMotionHumanoidBinding(GenericBinding binding)
+        {
+            if (binding == null || binding.typeID != ClassIDType.Animator)
+            {
+                return false;
+            }
+            try
+            {
+                var attribute = binding.GetHumanoidMuscle().ToAttributeString();
+                return attribute.StartsWith("MotionT.", StringComparison.OrdinalIgnoreCase)
+                    || attribute.StartsWith("MotionQ.", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return binding.attribute >= 0 && binding.attribute <= 6;
+            }
         }
 
         private static bool IsBlendShapeBinding(GenericBinding binding)
@@ -4239,8 +4307,12 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
 
         internal static bool IsCoreAnimationPath(string path)
         {
-            var text = NormalizeAnimationPath(path);
+            var text = NormalizeAnimationPathLeaf(path);
             if (IsAuxiliaryAnimationPath(path) || IsTwistOrHelperAnimationPath(path))
+            {
+                return false;
+            }
+            if (IsAttachmentAnimationPath(path))
             {
                 return false;
             }
@@ -4260,14 +4332,37 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
 
         private static bool IsAuxiliaryAnimationPath(string path)
         {
-            var text = NormalizeAnimationPath(path);
+            var text = NormalizeAnimationPathLeaf(path);
             return text.Contains("point") || text.Contains("socket") || text.Contains("attach");
         }
 
         private static bool IsTwistOrHelperAnimationPath(string path)
         {
-            var text = NormalizeAnimationPath(path);
+            var text = NormalizeAnimationPathLeaf(path);
             return text.Contains("twist") || text.Contains("helper");
+        }
+
+        private static bool IsAttachmentAnimationPath(string path)
+        {
+            var text = NormalizeAnimationPathLeaf(path);
+            return text.Contains("hair")
+                || text.Contains("ear")
+                || text.Contains("eye")
+                || text.Contains("tooth")
+                || text.Contains("breast")
+                || text.Contains("bag")
+                || text.Contains("cloth")
+                || text.Contains("skirt")
+                || text.Contains("cape")
+                || text.Contains("tail")
+                || text.Contains("ribbon")
+                || text.Contains("weapon")
+                || text.Contains("bow")
+                || text.Contains("arrow")
+                || text.Contains("sleeve")
+                || text.Contains("dress")
+                || text.Contains("ornament")
+                || text.Contains("accessory");
         }
 
         internal static string NormalizeAnimationPath(string path)
@@ -4275,9 +4370,21 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             return Regex.Replace((path ?? string.Empty).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
         }
 
+        private static string NormalizeAnimationPathLeaf(string path)
+        {
+            var leaf = (path ?? string.Empty)
+                .Replace('\\', '/')
+                .Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries)
+                .LastOrDefault() ?? string.Empty;
+            return NormalizeAnimationPath(leaf);
+        }
+
         private sealed record AnimationClipInfo(
             string animationType,
             bool hasMuscleClip,
+            bool standaloneBodyBakeReady,
+            string standaloneBodyBakeStatus,
+            string standaloneBodyBakeReason,
             int transformBindingCount,
             int coreTransformBindingCount,
             int humanoidBindingCount,
