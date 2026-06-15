@@ -64,12 +64,16 @@ namespace AnimeStudio.CLI
             Logger.Info($"Avatar asset recovery selected {requests.Count} unique Avatar object(s).");
             if (requests.Count == 0)
             {
+                var existingProbePath = runProbe ? TryRunUnityProbe(libraryPath, unityProject, unityEditor, reportDir) : null;
+                var refreshedCandidates = RefreshLibraryIndexImportedAvatarBakeReadiness(dbPath, libraryPath, unityProject, existingProbePath);
                 var emptyReport = new JObject
                 {
                     ["status"] = "nothing_to_recover",
                     ["libraryRoot"] = libraryPath,
                     ["unityProject"] = Path.GetFullPath(unityProject),
                     ["createdUtc"] = started.ToString("O", CultureInfo.InvariantCulture),
+                    ["probeReport"] = existingProbePath ?? string.Empty,
+                    ["refreshedCandidateRows"] = refreshedCandidates,
                 };
                 File.WriteAllText(reportPath, emptyReport.ToString(Formatting.Indented));
                 return reportPath;
@@ -150,6 +154,7 @@ namespace AnimeStudio.CLI
                 probeValidNames = LoadProbeValidAvatarNames(probePath);
             }
             UpdateLocalBrowserSettings(libraryPath, unityProject, unityEditor, results, probeValidNames);
+            var refreshedCandidateRows = RefreshLibraryIndexImportedAvatarBakeReadiness(dbPath, libraryPath, unityProject, probePath);
 
             var recovered = results.Count(x => string.Equals((string)x["status"], "recovered", StringComparison.OrdinalIgnoreCase));
             var trusted = probeValidNames == null
@@ -171,6 +176,7 @@ namespace AnimeStudio.CLI
                 ["quarantinedInvalidAvatarObjects"] = quarantined,
                 ["failedAvatarObjects"] = requests.Count - recovered,
                 ["probeReport"] = probePath ?? string.Empty,
+                ["refreshedCandidateRows"] = refreshedCandidateRows,
                 ["rule"] = "从 library_index.db 的 Unity avatar source/pathId 精确恢复原始 UnityEngine.Avatar asset；不使用骨骼数量、名称或姿态推断动画关系。",
                 ["results"] = results,
             };
@@ -227,6 +233,12 @@ WHERE kind LIKE 'Model%'
 
                 var targetAsset = Path.Combine(importedRoot, Exporter.FixFileName(avatarName) + ".asset");
                 if (!force && File.Exists(targetAsset))
+                {
+                    continue;
+                }
+
+                var invalidAsset = Path.Combine(Path.GetDirectoryName(importedRoot) ?? importedRoot, "InvalidImportedAvatar", Exporter.FixFileName(avatarName) + ".asset");
+                if (!force && File.Exists(invalidAsset))
                 {
                     continue;
                 }
@@ -333,6 +345,272 @@ WHERE kind LIKE 'Model%'
             settings["unityAvatarAssets"] = map;
             File.WriteAllText(settingsPath, settings.ToString(Formatting.Indented));
             Logger.Info($"Updated local Browser Unity bake settings: {settingsPath}");
+        }
+
+        private static int RefreshLibraryIndexImportedAvatarBakeReadiness(
+            string dbPath,
+            string libraryPath,
+            string unityProject,
+            string probePath)
+        {
+            var importedAvatars = LoadFreshImportedAvatarAssetMap(libraryPath, unityProject, probePath);
+            if (importedAvatars.Count == 0)
+            {
+                Logger.Info("No fresh Unity-validated ImportedAvatar assets found for SQLite candidate refresh.");
+                return 0;
+            }
+
+            var rows = new List<CandidateAvatarRefreshRow>();
+            using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+            {
+                connection.Open();
+                using (var transaction = connection.BeginTransaction())
+                {
+                    using (var create = connection.CreateCommand())
+                    {
+                        create.Transaction = transaction;
+                        create.CommandText = "CREATE TEMP TABLE temp_valid_imported_avatar(key TEXT PRIMARY KEY, asset TEXT NOT NULL);";
+                        create.ExecuteNonQuery();
+                    }
+
+                    using (var insert = connection.CreateCommand())
+                    {
+                        insert.Transaction = transaction;
+                        insert.CommandText = "INSERT OR IGNORE INTO temp_valid_imported_avatar(key, asset) VALUES ($key, $asset);";
+                        var keyParameter = insert.CreateParameter();
+                        keyParameter.ParameterName = "$key";
+                        insert.Parameters.Add(keyParameter);
+                        var assetParameter = insert.CreateParameter();
+                        assetParameter.ParameterName = "$asset";
+                        insert.Parameters.Add(assetParameter);
+                        foreach (var pair in importedAvatars)
+                        {
+                            keyParameter.Value = pair.Key;
+                            assetParameter.Value = pair.Value;
+                            insert.ExecuteNonQuery();
+                        }
+                    }
+
+                    using (var select = connection.CreateCommand())
+                    {
+                        select.Transaction = transaction;
+                        select.CommandText = @"
+SELECT c.id, c.raw_json, va.asset, va.key
+FROM model_animation_candidates c
+JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+JOIN temp_valid_imported_avatar va
+  ON va.key=COALESCE(json_extract(m.raw_json, '$.avatar.name'), '')
+  OR va.key=COALESCE(m.name, '')
+WHERE c.relation_source='explicit'
+  AND (
+    COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.legacyUnityBakeSupported'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.productionUnityBakeReady'), 0)=1
+  );";
+                        using var reader = select.ExecuteReader();
+                        var seenIds = new HashSet<long>();
+                        while (reader.Read())
+                        {
+                            var id = reader.GetInt64(0);
+                            if (!seenIds.Add(id))
+                            {
+                                continue;
+                            }
+
+                            rows.Add(new CandidateAvatarRefreshRow(
+                                id,
+                                reader.IsDBNull(1) ? "{}" : reader.GetString(1),
+                                reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                                reader.IsDBNull(3) ? string.Empty : reader.GetString(3)));
+                        }
+                    }
+
+                    using (var update = connection.CreateCommand())
+                    {
+                        update.Transaction = transaction;
+                        update.CommandText = "UPDATE model_animation_candidates SET raw_json=$raw WHERE id=$id;";
+                        var rawParameter = update.CreateParameter();
+                        rawParameter.ParameterName = "$raw";
+                        update.Parameters.Add(rawParameter);
+                        var idParameter = update.CreateParameter();
+                        idParameter.ParameterName = "$id";
+                        update.Parameters.Add(idParameter);
+
+                        var changed = 0;
+                        foreach (var row in rows)
+                        {
+                            var refreshed = RefreshCandidateJsonForImportedAvatar(row.RawJson, row.AssetPath, row.MatchKey);
+                            if (string.Equals(refreshed, row.RawJson, StringComparison.Ordinal))
+                            {
+                                continue;
+                            }
+
+                            rawParameter.Value = refreshed;
+                            idParameter.Value = row.Id;
+                            update.ExecuteNonQuery();
+                            changed++;
+                        }
+
+                        transaction.Commit();
+                        Logger.Info($"Refreshed {changed} model-animation candidate row(s) with Unity-validated ImportedAvatar readiness.");
+                        return changed;
+                    }
+                }
+            }
+        }
+
+        private static Dictionary<string, string> LoadFreshImportedAvatarAssetMap(
+            string libraryPath,
+            string unityProject,
+            string probePath)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(libraryPath) || string.IsNullOrWhiteSpace(unityProject))
+            {
+                return result;
+            }
+
+            var importedRoot = Path.Combine(Path.GetFullPath(unityProject), ImportedAvatarFolder.Replace('/', Path.DirectorySeparatorChar));
+            if (!Directory.Exists(importedRoot))
+            {
+                return result;
+            }
+
+            var assetFiles = Directory.EnumerateFiles(importedRoot, "*.asset", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .ToArray();
+            if (assetFiles.Length == 0)
+            {
+                return result;
+            }
+
+            var reportFile = ResolveProbeReportFile(libraryPath, probePath);
+            if (reportFile == null || !reportFile.Exists)
+            {
+                return result;
+            }
+
+            var newestAssetTime = assetFiles.Max(file => file.LastWriteTimeUtc);
+            if (reportFile.LastWriteTimeUtc < newestAssetTime)
+            {
+                return result;
+            }
+
+            try
+            {
+                var root = JObject.Parse(File.ReadAllText(reportFile.FullName));
+                if ((int?)root["totalAssets"] != assetFiles.Length)
+                {
+                    return result;
+                }
+
+                foreach (var item in (root["items"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    if (!string.Equals((string)item["status"], "ok", StringComparison.OrdinalIgnoreCase)
+                        || (bool?)item["isValid"] != true
+                        || (bool?)item["isHuman"] != true)
+                    {
+                        continue;
+                    }
+
+                    var avatarAssetPath = ((string)item["avatarAssetPath"])?.Replace('\\', '/');
+                    if (string.IsNullOrWhiteSpace(avatarAssetPath))
+                    {
+                        continue;
+                    }
+
+                    var fullPath = Path.Combine(Path.GetFullPath(unityProject), avatarAssetPath.Replace('/', Path.DirectorySeparatorChar));
+                    if (!File.Exists(fullPath))
+                    {
+                        continue;
+                    }
+
+                    var name = Path.GetFileNameWithoutExtension(avatarAssetPath);
+                    AddImportedAvatarAssetMapKey(result, name, avatarAssetPath);
+                }
+            }
+            catch
+            {
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            return result;
+        }
+
+        private static FileInfo ResolveProbeReportFile(string libraryPath, string probePath)
+        {
+            if (!string.IsNullOrWhiteSpace(probePath))
+            {
+                var explicitReport = Path.Combine(probePath, "imported_avatar_probe_batch.json");
+                if (File.Exists(explicitReport))
+                {
+                    return new FileInfo(explicitReport);
+                }
+            }
+
+            try
+            {
+                return Directory.EnumerateDirectories(libraryPath, "ImportedAvatarProbe*", SearchOption.TopDirectoryOnly)
+                    .Select(dir => Path.Combine(dir, "imported_avatar_probe_batch.json"))
+                    .Where(File.Exists)
+                    .Select(path => new FileInfo(path))
+                    .OrderByDescending(file => file.LastWriteTimeUtc)
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void AddImportedAvatarAssetMapKey(Dictionary<string, string> target, string name, string assetPath)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(assetPath))
+            {
+                return;
+            }
+
+            target[name] = assetPath;
+            if (name.EndsWith("_ModelAvatar", StringComparison.OrdinalIgnoreCase))
+            {
+                target[name[..^"_ModelAvatar".Length]] = assetPath;
+            }
+        }
+
+        private static string RefreshCandidateJsonForImportedAvatar(string rawJson, string assetPath, string matchKey)
+        {
+            JObject json;
+            try
+            {
+                json = string.IsNullOrWhiteSpace(rawJson) ? new JObject() : JObject.Parse(rawJson);
+            }
+            catch
+            {
+                json = new JObject();
+            }
+
+            var before = json.ToString(Formatting.None);
+            json["legacyUnityBakeSupported"] = true;
+            json["requiresUnityBake"] = true;
+            json["productionUnityBakeReady"] = true;
+            json["productionUnityBakeBlocked"] = false;
+            json["productionUnityBakeBlockedReason"] = null;
+            json["productionAnimationPath"] = "UnityBakeToGltf";
+            json["requiresInternalHumanoidSolve"] = false;
+            json["missingInternalHumanoidSolver"] = false;
+            json["missingInternalHumanoidSolverReason"] = null;
+            json["fullHumanoidBakeBlocked"] = false;
+            json["fullHumanoidBakeBlockedReason"] = null;
+            json["nextAction"] = "generate_unity_baked_gltf";
+            json["unityAvatarAsset"] = assetPath;
+            json["unityAvatarMatchKey"] = matchKey;
+            json["productionUnityBakeAvatarSource"] = "imported_unity_avatar_asset";
+            json["importedAvatarAssetValidated"] = true;
+
+            var after = json.ToString(Formatting.None);
+            return string.Equals(before, after, StringComparison.Ordinal) ? rawJson : after;
         }
 
         private static HashSet<string> LoadProbeValidAvatarNames(string probePath)
@@ -608,6 +886,22 @@ WHERE kind LIKE 'Model%'
             public string Source { get; }
             public long PathId { get; }
             public List<JObject> ModelExamples { get; } = new();
+        }
+
+        private sealed class CandidateAvatarRefreshRow
+        {
+            public CandidateAvatarRefreshRow(long id, string rawJson, string assetPath, string matchKey)
+            {
+                Id = id;
+                RawJson = rawJson ?? "{}";
+                AssetPath = assetPath ?? string.Empty;
+                MatchKey = matchKey ?? string.Empty;
+            }
+
+            public long Id { get; }
+            public string RawJson { get; }
+            public string AssetPath { get; }
+            public string MatchKey { get; }
         }
     }
 }

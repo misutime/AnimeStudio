@@ -9,6 +9,7 @@
 - 恢复出的 `.asset` 必须放到 Unity bake 工程的 `Assets/AnimeStudioBake/ImportedAvatar/`。
 - `.asset` 必须经过 Unity 探针验证：`isValid=true` 且 `isHuman=true` 才能进入 Browser 和 bake 主流程。
 - 验证失败的 Avatar 会移到 `Assets/AnimeStudioBake/InvalidImportedAvatar/`，不能用于生产 bake。
+- 恢复后会把通过探针的 ImportedAvatar 同步回 `library_index.db` 的显式 Humanoid/Muscle 候选，写入 `unityAvatarAsset`、`nextAction=generate_unity_baked_gltf` 和 `productionAnimationPath=UnityBakeToGltf`，避免 Browser 继续显示旧的“需 Avatar 元数据”。
 
 ## CLI 用法
 
@@ -21,7 +22,7 @@ dotnet run --project AnimeStudio.CLI/AnimeStudio.CLI.csproj -f net9.0-windows --
   --run_unity_bake
 ```
 
-正常 Library 导出或 `--build_sqlite_index` 后，如果命令里提供了 `--unity_project`，CLI 会自动尝试恢复 ImportedAvatar。提供 `--unity_editor` 时会自动跑 Unity probe，并只接入验证通过的 Avatar。
+正常 Library 导出或 `--build_sqlite_index` 后，如果命令里提供了 `--unity_project`，CLI 会自动尝试恢复 ImportedAvatar。提供 `--unity_editor` 时会自动跑 Unity probe，并只接入验证通过的 Avatar。已隔离到 `InvalidImportedAvatar` 的 Avatar 默认不会重复恢复；需要重新验证时再显式使用强制恢复参数。
 
 ## Browser 行为
 
@@ -55,3 +56,4 @@ Unity Avatar YAML 里的多个字段是 `OffsetPtr<T>`，导出时必须保留 `
 - Unity probe：`231/231` 有效，`invalidAssets=0`。
 - 无效 Avatar 已隔离到 `InvalidImportedAvatar`。
 - 快速摘要显示 ImportedAvatar fresh probe 已强制启用，显式 Humanoid/Muscle 候选 bake-ready 覆盖约 `97.59%`。
+- 2026-06-15 追加刷新 `library_index.db` 候选状态：`3,886,701` 条候选已绑定 Unity 验证过的 ImportedAvatar。Kaeya、Gorou、NPC Male 关键样本均从“需 Avatar 元数据”更新为 `generate_unity_baked_gltf`。
