@@ -166,6 +166,12 @@ Assert-Contains $browserTrustedReport '"warning"' "Browser trusted Unity bake re
 Assert-Contains $browserTrustedReport '"frameVaryingTracks"' "Browser trusted Unity bake report must require frame-varying tracks."
 Assert-Contains $browserTrustedReport "frameVaryingTracks > 0" "Browser must not mark static-pose Unity bake as playable."
 Assert-Contains $browserTrustedReport "HasTrustedAvatarBake" "Browser trusted Unity bake report must require Avatar trust."
+Assert-Contains $browserTrustedReport "HasTrustedAnimationClipBake" "Browser trusted Unity bake report must require imported AnimationClip proof when an explicit Avatar asset request is used."
+
+$browserAnimationClipTrust = Get-MethodBodyText $browserCache "private static bool HasTrustedAnimationClipBake"
+Assert-Contains $browserAnimationClipTrust "ReportRequestHasExplicitAvatarAsset(root)" "Browser imported AnimationClip trust must only be mandatory for explicit Avatar asset requests."
+Assert-Contains $browserAnimationClipTrust '"unityAssetPaths.animationClip"' "Browser imported AnimationClip trust must require Unity AnimationClip asset source."
+Assert-Contains $browserAnimationClipTrust '"unityBakeImportedAnimationClip"' "Browser imported AnimationClip trust must require imported AnimationClip proof."
 
 $browserBakeCache = Get-MethodBodyText $browserCache "private Dictionary<string, AnimationPreviewStatus> LoadSqliteBakeCacheCore"
 Assert-Contains $browserBakeCache "HasTrustedUnityBakeReport(applyReport)" "Browser SQLite bake cache must require trusted apply report before playable."

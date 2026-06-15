@@ -14,7 +14,7 @@ namespace AnimeStudio.LibraryBrowser
 {
     internal sealed class AnimationPreviewCache
     {
-        private const string PreviewCacheVersion = "fast-preview-v7-ue-library-files";
+        private const string PreviewCacheVersion = "fast-preview-v8-unity-imported-animation-clip";
         private readonly string _root;
         private readonly string _cacheRoot;
         private readonly object _sqliteBakeCacheLock = new();
@@ -595,7 +595,8 @@ namespace AnimeStudio.LibraryBrowser
                 // 这种文件可用于诊断，不能在浏览器里标成“可播放”。
                 return TryReadInt(document.RootElement, "frameVaryingTracks", out var frameVaryingTracks)
                     && frameVaryingTracks > 0
-                    && HasTrustedAvatarBake(document.RootElement);
+                    && HasTrustedAvatarBake(document.RootElement)
+                    && HasTrustedAnimationClipBake(document.RootElement);
             }
             catch
             {
@@ -975,6 +976,13 @@ FROM animation_bake_cache;";
                         : applyStatus.AvatarTrustMessage;
                 }
 
+                if (applyStatus.RequiresImportedAnimationClip
+                    && (string.Equals(applyStatus.AnimationClipSource, "animeStudioAssets.animation.anim", StringComparison.OrdinalIgnoreCase)
+                        || string.IsNullOrWhiteSpace(applyStatus.ImportedAnimationClip)))
+                {
+                    return "这份 Unity 烘焙缓存没有使用导入到 Unity 工程的原始 AnimationClip asset，需要用新版 ImportedAnimationClip 流程重新烘焙。";
+                }
+
                 return $"Unity 烘焙报告状态是 {applyStatus.Status}，帧间变化轨道数 {frameVaryingTracks}，不能当作可信可播放动画。";
             }
 
@@ -1020,7 +1028,10 @@ FROM animation_bake_cache;";
                     TryReadInt(root, "frameVaryingChannels", out var channels) ? channels : null,
                     ReadString(root, "message"),
                     TryReadAvatarTrust(root, out var trusted, out var trustMessage) ? trusted : null,
-                    trustMessage);
+                    trustMessage,
+                    ReadString(root, "unityBakeAnimationClipSource"),
+                    ReadString(root, "unityBakeImportedAnimationClip"),
+                    ReportRequestHasExplicitAvatarAsset(root));
             }
             catch
             {
@@ -1031,6 +1042,22 @@ FROM animation_bake_cache;";
         private static bool HasTrustedAvatarBake(JsonElement root)
         {
             return TryReadAvatarTrust(root, out var trusted, out _) && trusted;
+        }
+
+        private static bool HasTrustedAnimationClipBake(JsonElement root)
+        {
+            if (!ReportRequestHasExplicitAvatarAsset(root))
+            {
+                return true;
+            }
+
+            // 原神这类走 ImportedAvatar oracle 的 Humanoid bake，AnimationClip 也必须来自
+            // Unity 工程内可导入的原始 .anim asset。旧缓存里常见的 AnimeStudio .anim 输入
+            // 会得到静态/语义错误结果，不能继续当作可信可播放动画。
+            var source = ReadString(root, "unityBakeAnimationClipSource");
+            var importedClip = ReadString(root, "unityBakeImportedAnimationClip");
+            return string.Equals(source, "unityAssetPaths.animationClip", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(importedClip);
         }
 
         private static bool TryReadAvatarTrust(JsonElement root, out bool trusted, out string message)
@@ -1581,5 +1608,8 @@ FROM animation_bake_cache;";
         int? FrameVaryingChannels,
         string Message,
         bool? TrustedProductionBake,
-        string AvatarTrustMessage);
+        string AvatarTrustMessage,
+        string AnimationClipSource,
+        string ImportedAnimationClip,
+        bool RequiresImportedAnimationClip);
 }
