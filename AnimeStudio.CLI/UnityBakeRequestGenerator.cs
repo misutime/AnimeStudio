@@ -2989,12 +2989,6 @@ LIMIT 1;";
 
             var status = reader.IsDBNull(0) ? "" : reader.GetString(0);
             var bakedGltfPath = reader.IsDBNull(1) ? null : reader.GetString(1);
-            if (string.Equals(status, "static_pose", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(status, "needs_review", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
             return string.Equals(status, "baked", StringComparison.OrdinalIgnoreCase)
                 && IsTrustedBakedGltfPath(bakedGltfPath, libraryRoot);
         }
