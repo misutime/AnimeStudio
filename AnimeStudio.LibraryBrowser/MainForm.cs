@@ -4570,6 +4570,11 @@ namespace AnimeStudio.LibraryBrowser
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
             {
+                if (OpenUnityBakeDiagnosticIfRequested(needsUnityBake, openAfterGenerate, status))
+                {
+                    return;
+                }
+
                 var title = needsUnityBake
                     ? "Unity 烘焙: " + (string.IsNullOrWhiteSpace(status.Status) ? "未可播放" : status.Status)
                     : "动画预览失败";
@@ -4579,7 +4584,6 @@ namespace AnimeStudio.LibraryBrowser
                     title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
-                OpenUnityBakeDiagnosticIfRequested(needsUnityBake, openAfterGenerate, status);
                 return;
             }
 
@@ -5184,6 +5188,11 @@ namespace AnimeStudio.LibraryBrowser
             UpdateStatus($"{(needsUnityBake ? "Unity 烘焙" : "动画预览")}: {status.Status}");
             if (!string.Equals(status.Status, "可播放", StringComparison.OrdinalIgnoreCase))
             {
+                if (OpenUnityBakeDiagnosticIfRequested(needsUnityBake, openAfterGenerate, status))
+                {
+                    return;
+                }
+
                 var title = needsUnityBake
                     ? "Unity 烘焙: " + (string.IsNullOrWhiteSpace(status.Status) ? "未可播放" : status.Status)
                     : "动画预览失败";
@@ -5193,7 +5202,6 @@ namespace AnimeStudio.LibraryBrowser
                     title,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
-                OpenUnityBakeDiagnosticIfRequested(needsUnityBake, openAfterGenerate, status);
                 return;
             }
 
@@ -5253,7 +5261,7 @@ namespace AnimeStudio.LibraryBrowser
             }
         }
 
-        private static void OpenUnityBakeDiagnosticIfRequested(bool needsUnityBake, bool openAfterGenerate, AnimationPreviewStatus status)
+        private static bool OpenUnityBakeDiagnosticIfRequested(bool needsUnityBake, bool openAfterGenerate, AnimationPreviewStatus status)
         {
             if (!needsUnityBake
                 || !openAfterGenerate
@@ -5262,10 +5270,11 @@ namespace AnimeStudio.LibraryBrowser
                 || !File.Exists(status.GltfPath)
                 || !IsOpenableUnityBakeDiagnosticStatus(status.Status))
             {
-                return;
+                return false;
             }
 
             OpenPathWithF3d(status.GltfPath);
+            return true;
         }
 
         private static bool IsOpenableUnityBakeDiagnosticStatus(string status)
