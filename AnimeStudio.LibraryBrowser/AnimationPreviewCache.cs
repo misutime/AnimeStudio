@@ -372,6 +372,18 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var batchReport = Path.Combine(output, "unity_bake_batch_report.json");
+            var cachedAfterBake = process.ExitCode == 0 ? RefreshSqliteBakeStatus(model, animation) : null;
+            if (cachedAfterBake != null
+                && BakeCacheStatusPriority(cachedAfterBake) > BakeCacheStatusPriority(new AnimationPreviewStatus("未生成", null, null, null))
+                && !string.IsNullOrWhiteSpace(cachedAfterBake.GltfPath)
+                && File.Exists(cachedAfterBake.GltfPath))
+            {
+                // CLI 可能发现该组合已经在 SQLite bake cache 中完成，于是本次 batch report 是 noop_all_cached、items 为空。
+                // 这种情况要相信 SQLite 中的生产缓存，不要把空 items 误判成 baked glTF 路径缺失。
+                WriteState(directory, cachedAfterBake.Status, cachedAfterBake.GltfPath, cachedAfterBake.ValidationPath, cachedAfterBake.Message);
+                return cachedAfterBake;
+            }
+
             var bakedGltf = ReadBakedGltfFromBatchReport(batchReport);
             var report = string.IsNullOrWhiteSpace(bakedGltf)
                 ? null
@@ -738,6 +750,17 @@ LIMIT 1;";
                 _sqliteBakeCacheTimestampUtc = timestamp;
                 return _sqliteBakeCache;
             }
+        }
+
+        private AnimationPreviewStatus RefreshSqliteBakeStatus(LibraryModelItem model, LibraryAnimationCandidate animation)
+        {
+            lock (_sqliteBakeCacheLock)
+            {
+                _sqliteBakeCache = null;
+                _sqliteBakeCacheTimestampUtc = DateTime.MinValue;
+            }
+
+            return GetSqliteBakeStatus(model, animation);
         }
 
         private Dictionary<string, AnimationPreviewStatus> LoadSqliteBakeCacheCore(string dbPath)
