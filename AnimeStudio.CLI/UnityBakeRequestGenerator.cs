@@ -347,8 +347,11 @@ namespace AnimeStudio.CLI
                         : (requestWritten ? "request_written" : "failed"),
                     ["model"] = modelName,
                     ["animation"] = animationName,
+                    ["requestedAnimation"] = (string)selection.Animation["animatorControllerRequestedClip"]?["name"] ?? animationName,
                     ["modelOutput"] = (string)selection.Model["model"]?["output"],
                     ["animationOutput"] = (string)selection.Animation["output"],
+                    ["requestedAnimationOutput"] = (string)selection.Animation["animatorControllerRequestedClip"]?["output"],
+                    ["actualBakeAnimationOutput"] = (string)selection.Animation["output"],
                     ["relationSource"] = (string)selection.Animation["relationSource"],
                     ["confidence"] = (string)selection.Animation["confidence"],
                     ["unityAvatarAsset"] = effectiveUnityAvatarAsset,
@@ -3200,6 +3203,27 @@ EXISTS (
         {
             var modelOutput = CanonicalizeLibraryOutput((string)item["modelOutput"], libraryRoot);
             var animationOutput = CanonicalizeLibraryOutput((string)item["animationOutput"], libraryRoot);
+            UpsertBakeCacheRow(connection, transaction, item, libraryRoot, modelOutput, animationOutput);
+
+            var requestedAnimationOutput = CanonicalizeLibraryOutput((string)item["requestedAnimationOutput"], libraryRoot);
+            if (!string.IsNullOrWhiteSpace(requestedAnimationOutput)
+                && !string.Equals(requestedAnimationOutput, animationOutput, StringComparison.OrdinalIgnoreCase))
+            {
+                // AnimatorController 的叠加/辅助 clip 会切到 baseLayerClip 才能得到完整身体动画。
+                // 这里额外把同一个可信 bake 结果挂回用户点选的原始候选，Browser 状态才不会显示成未生成；
+                // request/report 仍保留 actual/requested 两个路径，避免把关系来源说混。
+                UpsertBakeCacheRow(connection, transaction, item, libraryRoot, modelOutput, requestedAnimationOutput);
+            }
+        }
+
+        private static void UpsertBakeCacheRow(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            JObject item,
+            string libraryRoot,
+            string modelOutput,
+            string animationOutput)
+        {
             var incomingStatus = (string)item["status"] ?? "failed";
             var incomingMessage = (string)item["message"];
             var preserveExistingTerminal = ShouldPreserveExistingBakeCache(

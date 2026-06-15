@@ -162,6 +162,10 @@ Assert-Contains $clipRecoveryActual "animatorControllerContext" "Imported Animat
 Assert-Contains $clipRecoveryActual "baseLayerClip" "Imported AnimationClip recovery must use baseLayerClip for auxiliary controller clips."
 Assert-Contains $clipRecoveryActual "explicitCandidateAnimation" "Imported AnimationClip recovery must keep direct explicit candidate clips when no controller base clip is present."
 
+$batchCacheWrite = Get-MethodBodyText $requestGenerator "private static void UpsertBakeCache"
+Assert-Contains $batchCacheWrite "requestedAnimationOutput" "Batch Unity bake cache must also record the original user-selected AnimatorController clip."
+Assert-Contains $batchCacheWrite "UpsertBakeCacheRow" "Batch Unity bake cache must write an alias row for auxiliary clip -> baseLayerClip bake results."
+
 $applyReport = Get-MethodBodyText $applier "public static string Apply"
 Assert-Contains $applyReport "unityBakeRequestedAnimationClip" "Apply report must record requested Unity AnimationClip asset."
 Assert-Contains $applyReport "unityBakeImportedAnimationClip" "Apply report must record imported Unity AnimationClip asset."
