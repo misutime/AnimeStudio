@@ -61,8 +61,15 @@ namespace AnimeStudio.LibraryBrowser
         {
             ValidateLibraryRoot(root);
 
-            var catalogPath = Path.Combine(root, "asset_catalog.jsonl");
             var coverageByOutput = LoadUnrealModelCoverage(root);
+            var sqliteModels = TryLoadModelsFromSqlite(root, coverageByOutput);
+            if (sqliteModels != null)
+            {
+                AddTextureFiles(root, sqliteModels);
+                return sqliteModels;
+            }
+
+            var catalogPath = Path.Combine(root, "asset_catalog.jsonl");
             var models = new List<LibraryModelItem>();
             foreach (var line in File.ReadLines(catalogPath))
             {
@@ -163,6 +170,156 @@ namespace AnimeStudio.LibraryBrowser
 
             AddTextureFiles(root, models);
             return models;
+        }
+
+        private static List<LibraryModelItem> TryLoadModelsFromSqlite(
+            string root,
+            IReadOnlyDictionary<string, UnrealModelCoverage> coverageByOutput)
+        {
+            var dbPath = Path.Combine(root, "library_index.db");
+            if (!File.Exists(dbPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+                connection.Open();
+                if (!HasTable(connection, "assets") || !HasColumn(connection, "assets", "raw_json"))
+                {
+                    return null;
+                }
+
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT kind, resource_kind, name, source_type, source, path_id, output,
+       json_extract(raw_json, '$.libraryRole'),
+       json_extract(raw_json, '$.confidence'),
+       json_extract(raw_json, '$.status'),
+       json_extract(raw_json, '$.modelPreview'),
+       json_extract(raw_json, '$.objectPath'),
+       json_extract(raw_json, '$.vfxCategory'),
+       json_extract(raw_json, '$.meshCount'),
+       json_extract(raw_json, '$.vertexCount'),
+       json_extract(raw_json, '$.materialCount'),
+       json_extract(raw_json, '$.textureCount'),
+       json_extract(raw_json, '$.componentCount'),
+       json_extract(raw_json, '$.materialRefCount'),
+       json_extract(raw_json, '$.textureRefCount'),
+       json_extract(raw_json, '$.texturePreviewCount'),
+       json_extract(raw_json, '$.meshRefCount'),
+       json_extract(raw_json, '$.occurrenceCount'),
+       json_extract(raw_json, '$.boneCount'),
+       json_extract(raw_json, '$.bonePaths'),
+       json_extract(raw_json, '$.nodePaths'),
+       json_extract(raw_json, '$.signals'),
+       json_extract(raw_json, '$.previewHints')
+FROM assets
+WHERE kind IN ('Model', 'VFX', 'Texture')
+   OR source_type IN ('Texture2D', 'Texture2DArray')
+   OR resource_kind LIKE '%Texture%'
+ORDER BY kind, resource_kind, name;";
+
+                var models = new List<LibraryModelItem>();
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var kind = ReadSqliteString(reader, 0) ?? "";
+                    var resourceKind = ReadSqliteString(reader, 1) ?? "Unknown";
+                    var sourceType = ReadSqliteString(reader, 3) ?? "";
+                    var isTexture = IsTextureCatalogEntry(kind, sourceType, resourceKind);
+                    if (!string.Equals(kind, "Model", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase)
+                        && !isTexture)
+                    {
+                        continue;
+                    }
+
+                    var output = ReadSqliteString(reader, 6);
+                    if (string.IsNullOrWhiteSpace(output))
+                    {
+                        continue;
+                    }
+
+                    var isVfx = string.Equals(kind, "VFX", StringComparison.OrdinalIgnoreCase);
+                    if (isVfx)
+                    {
+                        output = LibraryPathResolver.ResolveExistingDirectory(root, output);
+                        if (!Directory.Exists(output))
+                        {
+                            continue;
+                        }
+                    }
+                    else if (!File.Exists(output))
+                    {
+                        output = LibraryPathResolver.ResolveExistingFile(root, output);
+                        if (!File.Exists(output))
+                        {
+                            continue;
+                        }
+                    }
+
+                    var modelPreview = LibraryPathResolver.ResolveExistingFile(root, ReadSqliteString(reader, 10) ?? "");
+                    UnrealModelCoverage coverage = null;
+                    coverageByOutput?.TryGetValue(NormalizePath(output), out coverage);
+                    models.Add(new LibraryModelItem
+                    {
+                        AssetKind = kind,
+                        Name = ReadSqliteString(reader, 2) ?? Path.GetFileNameWithoutExtension(output) ?? "",
+                        ResourceKind = resourceKind,
+                        VfxCategory = ReadSqliteString(reader, 12) ?? "",
+                        Confidence = ReadSqliteString(reader, 8) ?? "",
+                        Status = ReadSqliteString(reader, 9) ?? "",
+                        ValidationStatus = coverage?.ValidationStatus ?? "",
+                        LibraryRole = ReadSqliteString(reader, 7) ?? "",
+                        SourceType = sourceType,
+                        Source = ReadSqliteString(reader, 4) ?? "",
+                        ObjectPath = ReadSqliteString(reader, 11) ?? coverage?.ObjectPath ?? "",
+                        PathId = ReadSqliteInt64(reader, 5),
+                        OutputPath = output,
+                        ModelPreviewPath = modelPreview ?? "",
+                        MeshCount = ReadSqliteInt32(reader, 13),
+                        VertexCount = ReadSqliteInt32(reader, 14),
+                        MaterialCount = ReadSqliteInt32(reader, 15, coverage?.MaterialCount ?? 0),
+                        TextureCount = ReadSqliteInt32(reader, 16, coverage?.TextureCount ?? 0),
+                        ComponentCount = ReadSqliteInt32(reader, 17),
+                        MaterialRefCount = ReadSqliteInt32(reader, 18),
+                        TextureRefCount = ReadSqliteInt32(reader, 19),
+                        TexturePreviewCount = ReadSqliteInt32(reader, 20),
+                        MeshRefCount = ReadSqliteInt32(reader, 21),
+                        OccurrenceCount = Math.Max(1, ReadSqliteInt32(reader, 22)),
+                        BoneCount = ReadSqliteInt32(reader, 23),
+                        HasSkin = coverage?.HasSkin ?? false,
+                        HasSkeletonPath = coverage?.HasSkeletonPath ?? false,
+                        IsStaticModel = coverage?.IsStatic ?? false,
+                        ComponentReferenceCount = coverage?.ComponentReferenceCount ?? 0,
+                        SourceIndexObjectCount = coverage?.SourceIndexObjectCount ?? 0,
+                        AnimationCandidateCount = coverage?.AnimationCandidateCount ?? 0,
+                        IsTaskOrProp = coverage?.IsTaskOrProp ?? false,
+                        IsPathOnlyTask = coverage?.IsPathOnlyTask ?? false,
+                        MissingMaterials = coverage?.MissingMaterials ?? false,
+                        NoExternalTextureSlots = coverage?.NoExternalTextureSlots ?? false,
+                        NeedsReview = coverage?.NeedsReview ?? false,
+                        ReviewReasons = coverage?.ReviewReasons ?? Array.Empty<string>(),
+                        RelationNeedsReview = coverage?.RelationNeedsReview ?? false,
+                        RelationReviewReasons = coverage?.RelationReviewReasons ?? Array.Empty<string>(),
+                        BonePaths = ReadJsonStringArray(ReadSqliteString(reader, 24)),
+                        NodePaths = ReadJsonStringArray(ReadSqliteString(reader, 25)),
+                        Signals = ReadJsonStringArray(ReadSqliteString(reader, 26)),
+                        TaskSignals = coverage?.TaskSignals ?? Array.Empty<string>(),
+                        VfxTexturePreviewPaths = Array.Empty<string>(),
+                        VfxPreviewHintsJson = ReadSqliteString(reader, 27) ?? ""
+                    });
+                }
+
+                return models;
+            }
+            catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
+            {
+                return null;
+            }
         }
 
         private static Dictionary<string, UnrealModelCoverage> LoadUnrealModelCoverage(string root)
@@ -424,6 +581,21 @@ FROM model_coverage;";
                 || Contains(resourceKind, "Texture");
         }
 
+        private static bool IsTextureCatalogEntry(string kind, string sourceType, string resourceKind)
+        {
+            if (string.Equals(kind, "VfxTexturePreviewTexture", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return string.Equals(kind, "Texture", StringComparison.OrdinalIgnoreCase)
+                || Contains(kind, "Texture2DArray")
+                || Contains(kind, "MaterialTexture")
+                || string.Equals(sourceType, "Texture2D", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sourceType, "Texture2DArray", StringComparison.OrdinalIgnoreCase)
+                || Contains(resourceKind, "Texture");
+        }
+
         private static bool Contains(string value, string text)
         {
             return value?.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
@@ -544,6 +716,21 @@ FROM model_coverage;";
         private static bool ReadSqliteBool(SqliteDataReader reader, int index)
         {
             return !reader.IsDBNull(index) && reader.GetInt32(index) != 0;
+        }
+
+        private static string ReadSqliteString(SqliteDataReader reader, int index)
+        {
+            return reader.IsDBNull(index) ? null : reader.GetString(index);
+        }
+
+        private static int ReadSqliteInt32(SqliteDataReader reader, int index, int fallback = 0)
+        {
+            return reader.IsDBNull(index) ? fallback : Convert.ToInt32(reader.GetValue(index));
+        }
+
+        private static long ReadSqliteInt64(SqliteDataReader reader, int index, long fallback = 0)
+        {
+            return reader.IsDBNull(index) ? fallback : reader.GetInt64(index);
         }
 
         private static bool HasTable(SqliteConnection connection, string name)

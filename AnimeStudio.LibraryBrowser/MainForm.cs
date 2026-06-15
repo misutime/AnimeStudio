@@ -952,7 +952,7 @@ namespace AnimeStudio.LibraryBrowser
             _thumbnailCts?.Cancel();
             _thumbnailCache?.Dispose();
             _thumbnailCts = new CancellationTokenSource();
-            _statusLabel.Text = "正在读取 asset_catalog.jsonl ...";
+            _statusLabel.Text = "正在读取素材库索引 ...";
 
             try
             {
