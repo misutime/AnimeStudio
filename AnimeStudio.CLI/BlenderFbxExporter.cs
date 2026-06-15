@@ -9,7 +9,7 @@ namespace AnimeStudio.CLI
 {
     internal static class BlenderFbxExporter
     {
-        public static bool Export(string inputGltf, string outputFbx, string blenderPath)
+        public static bool Export(string inputGltf, string outputFbx, string blenderPath, bool skeletonOnly = false)
         {
             if (string.IsNullOrWhiteSpace(inputGltf) || !File.Exists(inputGltf))
             {
@@ -54,7 +54,7 @@ namespace AnimeStudio.CLI
 
             var scriptPath = Path.Combine(Path.GetTempPath(), $"animestudio_blender_export_fbx_{Guid.NewGuid():N}.py");
             var reportPath = Path.Combine(outputDir, "blender_fbx_export_report.json");
-            File.WriteAllText(scriptPath, BuildScript(blenderInputGltf, blenderOutputFbx, reportPath), Encoding.UTF8);
+            File.WriteAllText(scriptPath, BuildScript(blenderInputGltf, blenderOutputFbx, reportPath, skeletonOnly), Encoding.UTF8);
 
             var startInfo = new ProcessStartInfo
             {
@@ -101,6 +101,7 @@ namespace AnimeStudio.CLI
                 outputFbx = originalOutputFbx,
                 stagedInputGltf = string.Equals(blenderInputGltf, originalInputGltf, StringComparison.OrdinalIgnoreCase) ? null : blenderInputGltf,
                 stagedOutputFbx = string.Equals(blenderOutputFbx, originalOutputFbx, StringComparison.OrdinalIgnoreCase) ? null : blenderOutputFbx,
+                skeletonOnly,
                 exitCode = process.ExitCode,
                 blenderReport,
                 stdoutTail = Tail(stdout),
@@ -144,17 +145,25 @@ namespace AnimeStudio.CLI
             return candidates.FirstOrDefault(File.Exists);
         }
 
-        private static string BuildScript(string inputGltf, string outputFbx, string reportPath)
+        private static string BuildScript(string inputGltf, string outputFbx, string reportPath, bool skeletonOnly)
         {
             var gltfLiteral = JsonConvert.SerializeObject(Path.GetFullPath(inputGltf));
             var fbxLiteral = JsonConvert.SerializeObject(Path.GetFullPath(outputFbx));
             var reportLiteral = JsonConvert.SerializeObject(Path.GetFullPath(reportPath));
+            var skeletonOnlyLiteral = skeletonOnly ? "True" : "False";
+            var objectTypesLiteral = skeletonOnly
+                ? "{'ARMATURE', 'EMPTY'}"
+                : "{'ARMATURE', 'MESH', 'EMPTY'}";
+            var selectionExpression = skeletonOnly
+                ? "obj.type in {'ARMATURE', 'EMPTY'}"
+                : "obj.type in {'ARMATURE', 'MESH', 'EMPTY'}";
             return $@"
 import bpy, json
 
 input_gltf = {gltfLiteral}
 output_fbx = {fbxLiteral}
 report_path = {reportLiteral}
+skeleton_only = {skeletonOnlyLiteral}
 
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete()
@@ -172,12 +181,14 @@ if bpy.data.actions:
     scene.frame_end = frame_max
 
 for obj in scene.objects:
-    obj.select_set(obj.type in {{'ARMATURE', 'MESH', 'EMPTY'}})
+    obj.select_set({selectionExpression})
+
+selected_objects = [o for o in scene.objects if o.select_get()]
 
 bpy.ops.export_scene.fbx(
     filepath=output_fbx,
     use_selection=True,
-    object_types={{'ARMATURE', 'MESH', 'EMPTY'}},
+    object_types={objectTypesLiteral},
     bake_anim=True,
     bake_anim_use_all_bones=True,
     bake_anim_use_nla_strips=False,
@@ -194,6 +205,11 @@ report = {{
     'objects': len(scene.objects),
     'meshes': len([o for o in scene.objects if o.type == 'MESH']),
     'armatures': len([o for o in scene.objects if o.type == 'ARMATURE']),
+    'selectedObjects': len(selected_objects),
+    'selectedMeshes': len([o for o in selected_objects if o.type == 'MESH']),
+    'selectedArmatures': len([o for o in selected_objects if o.type == 'ARMATURE']),
+    'selectedEmpties': len([o for o in selected_objects if o.type == 'EMPTY']),
+    'skeletonOnly': skeleton_only,
     'actions': actions,
     'frameStart': scene.frame_start,
     'frameEnd': scene.frame_end,

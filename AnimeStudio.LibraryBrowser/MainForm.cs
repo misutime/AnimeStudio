@@ -516,6 +516,7 @@ namespace AnimeStudio.LibraryBrowser
 
             _menu.Items.Add("用 f3d 打开", null, (_, _) => OpenSelectedWithF3d());
             _menu.Items.Add("打开所在目录", null, (_, _) => OpenSelectedFolder());
+            _menu.Items.Add("导出 FBX 模型", null, async (_, _) => await ExportSelectedModelFbxAsync());
             _menu.Items.Add(new ToolStripSeparator());
             _menu.Items.Add("复制匹配动画路径", null, (_, _) => CopySelectedAnimationPaths());
             _menu.Items.Add("打开首个动画目录", null, (_, _) => OpenFirstAnimationFolder());
@@ -538,6 +539,7 @@ namespace AnimeStudio.LibraryBrowser
             _animationMenu.Items.Add(new ToolStripSeparator());
             _animationMenu.Items.Add("打开动画目录", null, (_, _) => OpenSelectedAnimationFolder());
             _animationMenu.Items.Add("生成并打开动画预览/Unity烘焙", null, async (_, _) => await GenerateSelectedAnimationPreviewAsync(openAfterGenerate: true));
+            _animationMenu.Items.Add("导出 FBX 动画(无Skin)", null, async (_, _) => await ExportSelectedAnimationFbxAsync());
             _animationMenu.Items.Add("批量烘焙选中动画", null, async (_, _) => await BakeSelectedModelAnimationsAsync());
             _animationMenu.Items.Add("批量烘焙当前可见动画", null, async (_, _) => await BakeVisibleModelAnimationsAsync());
             _animationList.ContextMenuStrip = _animationMenu;
@@ -1595,7 +1597,9 @@ namespace AnimeStudio.LibraryBrowser
                     return new CliRunLauncher(exe, root, (libraryRoot, sourceIndex) =>
                         BuildSqliteIndexArguments(libraryRoot, sourceIndex),
                         (libraryRoot, gameName, unityProject, unityEditor) =>
-                            RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor));
+                            RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor),
+                        (inputGltf, outputFbx, skeletonOnly) =>
+                            BuildFbxFromGltfArguments(inputGltf, outputFbx, skeletonOnly));
                 }
 
                 var project = Path.Combine(root, "AnimeStudio.CLI", "AnimeStudio.CLI.csproj");
@@ -1604,7 +1608,9 @@ namespace AnimeStudio.LibraryBrowser
                     return new CliRunLauncher("dotnet", root, (libraryRoot, sourceIndex) =>
                         BuildSqliteIndexArguments(libraryRoot, sourceIndex, project),
                         (libraryRoot, gameName, unityProject, unityEditor) =>
-                            RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor, project));
+                            RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor, project),
+                        (inputGltf, outputFbx, skeletonOnly) =>
+                            BuildFbxFromGltfArguments(inputGltf, outputFbx, skeletonOnly, project));
                 }
             }
 
@@ -1614,10 +1620,68 @@ namespace AnimeStudio.LibraryBrowser
                 return new CliRunLauncher(siblingExe, AppContext.BaseDirectory, (libraryRoot, sourceIndex) =>
                     BuildSqliteIndexArguments(libraryRoot, sourceIndex),
                     (libraryRoot, gameName, unityProject, unityEditor) =>
-                        RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor));
+                        RecoverImportedAvatarArguments(libraryRoot, gameName, unityProject, unityEditor),
+                    (inputGltf, outputFbx, skeletonOnly) =>
+                        BuildFbxFromGltfArguments(inputGltf, outputFbx, skeletonOnly));
             }
 
             return default;
+        }
+
+        private static async Task<ProcessRunResult> RunCliAsync(CliRunLauncher launcher, string[] arguments)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = launcher.FileName,
+                WorkingDirectory = launcher.WorkingDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            foreach (var arg in arguments)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("无法启动 AnimeStudio.CLI。");
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var output = await outputTask;
+            var error = await errorTask;
+            var combined = string.IsNullOrWhiteSpace(error)
+                ? output
+                : output + Environment.NewLine + error;
+            return new ProcessRunResult(process.ExitCode, combined);
+        }
+
+        private static string[] BuildFbxFromGltfArguments(string inputGltf, string outputFbx, bool skeletonOnly, string project = null)
+        {
+            var args = new List<string>();
+            if (!string.IsNullOrWhiteSpace(project))
+            {
+                args.AddRange(new[]
+                {
+                    "run",
+                    "--project", project,
+                    "-f", "net9.0-windows",
+                    "--",
+                });
+            }
+
+            args.AddRange(new[]
+            {
+                "--export_fbx_from_gltf", inputGltf,
+                "--baked_fbx_output", outputFbx,
+            });
+
+            if (skeletonOnly)
+            {
+                args.Add("--fbx_skeleton_only");
+            }
+
+            return args.ToArray();
         }
 
         private static string[] BuildSqliteIndexArguments(string libraryRoot, string sourceIndex, string project = null)
@@ -1882,13 +1946,25 @@ namespace AnimeStudio.LibraryBrowser
             return "..." + output.Substring(output.Length - maxLength).TrimStart();
         }
 
+        private static string SanitizeFileName(string value)
+        {
+            var text = string.IsNullOrWhiteSpace(value) ? "AnimeStudioExport" : value.Trim();
+            foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                text = text.Replace(c, '_');
+            }
+
+            return string.IsNullOrWhiteSpace(text) ? "AnimeStudioExport" : text;
+        }
+
         private readonly record struct ProcessRunResult(int ExitCode, string CombinedOutput);
 
         private readonly record struct CliRunLauncher(
             string FileName,
             string WorkingDirectory,
             Func<string, string, string[]> BuildSqliteIndexArguments,
-            Func<string, string, string, string, string[]> RecoverImportedAvatarArguments);
+            Func<string, string, string, string, string[]> RecoverImportedAvatarArguments,
+            Func<string, string, bool, string[]> BuildFbxFromGltfArguments);
 
         private void RebuildRecentMenu()
         {
@@ -4304,6 +4380,125 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             Process.Start(startInfo);
+        }
+
+        private async Task ExportSelectedModelFbxAsync()
+        {
+            var item = SelectedItems().FirstOrDefault();
+            if (item == null || item.IsTexture || item.IsVfx || string.IsNullOrWhiteSpace(item.OutputPath) || !File.Exists(item.OutputPath))
+            {
+                MessageBox.Show(this, "请先选择一个已导出的 glTF/GLB 模型。", "导出 FBX 模型", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var output = ChooseFbxOutputPath(item.Name, "导出 FBX 模型");
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return;
+            }
+
+            await ExportGltfToFbxAsync(item.OutputPath, output, skeletonOnly: false, title: "导出 FBX 模型");
+        }
+
+        private async Task ExportSelectedAnimationFbxAsync()
+        {
+            var model = _detailModel ?? SelectedItems().FirstOrDefault();
+            var animation = SelectedAnimationCandidate();
+            if (model == null || animation == null || _previewCache == null)
+            {
+                MessageBox.Show(this, "请先选择模型和右侧动画。", "导出 FBX 动画", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (animation.IsUnreal)
+            {
+                MessageBox.Show(this, "当前 FBX 动画导出先支持 Unity 动画；Unreal 动画后续单独接入。", "导出 FBX 动画", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (NeedsAvatarHumanDescriptionRefresh(animation))
+            {
+                MessageBox.Show(this, "该动画缺少生产 Unity bake 所需的 Avatar 元数据，不能导出可信 FBX 动画。", "导出 FBX 动画", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var inputError = ValidateAnimationPreviewInputs(model, animation);
+            if (!string.IsNullOrWhiteSpace(inputError))
+            {
+                MessageBox.Show(this, inputError, "导出 FBX 动画", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var output = ChooseFbxOutputPath($"{model.Name}__{animation.Name}", "导出 FBX 动画(无Skin)");
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return;
+            }
+
+            UpdateSelectedAnimationStatus("导出FBX中");
+            UpdateStatus("正在 Unity bake 并导出无 Skin FBX 动画");
+            var status = await _previewCache.EnsureUnityBakeAsync(
+                model,
+                animation,
+                CancellationToken.None,
+                message => BeginInvoke(() => UpdateStatus(message)));
+            if (string.IsNullOrWhiteSpace(status.GltfPath) || !File.Exists(status.GltfPath))
+            {
+                MessageBox.Show(this, status.Message ?? "Unity bake 没有生成可用于 FBX 导出的 glTF。", "导出 FBX 动画", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                UpdateSelectedAnimationStatus(status.Status);
+                return;
+            }
+
+            await ExportGltfToFbxAsync(status.GltfPath, output, skeletonOnly: true, title: "导出 FBX 动画");
+            UpdateSelectedAnimationStatus(status.Status);
+        }
+
+        private string ChooseFbxOutputPath(string baseName, string title)
+        {
+            using var dialog = new SaveFileDialog
+            {
+                Title = title,
+                Filter = "FBX 文件 (*.fbx)|*.fbx",
+                FileName = SanitizeFileName(baseName) + ".fbx",
+                DefaultExt = "fbx",
+                AddExtension = true,
+                OverwritePrompt = true,
+            };
+            return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
+        }
+
+        private async Task ExportGltfToFbxAsync(string inputGltf, string outputFbx, bool skeletonOnly, string title)
+        {
+            var launcher = FindCliLauncher();
+            if (string.IsNullOrWhiteSpace(launcher.FileName))
+            {
+                MessageBox.Show(this, "没有找到 AnimeStudio.CLI，无法导出 FBX。", title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                UpdateStatus(skeletonOnly ? "正在导出 skeleton-only FBX 动画" : "正在导出 FBX 模型");
+                var result = await RunCliAsync(launcher, launcher.BuildFbxFromGltfArguments(inputGltf, outputFbx, skeletonOnly));
+                if (result.ExitCode != 0 || !File.Exists(outputFbx))
+                {
+                    MessageBox.Show(this, TrimProcessOutput(result.CombinedOutput), title + "失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                UpdateStatus("FBX 导出完成");
+                MessageBox.Show(this, outputFbx, title + "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{outputFbx}\"",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show(this, e.Message, title + "失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private async Task GenerateSelectedAnimationPreviewAsync(bool openAfterGenerate)

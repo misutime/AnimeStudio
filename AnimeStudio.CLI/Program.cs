@@ -50,7 +50,8 @@ namespace AnimeStudio.CLI
                     BlenderFbxExporter.Export(
                         o.ExportFbxFromGltf.FullName,
                         o.BakedFbxOutput.FullName,
-                        o.Blender?.FullName
+                        o.Blender?.FullName,
+                        o.FbxSkeletonOnly
                     );
                     return;
                 }
@@ -211,7 +212,7 @@ namespace AnimeStudio.CLI
                     );
                     if (!string.IsNullOrWhiteSpace(o.BakedFbxOutput?.FullName))
                     {
-                        BlenderFbxExporter.Export(bakedGltf, o.BakedFbxOutput.FullName, o.Blender?.FullName);
+                        BlenderFbxExporter.Export(bakedGltf, o.BakedFbxOutput.FullName, o.Blender?.FullName, o.FbxSkeletonOnly);
                     }
                     return;
                 }

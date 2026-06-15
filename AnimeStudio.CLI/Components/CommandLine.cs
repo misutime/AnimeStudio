@@ -151,6 +151,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.CompareGltf,
                 optionsBinder.CompareOutput,
                 optionsBinder.ExportFbxFromGltf,
+                optionsBinder.FbxSkeletonOnly,
                 optionsBinder.BakedGltfOutput,
                 optionsBinder.BakedFbxOutput,
                 optionsBinder.GenerateSkeletonGuide,
@@ -266,6 +267,7 @@ namespace AnimeStudio.CLI
         public FileInfo CompareGltf { get; set; }
         public FileInfo CompareOutput { get; set; }
         public FileInfo ExportFbxFromGltf { get; set; }
+        public bool FbxSkeletonOnly { get; set; }
         public FileInfo BakedGltfOutput { get; set; }
         public FileInfo BakedFbxOutput { get; set; }
         public FileInfo GenerateSkeletonGuide { get; set; }
@@ -376,6 +378,7 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> CompareGltf;
         public readonly Option<FileInfo> CompareOutput;
         public readonly Option<FileInfo> ExportFbxFromGltf;
+        public readonly Option<bool> FbxSkeletonOnly;
         public readonly Option<FileInfo> BakedGltfOutput;
         public readonly Option<FileInfo> BakedFbxOutput;
         public readonly Option<FileInfo> GenerateSkeletonGuide;
@@ -484,6 +487,7 @@ namespace AnimeStudio.CLI
             CompareGltf = new Option<FileInfo>("--compare_gltf", "Internally solved glTF used by --compare_unity_bake_result.").LegalFilePathsOnly();
             CompareOutput = new Option<FileInfo>("--compare_output", "Output JSON report for --compare_unity_bake_result. Defaults to unity_bake_compare_report.json next to the compared glTF.").LegalFilePathsOnly();
             ExportFbxFromGltf = new Option<FileInfo>("--export_fbx_from_gltf", "Convert an existing baked glTF/GLB preview to FBX through Blender for Unity/DCC comparison. Requires --baked_fbx_output.");
+            FbxSkeletonOnly = new Option<bool>("--fbx_skeleton_only", "When converting glTF/GLB to FBX through Blender, export only armature/skeleton and animation takes, without mesh skin.");
             BakedGltfOutput = new Option<FileInfo>("--baked_gltf_output", "Output glTF path for --apply_unity_bake_result. Defaults to BakedPreview/<model>__<clip>.gltf next to the bake request/result.");
             BakedFbxOutput = new Option<FileInfo>("--baked_fbx_output", "Optional compatibility FBX output path. AnimeStudio first writes the baked glTF, then asks Blender to export FBX for DCC comparison.");
             GenerateSkeletonGuide = new Option<FileInfo>("--generate_skeleton_guide", "Generate a non-destructive Blender CoreHumanoid skeleton guide from an exported FBX/glTF/GLB. Uses asset_catalog.jsonl Unity Avatar relations when available.").LegalFilePathsOnly();
@@ -684,6 +688,7 @@ namespace AnimeStudio.CLI
                 CompareGltf = bindingContext.ParseResult.GetValueForOption(CompareGltf),
                 CompareOutput = bindingContext.ParseResult.GetValueForOption(CompareOutput),
                 ExportFbxFromGltf = bindingContext.ParseResult.GetValueForOption(ExportFbxFromGltf),
+                FbxSkeletonOnly = bindingContext.ParseResult.GetValueForOption(FbxSkeletonOnly),
                 BakedGltfOutput = bindingContext.ParseResult.GetValueForOption(BakedGltfOutput),
                 BakedFbxOutput = bindingContext.ParseResult.GetValueForOption(BakedFbxOutput),
                 GenerateSkeletonGuide = bindingContext.ParseResult.GetValueForOption(GenerateSkeletonGuide),
