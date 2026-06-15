@@ -757,6 +757,14 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 旧 helper 生成的 `baked` 如果缺少可信 Avatar 证明，不能当成已经完成的生产动画。批量 request 生成器只会跳过通过 `unity_bake_apply_report.json` 复核的可信 baked、确认静态姿态或需要人工复核项；不可信旧 `baked` 会重新进入待 bake 队列，并且不可信旧 `baked` 可以被后续失败或新请求状态覆盖，避免历史错误结果长期占坑。文档和源码门禁用 `cacheTrustGate=untrusted_requeue_overwriteable` 标记这条规则。
 
+如果旧库里已经存在“需 AnimatorController 上下文”的显式候选，可以用 Unity 控制器 inspect 结果回写候选上下文。这个命令只沿 `Animator.controller` / `AnimatorOverrideController.baseController` 显式关系查找控制器，并把辅助层 clip 映射到同一 state、同一 blend-tree node 的基础身体 clip；不会按动画名、骨骼数量或目录猜测关系。刷新器也会读取素材库本地 Browser 设置和 bake 工程 `Assets/AnimeStudioBake/ImportedAvatar/*.asset`，只有 fresh probe 证明 `Avatar.isValid && Avatar.isHuman` 的导入 Avatar 才会让候选进入生产 bake ready：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --refresh_animator_controller_contexts "D:\Assets\AS-Assets\YuanShen-Assets" `
+  --unity_file_inspect "D:\Assets\AS-Assets\YuanShen-Assets\.as_browser_cache\diagnostics\ambor_controller_inspect\unity_file_inspect.json"
+```
+
 Library Browser 也支持同一条路径。素材库根目录可写本地配置 `.as_browser_cache\unity_bake_settings.json`，本地配置会覆盖全局配置：
 
 ```json

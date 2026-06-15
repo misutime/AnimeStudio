@@ -346,6 +346,22 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.RefreshAnimatorControllerContexts != null)
+                {
+                    if (o.UnityFileInspect == null || !File.Exists(o.UnityFileInspect.FullName))
+                    {
+                        Logger.Error("--refresh_animator_controller_contexts requires --unity_file_inspect pointing to unity_file_inspect.json.");
+                        return;
+                    }
+
+                    AnimatorControllerContextRefresher.Refresh(
+                        o.RefreshAnimatorControllerContexts.FullName,
+                        o.UnityFileInspect.FullName,
+                        o.SourceIndex?.FullName,
+                        o.IndexPath?.FullName);
+                    return;
+                }
+
                 if (o.Input == null || o.Output == null)
                 {
                     Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
