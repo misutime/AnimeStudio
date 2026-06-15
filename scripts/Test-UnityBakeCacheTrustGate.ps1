@@ -170,6 +170,7 @@ $browserProcessed = Get-MethodBodyText $libraryBrowserMainForm "private bool IsU
 Assert-Contains $browserProcessed "status?.Status" "Browser batch bake must inspect preview status before skipping terminal rows."
 Assert-Contains $browserProcessed "StringComparison.OrdinalIgnoreCase" "Browser batch bake terminal status checks must be explicit."
 Assert-Contains $browserProcessed "|| string.Equals" "Browser batch bake must skip all processed terminal statuses."
+Assert-Contains $browserProcessed "AnimatorController" "Browser batch bake must skip controller-context blockers until deterministic baseLayerClip context is recovered."
 
 $browserKnownAvatar = Get-MethodBodyText $libraryBrowserMainForm "private static bool IsKnownProductionAvatarSource"
 Assert-Contains $browserKnownAvatar '"model_human_description"' "Browser production Avatar source must accept complete model HumanDescription."
@@ -211,6 +212,8 @@ Assert-Contains $browserOpenDiagnostic "|| string.Equals(status" "Browser double
 $browserPreviewPriority = Get-MethodBodyText $libraryBrowserPreviewCache "private static int BakeCacheStatusPriority"
 Assert-Contains $browserPreviewPriority "=> 45" "Browser preview status must keep needs_review above request_written rows."
 Assert-Contains $browserPreviewPriority "=> 44" "Browser preview status must keep static_pose above request_written rows."
+Assert-Contains $browserPreviewPriority "AnimatorController" "Browser preview status must keep controller-context blockers above request_written rows."
+Assert-Contains $browserPreviewPriority "=> 43" "Browser preview status must keep controller-context blockers above request_written rows."
 
 $browserGetStatus = Get-MethodBodyText $libraryBrowserPreviewCache "public AnimationPreviewStatus GetStatus"
 Assert-Contains $browserGetStatus "BakeCacheStatusPriority(sqliteBakeStatus) > BakeCacheStatusPriority(localStatus)" "Browser local preview state must not hide higher-priority SQLite terminal diagnostics."
@@ -219,6 +222,10 @@ $browserEnsureBake = Get-MethodBodyText $libraryBrowserPreviewCache "public asyn
 Assert-Contains $browserEnsureBake "ReadUnityBakeApplyStatus(report)" "Browser single Unity bake must read apply report status."
 Assert-Contains $browserEnsureBake "FormatBakeCacheStatus(" "Browser single Unity bake must preserve static_pose/needs_review/untrusted baked statuses."
 Assert-Contains $browserEnsureBake "BuildUntrustedBakeCacheMessage" "Browser single Unity bake must explain non-playable baked diagnostics."
+
+$browserFormatBakeStatus = Get-MethodBodyText $libraryBrowserPreviewCache "private static string FormatBakeCacheStatus"
+Assert-Contains $browserFormatBakeStatus "NeedsAnimatorControllerContext" "Browser bake status must classify humanMotion=false failures as controller-context blockers."
+Assert-Contains $browserFormatBakeStatus "AnimatorController" "Browser bake status must expose controller-context blockers explicitly."
 
 $avatarBlockers = Get-TextBetweenMarkers $coverageScript "def model_avatar_refresh_blockers" "def main():"
 Assert-Contains $avatarBlockers "temp_bake_ready_animation_candidates" "Coverage blocker diagnostics must subtract currently bake-ready Avatar oracle candidates."

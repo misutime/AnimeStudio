@@ -410,7 +410,8 @@ namespace AnimeStudio.LibraryBrowser
                 : FormatBakeCacheStatus(
                     !string.IsNullOrWhiteSpace(bakedGltf) && File.Exists(bakedGltf) ? "baked" : null,
                     bakedGltf,
-                    applyStatus);
+                    applyStatus,
+                    null);
             if (string.Equals(finalStatus, "未生成", StringComparison.OrdinalIgnoreCase))
             {
                 finalStatus = "烘焙失败";
@@ -829,7 +830,7 @@ FROM animation_bake_cache;";
                     var previewStatus = hasTrustedBakedGltf
                         ? new AnimationPreviewStatus("可播放", bakedGltf, applyReport ?? resultPath, message)
                         : new AnimationPreviewStatus(
-                            FormatBakeCacheStatus(status, bakedGltf, applyStatus),
+                            FormatBakeCacheStatus(status, bakedGltf, applyStatus, message),
                             displayGltf,
                             applyReport ?? resultPath,
                             BuildBakeCacheMessage(status, message, bakedGltf, applyReport, applyStatus));
@@ -890,6 +891,7 @@ FROM animation_bake_cache;";
                 "可播放" => 100,
                 "需人工验收" => 45,
                 "静态姿态" => 44,
+                "需 AnimatorController 上下文" => 43,
                 "已生成请求" => 40,
                 "已烘焙但需重建" => 30,
                 "烘焙失败" => 20,
@@ -898,8 +900,14 @@ FROM animation_bake_cache;";
             };
         }
 
-        private static string FormatBakeCacheStatus(string status, string bakedGltf, UnityBakeApplyStatus applyStatus)
+        private static string FormatBakeCacheStatus(string status, string bakedGltf, UnityBakeApplyStatus applyStatus, string cacheMessage)
         {
+            if (NeedsAnimatorControllerContext(applyStatus?.Message)
+                || NeedsAnimatorControllerContext(cacheMessage))
+            {
+                return "需 AnimatorController 上下文";
+            }
+
             if (string.Equals(applyStatus?.Status, "static_pose", StringComparison.OrdinalIgnoreCase))
             {
                 return "静态姿态";
@@ -921,6 +929,19 @@ FROM animation_bake_cache;";
                 null or "" => "未生成",
                 _ => status,
             };
+        }
+
+        private static bool NeedsAnimatorControllerContext(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return false;
+            }
+
+            return message.IndexOf("isHumanMotion=false", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("AnimatorController auxiliary", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("non-body layer", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("baseLayerClip", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool ShouldHideUntrustedBakedGltf(UnityBakeApplyStatus applyStatus)

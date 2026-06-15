@@ -3316,6 +3316,10 @@ namespace AnimeStudio.LibraryBrowser
                     {
                         stats.NeedsManualReview++;
                     }
+                    else if (string.Equals(status?.Status, "需 AnimatorController 上下文", StringComparison.OrdinalIgnoreCase))
+                    {
+                        stats.NeedsManualReview++;
+                    }
                     else if (string.Equals(status?.Status, "已烘焙但需重建", StringComparison.OrdinalIgnoreCase))
                     {
                         stats.NeedRebuild++;
@@ -4809,7 +4813,8 @@ namespace AnimeStudio.LibraryBrowser
             var status = _previewCache?.GetStatus(model, animation);
             return string.Equals(status?.Status, "可播放", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(status?.Status, "静态姿态", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(status?.Status, "需人工验收", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(status?.Status, "需人工验收", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status?.Status, "需 AnimatorController 上下文", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasProductionBakeOracle(LibraryAnimationCandidate animation)
