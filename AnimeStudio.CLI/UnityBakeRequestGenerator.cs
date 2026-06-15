@@ -852,7 +852,8 @@ namespace AnimeStudio.CLI
                 || !bakerText.Contains("AnimationClipLoadResult", StringComparison.Ordinal)
                 || !bakerText.Contains("animationClipSource", StringComparison.Ordinal)
                 || !bakerText.Contains("LoadImportedAvatarAsset", StringComparison.Ordinal)
-                || !bakerText.Contains("requires Unity to import the clip as humanMotion", StringComparison.Ordinal)
+                || !bakerText.Contains("clip.isHumanMotion", StringComparison.Ordinal)
+                || !bakerText.Contains("isHumanMotion=false", StringComparison.Ordinal)
                 || !skeletonText.Contains("request explicitly supplied unityAssetPaths.avatarAsset", StringComparison.OrdinalIgnoreCase))
             {
                 return "Unity project has an outdated AnimeStudio.UnityBake helper. Copy AnimeStudio.UnityBake\\Assets\\AnimeStudio.UnityBake into the Unity project's Assets directory so imported Avatar asset proof, AnimationClip source proof, and Humanoid humanMotion guards are written before trusted bake statistics are accepted: " + helperRoot;

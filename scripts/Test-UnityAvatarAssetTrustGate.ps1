@@ -115,7 +115,13 @@ Assert-Contains $bakeResult "requestedAnimationClip" "Bake result must record re
 Assert-Contains $bakeResult "importedAnimationClip" "Bake result must record importedAnimationClip."
 Assert-Contains $bakeResult "animationClipSource" "Bake result must record animationClipSource."
 Assert-Contains $bakeResult "clip.isHumanMotion" "Bake result must record Unity imported clip.isHumanMotion."
+Assert-Contains $bakeResult "AnimatorController auxiliary/non-body layer" "Unity helper humanMotion=false message must explain auxiliary/non-body clips instead of implying missing original asset only."
+Assert-Contains $bakeResult "deterministic baseLayerClip" "Unity helper humanMotion=false message must direct users back to deterministic controller context."
 Assert-Contains $bakeResult 'restPoseSource, "imported_unity_avatar_asset"' "Imported Avatar validity must require imported rest pose source."
+
+$helperVersionGate = Get-MethodBodyText $requestGenerator "private static string ValidateUnityBakeHelperVersion"
+Assert-Contains $helperVersionGate "clip.isHumanMotion" "Unity helper version gate must use a stable humanMotion guard marker."
+Assert-Contains $helperVersionGate "isHumanMotion=false" "Unity helper version gate must not depend on exact humanMotion error prose."
 
 $loadAnimationClip = Get-MethodBodyText $baker "private static AnimationClipLoadResult LoadAnimationClip"
 Assert-Contains $loadAnimationClip "unityAssetPaths.animationClip" "Unity helper must prefer explicit Unity AnimationClip asset paths."

@@ -35,7 +35,7 @@ namespace AnimeStudio.UnityBake
                 // PlayableGraph 只能采样到普通 Transform 曲线，身体主动作会丢失。
                 return Error(
                     request,
-                    "Humanoid/Muscle production bake requires Unity to import the clip as humanMotion, but imported clip.isHumanMotion=false. Refusing to write a misleading baked glTF; recover or reference the original Unity AnimationClip asset instead of the exported .anim fallback.");
+                    "Humanoid/Muscle production bake requires Unity to import the selected AnimationClip as humanMotion, but imported clip.isHumanMotion=false. This usually means the clip is an AnimatorController auxiliary/non-body layer, or the controller context still needs a deterministic baseLayerClip. Refusing to write a misleading baked glTF.");
             }
             var clipFilterStats = ApplyDiagnosticClipFilter(ref clip);
             Avatar explicitAvatar;
