@@ -127,8 +127,6 @@ FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 WHERE c.relation_source='explicit'
-  AND ($modelSelector='' OR m.name LIKE $modelLike OR m.output LIKE $modelLike)
-  AND ($animationSelector='' OR a.name LIKE $animationLike OR a.output LIKE $animationLike)
   AND (
     COALESCE(json_extract(c.raw_json, '$.requiresUnityBake'), 0)=1
     OR COALESCE(json_extract(c.raw_json, '$.hasMuscleClip'), 0)=1
@@ -136,10 +134,6 @@ WHERE c.relation_source='explicit'
     OR COALESCE(json_extract(c.raw_json, '$.humanoid.requiresUnityBake'), 0)=1
     OR json_extract(c.raw_json, '$.animatorControllerContext.baseLayerClip.clip.pathId') IS NOT NULL
   );";
-            command.Parameters.AddWithValue("$modelSelector", string.IsNullOrWhiteSpace(modelSelector) ? "" : modelSelector);
-            command.Parameters.AddWithValue("$animationSelector", string.IsNullOrWhiteSpace(animationSelector) ? "" : animationSelector);
-            command.Parameters.AddWithValue("$modelLike", SelectorLikePattern(modelSelector));
-            command.Parameters.AddWithValue("$animationLike", SelectorLikePattern(animationSelector));
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -316,51 +310,79 @@ WHERE c.relation_source='explicit'
                 return true;
             }
 
-            foreach (var value in values)
+            foreach (var item in selector.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-                if (value.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (MatchesOneSelector(item, values))
                 {
                     return true;
-                }
-
-                try
-                {
-                    if (Regex.IsMatch(value, selector, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-                    {
-                        return true;
-                    }
-                }
-                catch
-                {
-                    // selector 不是合法正则时，普通包含匹配已经覆盖手工输入场景。
                 }
             }
 
             return false;
         }
 
-        private static string SelectorLikePattern(string selector)
+        private static bool MatchesOneSelector(string selector, params string[] values)
         {
             if (string.IsNullOrWhiteSpace(selector))
             {
-                return "%";
+                return true;
             }
 
-            var normalized = selector.Trim();
-            if (normalized.StartsWith("^", StringComparison.Ordinal))
+            if (values.Any(x => string.Equals(x, selector, StringComparison.OrdinalIgnoreCase)))
             {
-                normalized = normalized[1..];
+                return true;
             }
-            if (normalized.EndsWith("$", StringComparison.Ordinal))
+
+            var selectorPath = NormalizeSelectorPath(selector);
+            var selectorFile = Path.GetFileName(selectorPath);
+            var selectorStem = Path.GetFileNameWithoutExtension(selectorPath);
+            foreach (var value in values.Where(x => !string.IsNullOrWhiteSpace(x)))
             {
-                normalized = normalized[..^1];
+                var valuePath = NormalizeSelectorPath(value);
+                if (string.Equals(valuePath, selectorPath, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(selectorFile) && string.Equals(Path.GetFileName(valuePath), selectorFile, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrWhiteSpace(selectorStem) && string.Equals(Path.GetFileNameWithoutExtension(valuePath), selectorStem, StringComparison.OrdinalIgnoreCase))
+                    || valuePath.EndsWith(selectorPath, StringComparison.OrdinalIgnoreCase)
+                    || selectorPath.EndsWith(valuePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
-            normalized = normalized.Replace(".*", "%").Replace("*", "%");
-            return "%" + normalized.Replace("'", "''") + "%";
+
+            // Browser 传入的是本机 glTF/.anim 绝对路径时，只做路径匹配，避免反斜杠被 Regex 误解。
+            if (LooksLikePathSelector(selectorPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var regex = new Regex(selector, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                return values.Where(x => !string.IsNullOrWhiteSpace(x)).Any(x => regex.IsMatch(x));
+            }
+            catch
+            {
+                return values.Where(x => !string.IsNullOrWhiteSpace(x)).Any(x => x.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+        }
+
+        private static string NormalizeSelectorPath(string value)
+        {
+            return (value ?? string.Empty)
+                .Trim()
+                .Trim('"')
+                .Replace('\\', '/')
+                .TrimEnd('/');
+        }
+
+        private static bool LooksLikePathSelector(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value)
+                && (value.IndexOf('/') >= 0
+                    || value.IndexOf('\\') >= 0
+                    || string.Equals(Path.GetExtension(value), ".gltf", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetExtension(value), ".glb", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetExtension(value), ".anim", StringComparison.OrdinalIgnoreCase));
         }
 
         private static string ResolveLibraryPath(string libraryRoot, string path)

@@ -168,16 +168,32 @@ Assert-Contains $clipRecoveryRequests "model_animation_candidates" "Imported Ani
 Assert-Contains $clipRecoveryRequests "c.relation_source='explicit'" "Imported AnimationClip recovery must only use explicit Unity relations."
 Assert-Contains $clipRecoveryRequests "animatorControllerContext.baseLayerClip.clip.pathId" "Imported AnimationClip recovery must include AnimatorController baseLayerClip context."
 Assert-Contains $clipRecoveryRequests "ResolveActualBakeAnimation" "Imported AnimationClip recovery must resolve the actual body-driving clip before copying assets."
+Assert-NotContains $clipRecoveryRequests "m.name LIKE `$modelLike" "Imported AnimationClip recovery must not rely on SQL LIKE for Browser absolute model paths."
+Assert-NotContains $clipRecoveryRequests "a.name LIKE `$animationLike" "Imported AnimationClip recovery must not rely on SQL LIKE for Browser absolute animation paths."
 
 $clipRecoveryActual = Get-MethodBodyText $animationClipRecovery "private static ActualBakeAnimation ResolveActualBakeAnimation"
 Assert-Contains $clipRecoveryActual "animatorControllerContext" "Imported AnimationClip recovery must use AnimatorController context when available."
 Assert-Contains $clipRecoveryActual "baseLayerClip" "Imported AnimationClip recovery must use baseLayerClip for auxiliary controller clips."
 Assert-Contains $clipRecoveryActual "explicitCandidateAnimation" "Imported AnimationClip recovery must keep direct explicit candidate clips when no controller base clip is present."
 
+$clipRecoverySelector = Get-MethodBodyText $animationClipRecovery "private static bool MatchesOneSelector"
+Assert-Contains $clipRecoverySelector "NormalizeSelectorPath" "Imported AnimationClip recovery must normalize Browser absolute path selectors."
+Assert-Contains $clipRecoverySelector "Path.GetFileNameWithoutExtension" "Imported AnimationClip recovery must match selected .anim filenames to SQLite asset outputs."
+Assert-Contains $clipRecoverySelector "LooksLikePathSelector" "Imported AnimationClip recovery must avoid treating Windows absolute paths as regex."
+
 $controllerRefresh = Get-MethodBodyText $controllerContextRefresh "public static string Refresh"
 Assert-Contains $controllerRefresh "blockedReasonCounts" "AnimatorController context refresh report must expose blocked reason counts."
 Assert-Contains $controllerRefresh "blockedItemsSample" "AnimatorController context refresh report must include blocked item samples."
 Assert-Contains $controllerRefresh "missing_animator_controller_relation" "AnimatorController context refresh must distinguish missing Animator.controller relations."
+
+$controllerRefreshSelector = Get-MethodBodyText $controllerContextRefresh "private static HashSet<string> SelectMatchingAssetOutputs"
+Assert-Contains $controllerRefreshSelector "LIMIT 200000" "AnimatorController context refresh must scan enough SQLite assets for Browser absolute path selectors."
+Assert-Contains $controllerRefreshSelector "MatchesSelector(selector, name, output)" "AnimatorController context refresh must filter selectors with path-aware C# matching."
+
+$controllerSelector = Get-MethodBodyText $controllerContextRefresh "private static bool MatchesOneSelector"
+Assert-Contains $controllerSelector "NormalizeSelectorPath" "AnimatorController context refresh must normalize Browser absolute path selectors."
+Assert-Contains $controllerSelector "Path.GetFileNameWithoutExtension" "AnimatorController context refresh must match selected .gltf/.anim filenames to SQLite asset outputs."
+Assert-Contains $controllerSelector "LooksLikePathSelector" "AnimatorController context refresh must avoid treating Windows absolute paths as regex."
 
 $programMain = Get-MethodBodyText $program "public static void Main"
 Assert-Before $programMain "TryPrepareAnimatorControllerBakeContext" "UnityBakeRequestGenerator.GenerateBatchFromLibrary" "CLI batch Unity bake must prepare AnimatorController context before generating requests."

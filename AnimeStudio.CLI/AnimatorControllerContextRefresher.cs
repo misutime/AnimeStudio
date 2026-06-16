@@ -281,14 +281,11 @@ WHERE c.relation_source='explicit'
 SELECT name, output
 FROM assets
 WHERE kind=$kind
-  AND (name LIKE $like OR output LIKE $like)
 ORDER BY name COLLATE NOCASE
-LIMIT $limit;";
+LIMIT 200000;";
             command.Parameters.AddWithValue("$kind", kind);
-            command.Parameters.AddWithValue("$like", SelectorLikePattern(selector));
-            command.Parameters.AddWithValue("$limit", Math.Max(1, limit));
             using var reader = command.ExecuteReader();
-            while (reader.Read())
+            while (reader.Read() && result.Count < Math.Max(1, limit))
             {
                 var name = reader.IsDBNull(0) ? null : reader.GetString(0);
                 var output = reader.IsDBNull(1) ? null : reader.GetString(1);
@@ -327,26 +324,6 @@ LIMIT $limit;";
             return $" AND {column} IN ({string.Join(",", names)})";
         }
 
-        private static string SelectorLikePattern(string selector)
-        {
-            if (string.IsNullOrWhiteSpace(selector))
-            {
-                return "%";
-            }
-
-            var normalized = selector.Trim();
-            if (normalized.StartsWith("^", StringComparison.Ordinal))
-            {
-                normalized = normalized[1..];
-            }
-            if (normalized.EndsWith("$", StringComparison.Ordinal))
-            {
-                normalized = normalized[..^1];
-            }
-            normalized = normalized.Replace(".*", "%").Replace("*", "%");
-            return "%" + normalized.Replace("'", "''") + "%";
-        }
-
         private static bool MatchesSelector(string selector, params string[] values)
         {
             if (string.IsNullOrWhiteSpace(selector))
@@ -354,31 +331,79 @@ LIMIT $limit;";
                 return true;
             }
 
-            foreach (var value in values)
+            foreach (var item in selector.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-                if (value.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (MatchesOneSelector(item, values))
                 {
                     return true;
-                }
-
-                try
-                {
-                    if (Regex.IsMatch(value, selector, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-                    {
-                        return true;
-                    }
-                }
-                catch
-                {
-                    // selector 不是合法正则时，上面的普通包含匹配已经覆盖手工输入场景。
                 }
             }
 
             return false;
+        }
+
+        private static bool MatchesOneSelector(string selector, params string[] values)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return true;
+            }
+
+            if (values.Any(x => string.Equals(x, selector, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            var selectorPath = NormalizeSelectorPath(selector);
+            var selectorFile = Path.GetFileName(selectorPath);
+            var selectorStem = Path.GetFileNameWithoutExtension(selectorPath);
+            foreach (var value in values.Where(x => !string.IsNullOrWhiteSpace(x)))
+            {
+                var valuePath = NormalizeSelectorPath(value);
+                if (string.Equals(valuePath, selectorPath, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(selectorFile) && string.Equals(Path.GetFileName(valuePath), selectorFile, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrWhiteSpace(selectorStem) && string.Equals(Path.GetFileNameWithoutExtension(valuePath), selectorStem, StringComparison.OrdinalIgnoreCase))
+                    || valuePath.EndsWith(selectorPath, StringComparison.OrdinalIgnoreCase)
+                    || selectorPath.EndsWith(valuePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            // Windows 绝对路径里的反斜杠会被 Regex 当转义符。Browser 传路径时只按路径规则匹配。
+            if (LooksLikePathSelector(selectorPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var regex = new Regex(selector, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                return values.Where(x => !string.IsNullOrWhiteSpace(x)).Any(x => regex.IsMatch(x));
+            }
+            catch
+            {
+                return values.Where(x => !string.IsNullOrWhiteSpace(x)).Any(x => x.IndexOf(selector, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+        }
+
+        private static string NormalizeSelectorPath(string value)
+        {
+            return (value ?? string.Empty)
+                .Trim()
+                .Trim('"')
+                .Replace('\\', '/')
+                .TrimEnd('/');
+        }
+
+        private static bool LooksLikePathSelector(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value)
+                && (value.IndexOf('/') >= 0
+                    || value.IndexOf('\\') >= 0
+                    || string.Equals(Path.GetExtension(value), ".gltf", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetExtension(value), ".glb", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetExtension(value), ".anim", StringComparison.OrdinalIgnoreCase));
         }
 
         private static JObject RefreshCandidateJson(
