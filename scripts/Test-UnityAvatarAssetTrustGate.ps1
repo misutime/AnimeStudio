@@ -130,8 +130,11 @@ Assert-Contains $loadAnimationClip "unityAssetPaths.animationClip" "Unity helper
 Assert-Contains $loadAnimationClip "animeStudioAssets.animation.anim" "Unity helper must still import AnimeStudio .anim sidecars when no explicit Unity clip asset is available."
 Assert-Contains $loadAnimationClip "AssetDatabase.LoadAssetAtPath<AnimationClip>" "Unity helper must load AnimationClip through Unity's AssetDatabase."
 Assert-Contains $loadAnimationClip "AssetDatabase.ImportAsset" "Unity helper must import copied .anim before loading it."
+Assert-Contains $loadAnimationClip "ImportAssetOptions.ForceUpdate" "Unity helper must force-import explicit Unity AnimationClip assets before loading them."
 Assert-Contains $loadAnimationClip 'source = "unityAssetPaths.animationClip"' "Unity helper must trace explicit Unity AnimationClip sources."
 Assert-Contains $loadAnimationClip 'source = "animeStudioAssets.animation.anim"' "Unity helper must trace imported sidecar AnimationClip sources."
+Assert-Contains $loadAnimationClip "The bake must fail instead of falling back to AnimeStudio sidecar animation" "Explicit Unity AnimationClip asset load failure must not fall back to sidecar animation."
+Assert-Before $loadAnimationClip "The bake must fail instead of falling back to AnimeStudio sidecar animation" "var sourceAnim" "Explicit Unity AnimationClip asset load failure must stop before sidecar fallback."
 
 $trustReport = Get-MethodBodyText $applier "private static AvatarTrustReport BuildAvatarTrustReport"
 Assert-Before $trustReport "if (!string.IsNullOrWhiteSpace(requestedAvatarAsset) && IsImportedAvatarAssetResultValid(result))" "var skeletonBoneCount" "Requested Avatar asset trust must be decided before HumanDescription fallback."

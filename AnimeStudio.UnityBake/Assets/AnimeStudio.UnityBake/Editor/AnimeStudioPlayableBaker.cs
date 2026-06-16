@@ -244,6 +244,10 @@ namespace AnimeStudio.UnityBake
             if (!string.IsNullOrWhiteSpace(request.unityAssetPaths.animationClip))
             {
                 var assetPath = AnimeStudioGltfSkeletonBuilder.NormalizeUnityAssetPath(request.unityAssetPaths.animationClip);
+                // 显式 AnimationClip asset 是 Unity 确定性来源，不能因为当前 AssetDatabase
+                // 还没刷新就静默回退到 sidecar 导入路径。
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+                AssetDatabase.Refresh();
                 var existing = AssetDatabase.LoadAssetAtPath<AnimationClip>(assetPath);
                 if (existing != null)
                 {
@@ -254,6 +258,10 @@ namespace AnimeStudio.UnityBake
                         source = "unityAssetPaths.animationClip",
                     };
                 }
+
+                throw new InvalidOperationException(
+                    "Request explicitly specified a Unity AnimationClip asset, but Unity could not load it as AnimationClip after import/refresh. " +
+                    $"The bake must fail instead of falling back to AnimeStudio sidecar animation: {assetPath}");
             }
 
             var sourceAnim = request.animeStudioAssets?.animation?.anim;
