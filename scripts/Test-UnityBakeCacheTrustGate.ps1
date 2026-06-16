@@ -228,6 +228,9 @@ $browserEnsureBake = Get-MethodBodyText $libraryBrowserPreviewCache "public asyn
 Assert-Contains $browserEnsureBake "ReadUnityBakeApplyStatus(report)" "Browser single Unity bake must read apply report status."
 Assert-Contains $browserEnsureBake "FormatBakeCacheStatus(" "Browser single Unity bake must preserve static_pose/needs_review/untrusted baked statuses."
 Assert-Contains $browserEnsureBake "BuildUntrustedBakeCacheMessage" "Browser single Unity bake must explain non-playable baked diagnostics."
+Assert-Contains $browserEnsureBake "var cachedAfterBake = RefreshSqliteBakeStatus(model, animation);" "Browser single Unity bake must refresh SQLite after the CLI exits, even for non-playable terminal statuses."
+Assert-NotContains $browserEnsureBake "&& !string.IsNullOrWhiteSpace(cachedAfterBake.GltfPath)" "Browser single Unity bake must not require a glTF path before accepting SQLite terminal statuses."
+Assert-Contains $browserEnsureBake "WriteState(directory, cachedAfterBake.Status" "Browser single Unity bake must write non-playable SQLite terminal statuses back to local preview state."
 
 $browserFormatBakeStatus = Get-MethodBodyText $libraryBrowserPreviewCache "private static string FormatBakeCacheStatus"
 Assert-Contains $browserFormatBakeStatus "NeedsAnimatorControllerContext" "Browser bake status must classify humanMotion=false failures as controller-context blockers."
@@ -237,8 +240,10 @@ Assert-Contains $browserFormatBakeStatus "needs_animator_controller_context" "Br
 $avatarBlockers = Get-TextBetweenMarkers $coverageScript "def model_avatar_refresh_blockers" "def main():"
 Assert-Contains $avatarBlockers "temp_bake_ready_animation_candidates" "Coverage blocker diagnostics must subtract currently bake-ready Avatar oracle candidates."
 Assert-Contains $avatarBlockers "effective_bake_ready_avatar_sql" "Coverage blocker diagnostics must use the current HumanDescription/imported Avatar oracle gate."
-Assert-NotContains $avatarBlockers "json_extract(c3.raw_json, '$.productionUnityBakeReady')" "Coverage blocker diagnostics must not count old productionUnityBakeReady flags as Avatar ready proof."
-Assert-NotContains $avatarBlockers "json_extract(c.raw_json, '$.productionUnityBakeBlocked'), 0)=1" "Coverage blocker diagnostics must not trust old productionUnityBakeBlocked flags as the blocker source."
+$legacyReadySql = "json_extract(c3.raw_json, '`$.productionUnityBakeReady')"
+$legacyBlockedSql = "json_extract(c.raw_json, '`$.productionUnityBakeBlocked'), 0)=1"
+Assert-NotContains $avatarBlockers $legacyReadySql "Coverage blocker diagnostics must not count old productionUnityBakeReady flags as Avatar ready proof."
+Assert-NotContains $avatarBlockers $legacyBlockedSql "Coverage blocker diagnostics must not trust old productionUnityBakeBlocked flags as the blocker source."
 
 Assert-Contains $cliUsage "untrusted_baked" "CLI docs must explain that untrusted baked rows re-enter the queue."
 Assert-Contains $cliUsage "cacheTrustGate=untrusted_requeue_overwriteable" "CLI docs must explain that untrusted baked rows are not protected terminal cache."

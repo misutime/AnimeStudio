@@ -384,14 +384,13 @@ namespace AnimeStudio.LibraryBrowser
             }
 
             var batchReport = Path.Combine(output, "unity_bake_batch_report.json");
-            var cachedAfterBake = process.ExitCode == 0 ? RefreshSqliteBakeStatus(model, animation) : null;
+            var cachedAfterBake = RefreshSqliteBakeStatus(model, animation);
             if (cachedAfterBake != null
-                && BakeCacheStatusPriority(cachedAfterBake) > BakeCacheStatusPriority(new AnimationPreviewStatus("未生成", null, null, null))
-                && !string.IsNullOrWhiteSpace(cachedAfterBake.GltfPath)
-                && File.Exists(cachedAfterBake.GltfPath))
+                && BakeCacheStatusPriority(cachedAfterBake) > BakeCacheStatusPriority(new AnimationPreviewStatus("未生成", null, null, null)))
             {
-                // CLI 可能发现该组合已经在 SQLite bake cache 中完成，于是本次 batch report 是 noop_all_cached、items 为空。
-                // 这种情况要相信 SQLite 中的生产缓存，不要把空 items 误判成 baked glTF 路径缺失。
+                // CLI 会把最终判断写回 SQLite。可播放结果会带可信 glTF；
+                // 但 isHumanMotion=false、静态姿态、缺控制器上下文这类终态本来就没有 glTF。
+                // Browser 必须接受这些非可播放终态，避免 UI 一直停在“烘焙中”。
                 WriteState(directory, cachedAfterBake.Status, cachedAfterBake.GltfPath, cachedAfterBake.ValidationPath, cachedAfterBake.Message);
                 return cachedAfterBake;
             }
