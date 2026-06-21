@@ -9,13 +9,178 @@ using System.Threading;
 using System.Threading.Tasks;
 using AnimeStudio.CLI.Properties;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using SharpGLTF.Schema2;
 using static AnimeStudio.CLI.Studio;
 
 namespace AnimeStudio.CLI 
 {
     public class Program
     {
-        public static void Main(string[] args) => CommandLine.Init(args);
+        public static void Main(string[] args)
+        {
+            if (args.Length > 0 && string.Equals(args[0], "compose-preview", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = ComposePreview(args.Skip(1).ToArray());
+                return;
+            }
+
+            CommandLine.Init(args);
+        }
+
+        private static int ComposePreview(string[] args)
+        {
+            Logger.Default = new ConsoleLogger();
+            var options = ParseCommandArgs(args);
+            var libraryRoot = GetOption(options, "library-root");
+            var model = GetOption(options, "model");
+            var animation = GetOption(options, "animation");
+            var output = GetOption(options, "output");
+            var report = GetOption(options, "report");
+            var game = FirstNotEmpty(GetOption(options, "game"), ReadManifestString(libraryRoot, "sourceGame"), "Normal");
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+                {
+                    return WriteComposeReport(report, "error", null, output, "Library root not found.", 2);
+                }
+                if (string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(animation))
+                {
+                    return WriteComposeReport(report, "error", null, output, "--model and --animation are required.", 2);
+                }
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    return WriteComposeReport(report, "error", null, output, "--output is required.", 2);
+                }
+
+                var outputFullPath = Path.GetFullPath(output);
+                var outputExtension = Path.GetExtension(outputFullPath);
+                var writesExplicitFile = !string.IsNullOrWhiteSpace(outputExtension);
+                if (writesExplicitFile
+                    && !string.Equals(outputExtension, ".gltf", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(outputExtension, ".glb", StringComparison.OrdinalIgnoreCase))
+                {
+                    return WriteComposeReport(report, "error", null, outputFullPath, "compose-preview output must be .gltf, .glb, or a directory.", 2);
+                }
+
+                var outputDirectory = !writesExplicitFile
+                    ? outputFullPath
+                    : Path.GetDirectoryName(outputFullPath) ?? Directory.GetCurrentDirectory();
+
+                var generated = PreviewGltfGenerator.GenerateFromLibrary(
+                    Path.GetFullPath(libraryRoot),
+                    game,
+                    model,
+                    animation,
+                    outputDirectory,
+                    sourceRootOverride: null);
+
+                if (string.IsNullOrWhiteSpace(generated) || !File.Exists(generated))
+                {
+                    return WriteComposeReport(report, "error", generated, outputFullPath, "Preview generation failed.", 1);
+                }
+
+                var finalOutput = generated;
+                if (writesExplicitFile)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(outputFullPath) ?? Directory.GetCurrentDirectory());
+                    if (string.Equals(outputExtension, ".glb", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ModelRoot.Load(generated).SaveGLB(outputFullPath);
+                    }
+                    else
+                    {
+                        File.Copy(generated, outputFullPath, overwrite: true);
+                    }
+                    finalOutput = outputFullPath;
+                }
+
+                return WriteComposeReport(report, "ok", generated, finalOutput, "Preview generated.", 0);
+            }
+            catch (Exception e)
+            {
+                return WriteComposeReport(report, "error", null, output, e.GetType().Name + ": " + e.Message, 1);
+            }
+        }
+
+        private static Dictionary<string, string> ParseCommandArgs(string[] args)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < args.Length; i++)
+            {
+                var key = args[i];
+                if (!key.StartsWith("--", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var name = key[2..];
+                var value = i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal)
+                    ? args[++i]
+                    : "true";
+                result[name] = value;
+            }
+
+            return result;
+        }
+
+        private static string GetOption(Dictionary<string, string> options, string name)
+        {
+            return options.TryGetValue(name, out var value) ? value : null;
+        }
+
+        private static string ReadManifestString(string libraryRoot, string propertyName)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot))
+            {
+                return null;
+            }
+
+            var manifestPath = Path.Combine(libraryRoot, "asset_library.json");
+            if (!File.Exists(manifestPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                return (string)JObject.Parse(File.ReadAllText(manifestPath))[propertyName];
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static int WriteComposeReport(string reportPath, string status, string generated, string output, string message, int exitCode)
+        {
+            var payload = new JObject
+            {
+                ["status"] = status,
+                ["generated"] = generated,
+                ["output"] = output,
+                ["message"] = message,
+                ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O")
+            };
+
+            if (!string.IsNullOrWhiteSpace(reportPath))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath)) ?? Directory.GetCurrentDirectory());
+                File.WriteAllText(reportPath, payload.ToString(Formatting.Indented));
+            }
+
+            if (string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Info(message);
+            }
+            else
+            {
+                Logger.Error(message);
+            }
+
+            return exitCode;
+        }
 
         public static void Run(Options o)
         {

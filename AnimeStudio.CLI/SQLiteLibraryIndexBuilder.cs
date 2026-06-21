@@ -88,6 +88,10 @@ namespace AnimeStudio.CLI
 
             using var transaction = connection.BeginTransaction();
             InsertMetadata(connection, transaction, "schemaVersion", "1");
+            InsertMetadata(connection, transaction, "libraryKind", "AssetLibrary");
+            InsertMetadata(connection, transaction, "sourceTool", "AnimeStudio");
+            InsertMetadata(connection, transaction, "sourceGame", "");
+            InsertMetadata(connection, transaction, "capabilities", "{\"models\":true,\"animations\":true,\"animationPreviewComposer\":\"AnimeStudio.CLI compose-preview\"}");
             InsertMetadata(connection, transaction, "root", root);
             InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。SQLite v1 indexes exported Library/AudioLibrary artifacts; raw Unity source graph indexing will extend this schema later.");
@@ -124,8 +128,10 @@ namespace AnimeStudio.CLI
             RunStage("commit imports", () => transaction.Commit());
             RunStage("create sql indexes", () => CreateIndexes(connection));
             counts["modelAnimationCandidateModelSummary"] = RunCountStage("model animation candidate summaries", () => BuildModelAnimationCandidateSummaries(connection));
+            counts["modelAnimationRelations"] = RunCountStage("unified model animation relations", () => BuildUnifiedModelAnimationRelations(connection));
 
             RunStage("write summary", () => WriteSummary(connection, root, dbPath, counts, skipFileIndex, skipSidecarScan, sourceIndexPath));
+            RunStage("write asset library manifest", () => WriteUnifiedAssetLibraryManifest(root, counts));
             Logger.Info($"SQLite library index written: {dbPath}; elapsed={totalWatch.Elapsed.TotalSeconds:F1}s");
             return dbPath;
         }
@@ -146,10 +152,15 @@ CREATE TABLE assets (
     container TEXT,
     source TEXT,
     path_id INTEGER,
+    object_path TEXT,
     output TEXT,
+    format TEXT,
+    skeleton_path TEXT,
+    skeleton_name TEXT,
     audio_kind TEXT,
     animation_type TEXT,
     skeleton_hash TEXT,
+    validation_status TEXT,
     raw_json TEXT NOT NULL
 );
 CREATE TABLE unity_assets (
@@ -228,6 +239,49 @@ CREATE TABLE model_animation_candidate_animation_summary (
     internal_humanoid_model_count INTEGER NOT NULL,
     legacy_unity_bake_model_count INTEGER NOT NULL
 );
+CREATE TABLE model_animation_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_asset_id INTEGER,
+    model_name TEXT,
+    model_source TEXT,
+    model_output TEXT NOT NULL,
+    skeleton_path TEXT,
+    skeleton_name TEXT,
+    skeleton_hash TEXT,
+    relation_kind TEXT,
+    confidence TEXT,
+    animation_count INTEGER,
+    raw_json TEXT
+);
+CREATE TABLE relation_animations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relation_id INTEGER NOT NULL,
+    animation_asset_id INTEGER,
+    name TEXT,
+    source TEXT,
+    output TEXT NOT NULL,
+    status TEXT,
+    relation_source TEXT,
+    usage_evidence TEXT,
+    is_explicit_usage INTEGER,
+    is_skeleton_compatible INTEGER,
+    validation_status TEXT,
+    duration REAL,
+    frame_count INTEGER,
+    track_count INTEGER,
+    track_coverage REAL,
+    hierarchy_compatible INTEGER,
+    is_container_animation INTEGER,
+    is_usable_candidate INTEGER,
+    confidence_tier TEXT,
+    relationship_kind TEXT,
+    recommended_use TEXT,
+    evidence_summary TEXT,
+    is_deterministic_usage INTEGER,
+    is_compatibility_candidate INTEGER,
+    raw_json TEXT,
+    FOREIGN KEY(relation_id) REFERENCES model_animation_relations(id)
+);
 CREATE TABLE animation_preview_cache (
     model_output TEXT NOT NULL,
     animation_output TEXT NOT NULL,
@@ -274,6 +328,45 @@ CREATE TABLE files (
     kind TEXT,
     size INTEGER,
     modified_utc TEXT
+);
+CREATE TABLE model_validation (
+    asset_id INTEGER PRIMARY KEY,
+    output TEXT,
+    status TEXT,
+    mesh_count INTEGER,
+    material_count INTEGER,
+    texture_count INTEGER,
+    skin_count INTEGER,
+    bone_count INTEGER,
+    animation_count INTEGER,
+    bbox_min_x REAL,
+    bbox_min_y REAL,
+    bbox_min_z REAL,
+    bbox_max_x REAL,
+    bbox_max_y REAL,
+    bbox_max_z REAL,
+    raw_json TEXT
+);
+CREATE TABLE texture_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER,
+    texture_output TEXT,
+    usage TEXT,
+    raw_json TEXT
+);
+CREATE TABLE material_sidecars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER,
+    material_output TEXT,
+    material_name TEXT,
+    raw_json TEXT
+);
+CREATE TABLE library_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_kind TEXT NOT NULL,
+    status TEXT,
+    created_utc TEXT,
+    summary_json TEXT
 );");
         }
 
@@ -303,6 +396,10 @@ CREATE TABLE files (
                 "CREATE INDEX idx_model_animation_candidates_source_animation ON model_animation_candidates(relation_source, animation_output);",
                 "CREATE INDEX idx_model_animation_candidate_model_summary_count ON model_animation_candidate_model_summary(explicit_count);",
                 "CREATE INDEX idx_model_animation_candidate_animation_summary_count ON model_animation_candidate_animation_summary(explicit_model_count);",
+                "CREATE INDEX idx_model_animation_relations_model ON model_animation_relations(model_output);",
+                "CREATE INDEX idx_relation_animations_relation ON relation_animations(relation_id, is_usable_candidate);",
+                "CREATE INDEX idx_relation_animations_output ON relation_animations(output);",
+                "CREATE INDEX idx_relation_animations_source ON relation_animations(relation_source, output);",
                 "CREATE INDEX idx_export_manifest_output ON export_manifest(output);",
                 "CREATE INDEX idx_files_kind ON files(kind);",
             };
@@ -1374,6 +1471,152 @@ GROUP BY animation_output;", transaction);
 
             transaction.Commit();
             return ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_candidate_model_summary;");
+        }
+
+        private static long BuildUnifiedModelAnimationRelations(SqliteConnection connection)
+        {
+            using var transaction = connection.BeginTransaction();
+            Execute(connection, "DELETE FROM relation_animations;", transaction);
+            Execute(connection, "DELETE FROM model_animation_relations;", transaction);
+            Execute(connection, "DELETE FROM library_reports WHERE report_kind='asset_library_unified_projection';", transaction);
+
+            Execute(connection, @"
+INSERT INTO model_animation_relations(
+    model_asset_id,
+    model_name,
+    model_source,
+    model_output,
+    skeleton_path,
+    skeleton_name,
+    skeleton_hash,
+    relation_kind,
+    confidence,
+    animation_count,
+    raw_json
+)
+SELECT
+    MIN(m.id) AS model_asset_id,
+    COALESCE(MAX(m.name), json_extract(MIN(c.raw_json), '$.model.name'), c.model_output) AS model_name,
+    MAX(m.source) AS model_source,
+    c.model_output,
+    COALESCE(MAX(m.skeleton_path), '') AS skeleton_path,
+    COALESCE(MAX(m.skeleton_name), '') AS skeleton_name,
+    COALESCE(MAX(m.skeleton_hash), '') AS skeleton_hash,
+    'deterministicUsage' AS relation_kind,
+    'explicit' AS confidence,
+    COUNT(*) AS animation_count,
+    json_object(
+        'source', 'model_animation_candidates',
+        'relationSource', 'explicit',
+        'animationCount', COUNT(*)
+    ) AS raw_json
+FROM model_animation_candidates c
+LEFT JOIN assets m ON m.kind='Model' AND m.output=c.model_output
+WHERE c.relation_source='explicit'
+GROUP BY c.model_output;", transaction);
+
+            Execute(connection, @"
+INSERT INTO relation_animations(
+    relation_id,
+    animation_asset_id,
+    name,
+    source,
+    output,
+    status,
+    relation_source,
+    usage_evidence,
+    is_explicit_usage,
+    is_skeleton_compatible,
+    validation_status,
+    duration,
+    frame_count,
+    track_count,
+    track_coverage,
+    hierarchy_compatible,
+    is_container_animation,
+    is_usable_candidate,
+    confidence_tier,
+    relationship_kind,
+    recommended_use,
+    evidence_summary,
+    is_deterministic_usage,
+    is_compatibility_candidate,
+    raw_json
+)
+SELECT
+    r.id AS relation_id,
+    a.id AS animation_asset_id,
+    COALESCE(a.name, json_extract(c.raw_json, '$.animation.name'), json_extract(c.raw_json, '$.animationName'), c.animation_output) AS name,
+    a.source AS source,
+    c.animation_output AS output,
+    c.status AS status,
+    c.relation_source AS relation_source,
+    'explicitUnityRelation' AS usage_evidence,
+    1 AS is_explicit_usage,
+    1 AS is_skeleton_compatible,
+    COALESCE(json_extract(c.raw_json, '$.validationStatus'), '') AS validation_status,
+    CAST(COALESCE(json_extract(a.raw_json, '$.duration'), json_extract(a.raw_json, '$.length'), json_extract(c.raw_json, '$.duration'), 0) AS REAL) AS duration,
+    CAST(COALESCE(json_extract(a.raw_json, '$.frameCount'), json_extract(c.raw_json, '$.frameCount'), 0) AS INTEGER) AS frame_count,
+    CAST(COALESCE(json_extract(a.raw_json, '$.trackCount'), json_extract(a.raw_json, '$.curveCount'), json_extract(c.raw_json, '$.trackCount'), 0) AS INTEGER) AS track_count,
+    0 AS track_coverage,
+    0 AS hierarchy_compatible,
+    0 AS is_container_animation,
+    CASE
+        WHEN COALESCE(c.status, '') IN ('missing_model', 'missing_animation', 'invalid', 'error') THEN 0
+        ELSE 1
+    END AS is_usable_candidate,
+    'ExplicitUnity' AS confidence_tier,
+    'deterministicUsage' AS relationship_kind,
+    'defaultTrusted' AS recommended_use,
+    'model_animation_candidates.explicit' AS evidence_summary,
+    1 AS is_deterministic_usage,
+    0 AS is_compatibility_candidate,
+    c.raw_json AS raw_json
+FROM model_animation_candidates c
+JOIN model_animation_relations r ON r.model_output=c.model_output
+LEFT JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
+WHERE c.relation_source='explicit';", transaction);
+
+            var report = new JObject
+            {
+                ["modelsWithAnimations"] = ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_relations;", transaction),
+                ["relationAnimations"] = ScalarLong(connection, "SELECT COUNT(*) FROM relation_animations;", transaction),
+                ["rule"] = "Unified AssetLibrary v1 projection imports only explicit Unity model-animation candidates; fallback/name/structural matches remain diagnostics."
+            };
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = @"
+INSERT INTO library_reports(report_kind, status, created_utc, summary_json)
+VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
+                command.Parameters.AddWithValue("$createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                command.Parameters.AddWithValue("$summaryJson", report.ToString(Formatting.None));
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            return ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_relations;");
+        }
+
+        private static void WriteUnifiedAssetLibraryManifest(string root, Dictionary<string, long> counts)
+        {
+            var manifest = new JObject
+            {
+                ["schemaVersion"] = 1,
+                ["libraryKind"] = "AssetLibrary",
+                ["libraryName"] = new DirectoryInfo(root).Name,
+                ["sourceTool"] = "AnimeStudio",
+                ["sourceGame"] = "",
+                ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["index"] = "library_index.db",
+                ["capabilities"] = new JObject
+                {
+                    ["models"] = true,
+                    ["animations"] = true,
+                    ["animationPreviewComposer"] = "AnimeStudio.CLI compose-preview"
+                }
+            };
+            File.WriteAllText(Path.Combine(root, "asset_library.json"), manifest.ToString(Formatting.Indented));
         }
 
         private static bool ShouldSkipSQLiteArtifact(string root, string fullPath, string fullDbPath)
@@ -3083,6 +3326,15 @@ WHERE s.explicit_model_count > 0;";
         private static long ScalarLong(SqliteConnection connection, string sql)
         {
             using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = sql;
+            return command.ExecuteScalar() is long value ? value : 0;
+        }
+
+        private static long ScalarLong(SqliteConnection connection, string sql, SqliteTransaction transaction)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = sql;
             return command.ExecuteScalar() is long value ? value : 0;
