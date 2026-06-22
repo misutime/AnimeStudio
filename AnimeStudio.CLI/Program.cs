@@ -192,6 +192,36 @@ namespace AnimeStudio.CLI
                 Studio.IncludeVfx = o.IncludeVfx;
                 CliExportOptions.IncludeVfx = o.IncludeVfx;
 
+                if (o.CheckUnityBakeAcceleratedWorker)
+                {
+                    if (!UnityBakeAcceleratedWorkerVerifier.Check(o.UnityProject?.FullName, o.UnityEditor?.FullName))
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
+                if (o.RunUnityBakeAccelerated != null)
+                {
+                    var ok = string.IsNullOrWhiteSpace(o.UnityBakeAcceleratedWorkerQueue?.FullName)
+                        ? UnityBakeAcceleratedRunner.RunOnce(
+                            o.RunUnityBakeAccelerated.FullName,
+                            o.UnityProject?.FullName,
+                            o.UnityEditor?.FullName,
+                            o.UnityBakeOutput?.FullName)
+                        : UnityBakeAcceleratedRunner.Queue(
+                            o.RunUnityBakeAccelerated.FullName,
+                            o.UnityProject?.FullName,
+                            o.UnityEditor?.FullName,
+                            o.UnityBakeAcceleratedWorkerQueue.FullName,
+                            o.UnityBakeOutput?.FullName);
+                    if (!ok)
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
                 if (o.ConvertModelTextures != null)
                 {
                     TexturePostProcessor.ConvertModelTextures(

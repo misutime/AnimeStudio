@@ -30,6 +30,13 @@ namespace AnimeStudio.UnityBake
                 return;
             }
 
+            var acceleratedRequestPath = GetArgument("-animeStudioAcceleratedBakeRequest");
+            if (!string.IsNullOrWhiteSpace(acceleratedRequestPath))
+            {
+                AnimeStudioUnityBakeAcceleratedWorker.RunOnce();
+                return;
+            }
+
             var requestPath = GetArgument("-animeStudioBakeRequest");
             if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
             {

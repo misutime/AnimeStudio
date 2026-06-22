@@ -136,6 +136,9 @@ namespace AnimeStudio.CLI
                 optionsBinder.GenerateUnityBakeRequest,
                 optionsBinder.GenerateUnityBakeRequestFromLibrary,
                 optionsBinder.BakeAnimationPreviewsFromLibrary,
+                optionsBinder.CheckUnityBakeAcceleratedWorker,
+                optionsBinder.RunUnityBakeAccelerated,
+                optionsBinder.UnityBakeAcceleratedWorkerQueue,
                 optionsBinder.UnityProject,
                 optionsBinder.UnityEditor,
                 optionsBinder.UnityBakeModelPrefab,
@@ -255,6 +258,9 @@ namespace AnimeStudio.CLI
         public FileInfo GenerateUnityBakeRequest { get; set; }
         public DirectoryInfo GenerateUnityBakeRequestFromLibrary { get; set; }
         public DirectoryInfo BakeAnimationPreviewsFromLibrary { get; set; }
+        public bool CheckUnityBakeAcceleratedWorker { get; set; }
+        public FileInfo RunUnityBakeAccelerated { get; set; }
+        public DirectoryInfo UnityBakeAcceleratedWorkerQueue { get; set; }
         public DirectoryInfo UnityProject { get; set; }
         public FileInfo UnityEditor { get; set; }
         public string UnityBakeModelPrefab { get; set; }
@@ -369,6 +375,9 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> GenerateUnityBakeRequest;
         public readonly Option<DirectoryInfo> GenerateUnityBakeRequestFromLibrary;
         public readonly Option<DirectoryInfo> BakeAnimationPreviewsFromLibrary;
+        public readonly Option<bool> CheckUnityBakeAcceleratedWorker;
+        public readonly Option<FileInfo> RunUnityBakeAccelerated;
+        public readonly Option<DirectoryInfo> UnityBakeAcceleratedWorkerQueue;
         public readonly Option<DirectoryInfo> UnityProject;
         public readonly Option<FileInfo> UnityEditor;
         public readonly Option<string> UnityBakeModelPrefab;
@@ -481,6 +490,9 @@ namespace AnimeStudio.CLI
             GenerateUnityBakeRequest = new Option<FileInfo>("--generate_unity_bake_request", "Generate a Unity Editor bake request from model_animations.json. Humanoid/Muscle production can use this to bake sampled TRS back into glTF.").LegalFilePathsOnly();
             GenerateUnityBakeRequestFromLibrary = new Option<DirectoryInfo>("--generate_unity_bake_request_from_library", "Generate and optionally run one Unity bake request from an explicit model-animation candidate in library_index.db.").LegalFilePathsOnly();
             BakeAnimationPreviewsFromLibrary = new Option<DirectoryInfo>("--bake_animation_previews_from_library", "Batch production path: select explicit Humanoid/Muscle candidates from library_index.db, run Unity bake, and write baked glTF previews.").LegalFilePathsOnly();
+            CheckUnityBakeAcceleratedWorker = new Option<bool>("--check_unity_bake_accelerated_worker", "Experimental: check a preconfigured Unity 6 AnimeStudioUnityBakeWorker project and UnityBakeAccelerated helper markers.");
+            RunUnityBakeAccelerated = new Option<FileInfo>("--run_unity_bake_accelerated", "Experimental: run a standalone UnityBakeAccelerated request JSON. This does not read or write Library indexes.").LegalFilePathsOnly();
+            UnityBakeAcceleratedWorkerQueue = new Option<DirectoryInfo>("--unity_bake_accelerated_worker_queue", "Experimental: queue directory for a persistent UnityBakeAccelerated worker. Only used with --run_unity_bake_accelerated.").LegalFilePathsOnly();
             UnityProject = new Option<DirectoryInfo>("--unity_project", "Unity project that contains the AnimeStudio.UnityBake helper scripts. Required when --run_unity_bake is used.").LegalFilePathsOnly();
             UnityEditor = new Option<FileInfo>("--unity_editor", "Unity.exe path used with --run_unity_bake. If omitted, only the request JSON is written.").LegalFilePathsOnly();
             UnityBakeModelPrefab = new Option<string>("--unity_model_prefab", "Unity project asset path for the prepared model prefab, for example Assets/AnimeStudioBake/Input/Bill.prefab.");
@@ -685,6 +697,9 @@ namespace AnimeStudio.CLI
                 GenerateUnityBakeRequest = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequest),
                 GenerateUnityBakeRequestFromLibrary = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequestFromLibrary),
                 BakeAnimationPreviewsFromLibrary = bindingContext.ParseResult.GetValueForOption(BakeAnimationPreviewsFromLibrary),
+                CheckUnityBakeAcceleratedWorker = bindingContext.ParseResult.GetValueForOption(CheckUnityBakeAcceleratedWorker),
+                RunUnityBakeAccelerated = bindingContext.ParseResult.GetValueForOption(RunUnityBakeAccelerated),
+                UnityBakeAcceleratedWorkerQueue = bindingContext.ParseResult.GetValueForOption(UnityBakeAcceleratedWorkerQueue),
                 UnityProject = bindingContext.ParseResult.GetValueForOption(UnityProject),
                 UnityEditor = bindingContext.ParseResult.GetValueForOption(UnityEditor),
                 UnityBakeModelPrefab = bindingContext.ParseResult.GetValueForOption(UnityBakeModelPrefab),
