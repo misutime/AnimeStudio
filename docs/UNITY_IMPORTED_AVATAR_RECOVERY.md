@@ -1,15 +1,17 @@
-# Unity Imported Avatar 恢复说明
+# Unity Imported Avatar 恢复说明（废弃诊断）
 
-本文记录原神这类缺少完整 `HumanDescription.skeletonBones` 的库，如何恢复可供 Unity bake 使用的原始 `UnityEngine.Avatar` asset。
+本文记录原神这类缺少完整 `HumanDescription.skeletonBones` 的历史库，过去如何恢复可供外部 Unity 工程 bake 使用的原始 `UnityEngine.Avatar` asset。
+
+> 当前规则：这条路径已经废弃，只能作为旧库迁移、Unity oracle 对照和排错诊断资料。这里废弃的是“用户新建 Unity 工程、安装插件/helper、启动 Unity Editor/Player/批处理进程，再让 AnimeStudio 通过外部 Unity 程序采样/烘焙动画”的复杂链路。以后生产级动画支持必须由 AnimeStudio 直接导出可使用的 glTF TRS / weights 数据；如果某个游戏必须经过 Unity Editor、Unity Player、Unity 工程、PlayableGraph、AnimationClipPlayable 或导入 Avatar/AnimationClip 后重新 bake 才能恢复动画，本项目应拒绝把它列为生产级动画支持目标。
 
 ## 主规则
 
 - 只从 `library_index.db` 里模型 `avatar.source` + `avatar.pathId` 指向的 Unity 原对象恢复 Avatar。
 - 不使用骨骼数量、骨骼名、目录名或当前姿态推断 Avatar/动画关系。
-- 恢复出的 `.asset` 必须放到 Unity bake 工程的 `Assets/AnimeStudioBake/ImportedAvatar/`。
-- `.asset` 必须经过 Unity 探针验证：`isValid=true` 且 `isHuman=true` 才能进入 Browser 和 bake 主流程。
-- 验证失败的 Avatar 会移到 `Assets/AnimeStudioBake/InvalidImportedAvatar/`，不能用于生产 bake。
-- 恢复后会把通过探针的 ImportedAvatar 同步回 `library_index.db` 的显式 Humanoid/Muscle 候选，写入 `unityAvatarAsset`、`nextAction=generate_unity_baked_gltf` 和 `productionAnimationPath=UnityBakeToGltf`，避免 Browser 继续显示旧的“需 Avatar 元数据”。
+- 恢复出的 `.asset` 曾经要求放到 Unity bake 工程的 `Assets/AnimeStudioBake/ImportedAvatar/`。
+- `.asset` 曾经要求经过 Unity 探针验证：`isValid=true` 且 `isHuman=true` 才能进入旧 Browser 和 bake 流程。
+- 验证失败的 Avatar 会移到 `Assets/AnimeStudioBake/InvalidImportedAvatar/`，不能用于任何可信动画结论。
+- 旧流程会把通过探针的 ImportedAvatar 同步回 `library_index.db` 的显式 Humanoid/Muscle 候选，写入 `unityAvatarAsset`、`nextAction=generate_unity_baked_gltf` 和 `productionAnimationPath=UnityBakeToGltf`。这些字段现在只能当历史诊断状态，不能作为生产可播放证明。
 
 ## CLI 用法
 

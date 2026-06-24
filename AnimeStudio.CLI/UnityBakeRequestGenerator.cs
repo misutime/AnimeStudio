@@ -24,15 +24,21 @@ namespace AnimeStudio.CLI
             string unityEditor,
             string unityModelPrefab,
             string unityAnimationClip,
+            string unityAnimatorController,
             string unityAvatarAsset,
             string unityBakeOutput,
             int frameRate,
             bool probeMuscles,
+            bool enableIkGoalDriver,
+            bool rebuildEditorCurveClip,
+            bool ignoreImportedAvatar,
+            string clipFilterModeOverride,
             bool runUnityBake,
             string unityBakeWorkerQueue = null,
             string bakedGltfOutput = null,
             string bakedFbxOutput = null,
-            string blender = null
+            string blender = null,
+            bool sampleRecoverableSkippedLayersDiagnostic = false
         )
         {
             if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
@@ -60,15 +66,21 @@ namespace AnimeStudio.CLI
                 unityEditor,
                 unityModelPrefab,
                 unityAnimationClip,
+                unityAnimatorController,
                 unityAvatarAsset,
                 unityBakeOutput,
                 frameRate,
                 probeMuscles,
+                enableIkGoalDriver,
+                rebuildEditorCurveClip,
+                ignoreImportedAvatar,
+                clipFilterModeOverride,
                 runUnityBake,
                 unityBakeWorkerQueue,
                 bakedGltfOutput,
                 bakedFbxOutput,
-                blender);
+                blender,
+                sampleRecoverableSkippedLayersDiagnostic: sampleRecoverableSkippedLayersDiagnostic);
         }
 
         public static void GenerateFromLibrary(
@@ -81,16 +93,22 @@ namespace AnimeStudio.CLI
             string unityEditor,
             string unityModelPrefab,
             string unityAnimationClip,
+            string unityAnimatorController,
             string unityAvatarAsset,
             string unityBakeOutput,
             int frameRate,
             bool probeMuscles,
+            bool enableIkGoalDriver,
+            bool rebuildEditorCurveClip,
+            bool ignoreImportedAvatar,
+            string clipFilterModeOverride,
             bool runUnityBake,
             string unityBakeWorkerQueue = null,
             string bakedGltfOutput = null,
             string bakedFbxOutput = null,
             string blender = null,
-            string indexPath = null
+            string indexPath = null,
+            bool sampleRecoverableSkippedLayersDiagnostic = false
         )
         {
             if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
@@ -113,6 +131,7 @@ namespace AnimeStudio.CLI
             }
             var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
             var importedAnimationClips = DiscoverImportedAnimationClips(unityProject, libraryRoot);
+            var importedAnimatorControllers = DiscoverImportedAnimatorControllers(unityProject, libraryRoot);
             var selection = SelectExplicitCandidateFromLibraryDb(
                 dbPath,
                 modelSelector,
@@ -133,6 +152,7 @@ namespace AnimeStudio.CLI
 
             var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets).AssetPath;
             var effectiveUnityAnimationClip = ResolveUnityAnimationClipForSelection(selection, unityAnimationClip, importedAnimationClips).AssetPath;
+            var effectiveUnityAnimatorController = ResolveUnityAnimatorControllerForSelection(selection, unityAnimatorController, importedAnimatorControllers).AssetPath;
             ResolveSelectionLibraryPaths(selection, libraryRoot);
             GenerateSelection(
                 dbPath,
@@ -143,15 +163,115 @@ namespace AnimeStudio.CLI
                 unityEditor,
                 unityModelPrefab,
                 effectiveUnityAnimationClip,
+                effectiveUnityAnimatorController,
                 effectiveUnityAvatarAsset,
                 unityBakeOutput,
                 frameRate,
                 probeMuscles,
+                enableIkGoalDriver,
+                rebuildEditorCurveClip,
+                ignoreImportedAvatar,
+                clipFilterModeOverride,
                 runUnityBake,
                 unityBakeWorkerQueue,
                 bakedGltfOutput,
                 bakedFbxOutput,
-                blender);
+                blender,
+                importedAnimationClips,
+                sampleRecoverableSkippedLayersDiagnostic: sampleRecoverableSkippedLayersDiagnostic);
+        }
+
+        public static string GenerateAcceleratedFromLibrary(
+            string libraryRoot,
+            string modelSelector,
+            string animationSelector,
+            string outputDirectory,
+            string unityProject,
+            string unityEditor,
+            string unityAnimatorController,
+            string unityAvatarAsset,
+            string unityBakeOutput,
+            int frameRate,
+            bool runUnityBake,
+            string clipFilterModeOverride = null,
+            bool allowGeneratedControllerDiagnostic = false,
+            string unityBakeWorkerQueue = null,
+            string indexPath = null,
+            bool sampleRecoverableSkippedLayersDiagnostic = false
+        )
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                Logger.Error($"Library root not found: {libraryRoot}");
+                return null;
+            }
+
+            var dbPath = string.IsNullOrWhiteSpace(indexPath)
+                ? Path.Combine(libraryRoot, "library_index.db")
+                : indexPath;
+            if (!File.Exists(dbPath))
+            {
+                Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
+                return null;
+            }
+            if (!ValidateSuppliedUnityAvatarAssetScope(modelSelector, unityAvatarAsset))
+            {
+                return null;
+            }
+
+            var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
+            var importedAnimationClips = DiscoverImportedAnimationClips(unityProject, libraryRoot);
+            var importedAnimatorControllers = DiscoverImportedAnimatorControllers(unityProject, libraryRoot);
+            var selection = SelectExplicitCandidateFromLibraryDb(
+                dbPath,
+                modelSelector,
+                animationSelector,
+                allowSuppliedAvatarAsset: !string.IsNullOrWhiteSpace(unityAvatarAsset),
+                importedAvatarAssets);
+            if (selection == null)
+            {
+                var blockedMessage = TryDescribeBlockedExplicitCandidate(dbPath, modelSelector, animationSelector);
+                Logger.Error(!string.IsNullOrWhiteSpace(blockedMessage)
+                    ? blockedMessage
+                    : "No explicit Humanoid/Muscle model-animation candidate matched the UnityBakeAccelerated selectors.");
+                return null;
+            }
+
+            ResolveSelectionLibraryPaths(selection, libraryRoot);
+            var model = selection.Model["model"] as JObject;
+            var effectiveUnityAvatarAsset = ResolveUnityAvatarAssetForSelection(selection, unityAvatarAsset, importedAvatarAssets).AssetPath;
+            var animationClipResolution = ResolveUnityAnimationClipForSelection(selection, null, importedAnimationClips);
+            var animatorControllerResolution = ResolveUnityAnimatorControllerForSelection(selection, unityAnimatorController, importedAnimatorControllers);
+            var requestAvatar = PrepareAvatarForUnityBake(
+                model?["avatar"] as JObject,
+                requiresHumanoidBake: true,
+                unityModelPrefab: null,
+                unityAvatarAsset: effectiveUnityAvatarAsset);
+            if (string.IsNullOrWhiteSpace(effectiveUnityAvatarAsset) && !HasUsableHumanoidReferencePose(requestAvatar, null, null))
+            {
+                Logger.Error("Selected candidate has no recovered Unity Avatar asset and no complete HumanDescription skeletonBones. Run --recover_imported_avatar_assets first, refresh Avatar metadata, or pass --unity_avatar_asset for this exact model scope.");
+                return null;
+            }
+
+            return GenerateAcceleratedSelection(
+                dbPath,
+                libraryRoot,
+                selection,
+                outputDirectory,
+                unityProject,
+                unityEditor,
+                effectiveUnityAvatarAsset,
+                animationClipResolution,
+                animatorControllerResolution,
+                importedAnimationClips,
+                requestAvatar,
+                unityBakeOutput,
+                frameRate,
+                runUnityBake,
+                clipFilterModeOverride,
+                allowGeneratedControllerDiagnostic,
+                unityBakeWorkerQueue,
+                sampleRecoverableSkippedLayersDiagnostic);
         }
 
         public static void GenerateBatchFromLibrary(
@@ -164,15 +284,21 @@ namespace AnimeStudio.CLI
             string unityEditor,
             string unityModelPrefab,
             string unityAnimationClip,
+            string unityAnimatorController,
             string unityAvatarAsset,
             int frameRate,
             bool runUnityBake,
+            string clipFilterModeOverride = null,
             string unityBakeWorkerQueue = null,
             string bakedFbxOutput = null,
             string blender = null,
             int limit = 10,
             string indexPath = null,
-            bool force = false
+            bool force = false,
+            bool probeMuscles = false,
+            bool enableIkGoalDriver = false,
+            bool rebuildEditorCurveClip = false,
+            bool sampleRecoverableSkippedLayersDiagnostic = false
         )
         {
             if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
@@ -210,6 +336,7 @@ namespace AnimeStudio.CLI
             }
             var importedAvatarAssets = DiscoverImportedAvatarAssets(unityProject, libraryRoot);
             var importedAnimationClips = DiscoverImportedAnimationClips(unityProject, libraryRoot);
+            var importedAnimatorControllers = DiscoverImportedAnimatorControllers(unityProject, libraryRoot);
 
             var selections = SelectExplicitBakeCandidatesFromLibraryDb(
                     dbPath,
@@ -299,6 +426,8 @@ namespace AnimeStudio.CLI
                 var effectiveUnityAvatarAsset = avatarResolution.AssetPath;
                 var animationClipResolution = ResolveUnityAnimationClipForSelection(selection, unityAnimationClip, importedAnimationClips);
                 var effectiveUnityAnimationClip = animationClipResolution.AssetPath;
+                var animatorControllerResolution = ResolveUnityAnimatorControllerForSelection(selection, unityAnimatorController, importedAnimatorControllers);
+                var effectiveUnityAnimatorController = animatorControllerResolution.AssetPath;
 
                 var requestPath = GenerateSelection(
                     dbPath,
@@ -309,15 +438,22 @@ namespace AnimeStudio.CLI
                     unityEditor,
                     unityModelPrefab,
                     effectiveUnityAnimationClip,
+                    effectiveUnityAnimatorController,
                     effectiveUnityAvatarAsset,
                     null,
                     frameRate,
-                    probeMuscles: false,
+                    probeMuscles,
+                    enableIkGoalDriver,
+                    rebuildEditorCurveClip,
+                    ignoreImportedAvatar: false,
+                    clipFilterModeOverride,
                     runUnityBake,
                     unityBakeWorkerQueue,
                     bakedGltfOutput: null,
                     bakedFbxOutput: itemFbx,
-                    blender);
+                    blender,
+                    importedAnimationClips,
+                    sampleRecoverableSkippedLayersDiagnostic: sampleRecoverableSkippedLayersDiagnostic);
 
                 var resultPath = string.IsNullOrWhiteSpace(requestPath)
                     ? null
@@ -338,7 +474,9 @@ namespace AnimeStudio.CLI
                 var needsReview = string.Equals(bakeApply.Status, "needs_review", StringComparison.OrdinalIgnoreCase)
                     && !string.IsNullOrWhiteSpace(bakedGltf)
                     && File.Exists(bakedGltf);
-                var needsAnimatorControllerContext = NeedsAnimatorControllerContext(bakeApply.Message);
+                var needsAnimatorControllerContext =
+                    string.Equals(bakeApply.Status, "needs_animator_controller_context", StringComparison.OrdinalIgnoreCase)
+                    || NeedsAnimatorControllerContext(bakeApply.Message);
                 if (requestWritten)
                 {
                     requestsWritten++;
@@ -373,6 +511,19 @@ namespace AnimeStudio.CLI
                     ["bakedGltf"] = bakedGltf,
                     ["bakedFbx"] = itemFbx,
                     ["applyStatus"] = bakeApply.Status,
+                    ["animationSolve"] = bakeApply.AnimationSolve?.DeepClone(),
+                    ["solvePath"] = bakeApply.SolvePath,
+                    ["productionStatus"] = bakeApply.ProductionStatus,
+                    ["requiresVisualValidation"] = bakeApply.RequiresVisualValidation,
+                    ["writesReusableGltfTrsCandidate"] = bakeApply.WritesReusableGltfTrsCandidate,
+                    ["reusableCandidateBlockedReasons"] = bakeApply.ReusableCandidateBlockedReasons?.DeepClone(),
+                    ["ikGoalDriverDiagnosticEnabled"] = bakeApply.IkGoalDriverDiagnosticEnabled,
+                    ["ikGoalDriverCallCount"] = bakeApply.IkGoalDriverCallCount,
+                    ["ikGoalDriverAppliedGoalCount"] = bakeApply.IkGoalDriverAppliedGoalCount,
+                    ["sampleRecoverableSkippedLayersDiagnostic"] = bakeApply.SampleRecoverableSkippedLayersDiagnostic,
+                    ["animatorControllerDiagnosticSampledSkippedLayerCount"] = bakeApply.AnimatorControllerDiagnosticSampledSkippedLayerCount,
+                    ["animatorControllerDiagnosticSampledSkippedLayerNames"] = bakeApply.AnimatorControllerDiagnosticSampledSkippedLayerNames?.DeepClone(),
+                    ["animatorControllerRecoverableSkippedLayerSummary"] = bakeApply.AnimatorControllerRecoverableSkippedLayerSummary?.DeepClone(),
                     ["message"] = bakeApply.Message,
                     ["frameVaryingTracks"] = bakeApply.FrameVaryingTracks,
                     ["frameVaryingChannels"] = bakeApply.FrameVaryingChannels,
@@ -608,6 +759,861 @@ namespace AnimeStudio.CLI
             return result;
         }
 
+        private static string GenerateAcceleratedSelection(
+            string indexPath,
+            string libraryRoot,
+            PreviewSelection selection,
+            string outputDirectory,
+            string unityProject,
+            string unityEditor,
+            string unityAvatarAsset,
+            AnimationClipAssetResolution unityAnimationClip,
+            AnimatorControllerAssetResolution unityAnimatorController,
+            IReadOnlyDictionary<string, string> importedAnimationClips,
+            JObject requestAvatar,
+            string unityBakeOutput,
+            int frameRate,
+            bool runUnityBake,
+            string clipFilterModeOverride,
+            bool allowGeneratedControllerDiagnostic,
+            string unityBakeWorkerQueue,
+            bool sampleRecoverableSkippedLayersDiagnostic)
+        {
+            var model = selection.Model["model"] as JObject;
+            var animation = selection.Animation;
+            var modelName = (string)model?["name"];
+            var animationName = (string)animation?["name"];
+            if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(animationName))
+            {
+                Logger.Error("Selected UnityBakeAccelerated entry is missing model or animation name.");
+                return null;
+            }
+            if (!IsExplicitBakeRelation(animation))
+            {
+                Logger.Error("Selected UnityBakeAccelerated candidate is not a Unity explicit model-animation relation.");
+                return null;
+            }
+
+            var modelGltf = ResolveSourcePath((string)model?["output"], null);
+            var animationAssetPath = ResolveAnimationAssetPath(animation);
+            if (string.IsNullOrWhiteSpace(modelGltf) || !File.Exists(modelGltf))
+            {
+                Logger.Error($"Selected model glTF not found: {modelGltf}");
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(animationAssetPath) || !File.Exists(animationAssetPath))
+            {
+                Logger.Error($"Selected animation sidecar not found: {animationAssetPath}. Re-export the clip with --export_full_decoded_animation_curves.");
+                return null;
+            }
+
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(
+                    libraryRoot,
+                    "UnityBakeAcceleratedRequests",
+                    $"{SafeName(modelName)}__{SafeName(animationName)}")
+                : outputDirectory;
+            Directory.CreateDirectory(output);
+
+            var sidecar = JObject.Parse(File.ReadAllText(animationAssetPath));
+            var curves = ReadDecodedFloatCurves(sidecar);
+            var effectiveFrameRate = frameRate > 0
+                ? frameRate
+                : Math.Max(1, (int)Math.Round((double?)sidecar["sampleRate"] ?? 60.0));
+            var unsupportedHumanPoseCurves = BuildUnsupportedAcceleratedHumanPoseCurveSummary(curves);
+            var requiresFullClipSemantics = (bool?)unsupportedHumanPoseCurves["requiresFullHumanoidClipBake"] == true;
+            if (curves.Count == 0 || requiresFullClipSemantics)
+            {
+                var fallbackReason = curves.Count == 0
+                    ? "missing_decoded_float_curves"
+                    : "unsupported_limb_goal_or_tdof_curves";
+                var fallbackRequest = TryGeneratePlayableGraphFallbackFromAcceleratedSelection(
+                    indexPath,
+                    libraryRoot,
+                    selection,
+                    output,
+                    unityProject,
+                    unityEditor,
+                    unityAvatarAsset,
+                    unityAnimationClip,
+                    unityAnimatorController,
+                    importedAnimationClips,
+                    unityBakeOutput,
+                    effectiveFrameRate,
+                    runUnityBake,
+                    unityBakeWorkerQueue,
+                    clipFilterModeOverride,
+                    allowGeneratedControllerDiagnostic,
+                    fallbackReason,
+                    unsupportedHumanPoseCurves,
+                    sampleRecoverableSkippedLayersDiagnostic);
+                if (!string.IsNullOrWhiteSpace(fallbackRequest))
+                {
+                    return fallbackRequest;
+                }
+
+                Logger.Error(curves.Count == 0
+                    ? "Animation sidecar has no decoded float curves for UnityBakeAccelerated, and UnityOracle/PlayableGraph fallback was unavailable or blocked by safety gates."
+                    : "Animation sidecar contains limb goal/TDOF curves that UnityBakeAccelerated fast path does not consume, and UnityOracle/PlayableGraph fallback was unavailable or blocked by safety gates.");
+                return null;
+            }
+
+            var samples = BuildAcceleratedPoseSamples(curves, sidecar, effectiveFrameRate);
+            if (samples.Count == 0)
+            {
+                Logger.Error("Unable to build UnityBakeAccelerated pose samples from decoded float curves.");
+                return null;
+            }
+
+            var jointPaths = BuildGltfJointPaths(modelGltf, modelName);
+            if (jointPaths.Length == 0)
+            {
+                Logger.Error("Unable to build UnityBakeAccelerated joint paths from model glTF.");
+                return null;
+            }
+            var unityJointPaths = BuildUnityBakeJointPaths(jointPaths, requestAvatar, unityAvatarAsset);
+
+            var requestPath = Path.Combine(output, "unity_bake_accelerated_request.json");
+            var resultPath = string.IsNullOrWhiteSpace(unityBakeOutput)
+                ? Path.Combine(output, "unity_bake_accelerated_result.json")
+                : unityBakeOutput;
+
+            var request = new JObject
+            {
+                ["version"] = 1,
+                ["mode"] = "UnityBakeAccelerated",
+                ["avatarAsset"] = unityAvatarAsset,
+                // 没有可导入的 UnityEngine.Avatar asset 时，仍允许使用完整的
+                // HumanDescription.humanBones + skeletonBones 让 Unity 6 临时 BuildHumanAvatar。
+                // 这不是按名字猜骨骼；数据来自模型索引里的 Unity Avatar/HumanDescription。
+                ["avatar"] = requestAvatar,
+                ["avatarKey"] = BuildAcceleratedAvatarKey(model, animation),
+                ["poseSolveMethod"] = "HumanPoseHandler.SetInternalHumanPose",
+                ["outputJson"] = resultPath,
+                ["jointPaths"] = new JArray(unityJointPaths),
+                ["clips"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["clipKey"] = BuildAcceleratedClipKey(animation),
+                        ["clipName"] = animationName,
+                        ["frameRate"] = effectiveFrameRate,
+                        ["samples"] = samples,
+                    }
+                },
+                ["animeStudioRequest"] = new JObject
+                {
+                    ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                    ["rule"] = "UnityBakeAccelerated 只把已解码 Humanoid/Muscle 曲线求解成目标骨架 TRS；最终仍需写成普通 glTF 动画。",
+                    ["libraryRoot"] = libraryRoot,
+                    ["libraryIndex"] = indexPath,
+                    ["model"] = new JObject
+                    {
+                        ["name"] = modelName,
+                        ["gltf"] = modelGltf,
+                        ["pathId"] = model?["pathId"],
+                    },
+                    ["animation"] = new JObject
+                    {
+                        ["name"] = animationName,
+                        ["animationAsset"] = animationAssetPath,
+                        ["pathId"] = animation?["pathId"],
+                        ["relation"] = animation?["relation"],
+                        ["relationSource"] = animation?["relationSource"],
+                        ["confidence"] = animation?["confidence"],
+                    },
+                    ["sampling"] = new JObject
+                    {
+                        ["source"] = "animation_asset.decoded.floats",
+                        ["bodyPosition"] = "MotionT.xyz fallback RootT.xyz fallback zero",
+                        ["bodyRotation"] = "MotionQ.xyzw fallback RootQ.xyzw fallback identity",
+                        ["muscles"] = "Humanoid muscle/finger curves only. Limb IK goal curves and TDOF curves are recorded in the report but not consumed by HumanPoseHandler.SetHumanPose/SetInternalHumanPose.",
+                        ["unsupportedHumanPoseCurveSummary"] = unsupportedHumanPoseCurves,
+                        ["sampleCount"] = samples.Count,
+                        ["frameRate"] = effectiveFrameRate,
+                        ["gltfJointPaths"] = new JArray(jointPaths),
+                        ["unityJointPathPrefix"] = GetHumanDescriptionSkeletonRootName(requestAvatar),
+                    },
+                },
+            };
+
+            File.WriteAllText(requestPath, request.ToString(Formatting.Indented));
+            Logger.Info($"UnityBakeAccelerated request: {requestPath}");
+
+            if (runUnityBake)
+            {
+                var ok = string.IsNullOrWhiteSpace(unityBakeWorkerQueue)
+                    ? UnityBakeAcceleratedRunner.RunOnce(requestPath, unityProject, unityEditor, null)
+                    : UnityBakeAcceleratedRunner.Queue(requestPath, unityProject, unityEditor, unityBakeWorkerQueue, null);
+                if (!ok)
+                {
+                    Logger.Error("UnityBakeAccelerated run failed.");
+                }
+            }
+
+            return requestPath;
+        }
+
+        private static string TryGeneratePlayableGraphFallbackFromAcceleratedSelection(
+            string indexPath,
+            string libraryRoot,
+            PreviewSelection selection,
+            string output,
+            string unityProject,
+            string unityEditor,
+            string unityAvatarAsset,
+            AnimationClipAssetResolution unityAnimationClip,
+            AnimatorControllerAssetResolution unityAnimatorController,
+            IReadOnlyDictionary<string, string> importedAnimationClips,
+            string unityBakeOutput,
+            int frameRate,
+            bool runUnityBake,
+            string unityBakeWorkerQueue,
+            string clipFilterModeOverride,
+            bool allowGeneratedControllerDiagnostic,
+            string fallbackReason,
+            JObject unsupportedHumanPoseCurves,
+            bool sampleRecoverableSkippedLayersDiagnostic)
+        {
+            if (string.IsNullOrWhiteSpace(unityAnimationClip.AssetPath))
+            {
+                WriteAcceleratedFallbackReport(output, selection, fallbackReason, null, unityAnimationClip, null, unsupportedHumanPoseCurves, "missing_imported_animation_clip");
+                return null;
+            }
+
+            var selectedAnimation = selection?.Animation as JObject;
+            var requiresControllerContext = HasAnimatorControllerContext(selectedAnimation);
+            if (requiresControllerContext
+                && string.IsNullOrWhiteSpace(unityAnimatorController?.AssetPath)
+                && !allowGeneratedControllerDiagnostic)
+            {
+                var blockReason =
+                    "Selected Humanoid clip has deterministic AnimatorController context, but no exact ImportedAnimatorController/original RuntimeAnimatorController asset was resolved. "
+                    + "Default UnityBakeAccelerated fallback refuses to generate a temporary single-state controller because it can produce semantically wrong poses, such as raised or twisted hands on an idle clip. "
+                    + "Recover/import the original RuntimeAnimatorController or pass --unity_animator_controller. Use --unity_bake_allow_generated_controller_diagnostic only for clearly marked diagnostic output.";
+                WriteAcceleratedFallbackReport(
+                    output,
+                    selection,
+                    fallbackReason,
+                    null,
+                    unityAnimationClip,
+                    unityAnimatorController,
+                    unsupportedHumanPoseCurves,
+                    "blocked_generated_controller_context",
+                    probeUnsupportedHumanoidCurves: false,
+                    enableIkGoalDriver: false,
+                    allowGeneratedControllerDiagnostic: allowGeneratedControllerDiagnostic,
+                    sampleRecoverableSkippedLayersDiagnostic: sampleRecoverableSkippedLayersDiagnostic,
+                    blockReason: blockReason);
+                Logger.Error(blockReason);
+                return null;
+            }
+
+            Logger.Warning(
+                "UnityBakeAccelerated fast path cannot safely solve this Humanoid clip yet; generating UnityOracle/PlayableGraph fallback request. " +
+                $"reason={fallbackReason}; animationClip={unityAnimationClip.AssetPath}");
+            var missingDecodedFloatCurves = string.Equals(fallbackReason, "missing_decoded_float_curves", StringComparison.OrdinalIgnoreCase);
+            var shouldProbeUnsupportedHumanoidCurves = missingDecodedFloatCurves || RequiresFullHumanoidClipBake(unsupportedHumanPoseCurves);
+            var shouldEnableIkGoalDriver = HasHumanoidLimbGoalCurves(unsupportedHumanPoseCurves);
+            var requestPath = GenerateSelection(
+                indexPath,
+                selection,
+                output,
+                sourceRootOverride: null,
+                unityProject,
+                unityEditor,
+                unityModelPrefab: null,
+                unityAnimationClip: unityAnimationClip.AssetPath,
+                unityAnimatorController: unityAnimatorController.AssetPath,
+                unityAvatarAsset,
+                unityBakeOutput,
+                frameRate,
+                // fast path 已经证明这些曲线不能被 HumanPoseHandler 简单消费，或 sidecar
+                // 还没有解出 ACL scalar float curves。fallback 的职责是尽量接近 Unity 原生
+                // AnimationClip/PlayableGraph 语义，并补齐 editor curve 分类诊断；只有 fast path
+                // 已明确发现手脚 goal 时，才自动启用 IK pass 诊断。
+                probeMuscles: shouldProbeUnsupportedHumanoidCurves,
+                enableIkGoalDriver: shouldEnableIkGoalDriver,
+                rebuildEditorCurveClip: false,
+                ignoreImportedAvatar: false,
+                clipFilterModeOverride,
+                runUnityBake: runUnityBake,
+                unityBakeWorkerQueue: unityBakeWorkerQueue,
+                bakedGltfOutput: null,
+                bakedFbxOutput: null,
+                blender: null,
+                importedAnimationClips: importedAnimationClips,
+                sampleRecoverableSkippedLayersDiagnostic: sampleRecoverableSkippedLayersDiagnostic);
+            WriteAcceleratedFallbackReport(
+                output,
+                selection,
+                fallbackReason,
+                requestPath,
+                unityAnimationClip,
+                unityAnimatorController,
+                unsupportedHumanPoseCurves,
+                string.IsNullOrWhiteSpace(requestPath) ? "failed" : "ok",
+                shouldProbeUnsupportedHumanoidCurves,
+                shouldEnableIkGoalDriver,
+                allowGeneratedControllerDiagnostic,
+                sampleRecoverableSkippedLayersDiagnostic);
+            return requestPath;
+        }
+
+        private static bool RequiresFullHumanoidClipBake(JObject unsupportedHumanPoseCurves)
+        {
+            return (bool?)unsupportedHumanPoseCurves?["requiresFullHumanoidClipBake"] == true
+                || ((int?)unsupportedHumanPoseCurves?["curveCount"] ?? 0) > 0;
+        }
+
+        private static bool HasHumanoidLimbGoalCurves(JObject unsupportedHumanPoseCurves)
+        {
+            return ((int?)unsupportedHumanPoseCurves?["limbGoalCurveCount"] ?? 0) > 0;
+        }
+
+        private static bool HasDynamicHumanoidLimbGoalCurves(JObject unsupportedHumanPoseCurves)
+        {
+            return ((int?)unsupportedHumanPoseCurves?["dynamicLimbGoalCurveCount"] ?? 0) > 0;
+        }
+
+        private static bool ShouldAutoEnableIkGoalDriver(JObject animation, string unityAnimatorController, JObject unsupportedHumanPoseCurves)
+        {
+            if (animation == null
+                || string.IsNullOrWhiteSpace(unityAnimatorController)
+                || !HasAnimatorControllerContext(animation))
+            {
+                return false;
+            }
+
+            // 只有动态 Hand/Foot goal 才自动打开 IK 诊断。静态 goal 可能只是默认值，
+            // 不能因为有字段名就增加 Unity 采样成本或改变诊断路径。
+            return HasDynamicHumanoidLimbGoalCurves(unsupportedHumanPoseCurves);
+        }
+
+        private static void WriteAcceleratedFallbackReport(
+            string output,
+            PreviewSelection selection,
+            string fallbackReason,
+            string requestPath,
+            AnimationClipAssetResolution unityAnimationClip,
+            AnimatorControllerAssetResolution unityAnimatorController,
+            JObject unsupportedHumanPoseCurves,
+            string status,
+            bool probeUnsupportedHumanoidCurves = false,
+            bool enableIkGoalDriver = false,
+            bool allowGeneratedControllerDiagnostic = false,
+            bool sampleRecoverableSkippedLayersDiagnostic = false,
+            string blockReason = null)
+        {
+            Directory.CreateDirectory(output);
+            var model = selection?.Model?["model"] as JObject;
+            var animation = selection?.Animation as JObject;
+            var report = new JObject
+            {
+                ["status"] = status,
+                ["mode"] = "UnityOraclePlayableGraphFallback",
+                ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                ["fallbackReason"] = fallbackReason,
+                ["rule"] = "UnityBakeAccelerated fast path only consumes decoded body/muscle float curves. Missing decoded ACL scalar curves or limb goal/TDOF curves must use full Unity AnimationClip/PlayableGraph semantics until AnimeStudio has an equivalent direct solver. The fallback still writes ordinary glTF TRS through AnimeStudio and remains needs visual validation.",
+                ["model"] = new JObject
+                {
+                    ["name"] = (string)model?["name"],
+                    ["output"] = (string)model?["output"],
+                    ["pathId"] = model?["pathId"],
+                },
+                ["animation"] = new JObject
+                {
+                    ["name"] = (string)animation?["name"],
+                    ["output"] = (string)animation?["output"],
+                    ["pathId"] = animation?["pathId"],
+                    ["relation"] = (string)animation?["relation"],
+                    ["relationSource"] = (string)animation?["relationSource"],
+                    ["confidence"] = (string)animation?["confidence"],
+                },
+                ["unityAnimationClip"] = unityAnimationClip.AssetPath,
+                ["unityAnimationClipSource"] = unityAnimationClip.Source,
+                ["unityAnimationClipMatchKey"] = unityAnimationClip.MatchKey,
+                ["unityAnimatorController"] = unityAnimatorController?.AssetPath,
+                ["unityAnimatorControllerSource"] = unityAnimatorController?.Source,
+                ["unityAnimatorControllerMatchKey"] = unityAnimatorController?.MatchKey,
+                ["requestPath"] = requestPath,
+                ["blockedReason"] = blockReason,
+                ["unsupportedHumanPoseCurveSummary"] = unsupportedHumanPoseCurves ?? new JObject(),
+                ["fallbackDiagnostics"] = new JObject
+                {
+                    ["probeUnsupportedHumanoidCurves"] = probeUnsupportedHumanoidCurves,
+                    ["enableEditorCurveIkGoalDriver"] = enableIkGoalDriver,
+                    ["allowGeneratedControllerDiagnostic"] = allowGeneratedControllerDiagnostic,
+                    ["sampleRecoverableSkippedLayersDiagnostic"] = sampleRecoverableSkippedLayersDiagnostic,
+                    ["requiresOriginalAnimatorController"] = string.Equals(status, "blocked_generated_controller_context", StringComparison.OrdinalIgnoreCase),
+                    ["rule"] = "limb goal/TDOF 已知时自动打开诊断采样；缺 decoded float curves 时也会 probe editor curves 以补齐分类证据，但不会仅凭 probe 结果进入生产。",
+                },
+                ["productionReady"] = false,
+            };
+            File.WriteAllText(Path.Combine(output, "unity_bake_accelerated_fallback_report.json"), report.ToString(Formatting.Indented));
+        }
+
+        private static Dictionary<string, List<FloatCurveKey>> ReadDecodedFloatCurves(JObject sidecar)
+        {
+            var result = new Dictionary<string, List<FloatCurveKey>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var curve in sidecar?["decoded"]?["floats"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var attribute = ((string)curve["attribute"] ?? (string)curve["attributeName"])?.Trim();
+                if (string.IsNullOrWhiteSpace(attribute))
+                {
+                    continue;
+                }
+
+                var keys = curve["keyframes"]?.OfType<JObject>()
+                    .Select(x => new FloatCurveKey((float?)x["time"] ?? 0f, (float?)x["value"] ?? 0f))
+                    .OrderBy(x => x.Time)
+                    .ToList();
+                if (keys == null || keys.Count == 0)
+                {
+                    continue;
+                }
+
+                result[attribute] = keys;
+                var unityFingerName = ToUnityFingerMuscleName(attribute);
+                if (!string.IsNullOrWhiteSpace(unityFingerName) && !result.ContainsKey(unityFingerName))
+                {
+                    result[unityFingerName] = keys;
+                }
+            }
+
+            return result;
+        }
+
+        private static JObject TryBuildUnsupportedHumanPoseCurveSummaryFromSidecar(JObject animation)
+        {
+            var animationAssetPath = ResolveAnimationAssetPath(animation);
+            if (string.IsNullOrWhiteSpace(animationAssetPath) || !File.Exists(animationAssetPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var sidecar = JObject.Parse(File.ReadAllText(animationAssetPath));
+                var curves = ReadDecodedFloatCurves(sidecar);
+                return curves.Count == 0
+                    ? null
+                    : BuildUnsupportedAcceleratedHumanPoseCurveSummary(curves);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Unable to inspect animation sidecar for Humanoid unsupported curve summary: {animationAssetPath}; {ex.Message}");
+                return null;
+            }
+        }
+
+        private static string ToUnityFingerMuscleName(string attribute)
+        {
+            if (string.IsNullOrWhiteSpace(attribute))
+            {
+                return null;
+            }
+
+            var parts = attribute.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3)
+            {
+                return null;
+            }
+
+            var side = parts[0].Equals("LeftHand", StringComparison.OrdinalIgnoreCase)
+                ? "Left"
+                : parts[0].Equals("RightHand", StringComparison.OrdinalIgnoreCase)
+                    ? "Right"
+                    : null;
+            if (side == null)
+            {
+                return null;
+            }
+
+            return parts[2].Equals("Spread", StringComparison.OrdinalIgnoreCase)
+                ? $"{side} {parts[1]} Spread"
+                : $"{side} {parts[1]} {parts[2]}";
+        }
+
+        private static JArray BuildAcceleratedPoseSamples(
+            Dictionary<string, List<FloatCurveKey>> curves,
+            JObject sidecar,
+            int frameRate)
+        {
+            var times = BuildAcceleratedSampleTimes(curves, sidecar, frameRate);
+            var muscleNames = BuildUnityHumanTraitMuscleNames();
+            var samples = new JArray();
+            foreach (var time in times)
+            {
+                var muscles = new JArray();
+                foreach (var muscleName in muscleNames)
+                {
+                    muscles.Add(SampleDecodedFloat(curves, muscleName, time, 0f));
+                }
+
+                var bodyPosition = SampleVector3(curves, "MotionT", time, "RootT");
+                var bodyRotation = SampleQuaternion(curves, "MotionQ", time, "RootQ");
+                samples.Add(new JObject
+                {
+                    ["time"] = time,
+                    ["bodyPosition"] = new JObject
+                    {
+                        ["x"] = bodyPosition[0],
+                        ["y"] = bodyPosition[1],
+                        ["z"] = bodyPosition[2],
+                    },
+                    ["bodyRotation"] = new JObject
+                    {
+                        ["x"] = bodyRotation[0],
+                        ["y"] = bodyRotation[1],
+                        ["z"] = bodyRotation[2],
+                        ["w"] = bodyRotation[3],
+                    },
+                    ["muscles"] = muscles,
+                });
+            }
+
+            return samples;
+        }
+
+        private static float[] BuildAcceleratedSampleTimes(
+            Dictionary<string, List<FloatCurveKey>> curves,
+            JObject sidecar,
+            int frameRate)
+        {
+            var duration = (float?)sidecar?["duration"]
+                ?? curves.Values.SelectMany(x => x).Select(x => x.Time).DefaultIfEmpty(0f).Max();
+            frameRate = Math.Max(1, frameRate);
+            if (duration <= 0f)
+            {
+                return new[] { 0f };
+            }
+
+            var count = Math.Max(2, (int)Math.Ceiling(duration * frameRate) + 1);
+            var times = new float[count];
+            for (var i = 0; i < count; i++)
+            {
+                times[i] = Math.Min(duration, i / (float)frameRate);
+            }
+            times[count - 1] = duration;
+            return times;
+        }
+
+        private static string[] BuildUnityHumanTraitMuscleNames()
+        {
+            var start = (int)AnimeStudio.HumanoidMuscleType.Muscles;
+            var end = (int)AnimeStudio.HumanoidMuscleType.TDoFBones;
+            var names = new string[Math.Max(0, end - start)];
+            for (var i = 0; i < names.Length; i++)
+            {
+                names[i] = ((AnimeStudio.HumanoidMuscleType)(start + i)).ToAttributeString();
+            }
+            return names;
+        }
+
+        private static JObject BuildUnsupportedAcceleratedHumanPoseCurveSummary(IEnumerable<string> attributes)
+        {
+            var unsupported = (attributes ?? Enumerable.Empty<string>())
+                .Where(IsUnsupportedAcceleratedHumanPoseCurve)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var limbGoalCount = unsupported.Count(IsHumanoidLimbGoalCurve);
+            var tDoFCount = unsupported.Count(IsHumanoidTDoFCurve);
+            return new JObject
+            {
+                ["curveCount"] = unsupported.Length,
+                ["limbGoalCurveCount"] = limbGoalCount,
+                ["tDoFCurveCount"] = tDoFCount,
+                ["requiresFullHumanoidClipBake"] = unsupported.Length > 0,
+                ["reason"] = unsupported.Length > 0
+                    ? "当前 UnityBakeAccelerated 只通过 HumanPoseHandler 写 body/muscles；Left/Right Foot/Hand T/Q 和 *TDOF 曲线不会进入求解，含这些曲线的 clip 只能作为诊断输出，不能标为生产可复用动画。"
+                    : "当前 clip 没有发现 HumanPoseHandler 无法消费的 limb IK/TDOF float 曲线。",
+                ["preview"] = new JArray(unsupported.Take(64)),
+            };
+        }
+
+        private static JObject BuildUnsupportedAcceleratedHumanPoseCurveSummary(Dictionary<string, List<FloatCurveKey>> curves)
+        {
+            var summary = BuildUnsupportedAcceleratedHumanPoseCurveSummary(curves?.Keys);
+            var dynamicUnsupported = (curves ?? new Dictionary<string, List<FloatCurveKey>>(StringComparer.OrdinalIgnoreCase))
+                .Where(x => IsUnsupportedAcceleratedHumanPoseCurve(x.Key) && IsFloatCurveDynamic(x.Value))
+                .Select(x => x.Key)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            summary["dynamicCurveCount"] = dynamicUnsupported.Length;
+            summary["dynamicLimbGoalCurveCount"] = dynamicUnsupported.Count(IsHumanoidLimbGoalCurve);
+            summary["dynamicTDoFCurveCount"] = dynamicUnsupported.Count(IsHumanoidTDoFCurve);
+            summary["dynamicPreview"] = new JArray(dynamicUnsupported.Take(64));
+            return summary;
+        }
+
+        private static bool IsFloatCurveDynamic(IReadOnlyList<FloatCurveKey> keys)
+        {
+            if (keys == null || keys.Count < 2)
+            {
+                return false;
+            }
+
+            var first = keys[0].Value;
+            return keys.Any(x => Math.Abs(x.Value - first) > 0.00001f);
+        }
+
+        private static bool IsUnsupportedAcceleratedHumanPoseCurve(string attribute)
+        {
+            return IsHumanoidLimbGoalCurve(attribute) || IsHumanoidTDoFCurve(attribute);
+        }
+
+        private static bool IsHumanoidLimbGoalCurve(string attribute)
+        {
+            if (string.IsNullOrWhiteSpace(attribute))
+            {
+                return false;
+            }
+            var names = new[]
+            {
+                "LeftFootT.", "LeftFootQ.",
+                "RightFootT.", "RightFootQ.",
+                "LeftHandT.", "LeftHandQ.",
+                "RightHandT.", "RightHandQ.",
+            };
+            return names.Any(prefix => attribute.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsHumanoidTDoFCurve(string attribute)
+        {
+            return !string.IsNullOrWhiteSpace(attribute)
+                && attribute.IndexOf("TDOF.", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static float[] SampleVector3(
+            Dictionary<string, List<FloatCurveKey>> curves,
+            string prefix,
+            float time,
+            string fallbackPrefix = null)
+        {
+            if (!curves.ContainsKey(prefix + ".x") && !string.IsNullOrWhiteSpace(fallbackPrefix))
+            {
+                prefix = fallbackPrefix;
+            }
+            return new[]
+            {
+                SampleDecodedFloat(curves, prefix + ".x", time, 0f),
+                SampleDecodedFloat(curves, prefix + ".y", time, 0f),
+                SampleDecodedFloat(curves, prefix + ".z", time, 0f),
+            };
+        }
+
+        private static float[] SampleQuaternion(
+            Dictionary<string, List<FloatCurveKey>> curves,
+            string prefix,
+            float time,
+            string fallbackPrefix = null)
+        {
+            if (!curves.ContainsKey(prefix + ".w") && !string.IsNullOrWhiteSpace(fallbackPrefix))
+            {
+                prefix = fallbackPrefix;
+            }
+
+            var q = new[]
+            {
+                SampleDecodedFloat(curves, prefix + ".x", time, 0f),
+                SampleDecodedFloat(curves, prefix + ".y", time, 0f),
+                SampleDecodedFloat(curves, prefix + ".z", time, 0f),
+                SampleDecodedFloat(curves, prefix + ".w", time, 1f),
+            };
+            var length = Math.Sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+            if (length <= 0.000001)
+            {
+                return new[] { 0f, 0f, 0f, 1f };
+            }
+            return new[]
+            {
+                (float)(q[0] / length),
+                (float)(q[1] / length),
+                (float)(q[2] / length),
+                (float)(q[3] / length),
+            };
+        }
+
+        private static float SampleDecodedFloat(
+            Dictionary<string, List<FloatCurveKey>> curves,
+            string attribute,
+            float time,
+            float fallback)
+        {
+            if (string.IsNullOrWhiteSpace(attribute) || !curves.TryGetValue(attribute, out var keys) || keys.Count == 0)
+            {
+                return fallback;
+            }
+            if (time <= keys[0].Time)
+            {
+                return keys[0].Value;
+            }
+            if (time >= keys[^1].Time)
+            {
+                return keys[^1].Value;
+            }
+
+            for (var i = 1; i < keys.Count; i++)
+            {
+                if (time > keys[i].Time)
+                {
+                    continue;
+                }
+
+                var a = keys[i - 1];
+                var b = keys[i];
+                var span = b.Time - a.Time;
+                if (span <= 0.000001f)
+                {
+                    return b.Value;
+                }
+
+                var t = (time - a.Time) / span;
+                return a.Value + (b.Value - a.Value) * t;
+            }
+
+            return keys[^1].Value;
+        }
+
+        private static string[] BuildGltfJointPaths(string gltfPath, string modelName)
+        {
+            var gltf = JObject.Parse(File.ReadAllText(gltfPath));
+            var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            if (nodes.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var rootIndices = gltf["scenes"]?.FirstOrDefault()?["nodes"]?.Values<int>().ToArray();
+            if (rootIndices == null || rootIndices.Length == 0)
+            {
+                rootIndices = Enumerable.Range(0, nodes.Length)
+                    .Where(i => !nodes.Any(n => n["children"]?.Values<int>().Contains(i) == true))
+                    .ToArray();
+            }
+
+            var result = new List<string>();
+            var visited = new HashSet<int>();
+            foreach (var rootIndex in rootIndices)
+            {
+                AddGltfJointPath(nodes, rootIndex, "", modelName, result, visited);
+            }
+
+            return result
+                .Where(x => x != null)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        private static string[] BuildUnityBakeJointPaths(string[] gltfJointPaths, JObject requestAvatar, string unityAvatarAsset)
+        {
+            var rootName = GetHumanDescriptionSkeletonRootName(requestAvatar);
+            if (!string.IsNullOrWhiteSpace(unityAvatarAsset) || string.IsNullOrWhiteSpace(rootName))
+            {
+                return gltfJointPaths;
+            }
+
+            // HumanPoseHandler(avatar, jointPaths) 使用 BuildHumanAvatar 时的 Unity 骨架路径。
+            // glTF 为了浏览会剥掉模型/Avatar 顶层；这里要补回去，写回 glTF 时再去掉。
+            return gltfJointPaths
+                .Select(path =>
+                {
+                    var normalized = NormalizeAcceleratedPathText(path);
+                    if (string.IsNullOrWhiteSpace(normalized))
+                    {
+                        return rootName;
+                    }
+                    return normalized.StartsWith(rootName + "/", StringComparison.Ordinal)
+                        ? normalized
+                        : rootName + "/" + normalized;
+                })
+                .ToArray();
+        }
+
+        private static string GetHumanDescriptionSkeletonRootName(JObject requestAvatar)
+        {
+            var roots = requestAvatar?["skeletonBones"]?.OfType<JObject>()
+                .Where(x => string.IsNullOrWhiteSpace((string)x["parentName"]))
+                .Select(x => NormalizeAcceleratedPathText((string)x["name"]))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
+            return roots.Length == 1 ? roots[0] : null;
+        }
+
+        private static string NormalizeAcceleratedPathText(string path)
+        {
+            return (path ?? string.Empty).Replace('\\', '/').Trim('/');
+        }
+
+        private static void AddGltfJointPath(
+            JObject[] nodes,
+            int nodeIndex,
+            string parentPath,
+            string modelName,
+            List<string> result,
+            HashSet<int> visited)
+        {
+            if (nodeIndex < 0 || nodeIndex >= nodes.Length || !visited.Add(nodeIndex))
+            {
+                return;
+            }
+
+            var node = nodes[nodeIndex];
+            var name = ((string)node["name"])?.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                name = "Node_" + nodeIndex.ToString(CultureInfo.InvariantCulture);
+            }
+
+            var path = string.IsNullOrWhiteSpace(parentPath) ? name : parentPath + "/" + name;
+            result.Add(NormalizeAcceleratedJointPath(path, modelName));
+
+            foreach (var child in node["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+            {
+                AddGltfJointPath(nodes, child, path, modelName, result, visited);
+            }
+        }
+
+        private static string NormalizeAcceleratedJointPath(string path, string modelName)
+        {
+            path = (path ?? string.Empty).Replace('\\', '/').Trim('/');
+            if (!string.IsNullOrWhiteSpace(modelName)
+                && path.StartsWith(modelName + "/", StringComparison.Ordinal))
+            {
+                return path[(modelName.Length + 1)..];
+            }
+            var rootIndex = path.IndexOf("/Root/", StringComparison.Ordinal);
+            if (rootIndex >= 0)
+            {
+                return path[(rootIndex + 1)..];
+            }
+            return string.Equals(path, modelName, StringComparison.Ordinal) ? string.Empty : path;
+        }
+
+        private static string BuildAcceleratedAvatarKey(JObject model, JObject animation)
+        {
+            return string.Join("|", new[]
+            {
+                (string)model?["source"],
+                Convert.ToString((long?)model?["pathId"], CultureInfo.InvariantCulture),
+                (string)model?["avatarName"],
+                (string)animation?["confidence"],
+            }.Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
+
+        private static string BuildAcceleratedClipKey(JObject animation)
+        {
+            return string.Join("|", new[]
+            {
+                (string)animation?["source"],
+                Convert.ToString((long?)animation?["pathId"], CultureInfo.InvariantCulture),
+                (string)animation?["name"],
+            }.Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
+
         private static string GenerateSelection(
             string indexPath,
             PreviewSelection selection,
@@ -617,19 +1623,26 @@ namespace AnimeStudio.CLI
             string unityEditor,
             string unityModelPrefab,
             string unityAnimationClip,
+            string unityAnimatorController,
             string unityAvatarAsset,
             string unityBakeOutput,
             int frameRate,
             bool probeMuscles,
+            bool enableIkGoalDriver,
+            bool rebuildEditorCurveClip,
+            bool ignoreImportedAvatar,
+            string clipFilterModeOverride,
             bool runUnityBake,
             string unityBakeWorkerQueue,
             string bakedGltfOutput,
             string bakedFbxOutput,
-            string blender
+            string blender,
+            IReadOnlyDictionary<string, string> importedAnimationClips = null,
+            bool sampleRecoverableSkippedLayersDiagnostic = false
         )
         {
             var model = selection.Model["model"] as JObject;
-            var animation = selection.Animation;
+            var animation = AttachAdditionalLayerClipAssetPaths(selection.Animation, importedAnimationClips);
             var modelName = (string)model?["name"];
             var animationName = (string)animation?["name"];
             if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(animationName))
@@ -644,16 +1657,48 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
-            var requiresHumanoidBake = (bool?)animation?["requiresHumanoidBake"] ?? false;
+            var requiresHumanoidBake = ResolveRequiresHumanoidBake(animation);
+            var legacyUnityBakePolicyOverride = false;
+            string legacyUnityBakePolicyOverrideReason = null;
             if (requiresHumanoidBake && IsStandaloneBodyBakeBlocked(animation, out var standaloneBlockReason))
             {
-                Logger.Error(
-                    "Selected Humanoid animation is an explicit Unity relation, but it is not a standalone body animation. " +
-                    standaloneBlockReason + " Restore/sample the AnimatorController layer/blend context before baking this clip."
+                var hasExplicitUnityClipSolver =
+                    !string.IsNullOrWhiteSpace(unityAnimationClip)
+                    && (!string.IsNullOrWhiteSpace(unityAvatarAsset) || !string.IsNullOrWhiteSpace(unityModelPrefab));
+                var hasControllerLayerContext = HasAdditionalAnimatorControllerLayerClips(animation);
+                if (!hasExplicitUnityClipSolver || (!IsLegacyUnityBakeDeprecationReason(standaloneBlockReason) && !hasControllerLayerContext))
+                {
+                    Logger.Error(
+                        "Selected Humanoid animation is an explicit Unity relation, but it is not a standalone body animation. " +
+                        standaloneBlockReason + " Restore/sample the AnimatorController layer/blend context before baking this clip."
+                    );
+                    return null;
+                }
+
+                Logger.Warning(
+                    "Selected Humanoid animation is blocked by standalone-body bake checks, but deterministic AnimatorController context is available. " +
+                    "Continuing as an explicit UnityOracle/PlayableGraph diagnostic because Unity AnimationClip plus Avatar/Prefab are available; " +
+                    "the final deliverable must still be glTF TRS with visual validation."
                 );
-                return null;
+                legacyUnityBakePolicyOverride = true;
+                legacyUnityBakePolicyOverrideReason = standaloneBlockReason;
             }
             var avatar = PrepareAvatarForUnityBake(model?["avatar"] as JObject, requiresHumanoidBake, unityModelPrefab, unityAvatarAsset);
+            var clipFilterMode = ResolveUnityBakeClipFilterMode(animation, requiresHumanoidBake, clipFilterModeOverride, unityAnimatorController);
+            var requestUnsupportedHumanPoseCurves = requiresHumanoidBake
+                ? TryBuildUnsupportedHumanPoseCurveSummaryFromSidecar(animation)
+                : null;
+            var autoEnabledIkGoalDriver = false;
+            string autoEnabledIkGoalDriverReason = null;
+            if (!enableIkGoalDriver
+                && ShouldAutoEnableIkGoalDriver(animation, unityAnimatorController, requestUnsupportedHumanPoseCurves))
+            {
+                enableIkGoalDriver = true;
+                autoEnabledIkGoalDriver = true;
+                autoEnabledIkGoalDriverReason =
+                    "Animation sidecar contains dynamic Hand/Foot IK goal curves and a provided AnimatorController is available; enabling IK goal diagnostic so the UnityOracle request does not silently sample a known-incomplete Humanoid pose.";
+                Logger.Warning(autoEnabledIkGoalDriverReason);
+            }
             var humanBones = avatar?["humanBones"]?.Values<string>()?
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToArray() ?? Array.Empty<string>();
@@ -692,6 +1737,9 @@ namespace AnimeStudio.CLI
                 ? Path.Combine(output, "unity_bake_result.json")
                 : unityBakeOutput;
             var logPath = Path.Combine(output, "unity_bake.log");
+            // IK goal driver 需要先读取 Unity editor curves，才能拿到 Hand/Foot T/Q。
+            // 显式启用 IK 诊断时自动打开 probe，避免 request 写了 enable=true 但实际无曲线可喂。
+            var effectiveProbeMuscles = probeMuscles || enableIkGoalDriver;
 
             var request = new
             {
@@ -702,7 +1750,26 @@ namespace AnimeStudio.CLI
                 sourceRootOverride,
                 frameRate = Math.Max(1, frameRate),
                 // 诊断开关：让 Unity 输出单 muscle 对骨骼的真实影响，用来标定内部 Humanoid 求解器。
-                probeMuscles,
+                probeMuscles = effectiveProbeMuscles,
+                // 诊断开关：用 Unity editor curve 中的 Hand/Foot IK goal 驱动 Animator IK pass。
+                // 只用于 Endfield Humanoid/Muscle 求解器对照；结果仍必须 needs_review。
+                enableEditorCurveIkGoalDriver = enableIkGoalDriver,
+                autoEnabledIkGoalDriver,
+                autoEnabledIkGoalDriverReason,
+                // 诊断开关：把 normally skipped 但能解析出 motion/mask 的 recovered controller layer
+                // 放进采样计划做对照。它只能帮助定位 layer/BlendTree 语义，不能升级生产状态。
+                sampleRecoverableSkippedLayersDiagnostic,
+                // 诊断开关：Endfield 部分恢复 .anim 只有 editor curves 能被 AnimationUtility 看到，
+                // runtime m_MuscleClip 不驱动 HumanPose。显式开启后，Unity helper 会从 editor curves
+                // 重建一份临时 Humanoid clip 再采样；结果必须保留 needs_review，不能当生产证明。
+                rebuildEditorCurveClip,
+                // Endfield 这类 MixedHumanoidTransform 如果已有确定的 Transform TRS 和
+                // AnimatorController layer/mask 上下文，优先把异常 Humanoid/Muscle 曲线排除出
+                // 当前诊断采样，保留 controller 叠层后的目标骨架 TRS。结果仍需视觉验收。
+                clipFilterMode,
+                // 诊断开关：忽略已传入的 imported Avatar，强制用 request 内 HumanDescription/oracle
+                // 重建 Avatar。只用于定位 imported Avatar/root 绑定问题，结果必须标为不可信生产 bake。
+                ignoreImportedAvatar,
                 outputJson = resultPath,
                 logJson = Path.Combine(output, "unity_bake_report.json"),
                 unityProject,
@@ -713,7 +1780,7 @@ namespace AnimeStudio.CLI
                     animationClip = unityAnimationClip,
                     // 预留给原始 RuntimeAnimatorController asset。Ambor 这类 BlendTree 叶子 clip
                     // 必须通过 Controller state 采样，不能再把单个 .anim 当完整身体动画。
-                    animatorController = (string)null,
+                    animatorController = NormalizeUnityAssetPath(unityAnimatorController),
                     // 原神等缺少完整 HumanDescription.skeletonBones 的资源，需要显式导入原始 UnityEngine.Avatar。
                     // 默认不填，避免影响 VRising/Freedunk 等普通 Unity 项目的既有路径。
                     avatarAsset = unityAvatarAsset,
@@ -741,6 +1808,9 @@ namespace AnimeStudio.CLI
                         animationType = (string)animation?["animationType"],
                         hasMuscleClip = (bool?)animation?["hasMuscleClip"] ?? false,
                         requiresHumanoidBake,
+                        unsupportedHumanPoseCurveSummary = requestUnsupportedHumanPoseCurves,
+                        autoEnabledIkGoalDriver,
+                        autoEnabledIkGoalDriverReason,
                         relation = (string)animation?["relation"],
                         relationSource = (string)animation?["relationSource"],
                         confidence = (string)animation?["confidence"],
@@ -753,6 +1823,9 @@ namespace AnimeStudio.CLI
                 {
                     expected = "Unity helper should output non-zero changed tracks on core body bones. If Humanoid clip is used without Animator.avatar, the bake must fail instead of producing guessed data.",
                     nextStep = "After unity_bake_result.json is produced, AnimeStudio can merge sampled TRS into glTF/GLB preview or animation pack.",
+                    clipFilterMode,
+                    legacyUnityBakePolicyOverride,
+                    legacyUnityBakePolicyOverrideReason,
                 },
             };
 
@@ -771,6 +1844,68 @@ namespace AnimeStudio.CLI
                 }
             }
             return requestPath;
+        }
+
+        private static string ResolveUnityBakeClipFilterMode(JObject animation, bool requiresHumanoidBake, string overrideMode, string unityAnimatorController)
+        {
+            var normalizedOverride = NormalizeUnityBakeClipFilterModeOverride(overrideMode);
+            if (normalizedOverride != null)
+            {
+                return normalizedOverride;
+            }
+
+            if (!requiresHumanoidBake || animation == null)
+            {
+                return null;
+            }
+
+            var animationType = (string)animation["animationType"];
+            if (!string.Equals(animationType, "MixedHumanoidTransform", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var hasOriginalRuntimeController = !string.IsNullOrWhiteSpace(unityAnimatorController);
+            if (hasOriginalRuntimeController)
+            {
+                return null;
+            }
+
+            if (!HasAnimatorControllerContext(animation))
+            {
+                return null;
+            }
+
+            // 这条规则只用于没有原始 RuntimeAnimatorController 的诊断路径：
+            // Endfield 的 Pelica idle 已证明 generated single/multi layer controller
+            // 可能把 Humanoid/Muscle full-body 采样成抬手、扭腕等语义错误姿态。
+            // 默认只保留确定 Transform/controller 层曲线；人工对照可显式传 full。
+            return "transform_only";
+        }
+
+        private static string NormalizeUnityBakeClipFilterModeOverride(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)
+                || string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "default", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (string.Equals(value, "none", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "full", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "full_clip", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            if (string.Equals(value, "transform_only", StringComparison.OrdinalIgnoreCase))
+            {
+                return "transform_only";
+            }
+
+            Logger.Warning($"Unknown --unity_bake_clip_filter_mode '{value}', falling back to auto.");
+            return null;
         }
 
         private static bool RunUnity(string requestPath, string resultPath, string unityProject, string unityEditor, string logPath, string unityBakeWorkerQueue)
@@ -1152,7 +2287,7 @@ namespace AnimeStudio.CLI
         {
             reason = null;
             var candidate = animation?["candidate"] as JObject;
-            if ((long?)candidate?["animatorControllerContext"]?["baseLayerClip"]?["clip"]?["pathId"] != null
+            if (ReadBaseLayerClipPathId(candidate) != null
                 && animation?["animatorControllerRequestedClip"] is JObject)
             {
                 // 选中的原 clip 可能是 AnimatorController 的附件/叠加层，所以它本身会标记为
@@ -1191,6 +2326,49 @@ namespace AnimeStudio.CLI
             }
 
             return false;
+        }
+
+        private static long? ReadBaseLayerClipPathId(JObject candidate)
+        {
+            // 旧索引里 animatorControllerContext/baseLayerClip/clip 可能是字符串或简单值。
+            // 只在结构完整时读取 pathId，避免诊断 request 因 JValue 形态崩溃。
+            if (candidate?["animatorControllerContext"] is not JObject context
+                || context["baseLayerClip"] is not JObject baseLayerClip
+                || baseLayerClip["clip"] is not JObject clip)
+            {
+                return null;
+            }
+
+            return (long?)clip["pathId"];
+        }
+
+        private static bool IsLegacyUnityBakeDeprecationReason(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+            {
+                return false;
+            }
+
+            return reason.IndexOf("old standalone Unity bake readiness flag is deprecated", StringComparison.OrdinalIgnoreCase) >= 0
+                || reason.IndexOf("Production export must use decoded direct glTF TRS/weights", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasAdditionalAnimatorControllerLayerClips(JObject animation)
+        {
+            return AnimatorControllerContextHasAdditionalLayerClips(animation?["animatorControllerContext"] as JObject)
+                || AnimatorControllerContextHasAdditionalLayerClips(animation?["candidate"]?["animatorControllerContext"] as JObject);
+        }
+
+        private static bool HasAnimatorControllerContext(JObject animation)
+        {
+            return animation?["animatorControllerContext"] is JObject
+                || animation?["candidate"]?["animatorControllerContext"] is JObject
+                || HasAdditionalAnimatorControllerLayerClips(animation);
+        }
+
+        private static bool AnimatorControllerContextHasAdditionalLayerClips(JObject context)
+        {
+            return context?["additionalLayerClips"] is JArray clips && clips.Count > 0;
         }
 
         private static bool IsFalse(JToken token)
@@ -1235,12 +2413,24 @@ namespace AnimeStudio.CLI
                 connection.Open();
                 using var command = connection.CreateCommand();
                 command.CommandText = @"
-SELECT m.name, a.name, json_extract(c.raw_json, '$.productionUnityBakeBlockedReason')
+SELECT m.name
+     , a.name
+     , json_extract(c.raw_json, '$.productionAnimationPath')
+     , json_extract(c.raw_json, '$.productionAnimationBlockedReason')
+     , json_extract(c.raw_json, '$.productionUnityBakeBlockedReason')
+     , json_extract(c.raw_json, '$.fullHumanoidBakeBlockedReason')
+     , json_extract(c.raw_json, '$.modelAvatarDiagnostics.productionAvatarMissingReason')
+     , json_extract(c.raw_json, '$.standaloneBodyBakeStatus')
+     , COALESCE(json_extract(c.raw_json, '$.standaloneBodyRequiresDirectTrsSolve'), 0)
 FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 WHERE c.relation_source='explicit'
-  AND json_extract(c.raw_json, '$.productionAnimationPath')='NeedsAnimatorControllerContext'
+  AND (
+    json_extract(c.raw_json, '$.productionAnimationPath') IN ('NeedsAnimatorControllerContext', 'NeedsDirectTrsAnimation')
+    OR COALESCE(json_extract(c.raw_json, '$.standaloneBodyRequiresDirectTrsSolve'), 0)=1
+    OR COALESCE(json_extract(c.raw_json, '$.fullHumanoidBakeRequired'), 0)=1
+  )
   AND ($model='' OR m.name LIKE $model OR m.output LIKE $model)
   AND ($animation='' OR a.name LIKE $animation OR a.output LIKE $animation)
 LIMIT 1;";
@@ -1254,8 +2444,29 @@ LIMIT 1;";
 
                 var model = reader.IsDBNull(0) ? "(unknown model)" : reader.GetString(0);
                 var animation = reader.IsDBNull(1) ? "(unknown animation)" : reader.GetString(1);
-                var reason = reader.IsDBNull(2) ? "requires_animator_controller_context" : reader.GetString(2);
-                return $"Selected explicit Unity candidate is blocked before bake: {model} + {animation} requires AnimatorController context. Reason: {reason}. Baking this single AnimationClip would produce a misleading root/accessory/static pose result.";
+                var productionPath = reader.IsDBNull(2) ? null : reader.GetString(2);
+                var animationReason = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var bakeReason = reader.IsDBNull(4) ? null : reader.GetString(4);
+                var fullBakeReason = reader.IsDBNull(5) ? null : reader.GetString(5);
+                var avatarReason = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var standaloneStatus = reader.IsDBNull(7) ? null : reader.GetString(7);
+                var requiresDirectSolve = !reader.IsDBNull(8) && reader.GetInt64(8) != 0;
+                var reason = FirstNonEmpty(animationReason, bakeReason, fullBakeReason, avatarReason, standaloneStatus, productionPath);
+                if (string.Equals(productionPath, "NeedsAnimatorControllerContext", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationReason, "requires_animator_controller_context", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(standaloneStatus, "requires_animator_controller_context", StringComparison.OrdinalIgnoreCase))
+                {
+                    return $"Selected explicit Unity candidate is blocked before bake: {model} + {animation} requires AnimatorController context. Reason: {reason ?? "requires_animator_controller_context"}. Baking this single AnimationClip would produce a misleading root/accessory/static pose result.";
+                }
+
+                if (requiresDirectSolve
+                    || string.Equals(productionPath, "NeedsDirectTrsAnimation", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(animationReason, "needs_direct_trs_animation", StringComparison.OrdinalIgnoreCase))
+                {
+                    return $"Selected explicit Unity candidate requires Humanoid/Muscle to target-skeleton TRS solving before it can be production glTF: {model} + {animation}. Avatar context: {avatarReason ?? fullBakeReason ?? bakeReason ?? "unknown"}. Provide/recover the original Unity Avatar or complete HumanDescription before UnityBakeAccelerated can generate a trustworthy request.";
+                }
+
+                return $"Selected explicit Unity candidate is blocked before bake: {model} + {animation}. Reason: {reason ?? "unknown"}.";
             }
             catch
             {
@@ -1266,6 +2477,11 @@ LIMIT 1;";
         private static string EscapeLike(string value)
         {
             return value ?? string.Empty;
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            return values?.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         }
 
         private static IEnumerable<PreviewSelection> SelectExplicitBakeCandidatesFromLibraryDb(
@@ -1454,17 +2670,16 @@ LIMIT $queryLimit;";
                 }
 
                 // 生产 bake 只允许从候选表带出的显式关系进入，避免手工拼错模型和动画。
-                animation["relation"] = (string)relation["relation"] ?? (string)relation["relationSource"] ?? "library.sqlite.candidate";
-                animation["relationSource"] = (string)relation["relationSource"] ?? "explicit";
-                animation["confidence"] = (string)relation["confidence"] ?? "explicit_unity_source_index";
-                animation["score"] = (int?)relation["score"] ?? 100;
-                animation["candidate"] = relation;
-                animation["requiresHumanoidBake"] = true;
+                // 关系 raw_json 里有 AnimatorController/状态机上下文，request 必须保留下来，
+                // 否则会把“状态机里的 clip”误当成普通独立动画。
+                MergeExplicitRelationIntoAnimation(animation, relation);
                 animation = ResolveAnimatorControllerBaseLayerAnimation(connection, animation, relation, libraryRoot) ?? animation;
                 ResolveBatchCandidatePaths(model, animation, libraryRoot);
                 if (!allowSuppliedAvatarAsset
                     && !ModelHasBakeReadyAvatar(model)
-                    && string.IsNullOrWhiteSpace(ResolveUnityAvatarAsset(model, importedAvatarAssets)))
+                    && string.IsNullOrWhiteSpace(ResolveUnityAvatarAsset(model, importedAvatarAssets))
+                    && string.IsNullOrWhiteSpace(ResolveCandidateImportedUnityAvatarAssetDetails(animation, importedAvatarAssets).AssetPath)
+                    && string.IsNullOrWhiteSpace(ResolveCandidateUnityAvatarAsset(animation)))
                 {
                     continue;
                 }
@@ -1494,7 +2709,9 @@ LIMIT $queryLimit;";
             JObject relation,
             string libraryRoot)
         {
-            var baseClip = relation?["animatorControllerContext"]?["baseLayerClip"]?["clip"] as JObject;
+            var animatorControllerContext = relation?["animatorControllerContext"] as JObject;
+            var baseLayerClip = animatorControllerContext?["baseLayerClip"] as JObject;
+            var baseClip = baseLayerClip?["clip"] as JObject;
             var basePathId = (long?)baseClip?["pathId"];
             if (basePathId == null)
             {
@@ -1539,6 +2756,68 @@ LIMIT 1;";
 
             return baseAnimation;
         }
+
+        private static void MergeExplicitRelationIntoAnimation(JObject animation, JObject relation)
+        {
+            if (animation == null || relation == null)
+            {
+                return;
+            }
+
+            animation["relation"] = (string)relation["relation"] ?? (string)relation["relationSource"] ?? "library.sqlite.candidate";
+            animation["relationSource"] = (string)relation["relationSource"] ?? "explicit";
+            animation["confidence"] = (string)relation["confidence"] ?? "explicit_unity_source_index";
+            animation["score"] = (int?)relation["score"] ?? 100;
+            animation["candidate"] = relation;
+            animation["requiresHumanoidBake"] = true;
+
+            foreach (var name in ExplicitRelationFieldsForRequest)
+            {
+                if (relation[name] != null)
+                {
+                    animation[name] = relation[name].DeepClone();
+                }
+            }
+        }
+
+        private static readonly string[] ExplicitRelationFieldsForRequest =
+        {
+            "animationAsset",
+            "legacyUnityBakeSupported",
+            "requiresUnityBake",
+            "directGltfAnimationReady",
+            "directGltfAnimationStatus",
+            "needsDirectTrsAnimation",
+            "deprecatedUnityBakeOnly",
+            "directHumanoidTrsRequired",
+            "unityBakeAcceleratedReady",
+            "unityBakeAcceleratedBlockedReason",
+            "directAnimationBlocked",
+            "directAnimationBlockedReason",
+            "productionAnimationReady",
+            "productionAnimationBlockedReason",
+            "productionAnimationPath",
+            "fullHumanoidBakeRequired",
+            "productionUnityBakeReady",
+            "productionUnityBakeBlocked",
+            "productionUnityBakeBlockedReason",
+            "fullHumanoidBakeBlocked",
+            "fullHumanoidBakeBlockedReason",
+            "standaloneBodyBakeReady",
+            "standaloneBodyBakeStatus",
+            "standaloneBodyBakeReason",
+            "standaloneBodyRequiresAnimatorControllerContext",
+            "standaloneBodyRequiresDirectTrsSolve",
+            "relationEvidence",
+            "animatorControllerContext",
+            "animatorControllerBodyClipReady",
+            "unityAvatarAsset",
+            "unityAvatarMatchKey",
+            "productionUnityBakeAvatarSource",
+            "importedAvatarAssetValidated",
+            "nextAction",
+            "matchReason",
+        };
 
         private static IEnumerable<PreviewSelection> DiversifySelectionsByModel(
             IReadOnlyList<PreviewSelection> selections,
@@ -1641,10 +2920,40 @@ CREATE TABLE IF NOT EXISTS animation_bake_cache (
     baked_fbx_path TEXT,
     message TEXT,
     bake_mode TEXT,
+    solve_path TEXT,
+    production_status TEXT,
+    requires_visual_validation INTEGER,
+    writes_reusable_gltf_trs_candidate INTEGER,
+    animation_solve_json TEXT,
     updated_utc TEXT,
     PRIMARY KEY(model_output, animation_output)
 );";
             command.ExecuteNonQuery();
+            EnsureBakeCacheColumn(connection, "solve_path", "TEXT");
+            EnsureBakeCacheColumn(connection, "production_status", "TEXT");
+            EnsureBakeCacheColumn(connection, "requires_visual_validation", "INTEGER");
+            EnsureBakeCacheColumn(connection, "writes_reusable_gltf_trs_candidate", "INTEGER");
+            EnsureBakeCacheColumn(connection, "animation_solve_json", "TEXT");
+        }
+
+        private static void EnsureBakeCacheColumn(SqliteConnection connection, string columnName, string sqlType)
+        {
+            using var check = connection.CreateCommand();
+            check.CommandText = "PRAGMA table_info(animation_bake_cache);";
+            using (var reader = check.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            using var alter = connection.CreateCommand();
+            alter.CommandText = $"ALTER TABLE animation_bake_cache ADD COLUMN {columnName} {sqlType};";
+            alter.ExecuteNonQuery();
         }
 
         private static void TryCompactBakeCache(string dbPath, string libraryRoot)
@@ -2225,12 +3534,28 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
 
                 return (int?)report["frameVaryingTracks"] > 0
                     && !UsesFirstSampleHumanoidDelta(report)
-                    && IsTrustedAvatarBake(report);
+                    && HasReusableAnimationSolve(report)
+                    && IsTrustedAvatarBake(report)
+                    && HasTrustedAnimationClipBake(report);
             }
             catch
             {
                 return false;
             }
+        }
+
+        private static bool HasReusableAnimationSolve(JObject report)
+        {
+            var solve = report?["animationSolve"] as JObject;
+            if (solve == null)
+            {
+                return true;
+            }
+
+            // batch 续跑和摘要也要听新版求解报告，不能只凭 glTF 存在和 Avatar 可信。
+            return ((bool?)solve["writesReusableGltfTrsCandidate"] ?? false)
+                && ((bool?)solve["productionReady"] ?? false)
+                && !((bool?)solve["requiresVisualValidation"] ?? false);
         }
 
         private static bool IsStaticPoseBakedGltfPath(string bakedGltfPath, string libraryRoot)
@@ -2332,6 +3657,21 @@ WHERE COALESCE(bc.baked_gltf_path, '')<>''
             {
                 return false;
             }
+        }
+
+        private static bool HasTrustedAnimationClipBake(JObject report)
+        {
+            if (!ReportRequestHasExplicitAvatarAsset(report))
+            {
+                return true;
+            }
+
+            // 走 ImportedAvatar oracle 时，clip 也必须是 Unity 工程内明确导入的原始 AnimationClip。
+            // 旧的临时 .anim sidecar 容易把辅助片段当成完整身体动作，只能保留为诊断缓存。
+            var source = (string)report?["unityBakeAnimationClipSource"];
+            var importedClip = (string)report?["unityBakeImportedAnimationClip"];
+            return string.Equals(source, "unityAssetPaths.animationClip", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(importedClip);
         }
 
         private static bool IsProductionAvatarTrustSource(string source)
@@ -2545,7 +3885,43 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
                 }
             }
 
+            AddValidatedUnityAvatarSettingsAliases(result, LoadUnityBakeStringMap(libraryRoot, "unityAvatarAssets"));
+
             return result;
+        }
+
+        private static void AddValidatedUnityAvatarSettingsAliases(
+            Dictionary<string, string> target,
+            IReadOnlyDictionary<string, string> settingsMap)
+        {
+            if (target == null || target.Count == 0 || settingsMap == null || settingsMap.Count == 0)
+            {
+                return;
+            }
+
+            var validAssets = target.Values
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(NormalizeUnityAssetPath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (validAssets.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var pair in settingsMap)
+            {
+                var key = pair.Key?.Trim();
+                var assetPath = NormalizeUnityAssetPath(pair.Value);
+                if (string.IsNullOrWhiteSpace(key)
+                    || string.IsNullOrWhiteSpace(assetPath)
+                    || !validAssets.Contains(assetPath))
+                {
+                    continue;
+                }
+
+                // Alias 只指向已经通过 ImportedAvatar probe 的真实 Unity Avatar asset。
+                target[key] = assetPath;
+            }
         }
 
         private static IReadOnlyDictionary<string, string> DiscoverImportedAnimationClips(string unityProject, string libraryRoot = null)
@@ -2579,6 +3955,43 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
 
                 // ImportedAnimationClip 只用文件名精确匹配当前已经选中的 AnimationClip。
                 // 它不参与模型-动画候选生成，也不做 contains 模糊匹配。
+                result[name] = unityPath;
+                result[Path.GetFileName(file)] = unityPath;
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyDictionary<string, string> DiscoverImportedAnimatorControllers(string unityProject, string libraryRoot = null)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            AddStringMap(result, LoadUnityBakeStringMap(libraryRoot, "unityAnimatorControllers"));
+            if (string.IsNullOrWhiteSpace(unityProject))
+            {
+                return result;
+            }
+
+            var directory = Path.Combine(unityProject, "Assets", "AnimeStudioBake", "ImportedAnimatorController");
+            if (!Directory.Exists(directory))
+            {
+                return result;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(directory, "*.controller", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                var unityPath = Path.GetRelativePath(unityProject, file).Replace('\\', '/');
+                if (!unityPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // 只登记显式导入目录里的原始/人工恢复 controller，不扫描 GeneratedAnimatorControllers。
                 result[name] = unityPath;
                 result[Path.GetFileName(file)] = unityPath;
             }
@@ -2942,7 +4355,7 @@ CREATE TEMP TABLE temp_explicit_unity_bake_candidates AS
 SELECT c.model_output AS model_output
      , c.animation_output AS animation_output
      , CASE WHEN " + BakeReadyAvatarSql("m") + @" THEN 1 ELSE 0 END AS bake_ready_avatar
-     , CASE WHEN " + ImportedAvatarAssetMatchSql("m") + @" THEN 1 ELSE 0 END AS imported_avatar_ready
+     , CASE WHEN " + ImportedAvatarAssetMatchSql("m", "c") + @" THEN 1 ELSE 0 END AS imported_avatar_ready
 FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 WHERE c.relation_source='explicit'
@@ -2961,14 +4374,23 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             }
         }
 
-        private static string ImportedAvatarAssetMatchSql(string modelAlias)
+        private static string ImportedAvatarAssetMatchSql(string modelAlias, string candidateAlias = null)
         {
             var raw = $"{modelAlias}.raw_json";
+            var candidateRaw = string.IsNullOrWhiteSpace(candidateAlias) ? null : $"{candidateAlias}.raw_json";
+            var candidateChecks = candidateRaw == null
+                ? string.Empty
+                : $@"
+       OR importedAvatar.key = COALESCE(json_extract({candidateRaw}, '$.relationEvidence.avatarName'), '')
+       OR importedAvatar.key = COALESCE(json_extract({candidateRaw}, '$.animatorControllerContext.avatarName'), '')
+       OR importedAvatar.key = COALESCE(json_extract({candidateRaw}, '$.candidate.relationEvidence.avatarName'), '')
+       OR importedAvatar.key = COALESCE(json_extract({candidateRaw}, '$.candidate.animatorControllerContext.avatarName'), '')";
             return $@"EXISTS (
     SELECT 1
     FROM temp_imported_avatar_asset_keys importedAvatar
     WHERE importedAvatar.key = COALESCE(json_extract({raw}, '$.avatar.name'), '')
        OR importedAvatar.key = COALESCE({modelAlias}.name, '')
+       {candidateChecks}
   )";
         }
 
@@ -2986,6 +4408,18 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             }
 
             var resolved = ResolveUnityAvatarAssetDetails(selection?.Model?["model"] as JObject, importedAvatarAssets);
+            if (!string.IsNullOrWhiteSpace(resolved.AssetPath))
+            {
+                return resolved;
+            }
+
+            resolved = ResolveCandidateImportedUnityAvatarAssetDetails(selection?.Animation as JObject, importedAvatarAssets);
+            if (!string.IsNullOrWhiteSpace(resolved.AssetPath))
+            {
+                return resolved;
+            }
+
+            resolved = ResolveCandidateUnityAvatarAssetDetails(selection?.Animation as JObject);
             if (!string.IsNullOrWhiteSpace(resolved.AssetPath))
             {
                 return resolved;
@@ -3036,6 +4470,149 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             return new AnimationClipAssetResolution(null, "animeStudioAssets.animation.anim", null);
         }
 
+        private static AnimatorControllerAssetResolution ResolveUnityAnimatorControllerForSelection(
+            PreviewSelection selection,
+            string suppliedUnityAnimatorController,
+            IReadOnlyDictionary<string, string> importedAnimatorControllers)
+        {
+            if (!string.IsNullOrWhiteSpace(suppliedUnityAnimatorController))
+            {
+                return new AnimatorControllerAssetResolution(
+                    NormalizeUnityAssetPath(suppliedUnityAnimatorController),
+                    "unityAssetPaths.animatorController",
+                    "--unity_animator_controller");
+            }
+
+            if (importedAnimatorControllers == null || importedAnimatorControllers.Count == 0)
+            {
+                return new AnimatorControllerAssetResolution(null, "generated_or_clip_playable_controller", null);
+            }
+
+            foreach (var key in BuildUnityAnimatorControllerLookupKeys(selection))
+            {
+                if (importedAnimatorControllers.TryGetValue(key, out var value))
+                {
+                    return new AnimatorControllerAssetResolution(
+                        NormalizeUnityAssetPath(value),
+                        "unityAssetPaths.animatorController",
+                        key);
+                }
+            }
+
+            return new AnimatorControllerAssetResolution(null, "generated_or_clip_playable_controller", null);
+        }
+
+        private static JObject AttachAdditionalLayerClipAssetPaths(
+            JObject animation,
+            IReadOnlyDictionary<string, string> importedAnimationClips)
+        {
+            var context = animation?["animatorControllerContext"] as JObject;
+            var clips = context?["additionalLayerClips"] as JArray;
+            if (clips == null || clips.Count == 0)
+            {
+                return animation;
+            }
+
+            var copy = (JObject)animation.DeepClone();
+            var copiedContext = copy["animatorControllerContext"] as JObject;
+            var copiedClips = copiedContext?["additionalLayerClips"] as JArray;
+            if (copiedClips == null)
+            {
+                return copy;
+            }
+
+            PruneAmbiguousAdditionalLayerClips(copiedContext, copiedClips);
+            copiedClips = copiedContext?["additionalLayerClips"] as JArray;
+            if (copiedClips == null || copiedClips.Count == 0)
+            {
+                return copy;
+            }
+
+            foreach (var clip in copiedClips.OfType<JObject>())
+            {
+                if (!string.IsNullOrWhiteSpace((string)clip["unityAssetPath"]))
+                {
+                    clip["unityAssetPath"] = NormalizeUnityAssetPath((string)clip["unityAssetPath"]);
+                    continue;
+                }
+
+                if (importedAnimationClips == null || importedAnimationClips.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var key in BuildAdditionalLayerClipLookupKeys(clip))
+                {
+                    if (importedAnimationClips.TryGetValue(key, out var value))
+                    {
+                        clip["unityAssetPath"] = NormalizeUnityAssetPath(value);
+                        clip["unityAssetLookupKey"] = key;
+                        break;
+                    }
+                }
+            }
+
+            return copy;
+        }
+
+        private static void PruneAmbiguousAdditionalLayerClips(JObject context, JArray clips)
+        {
+            if (context == null || clips == null || clips.Count == 0)
+            {
+                return;
+            }
+
+            var kept = new JArray();
+            var warnings = context["additionalLayerContextWarnings"] as JArray ?? new JArray();
+            foreach (var group in clips.OfType<JObject>().GroupBy(ReadAdditionalLayerIndex).OrderBy(x => x.Key))
+            {
+                var unique = group
+                    .Where(x => x != null)
+                    .GroupBy(x => FirstNonEmpty(
+                        ((long?)x["pathId"])?.ToString(CultureInfo.InvariantCulture),
+                        (string)x["unityAssetPath"],
+                        (string)x["name"]))
+                    .Select(x => x.First())
+                    .ToList();
+
+                if (unique.Count == 1)
+                {
+                    kept.Add(unique[0]);
+                    continue;
+                }
+
+                warnings.Add(new JObject
+                {
+                    ["layerIndex"] = group.Key,
+                    ["clipCount"] = unique.Count,
+                    ["reason"] = "same AnimatorController layer resolves to multiple additional clips; BlendTree parameters, weights, or runtime controller context are required",
+                    ["rule"] = "skip ambiguous additional layer in Unity bake request instead of applying several child clips as full-weight layers",
+                });
+            }
+
+            context["additionalLayerClips"] = kept;
+            if (warnings.Count > 0)
+            {
+                context["additionalLayerContextWarnings"] = warnings;
+            }
+        }
+
+        private static int ReadAdditionalLayerIndex(JObject clip)
+        {
+            return (int?)clip?["layerIndex"] ?? -1;
+        }
+
+        private static IEnumerable<string> BuildAdditionalLayerClipLookupKeys(JObject clip)
+        {
+            var name = (string)clip?["name"];
+            var pathId = (long?)clip?["pathId"];
+            var fileName = string.IsNullOrWhiteSpace(name) ? null : name + ".anim";
+            var pathIdText = pathId?.ToString(CultureInfo.InvariantCulture);
+            return new[] { name, fileName, pathIdText }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
         private static IEnumerable<string> BuildUnityAnimationClipLookupKeys(JObject animation)
         {
             var name = (string)animation?["name"];
@@ -3052,6 +4629,38 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             }
 
             return new[] { name, stem, fileName, sidecarStem, sidecarFileName }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> BuildUnityAnimatorControllerLookupKeys(PreviewSelection selection)
+        {
+            var model = selection?.Model?["model"] as JObject;
+            var animation = selection?.Animation as JObject;
+            var context = animation?["animatorControllerContext"] as JObject;
+            var relationEvidence = animation?["relationEvidence"] as JObject
+                ?? animation?["candidate"]?["relationEvidence"] as JObject;
+            var controllerName = (string)relationEvidence?["controllerName"] ?? (string)context?["controllerName"];
+            var controllerFileName = string.IsNullOrWhiteSpace(controllerName) ? null : controllerName + ".controller";
+            var controllerPathId = (long?)relationEvidence?["controllerPathId"] ?? (long?)context?["controllerPathId"];
+            var controllerPathIdText = controllerPathId?.ToString(CultureInfo.InvariantCulture);
+            var modelName = (string)model?["name"];
+            var animationName = (string)animation?["name"];
+
+            return new[]
+            {
+                controllerName,
+                controllerFileName,
+                controllerPathIdText,
+                modelName,
+                animationName,
+                !string.IsNullOrWhiteSpace(modelName) && !string.IsNullOrWhiteSpace(controllerName)
+                    ? modelName + "|" + controllerName
+                    : null,
+                !string.IsNullOrWhiteSpace(animationName) && !string.IsNullOrWhiteSpace(controllerName)
+                    ? animationName + "|" + controllerName
+                    : null,
+            }
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase);
         }
@@ -3156,9 +4765,66 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
         }
 
+        private static string ResolveCandidateUnityAvatarAsset(JObject animation)
+        {
+            return ResolveCandidateUnityAvatarAssetDetails(animation).AssetPath;
+        }
+
+        private static AvatarAssetResolution ResolveCandidateUnityAvatarAssetDetails(JObject animation)
+        {
+            var assetPath = NormalizeUnityAssetPath(
+                (string)animation?["unityAvatarAsset"]
+                ?? (string)animation?["unityAssetPaths"]?["avatarAsset"]
+                ?? (string)animation?["candidate"]?["unityAvatarAsset"]
+                ?? (string)animation?["candidate"]?["unityAssetPaths"]?["avatarAsset"]);
+            if (string.IsNullOrWhiteSpace(assetPath))
+            {
+                return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
+            }
+
+            // 这个字段来自已经入库的显式模型-动画候选，只用于当前选中候选的 Avatar 求解器入口。
+            // 它不参与新增模型-动画关系，也不允许跨模型批量硬套。
+            return new AvatarAssetResolution(assetPath, "candidate.unityAvatarAsset", "explicit_candidate");
+        }
+
+        private static AvatarAssetResolution ResolveCandidateImportedUnityAvatarAssetDetails(
+            JObject animation,
+            IReadOnlyDictionary<string, string> importedAvatarAssets)
+        {
+            if (animation == null || importedAvatarAssets == null || importedAvatarAssets.Count == 0)
+            {
+                return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
+            }
+
+            foreach (var key in BuildCandidateUnityAvatarLookupKeys(animation))
+            {
+                if (importedAvatarAssets.TryGetValue(key, out var value))
+                {
+                    return new AvatarAssetResolution(value, "unityAssetPaths.avatarAsset", key);
+                }
+            }
+
+            return new AvatarAssetResolution(null, "model_human_description_or_prefab", null);
+        }
+
+        private static IEnumerable<string> BuildCandidateUnityAvatarLookupKeys(JObject animation)
+        {
+            var relationEvidence = animation?["relationEvidence"] as JObject
+                ?? animation?["candidate"]?["relationEvidence"] as JObject;
+            var context = animation?["animatorControllerContext"] as JObject
+                ?? animation?["candidate"]?["animatorControllerContext"] as JObject;
+            return new[]
+            {
+                (string)relationEvidence?["avatarName"],
+                (string)context?["avatarName"],
+            }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
         private static IEnumerable<string> BuildUnityAvatarLookupKeys(JObject model)
         {
-            var avatarName = (string)model?["avatar"]?["name"];
+            var avatarName = (string)(model?["avatar"] as JObject)?["name"];
             var modelName = (string)model?["name"];
             var output = (string)model?["output"];
             var fileName = string.IsNullOrWhiteSpace(output) ? null : Path.GetFileName(output);
@@ -3191,6 +4857,34 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
             return $@"(
     {BakeReadyAvatarSql(modelAlias)}
     OR {ImportedAvatarAssetMatchSql(modelAlias)}
+    OR {CandidateImportedAvatarAssetReadySql(modelAlias)}
+    OR {CandidateUnityAvatarAssetReadySql(modelAlias)}
+  )";
+        }
+
+        private static string CandidateImportedAvatarAssetReadySql(string modelAlias)
+        {
+            return $@"EXISTS (
+    SELECT 1
+    FROM model_animation_candidates avatarCandidate
+    JOIN temp_imported_avatar_asset_keys importedAvatar
+      ON importedAvatar.key = COALESCE(json_extract(avatarCandidate.raw_json, '$.relationEvidence.avatarName'), '')
+      OR importedAvatar.key = COALESCE(json_extract(avatarCandidate.raw_json, '$.animatorControllerContext.avatarName'), '')
+      OR importedAvatar.key = COALESCE(json_extract(avatarCandidate.raw_json, '$.candidate.relationEvidence.avatarName'), '')
+      OR importedAvatar.key = COALESCE(json_extract(avatarCandidate.raw_json, '$.candidate.animatorControllerContext.avatarName'), '')
+    WHERE avatarCandidate.relation_source='explicit'
+      AND avatarCandidate.model_output={modelAlias}.output
+  )";
+        }
+
+        private static string CandidateUnityAvatarAssetReadySql(string modelAlias)
+        {
+            return $@"EXISTS (
+    SELECT 1
+    FROM model_animation_candidates avatarCandidate
+    WHERE avatarCandidate.relation_source='explicit'
+      AND avatarCandidate.model_output={modelAlias}.output
+      AND COALESCE(json_extract(avatarCandidate.raw_json, '$.unityAvatarAsset'), '') <> ''
   )";
         }
 
@@ -3202,7 +4896,9 @@ ON temp_explicit_unity_bake_candidates(model_output, animation_output);";
     OR COALESCE(json_extract({raw}, '$.legacyUnityBakeSupported'), 0)=1
     OR COALESCE(json_extract({raw}, '$.requiresInternalHumanoidSolve'), 0)=1
     OR COALESCE(json_extract({raw}, '$.fullHumanoidBakeRequired'), 0)=1
+    OR COALESCE(json_extract({raw}, '$.unityBakeAcceleratedReady'), 0)=1
     OR COALESCE(json_extract({raw}, '$.productionUnityBakeReady'), 0)=1
+    OR COALESCE(json_extract({raw}, '$.standaloneBodyRequiresDirectTrsSolve'), 0)=1
     OR json_extract({raw}, '$.animatorControllerContext.baseLayerClip.clip.pathId') IS NOT NULL
   )";
         }
@@ -3262,8 +4958,8 @@ EXISTS (
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO animation_bake_cache(model_output, animation_output, status, request_path, result_path, baked_gltf_path, baked_fbx_path, message, bake_mode, updated_utc)
-VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bakedGltfPath, $bakedFbxPath, $message, $bakeMode, $updatedUtc)
+INSERT INTO animation_bake_cache(model_output, animation_output, status, request_path, result_path, baked_gltf_path, baked_fbx_path, message, bake_mode, solve_path, production_status, requires_visual_validation, writes_reusable_gltf_trs_candidate, animation_solve_json, updated_utc)
+VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bakedGltfPath, $bakedFbxPath, $message, $bakeMode, $solvePath, $productionStatus, $requiresVisualValidation, $writesReusableGltfTrsCandidate, $animationSolveJson, $updatedUtc)
 ON CONFLICT(model_output, animation_output) DO UPDATE SET
     status=CASE
         WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.status
@@ -3287,6 +4983,26 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
         ELSE excluded.message
     END,
     bake_mode=COALESCE(excluded.bake_mode, animation_bake_cache.bake_mode),
+    solve_path=CASE
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.solve_path
+        ELSE excluded.solve_path
+    END,
+    production_status=CASE
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.production_status
+        ELSE excluded.production_status
+    END,
+    requires_visual_validation=CASE
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.requires_visual_validation
+        ELSE excluded.requires_visual_validation
+    END,
+    writes_reusable_gltf_trs_candidate=CASE
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.writes_reusable_gltf_trs_candidate
+        ELSE excluded.writes_reusable_gltf_trs_candidate
+    END,
+    animation_solve_json=CASE
+        WHEN $preserveExistingTerminal=1 AND excluded.status NOT IN ('baked', 'static_pose', 'needs_review') THEN animation_bake_cache.animation_solve_json
+        ELSE excluded.animation_solve_json
+    END,
     updated_utc=excluded.updated_utc;";
             command.Parameters.AddWithValue("$modelOutput", modelOutput);
             command.Parameters.AddWithValue("$animationOutput", animationOutput);
@@ -3297,6 +5013,11 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
             command.Parameters.AddWithValue("$bakedFbxPath", DbValue((string)item["bakedFbx"]));
             command.Parameters.AddWithValue("$message", DbValue((string)item["message"]));
             command.Parameters.AddWithValue("$bakeMode", "UnityBakeToGltf");
+            command.Parameters.AddWithValue("$solvePath", DbValue((string)item["solvePath"]));
+            command.Parameters.AddWithValue("$productionStatus", DbValue((string)item["productionStatus"]));
+            command.Parameters.AddWithValue("$requiresVisualValidation", NullableBoolDbValue((bool?)item["requiresVisualValidation"]));
+            command.Parameters.AddWithValue("$writesReusableGltfTrsCandidate", NullableBoolDbValue((bool?)item["writesReusableGltfTrsCandidate"]));
+            command.Parameters.AddWithValue("$animationSolveJson", DbValue((item["animationSolve"] as JObject)?.ToString(Formatting.None)));
             command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$preserveExistingTerminal", preserveExistingTerminal ? 1 : 0);
             command.ExecuteNonQuery();
@@ -3354,6 +5075,11 @@ LIMIT 1;";
         private static object DbValue(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? DBNull.Value : value;
+        }
+
+        private static object NullableBoolDbValue(bool? value)
+        {
+            return value.HasValue ? (object)(value.Value ? 1 : 0) : DBNull.Value;
         }
 
         private static string CanonicalizeLibraryOutput(string path, string libraryRoot)
@@ -4076,6 +5802,35 @@ LIMIT 32;";
                         var report = JObject.Parse(File.ReadAllText(applyReport));
                         var outputGltf = (string)report["outputGltf"];
                         var status = (string)report["status"];
+                        var animationSolve = report["animationSolve"] as JObject;
+                        var solvePath = (string)animationSolve?["path"];
+                        var productionStatus = (string)animationSolve?["productionStatus"];
+                        var requiresVisualValidation = (bool?)animationSolve?["requiresVisualValidation"];
+                        var writesReusableGltfTrsCandidate = (bool?)animationSolve?["writesReusableGltfTrsCandidate"];
+                        var reusableCandidateBlockedReasons = animationSolve?["reusableCandidateBlockedReasons"] as JArray;
+                        var ikDiagnostic = report["unityBakeEditorCurveIkGoalDriverDiagnostic"] as JObject;
+                        var ikGoalDriverDiagnosticEnabled =
+                            (bool?)animationSolve?["ikGoalDriverDiagnosticEnabled"]
+                            ?? (bool?)ikDiagnostic?["enabled"];
+                        var ikGoalDriverCallCount =
+                            (int?)animationSolve?["ikGoalDriverCallCount"]
+                            ?? (int?)ikDiagnostic?["callCount"]
+                            ?? 0;
+                        var ikGoalDriverAppliedGoalCount =
+                            (int?)animationSolve?["ikGoalDriverAppliedGoalCount"]
+                            ?? (int?)ikDiagnostic?["appliedGoalCount"]
+                            ?? 0;
+                        var sampleRecoverableSkippedLayersDiagnostic =
+                            (bool?)report["unityBakeRequestSampleRecoverableSkippedLayersDiagnostic"];
+                        var animatorControllerDiagnosticSampledSkippedLayerCount =
+                            (int?)animationSolve?["animatorControllerDiagnosticSampledSkippedLayerCount"]
+                            ?? (int?)report["unityBakeAnimatorControllerDiagnosticSampledSkippedLayerCount"]
+                            ?? 0;
+                        var animatorControllerDiagnosticSampledSkippedLayerNames =
+                            report["unityBakeAnimatorControllerDiagnosticSampledSkippedLayerNames"] as JArray;
+                        var animatorControllerRecoverableSkippedLayerSummary =
+                            animationSolve?["animatorControllerRecoverableSkippedLayerSummary"] as JObject
+                            ?? report["unityBakeAnimatorControllerRecoverableSkippedLayerSummary"] as JObject;
                         if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
                         {
                             return new BatchBakeApplyInfo(
@@ -4085,7 +5840,20 @@ LIMIT 32;";
                                 (int?)report["frameVaryingTracks"] ?? 0,
                                 (int?)report["frameVaryingChannels"] ?? 0,
                                 (int?)report["firstPoseChangedTracks"] ?? 0,
-                                (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                                (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0,
+                                animationSolve,
+                                solvePath,
+                                productionStatus,
+                                requiresVisualValidation,
+                                writesReusableGltfTrsCandidate,
+                                reusableCandidateBlockedReasons,
+                                ikGoalDriverDiagnosticEnabled,
+                                ikGoalDriverCallCount,
+                                ikGoalDriverAppliedGoalCount,
+                                sampleRecoverableSkippedLayersDiagnostic,
+                                animatorControllerDiagnosticSampledSkippedLayerCount,
+                                animatorControllerDiagnosticSampledSkippedLayerNames,
+                                animatorControllerRecoverableSkippedLayerSummary);
                         }
                         if (!string.IsNullOrWhiteSpace(outputGltf) && File.Exists(outputGltf))
                         {
@@ -4096,7 +5864,20 @@ LIMIT 32;";
                                 (int?)report["frameVaryingTracks"] ?? 0,
                                 (int?)report["frameVaryingChannels"] ?? 0,
                                 (int?)report["firstPoseChangedTracks"] ?? 0,
-                                (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0);
+                                (int?)report["coreBodyFirstPoseChangedTracks"] ?? 0,
+                                animationSolve,
+                                solvePath,
+                                productionStatus,
+                                requiresVisualValidation,
+                                writesReusableGltfTrsCandidate,
+                                reusableCandidateBlockedReasons,
+                                ikGoalDriverDiagnosticEnabled,
+                                ikGoalDriverCallCount,
+                                ikGoalDriverAppliedGoalCount,
+                                sampleRecoverableSkippedLayersDiagnostic,
+                                animatorControllerDiagnosticSampledSkippedLayerCount,
+                                animatorControllerDiagnosticSampledSkippedLayerNames,
+                                animatorControllerRecoverableSkippedLayerSummary);
                         }
                     }
                     catch (Exception e)
@@ -4110,7 +5891,7 @@ LIMIT 32;";
                     .FirstOrDefault();
                 if (!string.IsNullOrWhiteSpace(fallback))
                 {
-                    return new BatchBakeApplyInfo(fallback, "unknown", null, 0, 0, 0, 0);
+                    return new BatchBakeApplyInfo(fallback, "unknown", null, 0, 0, 0, 0, null, null, null, null, null, null, null, 0, 0, null, 0, null);
                 }
             }
 
@@ -4131,7 +5912,19 @@ LIMIT 32;";
                             0,
                             0,
                             0,
-                            0);
+                            0,
+                            null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                0,
+                                0,
+                                null,
+                                0,
+                                null);
                     }
                 }
                 catch (Exception e)
@@ -4140,7 +5933,7 @@ LIMIT 32;";
                 }
             }
 
-            return new BatchBakeApplyInfo(null, null, null, 0, 0, 0, 0);
+            return new BatchBakeApplyInfo(null, null, null, 0, 0, 0, 0, null, null, null, null, null, null, null, 0, 0, null, 0, null);
         }
 
         private static string Quote(string value) => "\"" + (value ?? string.Empty).Replace("\"", "\\\"") + "\"";
@@ -4159,6 +5952,7 @@ LIMIT 32;";
             }
 
             return message.IndexOf("isHumanMotion=false", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("AnimatorController context", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("AnimatorController auxiliary", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("non-body layer", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("baseLayerClip", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -4170,6 +5964,10 @@ LIMIT 32;";
 
         private sealed record AnimationClipAssetResolution(string AssetPath, string Source, string MatchKey);
 
+        private sealed record AnimatorControllerAssetResolution(string AssetPath, string Source, string MatchKey);
+
+        private sealed record FloatCurveKey(float Time, float Value);
+
         private sealed record BatchBakeApplyInfo(
             string BakedGltfPath,
             string Status,
@@ -4177,6 +5975,19 @@ LIMIT 32;";
             int FrameVaryingTracks,
             int FrameVaryingChannels,
             int FirstPoseChangedTracks,
-            int CoreBodyFirstPoseChangedTracks);
+            int CoreBodyFirstPoseChangedTracks,
+            JObject AnimationSolve,
+            string SolvePath,
+            string ProductionStatus,
+            bool? RequiresVisualValidation,
+            bool? WritesReusableGltfTrsCandidate,
+            JArray ReusableCandidateBlockedReasons,
+            bool? IkGoalDriverDiagnosticEnabled,
+            int IkGoalDriverCallCount,
+            int IkGoalDriverAppliedGoalCount,
+            bool? SampleRecoverableSkippedLayersDiagnostic,
+            int AnimatorControllerDiagnosticSampledSkippedLayerCount,
+            JArray AnimatorControllerDiagnosticSampledSkippedLayerNames,
+            JObject AnimatorControllerRecoverableSkippedLayerSummary = null);
     }
 }

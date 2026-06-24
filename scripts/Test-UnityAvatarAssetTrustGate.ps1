@@ -119,7 +119,8 @@ Assert-Contains $bakeResult "animationClipSource" "Bake result must record anima
 Assert-Contains $bakeResult "clip.isHumanMotion" "Bake result must record Unity imported clip.isHumanMotion."
 Assert-Contains $bakeResult "AnimatorController auxiliary/non-body layer" "Unity helper humanMotion=false message must explain auxiliary/non-body clips instead of implying missing original asset only."
 Assert-Contains $bakeResult "deterministic baseLayerClip" "Unity helper humanMotion=false message must direct users back to deterministic controller context."
-Assert-Contains $bakeResult 'restPoseSource, "imported_unity_avatar_asset"' "Imported Avatar validity must require imported rest pose source."
+Assert-Contains $bakeResult "rigMetadata != null" "Imported Avatar validity must require rig metadata before trusting the Avatar asset."
+Assert-Contains $bakeResult "IsImportedAvatarRestPoseSource(rigMetadata.restPoseSource)" "Imported Avatar validity must require imported rest pose source."
 
 $helperVersionGate = Get-MethodBodyText $requestGenerator "private static string ValidateUnityBakeHelperVersion"
 Assert-Contains $helperVersionGate "clip.isHumanMotion" "Unity helper version gate must use a stable humanMotion guard marker."
@@ -147,7 +148,10 @@ Assert-Contains $trustReport "TrustedProductionBake: false" "Diagnostic Avatar p
 $importedValid = Get-MethodBodyText $applier "private static bool IsImportedAvatarAssetResultValid"
 Assert-Contains $importedValid 'result["importedAvatarAssetValid"]' "Applier must prefer importedAvatarAssetValid proof."
 Assert-Contains $importedValid 'result["rigRestPoseSource"]' "Applier may only use legacy imported rest-pose proof as compatibility evidence."
-Assert-Contains $importedValid '"imported_unity_avatar_asset"' "Imported Avatar proof must name imported_unity_avatar_asset."
+Assert-Contains $importedValid "IsImportedAvatarRestPoseSource" "Imported Avatar proof must use the shared imported_unity_avatar_asset source gate."
+
+$applierImportedRestPoseSource = Get-MethodBodyText $applier "private static bool IsImportedAvatarRestPoseSource"
+Assert-Contains $applierImportedRestPoseSource '"imported_unity_avatar_asset"' "Imported Avatar proof must name imported_unity_avatar_asset."
 
 $requestResolveClip = Get-MethodBodyText $requestGenerator "private static AnimationClipAssetResolution ResolveUnityAnimationClipForSelection"
 Assert-Contains $requestResolveClip "unityAssetPaths.animationClip" "Request generator must write explicit Unity AnimationClip asset paths when available."
@@ -198,8 +202,21 @@ Assert-Contains $controllerSelector "NormalizeSelectorPath" "AnimatorController 
 Assert-Contains $controllerSelector "Path.GetFileNameWithoutExtension" "AnimatorController context refresh must match selected .gltf/.anim filenames to SQLite asset outputs."
 Assert-Contains $controllerSelector "LooksLikePathSelector" "AnimatorController context refresh must avoid treating Windows absolute paths as regex."
 
-$programMain = Get-MethodBodyText $program "public static void Main"
-Assert-Before $programMain "TryPrepareAnimatorControllerBakeContext" "UnityBakeRequestGenerator.GenerateBatchFromLibrary" "CLI batch Unity bake must prepare AnimatorController context before generating requests."
+$programMain = $program
+$batchBranchStart = $programMain.IndexOf("if (o.BakeAnimationPreviewsFromLibrary != null", [System.StringComparison]::Ordinal)
+$acceleratedBranchStart = $programMain.IndexOf("if (o.GenerateUnityBakeAcceleratedRequestFromLibrary != null", [System.StringComparison]::Ordinal)
+if ($batchBranchStart -lt 0 -or $acceleratedBranchStart -lt 0 -or $batchBranchStart -gt $acceleratedBranchStart) {
+    throw "Unable to locate Unity bake batch and accelerated branches in Program.Main."
+}
+$batchBranch = $programMain.Substring($batchBranchStart, $acceleratedBranchStart - $batchBranchStart)
+Assert-Before $batchBranch "TryPrepareAnimatorControllerBakeContext" "UnityBakeRequestGenerator.GenerateBatchFromLibrary" "CLI batch Unity bake must prepare AnimatorController context before generating requests."
+
+$applyBranchStart = $programMain.IndexOf("if (o.ApplyUnityBakeResult != null", $acceleratedBranchStart, [System.StringComparison]::Ordinal)
+if ($applyBranchStart -lt 0) {
+    throw "Unable to locate Unity bake apply branch in Program.Main."
+}
+$acceleratedBranch = $programMain.Substring($acceleratedBranchStart, $applyBranchStart - $acceleratedBranchStart)
+Assert-Before $acceleratedBranch "TryPrepareAnimatorControllerBakeContext" "UnityBakeRequestGenerator.GenerateAcceleratedFromLibrary" "CLI accelerated Unity bake must prepare AnimatorController context before generating requests."
 
 $programPrepareContext = Get-MethodBodyText $program "private static void TryPrepareAnimatorControllerBakeContext"
 Assert-Contains $programPrepareContext "o.UnityFileInspect" "CLI AnimatorController context preparation must require unity_file_inspect.json."

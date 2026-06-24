@@ -596,6 +596,7 @@ namespace AnimeStudio.LibraryBrowser
                 // 这种文件可用于诊断，不能在浏览器里标成“可播放”。
                 return TryReadInt(document.RootElement, "frameVaryingTracks", out var frameVaryingTracks)
                     && frameVaryingTracks > 0
+                    && HasReusableAnimationSolve(document.RootElement)
                     && HasTrustedAvatarBake(document.RootElement)
                     && HasTrustedAnimationClipBake(document.RootElement);
             }
@@ -1075,6 +1076,24 @@ FROM animation_bake_cache;";
             {
                 return null;
             }
+        }
+
+        private static bool HasReusableAnimationSolve(JsonElement root)
+        {
+            if (!root.TryGetProperty("animationSolve", out var solve)
+                || solve.ValueKind != JsonValueKind.Object)
+            {
+                return true;
+            }
+
+            // 新版报告已经把“能写 glTF TRS”和“可复用生产动画”分开。
+            // 旧 Browser 也必须服从这个门禁，避免把诊断 bake 显示成可播放。
+            return TryReadBool(solve, "writesReusableGltfTrsCandidate", out var writesReusable)
+                && writesReusable
+                && TryReadBool(solve, "productionReady", out var productionReady)
+                && productionReady
+                && (!TryReadBool(solve, "requiresVisualValidation", out var requiresVisualValidation)
+                    || !requiresVisualValidation);
         }
 
         private static bool HasTrustedAvatarBake(JsonElement root)

@@ -57,12 +57,15 @@ namespace AnimeStudio.UnityBake
             }
 
             var importedAvatar = LoadImportedAvatarAsset(request);
+            var avatarPoseSource = ApplyAvatarOraclePoseToTransforms(root, model.avatar);
             var rigRestPoseSource = importedAvatar != null
-                ? "imported_unity_avatar_asset"
-                : ApplyAvatarOraclePoseToTransforms(root, model.avatar);
+                ? string.IsNullOrWhiteSpace(avatarPoseSource)
+                    ? "imported_unity_avatar_asset"
+                    : "imported_unity_avatar_asset+" + avatarPoseSource
+                : avatarPoseSource;
             var metadata = root.AddComponent<AnimeStudioBakeRigMetadata>();
             metadata.restPoseSource = rigRestPoseSource;
-            metadata.restPoseApplied = !string.IsNullOrWhiteSpace(rigRestPoseSource);
+            metadata.restPoseApplied = !string.IsNullOrWhiteSpace(avatarPoseSource);
 
             var animator = root.AddComponent<Animator>();
             animator.avatar = importedAvatar != null ? importedAvatar : BuildAvatar(root, model.avatar);
@@ -73,6 +76,11 @@ namespace AnimeStudio.UnityBake
 
         public static Avatar LoadImportedAvatarAsset(AnimeStudioBakeRequest request)
         {
+            if (IgnoreImportedAvatarForDiagnostics(request))
+            {
+                return null;
+            }
+
             var path = request?.unityAssetPaths?.avatarAsset;
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -95,6 +103,18 @@ namespace AnimeStudio.UnityBake
             }
 
             return avatar;
+        }
+
+        private static bool IgnoreImportedAvatarForDiagnostics(AnimeStudioBakeRequest request)
+        {
+            if (request != null && request.ignoreImportedAvatar)
+            {
+                return true;
+            }
+
+            var value = Environment.GetEnvironmentVariable("ANIMESTUDIO_UNITY_BAKE_IGNORE_IMPORTED_AVATAR");
+            return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
         }
 
         public static string NormalizeUnityAssetPath(string path)
@@ -262,7 +282,7 @@ namespace AnimeStudio.UnityBake
         {
             if (avatarAsset?.skeletonBones != null && avatarAsset.skeletonBones.Length > 0)
             {
-                return avatarAsset.skeletonBones
+                var descriptionSkeleton = avatarAsset.skeletonBones
                     .Where(x => !string.IsNullOrWhiteSpace(x.name))
                     .Select(x => new SkeletonBone
                     {
@@ -272,6 +292,11 @@ namespace AnimeStudio.UnityBake
                         scale = x.scale.ToVector3(),
                     })
                     .ToList();
+                // Endfield 部分 Avatar 的 HumanDescription.skeletonBones 缺少少量 humanBones 目标，
+                // 但当前 glTF 层级里有这些 Transform。这里只补“模型层级真实存在”的骨骼，
+                // 让 Unity AvatarBuilder 能绑定当前目标骨架；动画关系仍然来自显式 Avatar/clip。
+                AppendMissingTransformSkeletonBones(root, descriptionSkeleton);
+                return descriptionSkeleton;
             }
 
             var skeleton = UseInternalSolverSkeletonPose()

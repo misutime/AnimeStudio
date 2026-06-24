@@ -39,6 +39,8 @@ namespace AnimeStudio
         private const int Float = 5126;
         private const int UInt = 5125;
         private const int UShort = 5123;
+        private const int ArrayBufferTarget = 34962;
+        private const int ElementArrayBufferTarget = 34963;
         private readonly string _path;
         private readonly string _directory;
         private readonly string _binName;
@@ -180,12 +182,12 @@ namespace AnimeStudio
             var vertexCount = mesh.VertexList.Count;
             var attributes = new Dictionary<string, object>
             {
-                ["POSITION"] = WriteVec3Accessor(mesh.VertexList.Select(x => x.Vertex), true),
+                ["POSITION"] = WriteVec3Accessor(mesh.VertexList.Select(x => x.Vertex), true, ArrayBufferTarget),
             };
 
             if (mesh.hasNormal)
             {
-                attributes["NORMAL"] = WriteVec3Accessor(mesh.VertexList.Select(x => x.Normal), false);
+                attributes["NORMAL"] = WriteVec3Accessor(mesh.VertexList.Select(x => x.Normal), false, ArrayBufferTarget);
             }
 
             for (var uv = 0; uv < mesh.hasUV?.Length; uv++)
@@ -198,13 +200,13 @@ namespace AnimeStudio
                         return value == null || value.Length < 2
                             ? new Vector2()
                             : new Vector2(value[0], 1.0f - value[1]);
-                    }));
+                    }), ArrayBufferTarget);
                 }
             }
 
             if (mesh.hasTangent)
             {
-                attributes["TANGENT"] = WriteVec4Accessor(mesh.VertexList.Select(x => x.Tangent));
+                attributes["TANGENT"] = WriteVec4Accessor(mesh.VertexList.Select(x => x.Tangent), ArrayBufferTarget);
             }
 
             var protectVertexColorAlpha = false;
@@ -213,13 +215,13 @@ namespace AnimeStudio
                 // 有些 Unity 自定义 shader 会把顶点色 alpha 当业务遮罩，不是真透明。
                 // glTF 查看器会直接乘 alpha；仅当所有子材质都确认是不透明预览时，保护可见性。
                 protectVertexColorAlpha = ShouldProtectVertexColorAlpha(mesh);
-                attributes["COLOR_0"] = WriteColorAccessor(mesh.VertexList.Select(x => x.Color), protectVertexColorAlpha);
+                attributes["COLOR_0"] = WriteColorAccessor(mesh.VertexList.Select(x => x.Color), protectVertexColorAlpha, ArrayBufferTarget);
             }
 
             if (mesh.BoneList?.Count > 0 && mesh.VertexList.Any(x => x.BoneIndices != null && x.Weights != null))
             {
-                attributes["JOINTS_0"] = WriteJointsAccessor(mesh.VertexList);
-                attributes["WEIGHTS_0"] = WriteWeightsAccessor(mesh.VertexList);
+                attributes["JOINTS_0"] = WriteJointsAccessor(mesh.VertexList, ArrayBufferTarget);
+                attributes["WEIGHTS_0"] = WriteWeightsAccessor(mesh.VertexList, ArrayBufferTarget);
             }
 
             var primitives = new List<Dictionary<string, object>>();
@@ -245,7 +247,7 @@ namespace AnimeStudio
                 var primitive = new Dictionary<string, object>
                 {
                     ["attributes"] = attributes,
-                    ["indices"] = WriteUIntAccessor(indices),
+                    ["indices"] = WriteUIntAccessor(indices, ElementArrayBufferTarget),
                     ["mode"] = 4,
                 };
                 AddMorphTargets(mesh, primitive);
@@ -327,15 +329,15 @@ namespace AnimeStudio
                 {
                     // morph target 的 POSITION 也是 glTF 规范里的 position accessor，需要 min/max。
                     // F3D 这类严格查看器会因为缺少 bounds 直接拒绝加载场景。
-                    ["POSITION"] = WriteVec3Accessor(positions, true),
+                    ["POSITION"] = WriteVec3Accessor(positions, true, ArrayBufferTarget),
                 };
                 if (normals != null)
                 {
-                    target["NORMAL"] = WriteVec3Accessor(normals, false);
+                    target["NORMAL"] = WriteVec3Accessor(normals, false, ArrayBufferTarget);
                 }
                 if (tangents != null)
                 {
-                    target["TANGENT"] = WriteVec3Accessor(tangents, false);
+                    target["TANGENT"] = WriteVec3Accessor(tangents, false, ArrayBufferTarget);
                 }
 
                 var channelName = channel.Name ?? $"morph_{targets.Count}";
@@ -439,9 +441,9 @@ namespace AnimeStudio
                         continue;
                     }
 
-                    AddAnimationChannel(track.Translations, "translation", nodeIndex, samplers, channels, WriteVec3Accessor);
+                    AddAnimationChannel(track.Translations, "translation", nodeIndex, samplers, channels, (values, bounds) => WriteVec3Accessor(values, bounds));
                     AddAnimationChannel(track.Rotations, "rotation", nodeIndex, samplers, channels, WriteQuatAccessor);
-                    AddAnimationChannel(track.Scalings, "scale", nodeIndex, samplers, channels, WriteVec3Accessor);
+                    AddAnimationChannel(track.Scalings, "scale", nodeIndex, samplers, channels, (values, bounds) => WriteVec3Accessor(values, bounds));
                 }
                 AddBlendShapeAnimationChannels(animation, samplers, channels);
 
@@ -1494,7 +1496,7 @@ namespace AnimeStudio
             File.WriteAllText(path + ".json", JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true }));
         }
 
-        private int WriteVec2Accessor(IEnumerable<Vector2> values)
+        private int WriteVec2Accessor(IEnumerable<Vector2> values, int bufferViewTarget = 0)
         {
             var list = values.ToList();
             var offset = BeginWrite();
@@ -1503,10 +1505,10 @@ namespace AnimeStudio
                 WriteFinite(value.X);
                 WriteFinite(value.Y);
             }
-            return AddAccessor(offset, list.Count * 8, Float, "VEC2", list.Count);
+            return AddAccessor(offset, list.Count * 8, Float, "VEC2", list.Count, target: bufferViewTarget);
         }
 
-        private int WriteVec3Accessor(IEnumerable<Vector3> values, bool bounds)
+        private int WriteVec3Accessor(IEnumerable<Vector3> values, bool bounds, int bufferViewTarget = 0)
         {
             var list = values.ToList();
             var offset = BeginWrite();
@@ -1518,7 +1520,7 @@ namespace AnimeStudio
             }
             var min = bounds ? FiniteVec3Bounds(list, isMin: true) : null;
             var max = bounds ? FiniteVec3Bounds(list, isMin: false) : null;
-            return AddAccessor(offset, list.Count * 12, Float, "VEC3", list.Count, min, max);
+            return AddAccessor(offset, list.Count * 12, Float, "VEC3", list.Count, min, max, bufferViewTarget);
         }
 
         private int WriteQuatAccessor(IEnumerable<Quaternion> values, bool bounds)
@@ -1535,7 +1537,7 @@ namespace AnimeStudio
             return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
         }
 
-        private int WriteVec4Accessor(IEnumerable<Vector4> values)
+        private int WriteVec4Accessor(IEnumerable<Vector4> values, int bufferViewTarget = 0)
         {
             var list = values.ToList();
             var offset = BeginWrite();
@@ -1546,10 +1548,10 @@ namespace AnimeStudio
                 WriteFinite(value.Z);
                 WriteFinite(value.W);
             }
-            return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
+            return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count, target: bufferViewTarget);
         }
 
-        private int WriteColorAccessor(IEnumerable<Color> values, bool forceOpaqueAlpha = false)
+        private int WriteColorAccessor(IEnumerable<Color> values, bool forceOpaqueAlpha = false, int bufferViewTarget = 0)
         {
             var list = values.ToList();
             var offset = BeginWrite();
@@ -1560,10 +1562,10 @@ namespace AnimeStudio
                 WriteFinite(value.B);
                 WriteFinite(forceOpaqueAlpha ? 1.0f : value.A);
             }
-            return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
+            return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count, target: bufferViewTarget);
         }
 
-        private int WriteJointsAccessor(IEnumerable<ImportedVertex> vertices)
+        private int WriteJointsAccessor(IEnumerable<ImportedVertex> vertices, int bufferViewTarget = 0)
         {
             var list = vertices.ToList();
             var offset = BeginWrite();
@@ -1575,25 +1577,51 @@ namespace AnimeStudio
                     _writer.Write((ushort)Math.Clamp(value, 0, ushort.MaxValue));
                 }
             }
-            return AddAccessor(offset, list.Count * 8, UShort, "VEC4", list.Count);
+            return AddAccessor(offset, list.Count * 8, UShort, "VEC4", list.Count, target: bufferViewTarget);
         }
 
-        private int WriteWeightsAccessor(IEnumerable<ImportedVertex> vertices)
+        private int WriteWeightsAccessor(IEnumerable<ImportedVertex> vertices, int bufferViewTarget = 0)
         {
             var list = vertices.ToList();
             var offset = BeginWrite();
             foreach (var vertex in list)
             {
+                var weights = new float[4];
+                var sum = 0.0f;
                 for (var i = 0; i < 4; i++)
                 {
                     var value = vertex.Weights != null && i < vertex.Weights.Length ? vertex.Weights[i] : 0;
-                    WriteFinite(value);
+                    if (!float.IsFinite(value) || value < 0)
+                    {
+                        value = 0;
+                    }
+                    weights[i] = value;
+                    sum += value;
+                }
+
+                // glTF 要求 skin 权重和为 1。Unity 原始权重常有很小浮点误差，导出前统一修正，避免第三方校验器误报。
+                if (sum > 0.000001f)
+                {
+                    var inv = 1.0f / sum;
+                    for (var i = 0; i < 4; i++)
+                    {
+                        weights[i] *= inv;
+                    }
+                }
+                else
+                {
+                    weights[0] = 1.0f;
+                }
+
+                for (var i = 0; i < 4; i++)
+                {
+                    WriteFinite(weights[i]);
                 }
             }
-            return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count);
+            return AddAccessor(offset, list.Count * 16, Float, "VEC4", list.Count, target: bufferViewTarget);
         }
 
-        private int WriteUIntAccessor(IEnumerable<uint> values)
+        private int WriteUIntAccessor(IEnumerable<uint> values, int bufferViewTarget = 0)
         {
             var list = values.ToList();
             var offset = BeginWrite();
@@ -1601,7 +1629,7 @@ namespace AnimeStudio
             {
                 _writer.Write(value);
             }
-            return AddAccessor(offset, list.Count * 4, UInt, "SCALAR", list.Count);
+            return AddAccessor(offset, list.Count * 4, UInt, "SCALAR", list.Count, target: bufferViewTarget);
         }
 
         private int WriteFloatAccessor(IEnumerable<float> values, bool bounds)
@@ -1672,7 +1700,7 @@ namespace AnimeStudio
                 : new[] { x.Max(), y.Max(), z.Max() };
         }
 
-        private int AddAccessor(int offset, int length, int componentType, string type, int count, float[] min = null, float[] max = null)
+        private int AddAccessor(int offset, int length, int componentType, string type, int count, float[] min = null, float[] max = null, int target = 0)
         {
             var view = new Dictionary<string, object>
             {
@@ -1680,6 +1708,10 @@ namespace AnimeStudio
                 ["byteOffset"] = offset,
                 ["byteLength"] = length,
             };
+            if (target > 0)
+            {
+                view["target"] = target;
+            }
             var viewIndex = _bufferViews.Count;
             _bufferViews.Add(view);
 
@@ -1723,10 +1755,6 @@ namespace AnimeStudio
                 },
                 ["nodes"] = _nodes,
                 ["meshes"] = _meshes,
-                ["materials"] = _materials,
-                ["images"] = _images,
-                ["textures"] = _textures,
-                ["skins"] = _skins,
                 ["buffers"] = new[]
                 {
                     new Dictionary<string, object>
@@ -1738,6 +1766,28 @@ namespace AnimeStudio
                 ["bufferViews"] = _bufferViews,
                 ["accessors"] = _accessors,
             };
+
+            // glTF 的可选顶层数组为空时不要写出。
+            // 写成 [] 会被严格 validator 判为 EMPTY_ENTITY。
+            if (_materials.Count > 0)
+            {
+                document["materials"] = _materials;
+            }
+            if (_skins.Count > 0)
+            {
+                document["skins"] = _skins;
+            }
+
+            // glTF 不要求没有贴图时写 images/textures: []。
+            // 空实体会让严格 validator 报错；无贴图应由模型质量报告标 warning。
+            if (_images.Count > 0)
+            {
+                document["images"] = _images;
+            }
+            if (_textures.Count > 0)
+            {
+                document["textures"] = _textures;
+            }
 
             // glTF 不要求没有动画时写 animations: []。
             // 部分严格查看器/validator 会把空实体当错误，直接导致场景加载失败。

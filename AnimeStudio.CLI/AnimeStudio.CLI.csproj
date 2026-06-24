@@ -46,6 +46,10 @@
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<TargetPath>x64\acl.dll</TargetPath>
 		</ContentWithTargetPath>
+		<ContentWithTargetPath Include="..\AnimeStudio.Libraries\x64\acl_transform.dll">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<TargetPath>x64\acl_transform.dll</TargetPath>
+		</ContentWithTargetPath>
 	</ItemGroup>
 
 	<ItemGroup>

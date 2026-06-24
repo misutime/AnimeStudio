@@ -47,6 +47,12 @@ namespace AnimeStudio.CLI
                         selection = SelectPreviewFromLibraryDb(dbPath, modelSelector, animationSelector);
                         if (selection != null)
                         {
+                            if (!IsSelectionModelReadyForAnimation(selection, out var deferredBlockedReason))
+                            {
+                                Logger.Error("Selected deferred SQLite preview candidate is blocked by the model-first animation gate.");
+                                Logger.Error(deferredBlockedReason);
+                                return null;
+                            }
                             ResolveSelectionLibraryPaths(selection, libraryRoot);
                             var deferredSourceIndex = ResolveExistingSourceIndex(libraryRoot);
                             return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride, deferredSourceIndex);
@@ -54,6 +60,13 @@ namespace AnimeStudio.CLI
                     }
                 }
                 Logger.Error("No model/animation candidate matched the preview selectors.");
+                return null;
+            }
+
+            if (!IsSelectionModelReadyForAnimation(selection, out var blockedReason))
+            {
+                Logger.Error("Selected preview candidate is blocked by the model-first animation gate.");
+                Logger.Error(blockedReason);
                 return null;
             }
 
@@ -103,10 +116,901 @@ namespace AnimeStudio.CLI
                 Logger.Error("No model/animation matched the SQLite preview selectors.");
                 return null;
             }
+            if (!IsSelectionModelReadyForAnimation(selection, out var blockedReason))
+            {
+                Logger.Error("Selected SQLite preview candidate is blocked by the model-first animation gate.");
+                Logger.Error(blockedReason);
+                return null;
+            }
 
             ResolveSelectionLibraryPaths(selection, libraryRoot);
             var sourceIndex = ResolveExistingSourceIndex(libraryRoot);
             return GenerateSelection(dbPath, gameName, selection, outputDirectory, sourceRootOverride, sourceIndex);
+        }
+
+        public static string ExportStandaloneAnimationFromLibrary(
+            string libraryRoot,
+            string gameName,
+            string modelSelector,
+            string animationSelector,
+            string outputDirectory,
+            bool forceInternalHumanoidSolve = false)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+            {
+                Logger.Error($"Library root not found: {libraryRoot}");
+                return null;
+            }
+
+            var dbPath = Path.Combine(libraryRoot, "library_index.db");
+            if (!File.Exists(dbPath))
+            {
+                Logger.Error($"library_index.db not found: {dbPath}. Rebuild the Library export or run --build_sqlite_index.");
+                return null;
+            }
+
+            var selection = SelectPreviewFromLibraryDb(dbPath, modelSelector, animationSelector);
+            if (selection == null)
+            {
+                Logger.Error("No model/animation matched the SQLite animation glTF selectors.");
+                return null;
+            }
+            if (!IsExplicitPreviewRelation(selection.Animation))
+            {
+                Logger.Error("Selected animation glTF candidate is not a Unity explicit model-animation relation.");
+                return null;
+            }
+            if (!IsSelectionModelReadyForAnimation(selection, out var blockedReason))
+            {
+                Logger.Error("Selected animation glTF candidate is blocked by the model-first animation gate.");
+                Logger.Error(blockedReason);
+                return null;
+            }
+
+            ResolveSelectionLibraryPaths(selection, libraryRoot);
+            var modelName = (string)selection.Model?["model"]?["name"];
+            var animationName = (string)selection.Animation?["name"];
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(
+                    Path.GetFullPath(libraryRoot),
+                    "AnimationGltf",
+                    $"{SafeName(modelName ?? "Model")}__{SafeName(animationName ?? "Animation")}"
+                )
+                : outputDirectory;
+
+            if (FastPreviewGltfBuilder.TryExportStandaloneAnimation(
+                selection.Model,
+                selection.Animation,
+                animationName,
+                output,
+                out var gltfPath,
+                out var message,
+                forceInternalHumanoidSolve))
+            {
+                var report = new JObject
+                {
+                    ["status"] = "ok",
+                    ["game"] = gameName ?? string.Empty,
+                    ["model"] = selection.Model?["model"],
+                    ["animation"] = selection.Animation,
+                    ["gltf"] = gltfPath,
+                    ["message"] = message,
+                    ["forceInternalHumanoidSolve"] = forceInternalHumanoidSolve,
+                    ["rule"] = forceInternalHumanoidSolve
+                        ? "独立动画 glTF 只从 relation_source=explicit 的 Unity 确定性候选生成；当前资产保留模型 node/rest TRS 并移除 mesh/material/texture/skin，使用 AnimeStudio 内部 Humanoid/Muscle 实验求解器写出 TRS channel。结果必须保留 notProductionReady，直到视觉验收和公式校准通过。"
+                        : "独立动画 glTF 只从 relation_source=explicit 的 Unity 确定性候选生成；当前资产保留模型 node/rest TRS 并移除 mesh/material/texture/skin，只写 AnimeStudio decoded 的直接 TRS channel。",
+                };
+                var reportPath = Path.Combine(output, "standalone_animation_gltf_report.json");
+                File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
+                Logger.Info(message);
+                Logger.Info($"Standalone animation glTF: {gltfPath}");
+                Logger.Info($"Standalone animation report: {reportPath}");
+                return gltfPath;
+            }
+
+            Logger.Error($"Standalone animation glTF export failed: {message}");
+            return null;
+        }
+
+        public static string MergeStandaloneAnimationGltf(
+            string modelGltfPath,
+            string animationGltfPath,
+            string outputDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(modelGltfPath) || !File.Exists(modelGltfPath))
+            {
+                Logger.Error($"Model glTF not found: {modelGltfPath}");
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(animationGltfPath) || !File.Exists(animationGltfPath))
+            {
+                Logger.Error("--preview_animation must point to a skinless standalone animation glTF.");
+                return null;
+            }
+            if (!string.Equals(Path.GetExtension(modelGltfPath), ".gltf", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Path.GetExtension(animationGltfPath), ".gltf", StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Error("--merge_animation_gltf currently accepts .gltf files with external buffers. Convert GLB to glTF first if needed.");
+                return null;
+            }
+
+            var modelDir = Path.GetDirectoryName(Path.GetFullPath(modelGltfPath)) ?? Directory.GetCurrentDirectory();
+            var animationDir = Path.GetDirectoryName(Path.GetFullPath(animationGltfPath)) ?? Directory.GetCurrentDirectory();
+            var modelName = Path.GetFileNameWithoutExtension(modelGltfPath);
+            var animationName = Path.GetFileNameWithoutExtension(animationGltfPath);
+            var requestedOutput = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(modelDir, "MergedAnimations", $"{SafeName(modelName)}__{SafeName(animationName)}")
+                : outputDirectory;
+            var requestedOutputExtension = Path.GetExtension(requestedOutput);
+            var writesExplicitGltfFile = string.Equals(requestedOutputExtension, ".gltf", StringComparison.OrdinalIgnoreCase);
+            var output = writesExplicitGltfFile
+                ? Path.GetDirectoryName(Path.GetFullPath(requestedOutput)) ?? Directory.GetCurrentDirectory()
+                : requestedOutput;
+            var outputGltf = writesExplicitGltfFile
+                ? Path.GetFullPath(requestedOutput)
+                : Path.Combine(output, $"{SafeName(modelName)}__{SafeName(animationName)}.merged.gltf");
+
+            // 只有默认“输出目录”模式可以清空目录；显式 .gltf 路径的父目录可能还放着别的验收文件。
+            if (!writesExplicitGltfFile && Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+            Directory.CreateDirectory(output);
+
+            if (!TryValidateModelGltfForAnimation(modelGltfPath, out var modelGate))
+            {
+                if (File.Exists(outputGltf))
+                {
+                    File.Delete(outputGltf);
+                }
+
+                var reportPath = Path.Combine(output, "merge_animation_gltf_report.json");
+                File.WriteAllText(reportPath, new JObject
+                {
+                    ["status"] = "blocked",
+                    ["reason"] = "model_not_animation_ready",
+                    ["modelGltf"] = modelGltfPath,
+                    ["animationGltf"] = animationGltfPath,
+                    ["outputGltf"] = outputGltf,
+                    ["modelGate"] = modelGate,
+                    ["rule"] = "模型 glTF 单独通过 Mesh/UV/材质/贴图/skin/bbox 静态验收后，才允许合并独立动画。白模、缺材质贴图或 skin 异常只能作为诊断样本。",
+                }.ToString(Formatting.Indented));
+                Logger.Error($"Merge blocked by model-first gate: {reportPath}");
+                return null;
+            }
+
+            var model = JObject.Parse(File.ReadAllText(modelGltfPath));
+            var animation = JObject.Parse(File.ReadAllText(animationGltfPath));
+            var merged = (JObject)model.DeepClone();
+            var copyNotes = new JArray();
+            CopyGltfUriResources(merged, modelDir, output, null, copyNotes, compactNames: true);
+
+            var modelNodeMap = BuildGltfNodePathMap(merged);
+            var animationNodeMap = BuildGltfNodePathMap(animation);
+            var animationIndexToPath = animationNodeMap
+                .GroupBy(x => x.Value)
+                .ToDictionary(x => x.Key, x => x.OrderBy(y => y.Key.Length).First().Key);
+
+            var bufferOffset = ArrayCount(merged, "buffers");
+            var bufferViewOffset = ArrayCount(merged, "bufferViews");
+            var accessorOffset = ArrayCount(merged, "accessors");
+            AppendAnimationBuffers(merged, animation, animationDir, output, animationName, copyNotes);
+            AppendOffsetArray(merged, animation, "bufferViews", item =>
+            {
+                if ((int?)item["buffer"] is int buffer)
+                {
+                    item["buffer"] = buffer + bufferOffset;
+                }
+            });
+            AppendOffsetArray(merged, animation, "accessors", item =>
+            {
+                if ((int?)item["bufferView"] is int bufferView)
+                {
+                    item["bufferView"] = bufferView + bufferViewOffset;
+                }
+            });
+
+            var mergedAnimations = EnsureJArray(merged, "animations");
+            var missingNodes = new JArray();
+            var channelCount = 0;
+            foreach (var sourceAnimation in animation["animations"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var animationClone = (JObject)sourceAnimation.DeepClone();
+                foreach (var sampler in animationClone["samplers"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    if ((int?)sampler["input"] is int input)
+                    {
+                        sampler["input"] = input + accessorOffset;
+                    }
+                    if ((int?)sampler["output"] is int outputAccessor)
+                    {
+                        sampler["output"] = outputAccessor + accessorOffset;
+                    }
+                }
+
+                foreach (var channel in animationClone["channels"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    channelCount++;
+                    var target = channel["target"] as JObject;
+                    var oldNodeIndex = (int?)target?["node"];
+                    if (target == null || oldNodeIndex == null)
+                    {
+                        missingNodes.Add(new JObject
+                        {
+                            ["reason"] = "missing_channel_target_node",
+                            ["channelIndex"] = channelCount - 1,
+                        });
+                        continue;
+                    }
+
+                    if (!animationIndexToPath.TryGetValue(oldNodeIndex.Value, out var animationNodePath)
+                        || !TryMapGltfNode(modelNodeMap, animationNodePath, out var newNodeIndex))
+                    {
+                        missingNodes.Add(new JObject
+                        {
+                            ["reason"] = "target_node_not_found_in_model",
+                            ["channelIndex"] = channelCount - 1,
+                            ["animationNodeIndex"] = oldNodeIndex.Value,
+                            ["animationNodePath"] = animationNodePath,
+                        });
+                        continue;
+                    }
+
+                    target["node"] = newNodeIndex;
+                }
+
+                animationClone["extras"] ??= new JObject();
+                animationClone["extras"]["animeStudioMergedAnimation"] = new JObject
+                {
+                    ["sourceAnimationGltf"] = animationGltfPath,
+                    ["sourceModelGltf"] = modelGltfPath,
+                    ["mode"] = "MergeStandaloneAnimationGltf",
+                    ["nodeMapping"] = "animation glTF channel targets are remapped to model glTF nodes by full node path, then unique suffix/leaf fallback",
+                };
+                mergedAnimations.Add(animationClone);
+            }
+
+            if (missingNodes.Count > 0)
+            {
+                var reportPath = Path.Combine(output, "merge_animation_gltf_report.json");
+                File.WriteAllText(reportPath, new JObject
+                {
+                    ["status"] = "failed",
+                    ["reason"] = "animation_channel_target_nodes_missing",
+                    ["modelGltf"] = modelGltfPath,
+                    ["animationGltf"] = animationGltfPath,
+                    ["missingNodes"] = missingNodes,
+                    ["copiedResources"] = copyNotes,
+                }.ToString(Formatting.Indented));
+                Logger.Error($"Merge failed: {missingNodes.Count} animation channel target node(s) could not be mapped to the model. Report: {reportPath}");
+                return null;
+            }
+
+            merged["extras"] ??= new JObject();
+            var mergeAssessment = AssessStandaloneAnimationForMerge(animation, channelCount);
+            var hiddenLodMeshes = HideNonPrimaryLodMeshes(merged["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>());
+            merged["extras"]["animeStudioMergedAnimation"] = new JObject
+            {
+                ["mode"] = "MergeStandaloneAnimationGltf",
+                ["sourceModelGltf"] = modelGltfPath,
+                ["sourceAnimationGltf"] = animationGltfPath,
+                ["animationCountAdded"] = animation["animations"]?.Count() ?? 0,
+                ["channelCount"] = channelCount,
+                ["hiddenNonPrimaryLodMeshCount"] = hiddenLodMeshes.Count,
+                ["validationStatus"] = mergeAssessment.Status,
+                ["validationReasons"] = mergeAssessment.Reasons,
+                ["rule"] = "只合并已经导出的 standalone animation glTF，不重新猜模型-动画关系；节点无法确定匹配时失败。",
+            };
+
+            RemoveEmptyTopLevelArrays(merged);
+            File.WriteAllText(outputGltf, merged.ToString(Formatting.Indented));
+            var okReportPath = Path.Combine(output, "merge_animation_gltf_report.json");
+            File.WriteAllText(okReportPath, new JObject
+            {
+                ["status"] = mergeAssessment.Status,
+                ["modelGltf"] = modelGltfPath,
+                ["animationGltf"] = animationGltfPath,
+                ["outputGltf"] = outputGltf,
+                ["animationCountAdded"] = animation["animations"]?.Count() ?? 0,
+                ["channelCount"] = channelCount,
+                ["hiddenNonPrimaryLodMeshCount"] = hiddenLodMeshes.Count,
+                ["hiddenNonPrimaryLodMeshes"] = JArray.FromObject(hiddenLodMeshes),
+                ["sourceAssessment"] = mergeAssessment.ToJson(),
+                ["copiedResources"] = copyNotes,
+                ["rule"] = "模型、贴图、材质、skin 来自模型 glTF；动画 channel 来自独立动画 glTF；合并只重映射确定节点。",
+            }.ToString(Formatting.Indented));
+            Logger.Info($"Merged model+animation glTF: {outputGltf}");
+            Logger.Info($"Merge report: {okReportPath}");
+            return outputGltf;
+        }
+
+        private static List<HiddenLodMeshReport> HideNonPrimaryLodMeshes(JObject[] nodes)
+        {
+            var result = new List<HiddenLodMeshReport>();
+            if (nodes.Length == 0)
+            {
+                return result;
+            }
+
+            var groups = nodes
+                .Select((node, index) => new
+                {
+                    Node = node,
+                    Index = index,
+                    Name = (string)node["name"] ?? string.Empty,
+                    Mesh = (int?)node["mesh"],
+                    Lod = TryParseLodNode((string)node["name"], out var lodInfo) ? lodInfo : null,
+                })
+                .Where(x => x.Mesh.HasValue && x.Lod != null)
+                .GroupBy(x => x.Lod.BaseName, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var group in groups)
+            {
+                var ordered = group
+                    .OrderBy(x => x.Lod.Lod)
+                    .ThenBy(x => x.Index)
+                    .ToArray();
+                if (ordered.Length <= 1)
+                {
+                    continue;
+                }
+
+                var selected = ordered[0];
+                foreach (var item in ordered.Skip(1))
+                {
+                    var extras = item.Node["extras"] as JObject;
+                    if (extras == null)
+                    {
+                        extras = new JObject();
+                        item.Node["extras"] = extras;
+                    }
+
+                    extras["animeStudioLod"] = new JObject
+                    {
+                        ["hiddenByAnimeStudio"] = true,
+                        ["reason"] = "non_primary_lod_preview",
+                        ["group"] = item.Lod.BaseName,
+                        ["selectedNode"] = selected.Name,
+                        ["selectedLod"] = selected.Lod.Lod,
+                        ["hiddenLod"] = item.Lod.Lod,
+                        ["hiddenMesh"] = item.Mesh.Value,
+                    };
+                    item.Node.Remove("mesh");
+                    item.Node.Remove("skin");
+                    result.Add(new HiddenLodMeshReport(
+                        Node: item.Index,
+                        Name: item.Name,
+                        Mesh: item.Mesh.Value,
+                        Group: item.Lod.BaseName,
+                        HiddenLod: item.Lod.Lod,
+                        SelectedNode: selected.Name,
+                        SelectedLod: selected.Lod.Lod));
+                }
+            }
+
+            return result;
+        }
+
+        private static bool TryParseLodNode(string name, out LodNodeInfo info)
+        {
+            info = null;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            var match = Regex.Match(name, @"^(?<base>.+?)(?:[_\-. ]lod(?<lod>\d+))$", RegexOptions.IgnoreCase);
+            if (!match.Success)
+            {
+                return false;
+            }
+
+            if (!int.TryParse(match.Groups["lod"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var lod))
+            {
+                return false;
+            }
+
+            info = new LodNodeInfo(match.Groups["base"].Value, lod);
+            return true;
+        }
+
+        private static StandaloneAnimationMergeAssessment AssessStandaloneAnimationForMerge(JObject animationGltf, int channelCount)
+        {
+            var reasons = new JArray();
+            var sourceModes = new JArray();
+            var needsReview = false;
+
+            foreach (var animation in animationGltf["animations"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var extras = animation["extras"] as JObject;
+                var asset = extras?["animeStudioAnimationAsset"] as JObject;
+                if (asset != null)
+                {
+                    var mode = (string)asset["mode"];
+                    if (!string.IsNullOrWhiteSpace(mode))
+                    {
+                        sourceModes.Add(mode);
+                    }
+
+                    if ((bool?)asset["notProductionReady"] == true)
+                    {
+                        needsReview = true;
+                        reasons.Add(new JObject
+                        {
+                            ["reason"] = "standalone_animation_not_production_ready",
+                            ["mode"] = mode,
+                            ["detail"] = (string)asset["notProductionReadyReason"],
+                        });
+                    }
+
+                    if ((bool?)asset["experimental"] == true)
+                    {
+                        needsReview = true;
+                        reasons.Add(new JObject
+                        {
+                            ["reason"] = "standalone_animation_experimental",
+                            ["mode"] = mode,
+                        });
+                    }
+
+                    var humanoid = asset["unityHumanoid"] as JObject;
+                    var diagnostics = humanoid?["diagnostics"] as JObject;
+                    var knownRiskTargetCount = (int?)diagnostics?["knownRiskTargetCount"] ?? 0;
+                    if (knownRiskTargetCount > 0)
+                    {
+                        needsReview = true;
+                        reasons.Add(new JObject
+                        {
+                            ["reason"] = "humanoid_solver_known_limb_risk",
+                            ["knownRiskTargetCount"] = knownRiskTargetCount,
+                            ["status"] = (string)diagnostics["status"],
+                        });
+                    }
+                }
+
+                var accelerated = extras?["animeStudioUnityBakeAccelerated"] as JObject;
+                if (accelerated != null)
+                {
+                    needsReview = true;
+                    sourceModes.Add("UnityBakeAccelerated");
+                    reasons.Add(new JObject
+                    {
+                        ["reason"] = "unity_bake_accelerated_requires_visual_validation",
+                        ["sourceRequest"] = (string)accelerated["sourceRequest"],
+                        ["sourceResult"] = (string)accelerated["sourceResult"],
+                        ["detail"] = "UnityBakeAccelerated 输出的是 glTF TRS 求解结果，但在清晰视觉验收通过前不能把合并预览标为 ok。",
+                    });
+                }
+            }
+
+            if (channelCount > 0 && channelCount < 30 && sourceModes.Any(x =>
+                    string.Equals((string)x, "UnityBakeAccelerated", StringComparison.OrdinalIgnoreCase)
+                    || ((string)x)?.IndexOf("Humanoid", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                needsReview = true;
+                reasons.Add(new JObject
+                {
+                    ["reason"] = "low_humanoid_channel_coverage",
+                    ["channelCount"] = channelCount,
+                    ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道过少，只能视为诊断预览；必须经过主体骨骼覆盖和视觉验收。",
+                });
+            }
+
+            if (reasons.Count == 0)
+            {
+                reasons.Add(new JObject
+                {
+                    ["reason"] = "standalone_animation_channels_mapped",
+                    ["detail"] = "独立动画 channel 均已确定映射到模型节点；这只证明 glTF 结构可合并，不等同于视觉验收通过。",
+                });
+            }
+
+            return new StandaloneAnimationMergeAssessment(
+                needsReview ? "needs_review" : "ok",
+                sourceModes,
+                reasons);
+        }
+
+        public static string ExportStandaloneAnimationFromFiles(
+            string modelGltfPath,
+            string animationSidecarPath,
+            string outputDirectory,
+            bool forceInternalHumanoidSolve = false,
+            string additionalLayerSidecars = null)
+        {
+            if (string.IsNullOrWhiteSpace(modelGltfPath) || !File.Exists(modelGltfPath))
+            {
+                Logger.Error($"Model glTF not found: {modelGltfPath}");
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(animationSidecarPath) || !File.Exists(animationSidecarPath))
+            {
+                Logger.Error("--preview_animation must point to an animation_asset.json sidecar.");
+                return null;
+            }
+
+            JObject sidecar;
+            try
+            {
+                sidecar = JObject.Parse(File.ReadAllText(animationSidecarPath));
+            }
+            catch (Exception e)
+            {
+                Logger.Error($"Unable to read animation sidecar: {animationSidecarPath}. {e.GetType().Name}: {e.Message}");
+                return null;
+            }
+
+            var animationName = (string)sidecar["name"];
+            if (string.IsNullOrWhiteSpace(animationName))
+            {
+                animationName = Path.GetFileNameWithoutExtension(animationSidecarPath)
+                    ?.Replace(".animation_asset", string.Empty);
+            }
+
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(
+                    Path.GetDirectoryName(Path.GetFullPath(modelGltfPath)) ?? Directory.GetCurrentDirectory(),
+                    "AnimationGltf",
+                    SafeName(animationName ?? "Animation")
+                )
+                : outputDirectory;
+            Directory.CreateDirectory(output);
+            if (!TryValidateModelGltfForAnimation(modelGltfPath, out var modelGate))
+            {
+                var reportPath = Path.Combine(output, "standalone_animation_gltf_report.json");
+                File.WriteAllText(reportPath, new JObject
+                {
+                    ["status"] = "blocked",
+                    ["reason"] = "model_not_animation_ready",
+                    ["modelGltf"] = modelGltfPath,
+                    ["animationSidecar"] = animationSidecarPath,
+                    ["animationName"] = animationName,
+                    ["modelGate"] = modelGate,
+                    ["rule"] = "手动 animation_asset.json 入口也必须先通过模型本体验收；不能用动画生成结果掩盖白模、缺贴图、缺材质或 skin 问题。",
+                }.ToString(Formatting.Indented));
+                Logger.Error($"Standalone animation glTF export blocked by model-first gate: {reportPath}");
+                return null;
+            }
+
+            if (forceInternalHumanoidSolve)
+            {
+                return ExportForcedHumanoidStandaloneFromFiles(
+                    modelGltfPath,
+                    animationSidecarPath,
+                    sidecar,
+                    animationName,
+                    outputDirectory);
+            }
+
+            var modelEntry = new JObject
+            {
+                ["model"] = new JObject
+                {
+                    ["name"] = Path.GetFileNameWithoutExtension(modelGltfPath),
+                    ["output"] = modelGltfPath,
+                },
+            };
+            var animationEntry = new JObject
+            {
+                ["name"] = animationName,
+                ["animationAsset"] = animationSidecarPath,
+                ["output"] = (string)sidecar["output"],
+                ["source"] = (string)sidecar["source"],
+                ["sourceType"] = (string)sidecar["sourceType"],
+                ["pathId"] = sidecar["pathId"],
+                ["animationType"] = (string)sidecar["animationType"],
+                ["relationSource"] = "manualFileSelection",
+                ["confidence"] = "manual_explicit_file_selection",
+            };
+            AttachManualAdditionalLayerSidecars(animationEntry, additionalLayerSidecars);
+
+            if (FastPreviewGltfBuilder.TryExportStandaloneAnimation(
+                modelEntry,
+                animationEntry,
+                animationName,
+                output,
+                out var gltfPath,
+                out var message))
+            {
+                var reportPath = Path.Combine(output, "standalone_animation_gltf_report.json");
+                File.WriteAllText(reportPath, new JObject
+                {
+                    ["status"] = "ok",
+                    ["modelGltf"] = modelGltfPath,
+                    ["animationSidecar"] = animationSidecarPath,
+                    ["additionalLayerSidecars"] = new JArray(SplitManualAdditionalLayerSidecars(additionalLayerSidecars)),
+                    ["animationName"] = animationName,
+                    ["gltf"] = gltfPath,
+                    ["message"] = message,
+                    ["rule"] = "手动文件入口只把已选择的 animation_asset.json decoded TRS 写成独立动画 glTF，不创建默认模型-动画推荐关系；可信关系仍应来自 Unity 显式引用或后续验证索引。",
+                }.ToString(Formatting.Indented));
+                Logger.Info(message);
+                Logger.Info($"Standalone animation glTF: {gltfPath}");
+                Logger.Info($"Standalone animation report: {reportPath}");
+                return gltfPath;
+            }
+
+            Logger.Error($"Standalone animation glTF export failed: {message}");
+            return null;
+        }
+
+        private static bool TryValidateModelGltfForAnimation(string modelGltfPath, out JObject modelGate)
+        {
+            modelGate = ModelLibraryValidator.ValidateSingleModelForAnimationGate(modelGltfPath);
+            ApplyCatalogModelGateIfAvailable(modelGltfPath, modelGate);
+            return (bool?)modelGate?["animationGate"]?["ready"] == true;
+        }
+
+        private static void ApplyCatalogModelGateIfAvailable(string modelGltfPath, JObject modelGate)
+        {
+            if (modelGate?["animationGate"] is not JObject gate)
+            {
+                return;
+            }
+
+            var model = TryFindCatalogModel(modelGltfPath);
+            if (model == null)
+            {
+                return;
+            }
+
+            var reasons = gate["reasons"] as JArray ?? new JArray();
+            var unresolved = (int?)model["unresolvedModelDependencyCount"] ?? 0;
+            if (unresolved > 0)
+            {
+                AddReason("unresolved_model_dependencies");
+            }
+            if ((bool?)model["materialMissingRendererBinding"] == true)
+            {
+                AddReason("missing_renderer_material_binding");
+            }
+
+            if (reasons.Count > 0)
+            {
+                gate["ready"] = false;
+                gate["status"] = "blocked";
+                gate["reasons"] = reasons;
+            }
+
+            gate["catalogEvidence"] = new JObject
+            {
+                ["source"] = (string)model["source"],
+                ["output"] = (string)model["output"],
+                ["unresolvedModelDependencyCount"] = unresolved,
+                ["unresolvedModelDependencyTypes"] = model["unresolvedModelDependencyTypes"]?.DeepClone(),
+                ["materialMissingRendererBinding"] = (bool?)model["materialMissingRendererBinding"] ?? false,
+            };
+
+            void AddReason(string reason)
+            {
+                if (!reasons.Values<string>().Any(x => string.Equals(x, reason, StringComparison.OrdinalIgnoreCase)))
+                {
+                    reasons.Add(reason);
+                }
+            }
+        }
+
+        private static JObject TryFindCatalogModel(string modelGltfPath)
+        {
+            var fullModelPath = Path.GetFullPath(modelGltfPath);
+            var current = new DirectoryInfo(Path.GetDirectoryName(fullModelPath) ?? Directory.GetCurrentDirectory());
+            while (current != null)
+            {
+                var catalogPath = Path.Combine(current.FullName, "asset_catalog.jsonl");
+                if (!File.Exists(catalogPath))
+                {
+                    current = current.Parent;
+                    continue;
+                }
+
+                var root = current.FullName;
+                return ReadJsonLines(catalogPath)
+                    .Where(x => string.Equals((string)x["kind"], "Model", StringComparison.OrdinalIgnoreCase))
+                    .Select(x =>
+                    {
+                        var clone = (JObject)x.DeepClone();
+                        ResolvePathProperty(clone, root, "output");
+                        return clone;
+                    })
+                    .FirstOrDefault(x => PathsEqual((string)x["output"], fullModelPath));
+            }
+
+            return null;
+        }
+
+        private static void AttachManualAdditionalLayerSidecars(JObject animationEntry, string additionalLayerSidecars)
+        {
+            var paths = SplitManualAdditionalLayerSidecars(additionalLayerSidecars)
+                .Where(File.Exists)
+                .ToArray();
+            if (paths.Length == 0)
+            {
+                return;
+            }
+
+            var clips = new JArray();
+            foreach (var requestPath in paths.Where(IsUnityBakeRequestPath))
+            {
+                var request = JObject.Parse(File.ReadAllText(requestPath));
+                foreach (var clip in request["animeStudioAssets"]?["animation"]?["animatorControllerContext"]?["additionalLayerClips"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var copy = (JObject)clip.DeepClone();
+                    copy["source"] = "manual_unity_bake_request_context";
+                    clips.Add(copy);
+                }
+            }
+
+            foreach (var path in paths)
+            {
+                if (IsUnityBakeRequestPath(path))
+                {
+                    continue;
+                }
+
+                var sidecar = JObject.Parse(File.ReadAllText(path));
+                var name = (string)sidecar["name"] ?? Path.GetFileNameWithoutExtension(path)?.Replace(".animation_asset", string.Empty);
+                var existing = clips
+                    .OfType<JObject>()
+                    .Where(x => string.Equals((string)x["name"], name, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (existing.Length > 0)
+                {
+                    foreach (var clip in existing)
+                    {
+                        clip["animationAsset"] = path;
+                    }
+                    continue;
+                }
+
+                clips.Add(new JObject
+                {
+                    ["name"] = name,
+                    ["animationAsset"] = path,
+                    ["layerIndex"] = clips.Count + 1,
+                    ["layerBlendingMode"] = 1,
+                    ["layerDefaultWeight"] = 1.0,
+                    ["source"] = "manual_additional_layer_sidecar",
+                });
+            }
+
+            animationEntry["animatorControllerContext"] = new JObject
+            {
+                ["source"] = "manual_file_selection.additional_layers",
+                ["additionalLayerClips"] = clips,
+            };
+        }
+
+        private static bool IsUnityBakeRequestPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return false;
+            }
+
+            return string.Equals(Path.GetFileName(path), "unity_bake_request.json", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string[] SplitManualAdditionalLayerSidecars(string value)
+        {
+            return string.IsNullOrWhiteSpace(value)
+                ? Array.Empty<string>()
+                : value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
+
+        private static string ExportForcedHumanoidStandaloneFromFiles(
+            string modelGltfPath,
+            string animationSidecarPath,
+            JObject sidecar,
+            string animationName,
+            string outputDirectory)
+        {
+            if (!TryBuildModelEntryFromCatalog(modelGltfPath, out var modelEntry, out var libraryRoot, out var modelMessage))
+            {
+                Logger.Error(modelMessage);
+                return null;
+            }
+
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(
+                    Path.GetDirectoryName(Path.GetFullPath(modelGltfPath)) ?? Directory.GetCurrentDirectory(),
+                    "AnimationGltf",
+                    SafeName(animationName ?? "Animation"))
+                : outputDirectory;
+
+            var animationEntry = new JObject
+            {
+                ["name"] = animationName,
+                ["animationAsset"] = animationSidecarPath,
+                ["output"] = (string)sidecar["output"],
+                ["source"] = (string)sidecar["source"],
+                ["sourceType"] = (string)sidecar["sourceType"],
+                ["pathId"] = sidecar["pathId"],
+                ["animationType"] = (string)sidecar["animationType"],
+                ["relationSource"] = "manualFileSelection",
+                ["confidence"] = "manual_explicit_file_selection",
+            };
+
+            if (!FastPreviewGltfBuilder.TryExportStandaloneAnimation(
+                    modelEntry,
+                    animationEntry,
+                    animationName,
+                    output,
+                    out var gltfPath,
+                    out var message,
+                    forceInternalHumanoidSolve: true))
+            {
+                Logger.Error($"Forced internal Humanoid/Muscle standalone animation export failed: {message}");
+                return null;
+            }
+
+            var reportPath = Path.Combine(output, "standalone_animation_gltf_report.json");
+            File.WriteAllText(reportPath, new JObject
+            {
+                ["status"] = "ok",
+                ["modelGltf"] = modelGltfPath,
+                ["animationSidecar"] = animationSidecarPath,
+                ["animationName"] = animationName,
+                ["gltf"] = gltfPath,
+                ["message"] = message,
+                ["libraryRoot"] = libraryRoot,
+                ["rule"] = "手动文件入口强制使用 AnimeStudio 内部 Humanoid/Muscle 求解器生成无 mesh/skin 的独立动画 glTF；只用于直接 TRS 求解验证，不创建默认模型-动画推荐关系，也不替代视觉验收。",
+            }.ToString(Formatting.Indented));
+
+            Logger.Info(message);
+            Logger.Info($"Forced internal Humanoid/Muscle standalone animation glTF: {gltfPath}");
+            Logger.Info($"Standalone animation report: {reportPath}");
+            return gltfPath;
+        }
+
+        private static bool TryBuildModelEntryFromCatalog(string modelGltfPath, out JObject modelEntry, out string libraryRoot, out string message)
+        {
+            modelEntry = null;
+            libraryRoot = null;
+            message = null;
+
+            var fullModelPath = Path.GetFullPath(modelGltfPath);
+            var current = new DirectoryInfo(Path.GetDirectoryName(fullModelPath) ?? Directory.GetCurrentDirectory());
+            while (current != null)
+            {
+                var catalogPath = Path.Combine(current.FullName, "asset_catalog.jsonl");
+                if (File.Exists(catalogPath))
+                {
+                    var root = current.FullName;
+                    libraryRoot = root;
+                    var model = ReadJsonLines(catalogPath)
+                        .Where(x => string.Equals((string)x["kind"], "Model", StringComparison.OrdinalIgnoreCase))
+                        .Select(x =>
+                        {
+                            var clone = (JObject)x.DeepClone();
+                            ResolvePathProperty(clone, root, "output");
+                            ResolvePathProperty(clone, root, "modelPreview");
+                            return clone;
+                        })
+                        .FirstOrDefault(x => PathsEqual((string)x["output"], fullModelPath));
+
+                    if (model == null)
+                    {
+                        message = $"asset_catalog.jsonl was found, but no Model row matches {fullModelPath}.";
+                        return false;
+                    }
+                    if (model["avatar"]?["internalSolver"] == null)
+                    {
+                        message = "Forced internal Humanoid/Muscle preview needs model.avatar.internalSolver from asset_catalog.jsonl. Re-export the model with current Avatar metadata first.";
+                        return false;
+                    }
+
+                    modelEntry = new JObject
+                    {
+                        ["model"] = model,
+                        ["candidateCount"] = 1,
+                    };
+                    return true;
+                }
+                current = current.Parent;
+            }
+
+            message = $"Cannot find asset_catalog.jsonl by walking up from model glTF: {fullModelPath}";
+            return false;
         }
 
         private static string GenerateSelection(
@@ -130,6 +1034,12 @@ namespace AnimeStudio.CLI
             {
                 Logger.Error("Selected preview candidate is not a Unity explicit model-animation relation. Default preview generation refuses structure/name/manual matches.");
                 Logger.Error($"Relation source: {(string)selection.Animation["relationSource"] ?? "(none)"}; confidence: {(string)selection.Animation["confidence"] ?? "(none)"}");
+                return null;
+            }
+            if (!IsSelectionModelReadyForAnimation(selection, out var blockedReason))
+            {
+                Logger.Error("Selected preview candidate is blocked by the model-first animation gate.");
+                Logger.Error(blockedReason);
                 return null;
             }
             var output = string.IsNullOrWhiteSpace(outputDirectory)
@@ -386,7 +1296,7 @@ namespace AnimeStudio.CLI
             var animations = SelectPackAnimations(model, animationSelectors, Math.Max(1, limit));
             if (animations.Count == 0)
             {
-                Logger.Error("No animation candidates matched --pack_animations.");
+                Logger.Error("No animation candidates matched --pack_animations after the model-first animation gate.");
                 return;
             }
 
@@ -1114,6 +2024,9 @@ JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 LEFT JOIN animation_preview_cache cache
   ON cache.model_output=c.model_output AND cache.animation_output=c.animation_output
 WHERE c.relation_source='explicit'
+  AND COALESCE(c.status, '') <> 'model_not_animation_ready'
+  AND COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 0) = 1
+  AND COALESCE(json_extract(c.raw_json, '$.modelAnimationGate.ready'), 0) = 1
   AND COALESCE(json_extract(c.raw_json, '$.nextAction'), '') = 'generate_preview_gltf'
   AND (
     COALESCE(json_extract(c.raw_json, '$.requiresInternalHumanoidSolve'), 0) = 0
@@ -1361,6 +2274,7 @@ ON CONFLICT(model_output, animation_output) DO UPDATE SET
             var candidates = model["candidates"]?
                 .OfType<JObject>()
                 .Where(IsExplicitPreviewRelation)
+                .Where(x => IsJsonIndexCandidateModelReady(model, x))
                 .OrderByDescending(x => (int?)x["score"] ?? 0)
                 .ThenBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
                 .ToList() ?? new List<JObject>();
@@ -1403,6 +2317,9 @@ FROM model_animation_candidates c
 JOIN assets a ON a.output = c.animation_output AND a.kind = 'Animation'
 WHERE c.model_output = $modelOutput
   AND c.relation_source = 'explicit'
+  AND COALESCE(c.status, '') <> 'model_not_animation_ready'
+  AND COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 0) = 1
+  AND COALESCE(json_extract(c.raw_json, '$.modelAnimationGate.ready'), 0) = 1
   AND (
     $hasAnimationSelector = 0
     OR c.animation_output IN (
@@ -1466,7 +2383,8 @@ LIMIT 4096;";
                 }
                 var animation = model["candidates"]?
                     .OfType<JObject>()
-                    .FirstOrDefault(x => Matches(animationSelector, (string)x["name"], (string)x["output"]));
+                    .FirstOrDefault(x => IsJsonIndexCandidateModelReady(model, x)
+                        && Matches(animationSelector, (string)x["name"], (string)x["output"]));
                 if (animation != null)
                 {
                     return new PreviewSelection(model, animation);
@@ -1494,6 +2412,9 @@ FROM model_animation_candidates c
 JOIN assets m ON m.kind='Model' AND m.output=c.model_output
 JOIN assets a ON a.kind='Animation' AND a.output=c.animation_output
 WHERE c.relation_source='explicit'
+  AND COALESCE(c.status, '') <> 'model_not_animation_ready'
+  AND COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 0) = 1
+  AND COALESCE(json_extract(c.raw_json, '$.modelAnimationGate.ready'), 0) = 1
   AND {modelSelectorClause}
   AND {animationSelectorClause}
 ORDER BY c.score DESC, m.name COLLATE NOCASE, a.name COLLATE NOCASE
@@ -1603,6 +2524,65 @@ LIMIT 128;";
                 || string.Equals((string)animation?["relationSource"], "componentAnimClass", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsJsonIndexCandidateModelReady(JObject model, JObject animation)
+        {
+            return IsSelectionModelReadyForAnimation(new PreviewSelection(model, animation), out _);
+        }
+
+        private static bool IsSelectionModelReadyForAnimation(PreviewSelection selection, out string reason)
+        {
+            reason = null;
+            var gate = selection?.Model?["modelAnimationGate"] as JObject
+                ?? selection?.Animation?["modelAnimationGate"] as JObject
+                ?? selection?.Animation?["candidate"]?["modelAnimationGate"] as JObject;
+            var ready = ReadNullableBool(gate?["ready"])
+                ?? ReadNullableBool(selection?.Model?["modelReadyForAnimation"])
+                ?? ReadNullableBool(selection?.Animation?["modelReadyForAnimation"])
+                ?? ReadNullableBool(selection?.Animation?["candidate"]?["modelReadyForAnimation"]);
+            var candidateStatus = (string)selection?.Animation?["candidate"]?["status"]
+                ?? (string)selection?.Animation?["status"];
+            var nextAction = (string)selection?.Animation?["candidate"]?["nextAction"]
+                ?? (string)selection?.Animation?["nextAction"];
+
+            if (ready == true
+                && !string.Equals(candidateStatus, "model_not_animation_ready", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(nextAction, "fix_model_first", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var reasons = gate?["reasons"]?.OfType<JValue>()
+                .Select(x => x.ToString())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray() ?? Array.Empty<string>();
+            if (ready == false
+                || string.Equals(candidateStatus, "model_not_animation_ready", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(nextAction, "fix_model_first", StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "模型第一阶段未通过，不能进入动画预览/打包。"
+                    + $" gateStatus={(string)gate?["status"] ?? "(none)"}"
+                    + $" reasons={(reasons.Length == 0 ? "(none)" : string.Join(",", reasons))}"
+                    + $" candidateStatus={candidateStatus ?? "(none)"}"
+                    + $" nextAction={nextAction ?? "(none)"}";
+                return false;
+            }
+
+            reason = "缺少模型第一阶段验证 gate，不能确认 Mesh/UV/材质/贴图/skin/bbox 已通过；请先重建 Library 索引或修复模型导出，再进入动画阶段。";
+            return false;
+        }
+
+        private static bool? ReadNullableBool(JToken token)
+        {
+            return token?.Type switch
+            {
+                JTokenType.Boolean => token.Value<bool>(),
+                JTokenType.Integer => token.Value<int>() != 0,
+                JTokenType.String when bool.TryParse(token.ToString(), out var value) => value,
+                JTokenType.String when int.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) => value != 0,
+                _ => null,
+            };
+        }
+
         private static void ResolveSelectionLibraryPaths(PreviewSelection selection, string libraryRoot)
         {
             if (selection?.Model?["model"] is JObject model)
@@ -1627,6 +2607,23 @@ LIMIT 128;";
             }
 
             obj[propertyName] = LibraryRelativePathMigrator.ResolveLibraryPath(libraryRoot, value);
+        }
+
+        private static bool PathsEqual(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            {
+                return false;
+            }
+
+            try
+            {
+                return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         private static JObject SelectAssetFromLibraryDb(SqliteConnection connection, string kind, string selector)
@@ -2021,6 +3018,302 @@ LIMIT 32;";
             return name;
         }
 
+        private static int ArrayCount(JObject obj, string propertyName)
+        {
+            return obj?[propertyName] is JArray array ? array.Count : 0;
+        }
+
+        private static JArray EnsureJArray(JObject obj, string propertyName)
+        {
+            if (obj[propertyName] is not JArray array)
+            {
+                array = new JArray();
+                obj[propertyName] = array;
+            }
+            return array;
+        }
+
+        private static void RemoveEmptyTopLevelArrays(JObject gltf)
+        {
+            foreach (var key in new[] { "images", "materials", "textures", "samplers" })
+            {
+                if (gltf?[key] is JArray array && array.Count == 0)
+                {
+                    gltf.Remove(key);
+                }
+            }
+        }
+
+        private static void AppendOffsetArray(JObject target, JObject source, string propertyName, Action<JObject> mutate)
+        {
+            var targetArray = EnsureJArray(target, propertyName);
+            foreach (var item in source[propertyName]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var clone = (JObject)item.DeepClone();
+                mutate?.Invoke(clone);
+                targetArray.Add(clone);
+            }
+        }
+
+        private static void AppendAnimationBuffers(
+            JObject merged,
+            JObject animation,
+            string animationDir,
+            string outputDir,
+            string animationName,
+            JArray copyNotes)
+        {
+            var buffers = EnsureJArray(merged, "buffers");
+            var sourceBuffers = animation["buffers"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            for (var i = 0; i < sourceBuffers.Length; i++)
+            {
+                var clone = (JObject)sourceBuffers[i].DeepClone();
+                var uri = (string)clone["uri"];
+                if (!string.IsNullOrWhiteSpace(uri) && !IsDataUri(uri))
+                {
+                    var sourcePath = ResolveGltfUriPath(animationDir, uri);
+                    // 合并预览常在很深的素材库目录里生成，动画名再重复进目录会让 Blender 等工具踩到 Windows 长路径边界。
+                    // buffer 内容和来源已写入报告，这里只保留短而稳定的文件名，保证 glTF 可以被常见工具直接打开。
+                    var targetUri = ToGltfUri(Path.Combine("AnimationBuffers", $"anim_{i}.bin"));
+                    CopyGltfResourceFile(sourcePath, outputDir, targetUri, copyNotes, "animationBuffer");
+                    clone["uri"] = targetUri;
+                }
+                buffers.Add(clone);
+            }
+        }
+
+        private static void CopyGltfUriResources(
+            JObject gltf,
+            string sourceDir,
+            string outputDir,
+            string prefix,
+            JArray copyNotes,
+            bool compactNames = false)
+        {
+            CopyGltfUriResources(gltf["buffers"]?.OfType<JObject>(), sourceDir, outputDir, prefix, copyNotes, "buffer", compactNames);
+            CopyGltfUriResources(gltf["images"]?.OfType<JObject>(), sourceDir, outputDir, prefix, copyNotes, "image", compactNames);
+        }
+
+        private static void CopyGltfUriResources(
+            IEnumerable<JObject> items,
+            string sourceDir,
+            string outputDir,
+            string prefix,
+            JArray copyNotes,
+            string kind,
+            bool compactNames = false)
+        {
+            var index = 0;
+            foreach (var item in items ?? Enumerable.Empty<JObject>())
+            {
+                var uri = (string)item["uri"];
+                if (string.IsNullOrWhiteSpace(uri) || IsDataUri(uri))
+                {
+                    continue;
+                }
+
+                var sourcePath = ResolveGltfUriPath(sourceDir, uri);
+                var targetUri = compactNames
+                    ? BuildCompactCopiedModelUri(uri, kind, index++)
+                    : BuildCopiedModelUri(uri, prefix);
+                CopyGltfResourceFile(sourcePath, outputDir, targetUri, copyNotes, kind);
+                item["uri"] = targetUri;
+            }
+        }
+
+        private static string BuildCompactCopiedModelUri(string uri, string kind, int index)
+        {
+            // merged 预览经常放在很深的调试目录；长贴图名叠加长目录会让部分 Windows 工具误判资源缺失。
+            // 预览文件使用短 URI，来源和原名仍保留在 merge report 的 copiedResources 里。
+            var extension = Path.GetExtension(FromGltfUri(uri));
+            if (string.IsNullOrWhiteSpace(extension))
+            {
+                extension = string.Equals(kind, "image", StringComparison.OrdinalIgnoreCase) ? ".png" : ".bin";
+            }
+
+            var folder = string.Equals(kind, "image", StringComparison.OrdinalIgnoreCase) ? "Textures" : "Buffers";
+            var name = string.Equals(kind, "image", StringComparison.OrdinalIgnoreCase)
+                ? $"image_{index:D3}{extension}"
+                : $"buffer_{index:D3}{extension}";
+            return ToGltfUri(Path.Combine(folder, name));
+        }
+
+        private static void CopyGltfResourceFile(string sourcePath, string outputDir, string targetUri, JArray copyNotes, string kind)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                throw new FileNotFoundException($"glTF {kind} dependency not found.", sourcePath);
+            }
+
+            var targetPath = Path.Combine(outputDir, FromGltfUri(targetUri));
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? outputDir);
+            File.Copy(sourcePath, targetPath, overwrite: true);
+            copyNotes.Add(new JObject
+            {
+                ["kind"] = kind,
+                ["source"] = sourcePath,
+                ["uri"] = targetUri,
+            });
+        }
+
+        private static string BuildCopiedModelUri(string uri, string prefix)
+        {
+            if (IsAbsoluteGltfUri(uri))
+            {
+                var fileName = SafeRelativeFileName(uri, "resource.bin");
+                return ToGltfUri(string.IsNullOrWhiteSpace(prefix)
+                    ? Path.Combine("ExternalModelResources", fileName)
+                    : Path.Combine(prefix, fileName));
+            }
+
+            var relative = FromGltfUri(uri);
+            if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+            {
+                return ToGltfUri(Path.Combine("ExternalModelResources", SafeRelativeFileName(uri, "resource.bin")));
+            }
+
+            return ToGltfUri(string.IsNullOrWhiteSpace(prefix) ? relative : Path.Combine(prefix, relative));
+        }
+
+        private static string ResolveGltfUriPath(string sourceDir, string uri)
+        {
+            if (Uri.TryCreate(uri, UriKind.Absolute, out var parsed))
+            {
+                if (parsed.IsFile)
+                {
+                    return parsed.LocalPath;
+                }
+                throw new NotSupportedException($"External glTF URI is not supported for local merge: {uri}");
+            }
+
+            return Path.GetFullPath(Path.Combine(sourceDir, FromGltfUri(uri)));
+        }
+
+        private static string FromGltfUri(string uri)
+        {
+            return Uri.UnescapeDataString(uri ?? string.Empty)
+                .Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        private static string ToGltfUri(string path)
+        {
+            return path.Replace(Path.DirectorySeparatorChar, '/')
+                .Replace(Path.AltDirectorySeparatorChar, '/');
+        }
+
+        private static bool IsDataUri(string uri)
+        {
+            return uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsAbsoluteGltfUri(string uri)
+        {
+            return Uri.TryCreate(uri, UriKind.Absolute, out _)
+                || Path.IsPathRooted(FromGltfUri(uri));
+        }
+
+        private static string SafeRelativeFileName(string uri, string fallback)
+        {
+            var fileName = Path.GetFileName(FromGltfUri(uri));
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                fileName = fallback;
+            }
+            return SafeName(fileName);
+        }
+
+        private static Dictionary<string, int> BuildGltfNodePathMap(JObject gltf)
+        {
+            var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var childToParent = new Dictionary<int, int>();
+            for (var i = 0; i < nodes.Length; i++)
+            {
+                foreach (var child in nodes[i]["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+                {
+                    if (!childToParent.ContainsKey(child))
+                    {
+                        childToParent[child] = i;
+                    }
+                }
+            }
+
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < nodes.Length; i++)
+            {
+                var path = BuildGltfNodePath(nodes, childToParent, i);
+                AddNodePathMapEntry(map, path, i);
+                AddNodePathMapEntry(map, (string)nodes[i]["name"], i);
+            }
+            return map;
+        }
+
+        private static string BuildGltfNodePath(JObject[] nodes, Dictionary<int, int> childToParent, int index)
+        {
+            var parts = new List<string>();
+            var guard = 0;
+            var current = index;
+            while (current >= 0 && current < nodes.Length && guard++ < nodes.Length)
+            {
+                parts.Add((string)nodes[current]["name"] ?? $"node_{current}");
+                if (!childToParent.TryGetValue(current, out current))
+                {
+                    break;
+                }
+            }
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        private static void AddNodePathMapEntry(Dictionary<string, int> map, string path, int index)
+        {
+            if (!string.IsNullOrWhiteSpace(path) && !map.ContainsKey(path))
+            {
+                map[path] = index;
+            }
+        }
+
+        private static bool TryMapGltfNode(Dictionary<string, int> modelNodeMap, string animationNodePath, out int nodeIndex)
+        {
+            nodeIndex = -1;
+            if (string.IsNullOrWhiteSpace(animationNodePath))
+            {
+                return false;
+            }
+            if (modelNodeMap.TryGetValue(animationNodePath, out nodeIndex))
+            {
+                return true;
+            }
+
+            var suffixMatches = modelNodeMap
+                .Where(x => x.Key.EndsWith("/" + animationNodePath, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.Key.Length)
+                .Take(2)
+                .ToArray();
+            if (suffixMatches.Length == 1)
+            {
+                nodeIndex = suffixMatches[0].Value;
+                return true;
+            }
+
+            var leaf = animationNodePath.Split('/').LastOrDefault();
+            if (string.IsNullOrWhiteSpace(leaf))
+            {
+                return false;
+            }
+            var leafMatches = modelNodeMap
+                .Where(x => string.Equals(x.Key.Split('/').LastOrDefault(), leaf, StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.Value)
+                .Distinct()
+                .Take(2)
+                .ToArray();
+            if (leafMatches.Length == 1)
+            {
+                nodeIndex = leafMatches[0];
+                return true;
+            }
+            return false;
+        }
+
         private static bool CandidateRequiresInternalHumanoidSolve(JObject animation)
         {
             var candidate = animation?["candidate"] as JObject;
@@ -2033,6 +3326,23 @@ LIMIT 32;";
         private sealed record PreviewValidationCandidate(JObject Model, JObject Animation, string ModelOutput, string AnimationOutput);
 
         private sealed record PreviewSelection(JObject Model, JObject Animation);
+
+        private sealed record LodNodeInfo(string BaseName, int Lod);
+
+        private sealed record HiddenLodMeshReport(int Node, string Name, int Mesh, string Group, int HiddenLod, string SelectedNode, int SelectedLod);
+
+        private sealed record StandaloneAnimationMergeAssessment(string Status, JArray SourceModes, JArray Reasons)
+        {
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["sourceModes"] = SourceModes,
+                    ["reasons"] = Reasons,
+                };
+            }
+        }
     }
 
     internal static class GltfPreviewValidator

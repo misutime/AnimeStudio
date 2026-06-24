@@ -76,6 +76,14 @@ namespace AnimeStudio.CLI
                 optionsBinder.TypeFilter,
                 optionsBinder.SourceFileFilter,
                 optionsBinder.PathIdFilter,
+                optionsBinder.IncludeAnimatorControllerClipClosure,
+                optionsBinder.EndfieldVfsFileFilter,
+                optionsBinder.EndfieldVfsFileLimit,
+                optionsBinder.EndfieldVfsKeepSameLengthSupplemental,
+                optionsBinder.EndfieldManifestDeps,
+                optionsBinder.EndfieldSourceCabClosure,
+                optionsBinder.EndfieldSourceCabClosureDomains,
+                optionsBinder.EndfieldSourceCabClosureIncludeAutoRoots,
                 optionsBinder.NameFilter,
                 optionsBinder.ContainerFilter,
                 optionsBinder.NameExcludeFilter,
@@ -117,12 +125,17 @@ namespace AnimeStudio.CLI
                 optionsBinder.UpdateGltfTextureRefs,
                 optionsBinder.GeneratePreviewGltf,
                 optionsBinder.GeneratePreviewFromLibrary,
+                optionsBinder.ListModelAnimationsFromLibrary,
+                optionsBinder.ExportAnimationGltfFromLibrary,
+                optionsBinder.ExportAnimationGltfFromFiles,
+                optionsBinder.MergeAnimationGltf,
                 optionsBinder.ValidateAnimationPreviewsFromLibrary,
                 optionsBinder.GenerateAssembledPreviewGltf,
                 optionsBinder.PreviewModel,
                 optionsBinder.PreviewAnimation,
                 optionsBinder.PreviewOutput,
                 optionsBinder.PreviewSourceRoot,
+                optionsBinder.PreviewForceInternalHumanoidSolve,
                 optionsBinder.AssemblyModules,
                 optionsBinder.PackModelAnimations,
                 optionsBinder.PackModelAnimationsFromLibrary,
@@ -136,17 +149,27 @@ namespace AnimeStudio.CLI
                 optionsBinder.GenerateUnityBakeRequest,
                 optionsBinder.GenerateUnityBakeRequestFromLibrary,
                 optionsBinder.BakeAnimationPreviewsFromLibrary,
+                optionsBinder.GenerateUnityBakeAcceleratedRequestFromLibrary,
                 optionsBinder.CheckUnityBakeAcceleratedWorker,
+                optionsBinder.SyncUnityBakeAcceleratedWorker,
                 optionsBinder.RunUnityBakeAccelerated,
                 optionsBinder.UnityBakeAcceleratedWorkerQueue,
+                optionsBinder.ApplyUnityBakeAcceleratedResult,
                 optionsBinder.UnityProject,
                 optionsBinder.UnityEditor,
                 optionsBinder.UnityBakeModelPrefab,
                 optionsBinder.UnityBakeAnimationClip,
+                optionsBinder.UnityBakeAnimatorController,
                 optionsBinder.UnityBakeAvatarAsset,
                 optionsBinder.UnityBakeOutput,
                 optionsBinder.UnityBakeFps,
                 optionsBinder.UnityProbeMuscles,
+                optionsBinder.UnityBakeEnableIkGoalDriver,
+                optionsBinder.UnityBakeSampleRecoverableSkippedLayersDiagnostic,
+                optionsBinder.UnityBakeRebuildEditorCurveClip,
+                optionsBinder.UnityBakeIgnoreImportedAvatar,
+                optionsBinder.UnityBakeClipFilterMode,
+                optionsBinder.UnityBakeAllowGeneratedControllerDiagnostic,
                 optionsBinder.RunUnityBake,
                 optionsBinder.UnityBakeWorkerQueue,
                 optionsBinder.ApplyUnityBakeResult,
@@ -164,15 +187,27 @@ namespace AnimeStudio.CLI
                 optionsBinder.BuildSqliteIndex,
                 optionsBinder.BuildSourceSqliteIndex,
                 optionsBinder.VerifySourceIndex,
+                optionsBinder.EnsureSourceIndexQueryIndexes,
+                optionsBinder.ListSourceModelCandidates,
+                optionsBinder.ListSourceModelAnimations,
+                optionsBinder.LocateEndfieldStrings,
+                optionsBinder.LocateEndfieldCabs,
+                optionsBinder.LocateEndfieldMissingSourceCabs,
+                optionsBinder.BuildEndfieldCabLocationIndex,
+                optionsBinder.EndfieldCabLocationIndex,
+                optionsBinder.InspectEndfieldManifestDeps,
                 optionsBinder.ExportAvatarOracle,
                 optionsBinder.RecoverImportedAvatarAssets,
                 optionsBinder.RecoverImportedAnimationClips,
+                optionsBinder.RecoverImportedAnimatorControllers,
+                optionsBinder.AnimatorControllerClipLibrary,
                 optionsBinder.RefreshAnimatorControllerContexts,
                 optionsBinder.UnityFileInspect,
                 optionsBinder.AvatarRecoveryLimit,
                 optionsBinder.AvatarRecoveryForce,
                 optionsBinder.DumpUnityBlockChunks,
                 optionsBinder.RequireFreshSourceAnimationRelations,
+                optionsBinder.SourceCandidateLimit,
                 optionsBinder.SourceIndex,
                 optionsBinder.IndexPath,
                 optionsBinder.SkipSqliteIndex,
@@ -198,6 +233,14 @@ namespace AnimeStudio.CLI
         public string[] TypeFilter { get; set; }
         public string[] SourceFileFilter { get; set; }
         public long[] PathIdFilter { get; set; }
+        public bool IncludeAnimatorControllerClipClosure { get; set; }
+        public Regex[] EndfieldVfsFileFilter { get; set; }
+        public int EndfieldVfsFileLimit { get; set; }
+        public bool EndfieldVfsKeepSameLengthSupplemental { get; set; }
+        public FileInfo EndfieldManifestDeps { get; set; }
+        public FileInfo[] EndfieldSourceCabClosure { get; set; }
+        public string[] EndfieldSourceCabClosureDomains { get; set; }
+        public bool EndfieldSourceCabClosureIncludeAutoRoots { get; set; }
         public Regex[] NameFilter { get; set; }
         public Regex[] ContainerFilter { get; set; }
         public Regex[] NameExcludeFilter { get; set; }
@@ -239,12 +282,17 @@ namespace AnimeStudio.CLI
         public bool UpdateGltfTextureRefs { get; set; }
         public FileInfo GeneratePreviewGltf { get; set; }
         public DirectoryInfo GeneratePreviewFromLibrary { get; set; }
+        public DirectoryInfo ListModelAnimationsFromLibrary { get; set; }
+        public DirectoryInfo ExportAnimationGltfFromLibrary { get; set; }
+        public FileInfo ExportAnimationGltfFromFiles { get; set; }
+        public FileInfo MergeAnimationGltf { get; set; }
         public DirectoryInfo ValidateAnimationPreviewsFromLibrary { get; set; }
         public FileInfo GenerateAssembledPreviewGltf { get; set; }
         public string PreviewModel { get; set; }
         public string PreviewAnimation { get; set; }
         public DirectoryInfo PreviewOutput { get; set; }
         public DirectoryInfo PreviewSourceRoot { get; set; }
+        public bool PreviewForceInternalHumanoidSolve { get; set; }
         public string AssemblyModules { get; set; }
         public FileInfo PackModelAnimations { get; set; }
         public DirectoryInfo PackModelAnimationsFromLibrary { get; set; }
@@ -258,17 +306,27 @@ namespace AnimeStudio.CLI
         public FileInfo GenerateUnityBakeRequest { get; set; }
         public DirectoryInfo GenerateUnityBakeRequestFromLibrary { get; set; }
         public DirectoryInfo BakeAnimationPreviewsFromLibrary { get; set; }
+        public DirectoryInfo GenerateUnityBakeAcceleratedRequestFromLibrary { get; set; }
         public bool CheckUnityBakeAcceleratedWorker { get; set; }
+        public bool SyncUnityBakeAcceleratedWorker { get; set; }
         public FileInfo RunUnityBakeAccelerated { get; set; }
         public DirectoryInfo UnityBakeAcceleratedWorkerQueue { get; set; }
+        public FileInfo ApplyUnityBakeAcceleratedResult { get; set; }
         public DirectoryInfo UnityProject { get; set; }
         public FileInfo UnityEditor { get; set; }
         public string UnityBakeModelPrefab { get; set; }
         public string UnityBakeAnimationClip { get; set; }
+        public string UnityBakeAnimatorController { get; set; }
         public string UnityBakeAvatarAsset { get; set; }
         public FileInfo UnityBakeOutput { get; set; }
         public int UnityBakeFps { get; set; }
         public bool UnityProbeMuscles { get; set; }
+        public bool UnityBakeEnableIkGoalDriver { get; set; }
+        public bool UnityBakeSampleRecoverableSkippedLayersDiagnostic { get; set; }
+        public bool UnityBakeRebuildEditorCurveClip { get; set; }
+        public bool UnityBakeIgnoreImportedAvatar { get; set; }
+        public string UnityBakeClipFilterMode { get; set; }
+        public bool UnityBakeAllowGeneratedControllerDiagnostic { get; set; }
         public bool RunUnityBake { get; set; }
         public DirectoryInfo UnityBakeWorkerQueue { get; set; }
         public FileInfo ApplyUnityBakeResult { get; set; }
@@ -286,15 +344,27 @@ namespace AnimeStudio.CLI
         public DirectoryInfo BuildSqliteIndex { get; set; }
         public bool BuildSourceSqliteIndex { get; set; }
         public FileInfo VerifySourceIndex { get; set; }
+        public FileInfo EnsureSourceIndexQueryIndexes { get; set; }
+        public FileInfo ListSourceModelCandidates { get; set; }
+        public FileInfo ListSourceModelAnimations { get; set; }
+        public string[] LocateEndfieldStrings { get; set; }
+        public string[] LocateEndfieldCabs { get; set; }
+        public FileInfo LocateEndfieldMissingSourceCabs { get; set; }
+        public bool BuildEndfieldCabLocationIndex { get; set; }
+        public FileInfo EndfieldCabLocationIndex { get; set; }
+        public string[] InspectEndfieldManifestDeps { get; set; }
         public FileInfo ExportAvatarOracle { get; set; }
         public DirectoryInfo RecoverImportedAvatarAssets { get; set; }
         public DirectoryInfo RecoverImportedAnimationClips { get; set; }
+        public DirectoryInfo RecoverImportedAnimatorControllers { get; set; }
+        public DirectoryInfo[] AnimatorControllerClipLibrary { get; set; }
         public DirectoryInfo RefreshAnimatorControllerContexts { get; set; }
         public FileInfo UnityFileInspect { get; set; }
         public int AvatarRecoveryLimit { get; set; }
         public bool AvatarRecoveryForce { get; set; }
         public bool DumpUnityBlockChunks { get; set; }
         public bool RequireFreshSourceAnimationRelations { get; set; }
+        public int SourceCandidateLimit { get; set; }
         public FileInfo SourceIndex { get; set; }
         public FileInfo IndexPath { get; set; }
         public bool SkipSqliteIndex { get; set; }
@@ -315,6 +385,14 @@ namespace AnimeStudio.CLI
         public readonly Option<string[]> TypeFilter;
         public readonly Option<string[]> SourceFileFilter;
         public readonly Option<long[]> PathIdFilter;
+        public readonly Option<bool> IncludeAnimatorControllerClipClosure;
+        public readonly Option<Regex[]> EndfieldVfsFileFilter;
+        public readonly Option<int> EndfieldVfsFileLimit;
+        public readonly Option<bool> EndfieldVfsKeepSameLengthSupplemental;
+        public readonly Option<FileInfo> EndfieldManifestDeps;
+        public readonly Option<FileInfo[]> EndfieldSourceCabClosure;
+        public readonly Option<string[]> EndfieldSourceCabClosureDomains;
+        public readonly Option<bool> EndfieldSourceCabClosureIncludeAutoRoots;
         public readonly Option<Regex[]> NameFilter;
         public readonly Option<Regex[]> ContainerFilter;
         public readonly Option<Regex[]> NameExcludeFilter;
@@ -356,12 +434,17 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> UpdateGltfTextureRefs;
         public readonly Option<FileInfo> GeneratePreviewGltf;
         public readonly Option<DirectoryInfo> GeneratePreviewFromLibrary;
+        public readonly Option<DirectoryInfo> ListModelAnimationsFromLibrary;
+        public readonly Option<DirectoryInfo> ExportAnimationGltfFromLibrary;
+        public readonly Option<FileInfo> ExportAnimationGltfFromFiles;
+        public readonly Option<FileInfo> MergeAnimationGltf;
         public readonly Option<DirectoryInfo> ValidateAnimationPreviewsFromLibrary;
         public readonly Option<FileInfo> GenerateAssembledPreviewGltf;
         public readonly Option<string> PreviewModel;
         public readonly Option<string> PreviewAnimation;
         public readonly Option<DirectoryInfo> PreviewOutput;
         public readonly Option<DirectoryInfo> PreviewSourceRoot;
+        public readonly Option<bool> PreviewForceInternalHumanoidSolve;
         public readonly Option<string> AssemblyModules;
         public readonly Option<FileInfo> PackModelAnimations;
         public readonly Option<DirectoryInfo> PackModelAnimationsFromLibrary;
@@ -375,17 +458,27 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> GenerateUnityBakeRequest;
         public readonly Option<DirectoryInfo> GenerateUnityBakeRequestFromLibrary;
         public readonly Option<DirectoryInfo> BakeAnimationPreviewsFromLibrary;
+        public readonly Option<DirectoryInfo> GenerateUnityBakeAcceleratedRequestFromLibrary;
         public readonly Option<bool> CheckUnityBakeAcceleratedWorker;
+        public readonly Option<bool> SyncUnityBakeAcceleratedWorker;
         public readonly Option<FileInfo> RunUnityBakeAccelerated;
         public readonly Option<DirectoryInfo> UnityBakeAcceleratedWorkerQueue;
+        public readonly Option<FileInfo> ApplyUnityBakeAcceleratedResult;
         public readonly Option<DirectoryInfo> UnityProject;
         public readonly Option<FileInfo> UnityEditor;
         public readonly Option<string> UnityBakeModelPrefab;
         public readonly Option<string> UnityBakeAnimationClip;
+        public readonly Option<string> UnityBakeAnimatorController;
         public readonly Option<string> UnityBakeAvatarAsset;
         public readonly Option<FileInfo> UnityBakeOutput;
         public readonly Option<int> UnityBakeFps;
         public readonly Option<bool> UnityProbeMuscles;
+        public readonly Option<bool> UnityBakeEnableIkGoalDriver;
+        public readonly Option<bool> UnityBakeSampleRecoverableSkippedLayersDiagnostic;
+        public readonly Option<bool> UnityBakeRebuildEditorCurveClip;
+        public readonly Option<bool> UnityBakeIgnoreImportedAvatar;
+        public readonly Option<string> UnityBakeClipFilterMode;
+        public readonly Option<bool> UnityBakeAllowGeneratedControllerDiagnostic;
         public readonly Option<bool> RunUnityBake;
         public readonly Option<DirectoryInfo> UnityBakeWorkerQueue;
         public readonly Option<FileInfo> ApplyUnityBakeResult;
@@ -403,15 +496,27 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> BuildSqliteIndex;
         public readonly Option<bool> BuildSourceSqliteIndex;
         public readonly Option<FileInfo> VerifySourceIndex;
+        public readonly Option<FileInfo> EnsureSourceIndexQueryIndexes;
+        public readonly Option<FileInfo> ListSourceModelCandidates;
+        public readonly Option<FileInfo> ListSourceModelAnimations;
+        public readonly Option<string[]> LocateEndfieldStrings;
+        public readonly Option<string[]> LocateEndfieldCabs;
+        public readonly Option<FileInfo> LocateEndfieldMissingSourceCabs;
+        public readonly Option<bool> BuildEndfieldCabLocationIndex;
+        public readonly Option<FileInfo> EndfieldCabLocationIndex;
+        public readonly Option<string[]> InspectEndfieldManifestDeps;
         public readonly Option<FileInfo> ExportAvatarOracle;
         public readonly Option<DirectoryInfo> RecoverImportedAvatarAssets;
         public readonly Option<DirectoryInfo> RecoverImportedAnimationClips;
+        public readonly Option<DirectoryInfo> RecoverImportedAnimatorControllers;
+        public readonly Option<DirectoryInfo[]> AnimatorControllerClipLibrary;
         public readonly Option<DirectoryInfo> RefreshAnimatorControllerContexts;
         public readonly Option<FileInfo> UnityFileInspect;
         public readonly Option<int> AvatarRecoveryLimit;
         public readonly Option<bool> AvatarRecoveryForce;
         public readonly Option<bool> DumpUnityBlockChunks;
         public readonly Option<bool> RequireFreshSourceAnimationRelations;
+        public readonly Option<int> SourceCandidateLimit;
         public readonly Option<FileInfo> SourceIndex;
         public readonly Option<FileInfo> IndexPath;
         public readonly Option<bool> SkipSqliteIndex;
@@ -431,6 +536,14 @@ namespace AnimeStudio.CLI
             TypeFilter = new Option<string[]>("--types", "Specify unity class type(s)") { AllowMultipleArgumentsPerToken = true, ArgumentHelpName = "Texture2D|Shader:Parse|Sprite:Both|etc.." };
             SourceFileFilter = new Option<string[]>("--source_files", "Explicit source file paths, relative to the input root, to load for targeted refresh/debug exports. Default Library exports should leave this unset.") { AllowMultipleArgumentsPerToken = true };
             PathIdFilter = new Option<long[]>("--path_ids", "Explicit Unity object PathID values to export for targeted refresh/debug exports. Default Library exports should leave this unset.") { AllowMultipleArgumentsPerToken = true };
+            IncludeAnimatorControllerClipClosure = new Option<bool>("--include_animator_controller_clip_closure", "Diagnostic only: when --path_ids selects AnimationClip assets, also export every AnimationClip referenced by the same AnimatorController(s). This repairs controller recovery clip closure but may export many clips.");
+            EndfieldVfsFileFilter = new Option<Regex[]>("--endfield_vfs_files", ParseRegexOption, false, "Diagnostic only: regex filter for UnityFS files inside Arknights Endfield .blc VFS groups. Leave unset for full Library source indexing.") { AllowMultipleArgumentsPerToken = true };
+            EndfieldVfsFileLimit = new Option<int>("--endfield_vfs_file_limit", "Diagnostic only: maximum number of UnityFS files to expose from each Arknights Endfield .blc VFS group. 0 means no limit.");
+            EndfieldVfsKeepSameLengthSupplemental = new Option<bool>("--endfield_vfs_keep_same_length_supplemental", "Diagnostic/full-closure mode: keep same-named same-length StreamingAssets inner UnityFS files in addition to Persistent/VFS. Slower and not the default production source-index path.");
+            EndfieldManifestDeps = new Option<FileInfo>("--endfield_manifest_deps", "Diagnostic: Endfield manifest file used with --endfield_vfs_files to expand selected root bundle(s) to their manifest dependency closure for source-index smoke builds.").LegalFilePathsOnly();
+            EndfieldSourceCabClosure = new Option<FileInfo[]>("--endfield_source_cab_closure", "Diagnostic: include locatedUnityBundleFiles from one or more endfield_missing_source_cab_closure.json reports in the Endfield VFS inner-file filter for source-index smoke builds. Combine with --endfield_vfs_files for root bundle(s).") { AllowMultipleArgumentsPerToken = true }.LegalFilePathsOnly();
+            EndfieldSourceCabClosureDomains = new Option<string[]>("--endfield_source_cab_closure_domains", "Diagnostic: restrict --endfield_source_cab_closure to dependency domains: model, material, animationClip. Leave unset to include every located bundle.") { AllowMultipleArgumentsPerToken = true };
+            EndfieldSourceCabClosureIncludeAutoRoots = new Option<bool>("--endfield_source_cab_closure_include_auto_roots", "Diagnostic: when building an Endfield source index with CAB closure reports, keep the default VFS root/context selection and add closure bundles on top.");
             NameFilter = new Option<Regex[]>("--names", ParseRegexOption, false, "Specify name regex filter(s).") { AllowMultipleArgumentsPerToken = true };
             ContainerFilter = new Option<Regex[]>("--containers", ParseRegexOption, false, "Specify container regex filter(s).") { AllowMultipleArgumentsPerToken = true };
             NameExcludeFilter = new Option<Regex[]>("--names_exclude", ParseRegexOption, false, "Specify name regex exclude filter(s).") { AllowMultipleArgumentsPerToken = true };
@@ -457,7 +570,7 @@ namespace AnimeStudio.CLI
             TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
             ModelSource = new Option<ModelSourceMode>("--model_source", "Specify Library model source mode: PrefabPrimary exports prefab/Animator models by default and indexes raw fbx parts; PrefabAndParts exports both; RawPartsOnly exports only raw fbx/source parts.");
-            IncludeStaticMeshes = new Option<bool>("--include_static_meshes", "Include standalone/static Mesh assets as browsable Library models. Disabled by default so Library focuses on prefab/Animator models.");
+            IncludeStaticMeshes = new Option<bool>("--include_static_meshes", "Include standalone/static Mesh assets as browsable Library models. Also enables StaticRendererModel rows for --list_source_model_candidates. Disabled by default so Library focuses on prefab/Animator models.");
             IncludeVfx = new Option<bool>("--include_vfx", "Include VFX metadata, mesh-VFX classification, and VFX preview cache in Library export. Disabled by default.");
             IncludeShaders = new Option<bool>("--include_shaders", "Include shaders in Library mode as experimental safe raw archives.");
             MaxExportTasks = new Option<int>("--max_export_tasks", "Maximum parallel export tasks for independent texture/audio/material assets and StaticMeshPrimary glTF export. Core prefab/Animator model export remains serial. Use 1 for fully serial export.");
@@ -471,12 +584,17 @@ namespace AnimeStudio.CLI
             UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
             GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Generate a playable preview glTF from model_animations.json by re-exporting one model with one selected animation.").LegalFilePathsOnly();
             GeneratePreviewFromLibrary = new Option<DirectoryInfo>("--generate_preview_from_library", "Generate a playable preview glTF by selecting model and animation from library_index.db in a Library root.").LegalFilePathsOnly();
+            ListModelAnimationsFromLibrary = new Option<DirectoryInfo>("--list_model_animations_from_library", "List deterministic relation_source=explicit animation candidates for one selected Library model. Use --preview_model and optional --preview_animation.").LegalFilePathsOnly();
+            ExportAnimationGltfFromLibrary = new Option<DirectoryInfo>("--export_animation_gltf_from_library", "Export a skinless standalone glTF animation asset from a deterministic library_index.db model-animation candidate.").LegalFilePathsOnly();
+            ExportAnimationGltfFromFiles = new Option<FileInfo>("--export_animation_gltf_from_files", "Export a skinless standalone glTF animation asset from a model glTF and an explicit animation sidecar passed with --preview_animation. This does not create a model-animation recommendation.").LegalFilePathsOnly();
+            MergeAnimationGltf = new Option<FileInfo>("--merge_animation_gltf", "Merge a clean model glTF with a previously exported skinless standalone animation glTF. Pass the model glTF here and the animation glTF with --preview_animation.").LegalFilePathsOnly();
             ValidateAnimationPreviewsFromLibrary = new Option<DirectoryInfo>("--validate_animation_previews_from_library", "Generate and validate a limited batch of deterministic SQLite model-animation preview glTFs, then write animation_preview_cache.").LegalFilePathsOnly();
             GenerateAssembledPreviewGltf = new Option<FileInfo>("--generate_assembled_preview_gltf", "Generate a playable preview glTF and non-destructively add compatible modular character parts such as face, hair, or accessories when their Unity joints can be remapped.").LegalFilePathsOnly();
             PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with preview commands.");
             PreviewAnimation = new Option<string>("--preview_animation", "Animation name, output path, or regex used with preview commands.");
             PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for preview commands. Defaults to Previews/<model>__<animation> next to the index or Library root.");
             PreviewSourceRoot = new Option<DirectoryInfo>("--preview_source_root", "Full Unity game/source root used by preview and animation-pack commands to resolve dependencies instead of reusing possibly incomplete indexed sample paths.").LegalFilePathsOnly();
+            PreviewForceInternalHumanoidSolve = new Option<bool>("--preview_force_internal_humanoid_solve", "Force file-based preview/standalone animation export to use AnimeStudio's internal Humanoid/Muscle solver. Diagnostic validation only; it does not create model-animation recommendations.");
             AssemblyModules = new Option<string>("--assembly_modules", "Comma-separated module roles or selectors for --generate_assembled_preview_gltf. Defaults to Face,Hair,Accessory.");
             PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
             PackModelAnimationsFromLibrary = new Option<DirectoryInfo>("--pack_model_animations_from_library", "Generate a reusable animation asset pack directly from library_index.db in a Library root.").LegalFilePathsOnly();
@@ -487,20 +605,30 @@ namespace AnimeStudio.CLI
             PreviewValidationOutput = new Option<DirectoryInfo>("--preview_validation_output", "Output folder for --validate_animation_previews_from_library. Defaults to AnimationPreviewValidation under the Library root.");
             PreviewValidationKind = new Option<PreviewValidationKind>("--preview_validation_kind", "Filter preview validation candidates: All, Direct, or InternalHumanoid. This only filters existing relation_source=explicit candidates.");
             PreviewValidationForce = new Option<bool>("--preview_validation_force", "Re-run matching deterministic preview candidates even when animation_preview_cache already has a result. Use for visual spot checks after solver or decoder changes.");
-            GenerateUnityBakeRequest = new Option<FileInfo>("--generate_unity_bake_request", "Generate a Unity Editor bake request from model_animations.json. Humanoid/Muscle production can use this to bake sampled TRS back into glTF.").LegalFilePathsOnly();
-            GenerateUnityBakeRequestFromLibrary = new Option<DirectoryInfo>("--generate_unity_bake_request_from_library", "Generate and optionally run one Unity bake request from an explicit model-animation candidate in library_index.db.").LegalFilePathsOnly();
-            BakeAnimationPreviewsFromLibrary = new Option<DirectoryInfo>("--bake_animation_previews_from_library", "Batch production path: select explicit Humanoid/Muscle candidates from library_index.db, run Unity bake, and write baked glTF previews.").LegalFilePathsOnly();
+            GenerateUnityBakeRequest = new Option<FileInfo>("--generate_unity_bake_request", "Deprecated diagnostic only: generate a Unity Editor bake request from model_animations.json for legacy comparison.").LegalFilePathsOnly();
+            GenerateUnityBakeRequestFromLibrary = new Option<DirectoryInfo>("--generate_unity_bake_request_from_library", "Deprecated diagnostic only: generate one Unity bake request from an explicit model-animation candidate in library_index.db.").LegalFilePathsOnly();
+            BakeAnimationPreviewsFromLibrary = new Option<DirectoryInfo>("--bake_animation_previews_from_library", "Deprecated diagnostic only: batch legacy Unity bake previews for comparison, not production animation support.").LegalFilePathsOnly();
+            GenerateUnityBakeAcceleratedRequestFromLibrary = new Option<DirectoryInfo>("--generate_unity_bake_accelerated_request_from_library", "Experimental: generate one UnityBakeAccelerated request from an explicit Library Humanoid/Muscle candidate and decoded animation sidecar.").LegalFilePathsOnly();
             CheckUnityBakeAcceleratedWorker = new Option<bool>("--check_unity_bake_accelerated_worker", "Experimental: check a preconfigured Unity 6 AnimeStudioUnityBakeWorker project and UnityBakeAccelerated helper markers.");
+            SyncUnityBakeAcceleratedWorker = new Option<bool>("--sync_unity_bake_accelerated_worker", "Experimental: copy the repo AnimeStudio.UnityBake helper into the UnityBakeAccelerated worker project, then run the worker check.");
             RunUnityBakeAccelerated = new Option<FileInfo>("--run_unity_bake_accelerated", "Experimental: run a standalone UnityBakeAccelerated request JSON. This does not read or write Library indexes.").LegalFilePathsOnly();
             UnityBakeAcceleratedWorkerQueue = new Option<DirectoryInfo>("--unity_bake_accelerated_worker_queue", "Experimental: queue directory for a persistent UnityBakeAccelerated worker. Only used with --run_unity_bake_accelerated.").LegalFilePathsOnly();
+            ApplyUnityBakeAcceleratedResult = new Option<FileInfo>("--apply_unity_bake_accelerated_result", "Experimental: apply a UnityBakeAccelerated request/result to the source glTF and write ordinary glTF TRS animation channels.").LegalFilePathsOnly();
             UnityProject = new Option<DirectoryInfo>("--unity_project", "Unity project that contains the AnimeStudio.UnityBake helper scripts. Required when --run_unity_bake is used.").LegalFilePathsOnly();
             UnityEditor = new Option<FileInfo>("--unity_editor", "Unity.exe path used with --run_unity_bake. If omitted, only the request JSON is written.").LegalFilePathsOnly();
             UnityBakeModelPrefab = new Option<string>("--unity_model_prefab", "Unity project asset path for the prepared model prefab, for example Assets/AnimeStudioBake/Input/Bill.prefab.");
             UnityBakeAnimationClip = new Option<string>("--unity_animation_clip", "Unity project asset path for the prepared AnimationClip, for example Assets/AnimeStudioBake/Input/NORMALMOVE_STAND_01.anim.");
+            UnityBakeAnimatorController = new Option<string>("--unity_animator_controller", "Unity project asset path for the original RuntimeAnimatorController asset. Diagnostic/prototype path for sampling the real AnimatorController instead of a generated single-state controller.");
             UnityBakeAvatarAsset = new Option<string>("--unity_avatar_asset", "Unity project asset path for the original imported UnityEngine.Avatar asset. Explicit Genshin oracle path; omitted by default so normal Unity projects keep their existing prefab/HumanDescription flow.");
             UnityBakeOutput = new Option<FileInfo>("--unity_bake_output", "Output JSON path for Unity baked TRS animation. Defaults to unity_bake_result.json next to the request.");
             UnityBakeFps = new Option<int>("--unity_bake_fps", "Frame rate used by the Unity bake helper.");
             UnityProbeMuscles = new Option<bool>("--unity_probe_muscles", "Diagnostic only: ask the Unity bake helper to sample every Humanoid muscle at -1/+1 so AnimeStudio can compare Unity's real Avatar solve against the internal solver.");
+            UnityBakeEnableIkGoalDriver = new Option<bool>("--unity_bake_enable_ik_goal_driver", "Diagnostic only: enable editor-curve Hand/Foot IK goal driver during Unity bake. Results remain needs_review until visual validation and goal space/weight semantics are proven.");
+            UnityBakeSampleRecoverableSkippedLayersDiagnostic = new Option<bool>("--unity_bake_sample_recoverable_skipped_layers_diagnostic", "Diagnostic only: sample recovered AnimatorController layers that would normally be skipped but have a resolvable motion and mask metadata. Results remain needs_review until runtime layer semantics are proven.");
+            UnityBakeRebuildEditorCurveClip = new Option<bool>("--unity_bake_rebuild_editor_curve_clip", "Diagnostic only: rebuild a Humanoid AnimationClip from Unity editor curves before sampling, useful when recovered .anim has editor curves but an empty runtime m_MuscleClip.");
+            UnityBakeIgnoreImportedAvatar = new Option<bool>("--unity_bake_ignore_imported_avatar", "Diagnostic only: ignore a supplied imported Avatar asset and rebuild Avatar from request HumanDescription/oracle data. Results must stay needs_review.");
+            UnityBakeClipFilterMode = new Option<string>("--unity_bake_clip_filter_mode", "Diagnostic only: override Unity bake clip filter mode. Use auto/default for existing safety gates, full/none to sample the full AnimationClip, or transform_only to keep only deterministic Transform/controller layer curves.");
+            UnityBakeAllowGeneratedControllerDiagnostic = new Option<bool>("--unity_bake_allow_generated_controller_diagnostic", "Diagnostic only: allow Unity bake fallback to generate a temporary AnimatorController when no exact ImportedAnimatorController/original RuntimeAnimatorController is available. Default blocks this because it can create semantically wrong poses.");
             RunUnityBake = new Option<bool>("--run_unity_bake", "Run Unity Editor batchmode immediately after writing the bake request.");
             UnityBakeWorkerQueue = new Option<DirectoryInfo>("--unity_bake_worker_queue", "Queue directory for a persistent Unity bake worker. When set with --run_unity_bake, CLI reuses a warm Unity worker instead of launching Unity for each request.").LegalFilePathsOnly();
             ApplyUnityBakeResult = new Option<FileInfo>("--apply_unity_bake_result", "Apply unity_bake_result.json or unity_bake_request.json to the source glTF and write a baked playable preview glTF.").LegalFilePathsOnly();
@@ -518,15 +646,27 @@ namespace AnimeStudio.CLI
             BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Rebuild the reusable SQLite index from a previous Library or AudioLibrary export. For Library roots, pass --source_index to use an external fresh source index; otherwise unity_source_index.db beside the Library is used to restore deterministic model-animation candidates.").LegalFilePathsOnly();
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
             VerifySourceIndex = new Option<FileInfo>("--verify_source_index", "Inspect an existing unity_source_index.db and write an animation relation health report without rebuilding it.").LegalFilePathsOnly();
+            EnsureSourceIndexQueryIndexes = new Option<FileInfo>("--ensure_source_index_query_indexes", "Create or rebuild query indexes on an existing unity_source_index.db. Useful for old large indexes before candidate or animation relation scans.").LegalFilePathsOnly();
+            ListSourceModelCandidates = new Option<FileInfo>("--list_source_model_candidates", "List model-first smoke candidates from unity_source_index.db using deterministic Animator/Renderer/Mesh/Material relations. Does not export assets or create animation bindings.").LegalFilePathsOnly();
+            ListSourceModelAnimations = new Option<FileInfo>("--list_source_model_animations", "List deterministic source-index animation references for one selected model. Requires --preview_model; does not prove model quality or animation playability.").LegalFilePathsOnly();
+            LocateEndfieldStrings = new Option<string[]>("--locate_endfield_strings", "Diagnostic: locate ASCII strings inside Arknights Endfield VFS chunk files and map hits back to inner VFS files. Pass one or more strings; writes endfield_string_locations.json.") { AllowMultipleArgumentsPerToken = true };
+            LocateEndfieldCabs = new Option<string[]>("--locate_endfield_cabs", "Diagnostic: locate CAB files inside Arknights Endfield VFS inner UnityFS bundles. Pass one or more CAB names; writes endfield_cab_locations.json to output_path.") { AllowMultipleArgumentsPerToken = true };
+            LocateEndfieldMissingSourceCabs = new Option<FileInfo>("--locate_endfield_missing_source_cabs", "Diagnostic: read missing Mesh/Material/Texture/AnimationClip target CABs from a unity_source_index.db, locate them in Arknights Endfield VFS inner bundles, and write a source-index closure report. Use --source_candidate_limit to cap CAB targets.").LegalFilePathsOnly();
+            BuildEndfieldCabLocationIndex = new Option<bool>("--build_endfield_cab_location_index", "Diagnostic: scan Arknights Endfield VFS once and write endfield_cab_location_index.json for fast missing Mesh/Material/Texture CAB closure lookups.");
+            EndfieldCabLocationIndex = new Option<FileInfo>("--endfield_cab_location_index", "Existing endfield_cab_location_index.json used by --locate_endfield_missing_source_cabs to avoid rescanning all VFS bundles.").LegalFilePathsOnly();
+            InspectEndfieldManifestDeps = new Option<string[]>("--inspect_endfield_manifest_deps", "Diagnostic: parse an Arknights Endfield bundle manifest and list bundle dependency paths for one or more main/*.ab or initial/*.ab bundle paths. input_path is the manifest file; output_path receives endfield_manifest_dependencies.json.") { AllowMultipleArgumentsPerToken = true };
             ExportAvatarOracle = new Option<FileInfo>("--export_avatar_oracle", "Export one AvatarConstant oracle JSON from unity_source_index.db. Use --preview_model to select Avatar name/pathId/source and --preview_output for the output folder.").LegalFilePathsOnly();
             RecoverImportedAvatarAssets = new Option<DirectoryInfo>("--recover_imported_avatar_assets", "Recover missing original UnityEngine.Avatar assets from a Library root into the Unity bake project ImportedAvatar folder. Uses library_index.db avatar source/pathId, not guessed skeleton data.").LegalFilePathsOnly();
             RecoverImportedAnimationClips = new Option<DirectoryInfo>("--recover_imported_animation_clips", "Recover deterministic Humanoid/Muscle AnimationClip .anim assets from a Library root into the Unity bake project ImportedAnimationClip folder. Uses explicit SQLite candidates and AnimatorController baseLayerClip context; no name or bone-count guessing.").LegalFilePathsOnly();
+            RecoverImportedAnimatorControllers = new Option<DirectoryInfo>("--recover_imported_animator_controllers", "Experimental: rebuild default-state RuntimeAnimatorController assets into the Unity bake project ImportedAnimatorController folder from unity_file_inspect.json and explicit Library candidates. This is diagnostic until full state/transition semantics are recovered.").LegalFilePathsOnly();
+            AnimatorControllerClipLibrary = new Option<DirectoryInfo[]>("--animator_controller_clip_library", "Diagnostic only: extra Library roots that contain AnimationClip closure assets/settings used by --recover_imported_animator_controllers. Does not create model-animation relations.") { AllowMultipleArgumentsPerToken = true }.LegalFilePathsOnly();
             RefreshAnimatorControllerContexts = new Option<DirectoryInfo>("--refresh_animator_controller_contexts", "Refresh library_index.db candidates that need AnimatorController context by importing baseLayerClip evidence from unity_file_inspect.json. Uses explicit Animator.controller relations from unity_source_index.db; no name or bone-count guessing.").LegalFilePathsOnly();
             UnityFileInspect = new Option<FileInfo>("--unity_file_inspect", "unity_file_inspect.json produced by --inspect_unity_files. Used by --refresh_animator_controller_contexts to recover AnimatorController state/layer baseLayerClip context.").LegalFilePathsOnly();
             AvatarRecoveryLimit = new Option<int>("--avatar_recovery_limit", "Maximum number of unique missing Avatar assets to recover. 0 means all selected missing avatars.");
             AvatarRecoveryForce = new Option<bool>("--avatar_recovery_force", "Rewrite imported Avatar .asset files even when they already exist.");
             DumpUnityBlockChunks = new Option<bool>("--dump_unity_block_chunks", "Diagnostic only: decrypt a block container such as .blk and write its inner Unity/MHY chunks for Unity Editor load probes.");
             RequireFreshSourceAnimationRelations = new Option<bool>("--require_fresh_source_animation_relations", "Fail source-index verification or SQLite Library rebuild when AnimatorOverrideController overrideSet/clipPair markers are missing. Use this for production deterministic animation builds.");
+            SourceCandidateLimit = new Option<int>("--source_candidate_limit", "Maximum source model candidates to list for --list_source_model_candidates. Default 200.");
             SourceIndex = new Option<FileInfo>("--source_index", "SQLite Unity source index used by Library export or --build_sqlite_index for dependency resolution. Prefer unity_source_index.db over legacy CAB maps for full exports.").LegalFilePathsOnly();
             IndexPath = new Option<FileInfo>("--index_path", "Output SQLite database path for --build_sqlite_index. Defaults to library_index.db in the export root.");
             SkipSqliteIndex = new Option<bool>("--skip_sqlite_index", "Skip building library_index.db after a Library export. Use only for temporary preview/export jobs that do not need a reusable SQLite library index.");
@@ -549,6 +689,7 @@ namespace AnimeStudio.CLI
             LoggerFlags.AddValidator(FilterValidator);
             TypeFilter.AddValidator(FilterValidator);
             SourceFileFilter.AddValidator(FilterValidator);
+            EndfieldVfsFileFilter.AddValidator(FilterValidator);
             NameFilter.AddValidator(FilterValidator);
             ContainerFilter.AddValidator(FilterValidator);
             NameExcludeFilter.AddValidator(FilterValidator);
@@ -583,6 +724,7 @@ namespace AnimeStudio.CLI
             BatchFiles.SetDefaultValue(32);
             ModelGcInterval.SetDefaultValue(0);
             ProfileLog.SetDefaultValue("export_profile.jsonl");
+            EndfieldVfsFileLimit.SetDefaultValue(0);
             ConvertTextureFormat.SetDefaultValue(AnimeStudio.ImageFormat.Png);
             UpdateGltfTextureRefs.SetDefaultValue(true);
             PackLimit.SetDefaultValue(5);
@@ -637,6 +779,14 @@ namespace AnimeStudio.CLI
             TypeFilter = bindingContext.ParseResult.GetValueForOption(TypeFilter),
             SourceFileFilter = bindingContext.ParseResult.GetValueForOption(SourceFileFilter),
             PathIdFilter = bindingContext.ParseResult.GetValueForOption(PathIdFilter),
+            IncludeAnimatorControllerClipClosure = bindingContext.ParseResult.GetValueForOption(IncludeAnimatorControllerClipClosure),
+            EndfieldVfsFileFilter = bindingContext.ParseResult.GetValueForOption(EndfieldVfsFileFilter),
+            EndfieldVfsFileLimit = bindingContext.ParseResult.GetValueForOption(EndfieldVfsFileLimit),
+            EndfieldVfsKeepSameLengthSupplemental = bindingContext.ParseResult.GetValueForOption(EndfieldVfsKeepSameLengthSupplemental),
+            EndfieldManifestDeps = bindingContext.ParseResult.GetValueForOption(EndfieldManifestDeps),
+            EndfieldSourceCabClosure = bindingContext.ParseResult.GetValueForOption(EndfieldSourceCabClosure),
+            EndfieldSourceCabClosureDomains = bindingContext.ParseResult.GetValueForOption(EndfieldSourceCabClosureDomains),
+            EndfieldSourceCabClosureIncludeAutoRoots = bindingContext.ParseResult.GetValueForOption(EndfieldSourceCabClosureIncludeAutoRoots),
             NameFilter = bindingContext.ParseResult.GetValueForOption(NameFilter),
             ContainerFilter = bindingContext.ParseResult.GetValueForOption(ContainerFilter),
             NameExcludeFilter = bindingContext.ParseResult.GetValueForOption(NameExcludeFilter),
@@ -678,12 +828,17 @@ namespace AnimeStudio.CLI
                 UpdateGltfTextureRefs = bindingContext.ParseResult.GetValueForOption(UpdateGltfTextureRefs),
                 GeneratePreviewGltf = bindingContext.ParseResult.GetValueForOption(GeneratePreviewGltf),
                 GeneratePreviewFromLibrary = bindingContext.ParseResult.GetValueForOption(GeneratePreviewFromLibrary),
+                ListModelAnimationsFromLibrary = bindingContext.ParseResult.GetValueForOption(ListModelAnimationsFromLibrary),
+                ExportAnimationGltfFromLibrary = bindingContext.ParseResult.GetValueForOption(ExportAnimationGltfFromLibrary),
+                ExportAnimationGltfFromFiles = bindingContext.ParseResult.GetValueForOption(ExportAnimationGltfFromFiles),
+                MergeAnimationGltf = bindingContext.ParseResult.GetValueForOption(MergeAnimationGltf),
                 ValidateAnimationPreviewsFromLibrary = bindingContext.ParseResult.GetValueForOption(ValidateAnimationPreviewsFromLibrary),
                 GenerateAssembledPreviewGltf = bindingContext.ParseResult.GetValueForOption(GenerateAssembledPreviewGltf),
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
                 PreviewAnimation = bindingContext.ParseResult.GetValueForOption(PreviewAnimation),
                 PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
                 PreviewSourceRoot = bindingContext.ParseResult.GetValueForOption(PreviewSourceRoot),
+                PreviewForceInternalHumanoidSolve = bindingContext.ParseResult.GetValueForOption(PreviewForceInternalHumanoidSolve),
                 AssemblyModules = bindingContext.ParseResult.GetValueForOption(AssemblyModules),
                 PackModelAnimations = bindingContext.ParseResult.GetValueForOption(PackModelAnimations),
                 PackModelAnimationsFromLibrary = bindingContext.ParseResult.GetValueForOption(PackModelAnimationsFromLibrary),
@@ -697,17 +852,27 @@ namespace AnimeStudio.CLI
                 GenerateUnityBakeRequest = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequest),
                 GenerateUnityBakeRequestFromLibrary = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeRequestFromLibrary),
                 BakeAnimationPreviewsFromLibrary = bindingContext.ParseResult.GetValueForOption(BakeAnimationPreviewsFromLibrary),
+                GenerateUnityBakeAcceleratedRequestFromLibrary = bindingContext.ParseResult.GetValueForOption(GenerateUnityBakeAcceleratedRequestFromLibrary),
                 CheckUnityBakeAcceleratedWorker = bindingContext.ParseResult.GetValueForOption(CheckUnityBakeAcceleratedWorker),
+                SyncUnityBakeAcceleratedWorker = bindingContext.ParseResult.GetValueForOption(SyncUnityBakeAcceleratedWorker),
                 RunUnityBakeAccelerated = bindingContext.ParseResult.GetValueForOption(RunUnityBakeAccelerated),
                 UnityBakeAcceleratedWorkerQueue = bindingContext.ParseResult.GetValueForOption(UnityBakeAcceleratedWorkerQueue),
+                ApplyUnityBakeAcceleratedResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeAcceleratedResult),
                 UnityProject = bindingContext.ParseResult.GetValueForOption(UnityProject),
                 UnityEditor = bindingContext.ParseResult.GetValueForOption(UnityEditor),
                 UnityBakeModelPrefab = bindingContext.ParseResult.GetValueForOption(UnityBakeModelPrefab),
                 UnityBakeAnimationClip = bindingContext.ParseResult.GetValueForOption(UnityBakeAnimationClip),
+                UnityBakeAnimatorController = bindingContext.ParseResult.GetValueForOption(UnityBakeAnimatorController),
                 UnityBakeAvatarAsset = bindingContext.ParseResult.GetValueForOption(UnityBakeAvatarAsset),
                 UnityBakeOutput = bindingContext.ParseResult.GetValueForOption(UnityBakeOutput),
                 UnityBakeFps = bindingContext.ParseResult.GetValueForOption(UnityBakeFps),
                 UnityProbeMuscles = bindingContext.ParseResult.GetValueForOption(UnityProbeMuscles),
+                UnityBakeEnableIkGoalDriver = bindingContext.ParseResult.GetValueForOption(UnityBakeEnableIkGoalDriver),
+                UnityBakeSampleRecoverableSkippedLayersDiagnostic = bindingContext.ParseResult.GetValueForOption(UnityBakeSampleRecoverableSkippedLayersDiagnostic),
+                UnityBakeRebuildEditorCurveClip = bindingContext.ParseResult.GetValueForOption(UnityBakeRebuildEditorCurveClip),
+                UnityBakeIgnoreImportedAvatar = bindingContext.ParseResult.GetValueForOption(UnityBakeIgnoreImportedAvatar),
+                UnityBakeClipFilterMode = bindingContext.ParseResult.GetValueForOption(UnityBakeClipFilterMode),
+                UnityBakeAllowGeneratedControllerDiagnostic = bindingContext.ParseResult.GetValueForOption(UnityBakeAllowGeneratedControllerDiagnostic),
                 RunUnityBake = bindingContext.ParseResult.GetValueForOption(RunUnityBake),
                 UnityBakeWorkerQueue = bindingContext.ParseResult.GetValueForOption(UnityBakeWorkerQueue),
                 ApplyUnityBakeResult = bindingContext.ParseResult.GetValueForOption(ApplyUnityBakeResult),
@@ -725,15 +890,27 @@ namespace AnimeStudio.CLI
                 BuildSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSqliteIndex),
                 BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
                 VerifySourceIndex = bindingContext.ParseResult.GetValueForOption(VerifySourceIndex),
+                EnsureSourceIndexQueryIndexes = bindingContext.ParseResult.GetValueForOption(EnsureSourceIndexQueryIndexes),
+                ListSourceModelCandidates = bindingContext.ParseResult.GetValueForOption(ListSourceModelCandidates),
+                ListSourceModelAnimations = bindingContext.ParseResult.GetValueForOption(ListSourceModelAnimations),
+                LocateEndfieldStrings = bindingContext.ParseResult.GetValueForOption(LocateEndfieldStrings),
+                LocateEndfieldCabs = bindingContext.ParseResult.GetValueForOption(LocateEndfieldCabs),
+                LocateEndfieldMissingSourceCabs = bindingContext.ParseResult.GetValueForOption(LocateEndfieldMissingSourceCabs),
+                BuildEndfieldCabLocationIndex = bindingContext.ParseResult.GetValueForOption(BuildEndfieldCabLocationIndex),
+                EndfieldCabLocationIndex = bindingContext.ParseResult.GetValueForOption(EndfieldCabLocationIndex),
+                InspectEndfieldManifestDeps = bindingContext.ParseResult.GetValueForOption(InspectEndfieldManifestDeps),
                 ExportAvatarOracle = bindingContext.ParseResult.GetValueForOption(ExportAvatarOracle),
                 RecoverImportedAvatarAssets = bindingContext.ParseResult.GetValueForOption(RecoverImportedAvatarAssets),
                 RecoverImportedAnimationClips = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimationClips),
+                RecoverImportedAnimatorControllers = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimatorControllers),
+                AnimatorControllerClipLibrary = bindingContext.ParseResult.GetValueForOption(AnimatorControllerClipLibrary),
                 RefreshAnimatorControllerContexts = bindingContext.ParseResult.GetValueForOption(RefreshAnimatorControllerContexts),
                 UnityFileInspect = bindingContext.ParseResult.GetValueForOption(UnityFileInspect),
                 AvatarRecoveryLimit = bindingContext.ParseResult.GetValueForOption(AvatarRecoveryLimit),
                 AvatarRecoveryForce = bindingContext.ParseResult.GetValueForOption(AvatarRecoveryForce),
                 DumpUnityBlockChunks = bindingContext.ParseResult.GetValueForOption(DumpUnityBlockChunks),
                 RequireFreshSourceAnimationRelations = bindingContext.ParseResult.GetValueForOption(RequireFreshSourceAnimationRelations),
+                SourceCandidateLimit = bindingContext.ParseResult.GetValueForOption(SourceCandidateLimit),
                 SourceIndex = bindingContext.ParseResult.GetValueForOption(SourceIndex),
                 IndexPath = bindingContext.ParseResult.GetValueForOption(IndexPath),
                 SkipSqliteIndex = bindingContext.ParseResult.GetValueForOption(SkipSqliteIndex),

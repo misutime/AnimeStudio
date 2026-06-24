@@ -34,9 +34,7 @@ namespace AnimeStudio.CLI
             var dbPath = string.IsNullOrWhiteSpace(indexPath)
                 ? Path.Combine(root, "library_index.db")
                 : Path.GetFullPath(indexPath);
-            var sourceIndex = string.IsNullOrWhiteSpace(sourceIndexPath)
-                ? Path.Combine(root, "unity_source_index.db")
-                : Path.GetFullPath(sourceIndexPath);
+            var sourceIndex = ResolveSourceIndex(root, sourceIndexPath);
             if (!File.Exists(dbPath))
             {
                 throw new FileNotFoundException($"library_index.db not found: {dbPath}", dbPath);
@@ -89,8 +87,11 @@ namespace AnimeStudio.CLI
                     continue;
                 }
 
-                var controllerPathIds = controllerResolver.FindControllerPathIds(modelSource, modelPathId.Value);
-                if (controllerPathIds.Count == 0)
+                var controllerPathIds = controllerResolver.FindControllerPathIds(modelSource, modelPathId.Value)
+                    .Concat(ReadControllerPathIdsFromRelationEvidence(row.RawJson))
+                    .Distinct()
+                    .ToArray();
+                if (controllerPathIds.Length == 0)
                 {
                     AddBlockedItem(blockedItems, blockedReasonCounts, row, "missing_animator_controller_relation", new JObject
                     {
@@ -157,12 +158,74 @@ namespace AnimeStudio.CLI
                 ["blockedReasonCounts"] = JObject.FromObject(blockedReasonCounts),
                 // 只写前 200 条，避免原神这类大库报告变成另一个巨型索引。
                 ["blockedItemsSample"] = blockedItems,
-                ["rule"] = "只用 Unity Animator.controller 显式关系和 AnimatorController state/blend tree 同 node 的 baseLayerClip 修复辅助层 Humanoid clip；不按名称、骨骼数量或目录猜测。",
+                ["rule"] = "只用 Unity Animator.controller 显式关系、候选 relationEvidence.controllerPathId 和 AnimatorController state/default layer 上下文修复 Humanoid bake 上下文；不按名称、骨骼数量或目录猜测。",
             };
             var reportPath = Path.Combine(root, "animator_controller_context_refresh.json");
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
             Logger.Info($"AnimatorController context refresh updated {changed} candidate row(s). Report: {reportPath}");
             return reportPath;
+        }
+
+        private static string ResolveSourceIndex(string libraryRoot, string explicitSourceIndexPath)
+        {
+            if (!string.IsNullOrWhiteSpace(explicitSourceIndexPath))
+            {
+                return Path.GetFullPath(explicitSourceIndexPath);
+            }
+
+            foreach (var candidate in EnumerateSourceIndexCandidates(libraryRoot))
+            {
+                if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+                {
+                    return Path.GetFullPath(candidate);
+                }
+            }
+
+            // 保留旧默认路径作为错误信息，方便定位小库是否缺少源索引引用。
+            return Path.Combine(libraryRoot, "unity_source_index.db");
+        }
+
+        private static IEnumerable<string> EnumerateSourceIndexCandidates(string libraryRoot)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot))
+            {
+                yield break;
+            }
+
+            yield return Path.Combine(libraryRoot, "unity_source_index.db");
+            foreach (var reportName in new[]
+            {
+                "source_index_usage.json",
+                "animator_controller_context_refresh.json",
+                "sqlite_index_summary.json",
+            })
+            {
+                var reportPath = Path.Combine(libraryRoot, reportName);
+                var sourceIndex = TryReadSourceIndexFromReport(reportPath);
+                if (!string.IsNullOrWhiteSpace(sourceIndex))
+                {
+                    yield return sourceIndex;
+                }
+            }
+        }
+
+        private static string TryReadSourceIndexFromReport(string reportPath)
+        {
+            if (string.IsNullOrWhiteSpace(reportPath) || !File.Exists(reportPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                var root = JObject.Parse(File.ReadAllText(reportPath));
+                return (string)root["sourceIndex"]
+                    ?? (string)root["sourceIndexAnimationRelationHealth"]?["sourceIndex"];
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static void AddBlockedItem(
@@ -229,6 +292,10 @@ WHERE c.relation_source='explicit'
         OR json_extract(c.raw_json, '$.productionUnityBakeBlockedReason')='requires_animator_controller_context'
         OR json_extract(c.raw_json, '$.nextAction')='inspect_animator_controller_context'
         OR (
+          json_extract(c.raw_json, '$.productionAnimationPath')='NeedsDirectTrsAnimation'
+          AND json_extract(c.raw_json, '$.animatorControllerContext.source') IS NOT NULL
+        )
+        OR (
           json_extract(c.raw_json, '$.productionAnimationPath')='NeedsUnityAvatarMetadata'
           AND (
             COALESCE(json_extract(a.raw_json, '$.hasMuscleClip'), 0)=1
@@ -241,6 +308,10 @@ WHERE c.relation_source='explicit'
     OR (
       json_extract(c.raw_json, '$.animatorControllerContext.baseLayerClip.clip.pathId') IS NOT NULL
       AND json_extract(c.raw_json, '$.productionUnityBakeBlockedReason')='missing_production_avatar_oracle'
+    )
+    OR (
+      json_extract(c.raw_json, '$.animatorControllerContext.additionalLayerClipRule') LIKE 'AnimatorController default non-empty layer states whose state path matches the selected motion stem%'
+      AND json_extract(c.raw_json, '$.animatorControllerContext.additionalLayerClipRule') NOT LIKE '%exactly one deterministic clip%'
     )
   );";
             using var reader = command.ExecuteReader();
@@ -441,7 +512,7 @@ LIMIT 200000;";
             {
                 ["source"] = Path.GetFullPath(inspectPath),
                 ["refreshedUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
-                ["rule"] = "Animator.controller -> AnimatorController state -> same blend-tree node baseLayerClip",
+                ["rule"] = "Animator.controller -> AnimatorController state/default layer context; default additional layer clips are diagnostic until original RuntimeAnimatorController sampling is recovered",
             };
             return result;
         }
@@ -699,6 +770,47 @@ LIMIT 200000;";
         private static string NormalizeUnityAssetPath(string value)
             => (value ?? string.Empty).Trim().Trim('"').Replace('\\', '/');
 
+        public static Dictionary<long, long[]> FindBaseLayerClipDependencies(
+            string inspectPath,
+            IReadOnlySet<long> selectedClipPathIds)
+        {
+            var result = new Dictionary<long, HashSet<long>>();
+            if (string.IsNullOrWhiteSpace(inspectPath)
+                || !File.Exists(inspectPath)
+                || selectedClipPathIds == null
+                || selectedClipPathIds.Count == 0)
+            {
+                return new Dictionary<long, long[]>();
+            }
+
+            var contexts = LoadControllerContexts(inspectPath);
+            foreach (var item in contexts)
+            {
+                var selectedClipPathId = item.Key.ClipPathId;
+                if (!selectedClipPathIds.Contains(selectedClipPathId))
+                {
+                    continue;
+                }
+
+                var basePathId = (long?)item.Value["baseLayerClip"]?["clip"]?["pathId"];
+                if (basePathId == null || basePathId.Value == selectedClipPathId)
+                {
+                    continue;
+                }
+
+                if (!result.TryGetValue(selectedClipPathId, out var baseClips))
+                {
+                    baseClips = new HashSet<long>();
+                    result[selectedClipPathId] = baseClips;
+                }
+                baseClips.Add(basePathId.Value);
+            }
+
+            return result.ToDictionary(
+                x => x.Key,
+                x => x.Value.OrderBy(v => v).ToArray());
+        }
+
         private static Dictionary<(long ControllerPathId, long ClipPathId), JObject> LoadControllerContexts(string inspectPath)
         {
             var result = new Dictionary<(long, long), JObject>();
@@ -715,11 +827,58 @@ LIMIT 200000;";
                         continue;
                     }
 
-                    foreach (var stateMachine in controller["stateMachines"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                    var layerByMachine = (controller["layers"] as JArray)?
+                        .OfType<JObject>()
+                        .Where(x => (int?)x["stateMachineIndex"] != null)
+                        .GroupBy(x => (int)x["stateMachineIndex"])
+                        .ToDictionary(x => x.Key, x => x.First())
+                        ?? new Dictionary<int, JObject>();
+                    var stateMachines = controller["stateMachines"]?.OfType<JObject>().ToList() ?? new List<JObject>();
+                    var defaultBaseLayerClip = BuildDefaultBaseLayerClip(stateMachines, layerByMachine);
+                    foreach (var stateMachine in stateMachines)
                     {
+                        var machineIndex = (int?)stateMachine["machineIndex"] ?? -1;
+                        layerByMachine.TryGetValue(machineIndex, out var layer);
                         foreach (var state in stateMachine["states"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
                         {
                             var trees = state["blendTrees"]?.OfType<JObject>().ToList() ?? new List<JObject>();
+                            for (var treeIndex = 0; treeIndex < trees.Count; treeIndex++)
+                            {
+                                foreach (var nodePair in ReadClipNodes(trees[treeIndex]))
+                                {
+                                    var node = nodePair.Value;
+                                    var context = BuildStateNodeContext(
+                                        source,
+                                        serializedFile,
+                                        controller,
+                                        controllerPathId.Value,
+                                        stateMachine,
+                                        state,
+                                        layer,
+                                        treeIndex,
+                                        node);
+
+                                    ApplyDefaultBaseLayerClipContext(context, defaultBaseLayerClip, machineIndex, layer);
+
+                                    if (machineIndex == 0)
+                                    {
+                                        var additionalLayerWarnings = new JArray();
+                                        var additionalLayerClips = BuildDefaultAdditionalLayerClips(stateMachines, layerByMachine, machineIndex, state, node.PathId, additionalLayerWarnings);
+                                        if (additionalLayerClips.Count > 0)
+                                        {
+                                            context["additionalLayerClips"] = additionalLayerClips;
+                                            context["additionalLayerClipRule"] = "AnimatorController default non-empty layer states whose state path matches the selected motion stem and resolves to exactly one deterministic clip; diagnostic context until original RuntimeAnimatorController is recoverable.";
+                                        }
+                                        if (additionalLayerWarnings.Count > 0)
+                                        {
+                                            context["additionalLayerContextWarnings"] = additionalLayerWarnings;
+                                        }
+                                    }
+
+                                    result[(controllerPathId.Value, node.PathId)] = context;
+                                }
+                            }
+
                             if (trees.Count < 2)
                             {
                                 continue;
@@ -736,37 +895,25 @@ LIMIT 200000;";
                                         continue;
                                     }
 
-                                    var context = new JObject
+                                    var context = BuildStateNodeContext(
+                                        source,
+                                        serializedFile,
+                                        controller,
+                                        controllerPathId.Value,
+                                        stateMachine,
+                                        state,
+                                        layer,
+                                        treeIndex,
+                                        node);
+                                    ApplyDefaultBaseLayerClipContext(context, defaultBaseLayerClip, machineIndex, layer);
+                                    context["requestedClip"] = new JObject { ["clip"] = node.Clip };
+                                    context["baseLayerClip"] = new JObject
                                     {
-                                        ["source"] = source,
-                                        ["controllerName"] = S(controller, "name"),
-                                        ["controllerPathId"] = controllerPathId.Value,
-                                        ["controllerFile"] = serializedFile,
-                                        ["stateMachineIndex"] = stateMachine["machineIndex"],
-                                        ["stateIndex"] = state["stateIndex"],
-                                        ["stateName"] = state["name"],
-                                        ["statePath"] = state["fullPath"],
-                                        ["stateFullPath"] = state["fullPath"],
-                                        ["stateSpeed"] = state["speed"],
-                                        ["stateCycleOffset"] = state["cycleOffset"],
-                                        ["stateLoop"] = state["loop"],
-                                        ["stateMirror"] = state["mirror"],
-                                        ["blendTreeIndex"] = treeIndex,
-                                        ["nodeIndex"] = node.NodeIndex,
-                                        ["nodeClipId"] = node.ClipSlot,
-                                        ["nodeClipIndex"] = node.ClipSlot,
-                                        ["nodeDuration"] = node.Duration,
-                                        ["nodeCycleOffset"] = node.CycleOffset,
-                                        ["nodeMirror"] = node.Mirror,
-                                        ["requestedClip"] = new JObject { ["clip"] = node.Clip },
-                                        ["baseLayerClip"] = new JObject
-                                        {
-                                            ["clip"] = baseNode.Clip,
-                                            ["nodeIndex"] = baseNode.NodeIndex,
-                                            ["treeIndex"] = 0,
-                                        },
-                                        ["refreshRule"] = "same AnimatorController state; auxiliary layer clip mapped to layer 0 body clip by identical blend-tree node index",
+                                        ["clip"] = baseNode.Clip,
+                                        ["nodeIndex"] = baseNode.NodeIndex,
+                                        ["treeIndex"] = 0,
                                     };
+                                    context["refreshRule"] = "same AnimatorController state; auxiliary layer clip mapped to layer 0 body clip by identical blend-tree node index";
                                     result[(controllerPathId.Value, node.PathId)] = context;
                                 }
                             }
@@ -776,6 +923,487 @@ LIMIT 200000;";
             }
 
             return result;
+        }
+
+        private static DefaultBaseLayerClipContext BuildDefaultBaseLayerClip(
+            IReadOnlyList<JObject> stateMachines,
+            IReadOnlyDictionary<int, JObject> layerByMachine)
+        {
+            var baseLayer = layerByMachine
+                .Select(x => new { MachineIndex = x.Key, Layer = x.Value })
+                .OrderBy(x => ReadLayerInt(x.Layer, "index"))
+                .FirstOrDefault(x => ReadLayerInt(x.Layer, "index") == 0)
+                ?? layerByMachine
+                    .Select(x => new { MachineIndex = x.Key, Layer = x.Value })
+                    .OrderBy(x => ReadLayerInt(x.Layer, "index"))
+                    .FirstOrDefault();
+            var baseMachineIndex = baseLayer?.MachineIndex ?? 0;
+            var baseMachine = stateMachines?
+                .FirstOrDefault(x => ((int?)x["machineIndex"] ?? -1) == baseMachineIndex);
+            var defaultStateIndex = (int?)baseMachine?["defaultState"];
+            if (baseMachine == null || defaultStateIndex == null || defaultStateIndex.Value < 0)
+            {
+                return null;
+            }
+
+            var state = baseMachine["states"]?.OfType<JObject>()
+                .FirstOrDefault(x => ((int?)x["stateIndex"] ?? -1) == defaultStateIndex.Value);
+            if (state == null)
+            {
+                return null;
+            }
+
+            if (!TryReadDeterministicDefaultLayerClip(state, long.MinValue, out var node, out _))
+            {
+                return null;
+            }
+
+            var clip = new JObject
+            {
+                ["clip"] = node.Clip,
+                ["nodeIndex"] = node.NodeIndex,
+                ["treeIndex"] = 0,
+                ["stateMachineIndex"] = baseMachineIndex,
+                ["stateIndex"] = state["stateIndex"],
+                ["stateName"] = state["name"],
+                ["statePath"] = state["fullPath"],
+                ["stateFullPath"] = state["fullPath"],
+                ["stateSpeed"] = state["speed"],
+                ["stateCycleOffset"] = state["cycleOffset"],
+                ["stateIKOnFeet"] = state["iKOnFeet"],
+                ["stateLoop"] = state["loop"],
+                ["stateMirror"] = state["mirror"],
+                ["source"] = "animator_controller_inspect.base_layer_default_state",
+                ["rule"] = "same AnimatorController base layer default state resolved to exactly one deterministic body clip",
+            };
+            if (!string.IsNullOrWhiteSpace(node.SelectionRule))
+            {
+                clip["selectionRule"] = node.SelectionRule;
+                clip["selectionParameter"] = node.SelectionParameter;
+                clip["selectionValue"] = node.SelectionValue;
+                clip["selectionThreshold"] = node.SelectionThreshold;
+            }
+
+            return new DefaultBaseLayerClipContext(baseMachineIndex, clip);
+        }
+
+        private static void ApplyDefaultBaseLayerClipContext(
+            JObject context,
+            DefaultBaseLayerClipContext defaultBaseLayerClip,
+            int machineIndex,
+            JObject layer)
+        {
+            if (context == null || defaultBaseLayerClip == null || machineIndex == defaultBaseLayerClip.MachineIndex)
+            {
+                return;
+            }
+
+            var layerIndex = ReadLayerInt(layer, "index", machineIndex == defaultBaseLayerClip.MachineIndex ? 0 : 1);
+            if (layerIndex <= 0)
+            {
+                return;
+            }
+
+            context["baseLayerClip"] = defaultBaseLayerClip.Clip.DeepClone();
+            context["baseLayerClipRule"] = "non-base AnimatorController layer mapped to deterministic base layer default-state body clip; diagnostic until runtime controller state/parameters are fully recovered";
+        }
+
+        private static IEnumerable<long> ReadControllerPathIdsFromRelationEvidence(JObject raw)
+        {
+            var pathId = (long?)raw?["relationEvidence"]?["controllerPathId"];
+            if (pathId != null)
+            {
+                yield return pathId.Value;
+            }
+        }
+
+        private static JObject BuildStateNodeContext(
+            string source,
+            string serializedFile,
+            JObject controller,
+            long controllerPathId,
+            JObject stateMachine,
+            JObject state,
+            JObject layer,
+            int treeIndex,
+            ClipNode node)
+        {
+            var context = new JObject
+            {
+                ["source"] = source,
+                ["controllerName"] = S(controller, "name"),
+                ["controllerPathId"] = controllerPathId,
+                ["controllerFile"] = serializedFile,
+                ["stateMachineIndex"] = stateMachine["machineIndex"],
+                ["stateIndex"] = state["stateIndex"],
+                ["stateName"] = state["name"],
+                ["statePath"] = state["fullPath"],
+                ["stateFullPath"] = state["fullPath"],
+                ["stateSpeed"] = state["speed"],
+                ["stateCycleOffset"] = state["cycleOffset"],
+                ["stateIKOnFeet"] = state["iKOnFeet"],
+                ["stateLoop"] = state["loop"],
+                ["stateMirror"] = state["mirror"],
+                ["stateParameters"] = state["stateParameters"]?.DeepClone(),
+                ["blendTreeIndex"] = treeIndex,
+                ["nodeIndex"] = node.NodeIndex,
+                ["nodeClipId"] = node.ClipSlot,
+                ["nodeClipIndex"] = node.ClipSlot,
+                ["nodeDuration"] = node.Duration,
+                ["nodeCycleOffset"] = node.CycleOffset,
+                ["nodeMirror"] = node.Mirror,
+                ["clip"] = node.Clip,
+                ["refreshRule"] = "AnimatorController explicit state/blend-tree node context",
+            };
+
+            var layerContext = BuildLayerContext(layer);
+            if (layerContext != null)
+            {
+                context["layers"] = new JArray(layerContext);
+            }
+
+            return context;
+        }
+
+        private static JArray BuildDefaultAdditionalLayerClips(
+            IReadOnlyList<JObject> stateMachines,
+            IReadOnlyDictionary<int, JObject> layerByMachine,
+            int baseMachineIndex,
+            JObject baseState,
+            long baseClipPathId,
+            JArray warnings)
+        {
+            var result = new JArray();
+            var motionStem = ReadMotionStem(baseState);
+            if (string.IsNullOrWhiteSpace(motionStem))
+            {
+                return result;
+            }
+
+            var machinesByIndex = stateMachines
+                .Where(x => (int?)x["machineIndex"] != null)
+                .ToDictionary(x => (int)x["machineIndex"], x => x);
+            foreach (var pair in layerByMachine.OrderBy(x => ReadLayerInt(x.Value, "index")))
+            {
+                var machineIndex = pair.Key;
+                if (machineIndex == baseMachineIndex || !machinesByIndex.TryGetValue(machineIndex, out var machine))
+                {
+                    continue;
+                }
+
+                var defaultStateIndex = (int?)machine["defaultState"];
+                if (defaultStateIndex == null || defaultStateIndex.Value < 0)
+                {
+                    continue;
+                }
+
+                var state = machine["states"]?.OfType<JObject>()
+                    .FirstOrDefault(x => ((int?)x["stateIndex"] ?? -1) == defaultStateIndex.Value);
+                if (state == null || !StateMentionsMotionStem(state, motionStem))
+                {
+                    continue;
+                }
+
+                if (!TryReadDeterministicDefaultLayerClip(state, baseClipPathId, out var node, out var skipReason))
+                {
+                    warnings?.Add(new JObject
+                    {
+                        ["layerIndex"] = ReadLayerInt(pair.Value, "index"),
+                        ["stateFullPath"] = state["fullPath"],
+                        ["reason"] = skipReason,
+                        ["rule"] = "skip non-deterministic default layer; original AnimatorController state/blend parameters are required",
+                    });
+                    continue;
+                }
+
+                var layerClip = BuildAdditionalLayerClip(pair.Value, state, node);
+                if (layerClip != null)
+                {
+                    result.Add(layerClip);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool TryReadDeterministicDefaultLayerClip(JObject state, long baseClipPathId, out ClipNode clipNode, out string skipReason)
+        {
+            clipNode = null;
+            skipReason = null;
+            var trees = state?["blendTrees"]?.OfType<JObject>()?.ToList() ?? new List<JObject>();
+            if (trees.Count == 0)
+            {
+                skipReason = "default state has no blend tree clip";
+                return false;
+            }
+
+            var clips = new List<ClipNode>();
+            var hasParameterizedNode = false;
+            foreach (var tree in trees)
+            {
+                foreach (var node in tree["nodes"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    if (HasBlendTreeParameter(node))
+                    {
+                        hasParameterizedNode = true;
+                    }
+                }
+
+                clips.AddRange(ReadClipNodes(tree).Values.Where(x => x.PathId != baseClipPathId));
+            }
+
+            if (clips.Count > 1 && TrySelectClipFromStateParameters(state, trees, baseClipPathId, out var selectedNode, out var selectReason))
+            {
+                clipNode = selectedNode;
+                return true;
+            }
+
+            var uniqueClips = clips
+                .GroupBy(x => x.PathId)
+                .Select(x => x.First())
+                .ToList();
+            if (uniqueClips.Count != 1)
+            {
+                skipReason = $"default state resolves to {uniqueClips.Count} clip(s); BlendTree parameters or weights are required";
+                return false;
+            }
+
+            if (hasParameterizedNode && clips.Count > 1)
+            {
+                skipReason = "default state contains parameterized BlendTree nodes; cannot assign all child clips weight 1";
+                return false;
+            }
+
+            clipNode = uniqueClips[0];
+            return true;
+        }
+
+        private static bool TrySelectClipFromStateParameters(
+            JObject state,
+            IReadOnlyList<JObject> trees,
+            long baseClipPathId,
+            out ClipNode clipNode,
+            out string reason)
+        {
+            clipNode = null;
+            reason = null;
+            var parameterValues = ReadStateParameterValues(state);
+            if (parameterValues.Count == 0)
+            {
+                reason = "state has no serialized parameter defaults";
+                return false;
+            }
+
+            ClipNode selected = null;
+            foreach (var tree in trees ?? Array.Empty<JObject>())
+            {
+                var nodes = tree["nodes"]?.OfType<JObject>()?.ToList() ?? new List<JObject>();
+                var clipNodes = ReadClipNodes(tree);
+                foreach (var node in nodes)
+                {
+                    var parameterName = S(node, "blendEvent");
+                    if (string.IsNullOrWhiteSpace(parameterName)
+                        || !parameterValues.TryGetValue(parameterName, out var parameterValue))
+                    {
+                        continue;
+                    }
+
+                    var children = node["childIndices"]?.Values<int>()?.ToArray() ?? Array.Empty<int>();
+                    var thresholds = ReadThresholds(node);
+                    if (children.Length == 0 || thresholds.Length == 0 || children.Length != thresholds.Length)
+                    {
+                        continue;
+                    }
+
+                    var bestIndex = SelectClosestThresholdIndex(thresholds, parameterValue);
+                    if (bestIndex < 0 || bestIndex >= children.Length)
+                    {
+                        continue;
+                    }
+
+                    if (!clipNodes.TryGetValue(children[bestIndex], out var candidate) || candidate.PathId == baseClipPathId)
+                    {
+                        continue;
+                    }
+
+                    if (selected != null && selected.PathId != candidate.PathId)
+                    {
+                        reason = $"state parameters select multiple clips; first={selected.PathId}, next={candidate.PathId}";
+                        return false;
+                    }
+
+                    selected = candidate with
+                    {
+                        SelectionRule = "state_parameter_threshold",
+                        SelectionParameter = parameterName,
+                        SelectionValue = parameterValue,
+                        SelectionThreshold = thresholds[bestIndex],
+                    };
+                }
+            }
+
+            if (selected == null)
+            {
+                reason = "state parameters did not select a clip child";
+                return false;
+            }
+
+            clipNode = selected;
+            return true;
+        }
+
+        private static JObject BuildAdditionalLayerClip(JObject layer, JObject state, ClipNode node)
+        {
+            if (node.Clip == null)
+            {
+                return null;
+            }
+
+            var result = new JObject
+            {
+                ["name"] = node.Clip["name"],
+                ["fileId"] = node.Clip["fileId"],
+                ["file"] = node.Clip["file"],
+                ["pathId"] = node.Clip["pathId"],
+                ["layerIndex"] = ReadLayerInt(layer, "index"),
+                ["layerBlendingMode"] = ReadLayerInt(layer, "blendingMode", StateLooksAdditive(state) ? 1 : 0),
+                ["layerDefaultWeight"] = ReadLayerFloat(layer, "defaultWeight", 1f),
+                ["layerBodyMask"] = layer?["bodyMask"]?.DeepClone(),
+                ["layerSkeletonMask"] = layer?["skeletonMask"]?.DeepClone(),
+                ["stateName"] = state["name"],
+                ["statePath"] = state["fullPath"],
+                ["stateFullPath"] = state["fullPath"],
+                ["stateSpeed"] = state["speed"],
+                ["stateCycleOffset"] = state["cycleOffset"],
+                ["stateIKOnFeet"] = state["iKOnFeet"],
+                ["stateLoop"] = state["loop"],
+                ["stateMirror"] = state["mirror"],
+                ["nodeCycleOffset"] = node.CycleOffset,
+                ["nodeMirror"] = node.Mirror,
+                ["source"] = "animator_controller_inspect.default_layer_state",
+            };
+            if (!string.IsNullOrWhiteSpace(node.SelectionRule))
+            {
+                result["selectionRule"] = node.SelectionRule;
+                result["selectionParameter"] = node.SelectionParameter;
+                result["selectionValue"] = node.SelectionValue;
+                result["selectionThreshold"] = node.SelectionThreshold;
+            }
+            return result;
+        }
+
+        private static JObject BuildLayerContext(JObject layer)
+        {
+            if (layer == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["layerIndex"] = layer["index"],
+                ["layerStateMachineIndex"] = layer["stateMachineIndex"],
+                ["layerStateMachineMotionSetIndex"] = layer["stateMachineMotionSetIndex"],
+                ["layerBinding"] = layer["binding"],
+                ["layerBlendingMode"] = layer["blendingMode"],
+                ["layerDefaultWeight"] = layer["defaultWeight"],
+                ["layerIKPass"] = layer["iKPass"],
+                ["layerSyncedLayerAffectsTiming"] = layer["syncedLayerAffectsTiming"],
+                ["layerBodyMask"] = layer["bodyMask"]?.DeepClone(),
+                ["layerSkeletonMask"] = layer["skeletonMask"]?.DeepClone(),
+            };
+        }
+
+        private static string ReadMotionStem(JObject state)
+        {
+            var stateText = string.Join(" ", (string)state?["name"], (string)state?["fullPath"]);
+            foreach (var stem in new[] { "Idle", "Walk", "Run", "Sprint", "Jump", "Turn", "Attack", "Skill", "Move", "Bump" })
+            {
+                if (!string.IsNullOrWhiteSpace(stateText)
+                    && stateText.IndexOf(stem, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return stem;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool StateMentionsMotionStem(JObject state, string motionStem)
+        {
+            var stateText = string.Join(" ", (string)state?["name"], (string)state?["fullPath"]);
+            return !string.IsNullOrWhiteSpace(stateText)
+                && stateText.IndexOf("empty", StringComparison.OrdinalIgnoreCase) < 0
+                && stateText.IndexOf(motionStem, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool StateLooksAdditive(JObject state)
+        {
+            var stateText = string.Join(" ", (string)state?["name"], (string)state?["fullPath"]);
+            return !string.IsNullOrWhiteSpace(stateText)
+                && stateText.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static int ReadLayerInt(JObject layer, string name, int defaultValue = 0)
+        {
+            var token = layer?[name];
+            return token != null && token.Type != JTokenType.Null ? token.Value<int>() : defaultValue;
+        }
+
+        private static float ReadLayerFloat(JObject layer, string name, float defaultValue = 0f)
+        {
+            var token = layer?[name];
+            return token != null && token.Type != JTokenType.Null ? token.Value<float>() : defaultValue;
+        }
+
+        private static Dictionary<string, double> ReadStateParameterValues(JObject state)
+        {
+            var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (var parameter in state?["stateParameters"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var name = S(parameter, "name");
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                result[name] = (double?)parameter["value"] ?? 0d;
+            }
+
+            return result;
+        }
+
+        private static double[] ReadThresholds(JObject node)
+        {
+            var thresholds = node?["childThresholds"]?.Values<double>()?.ToArray() ?? Array.Empty<double>();
+            if (thresholds.Length > 0)
+            {
+                return thresholds;
+            }
+
+            return node?["blend1dChildThresholds"]?.Values<double>()?.ToArray() ?? Array.Empty<double>();
+        }
+
+        private static int SelectClosestThresholdIndex(IReadOnlyList<double> thresholds, double value)
+        {
+            if (thresholds == null || thresholds.Count == 0)
+            {
+                return -1;
+            }
+
+            var bestIndex = 0;
+            var bestDistance = Math.Abs(thresholds[0] - value);
+            for (var i = 1; i < thresholds.Count; i++)
+            {
+                var distance = Math.Abs(thresholds[i] - value);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestIndex = i;
+                }
+            }
+
+            return bestIndex;
         }
 
         private static Dictionary<int, ClipNode> ReadClipNodes(JObject tree)
@@ -798,10 +1426,31 @@ LIMIT 200000;";
                     (double?)node["duration"] ?? 0,
                     (double?)node["cycleOffset"] ?? 0,
                     (bool?)node["mirror"] ?? false,
-                    (JObject)clip.DeepClone());
+                    (JObject)clip.DeepClone(),
+                    null,
+                    null,
+                    0,
+                    0);
             }
 
             return result;
+        }
+
+        private static bool HasBlendTreeParameter(JObject node)
+        {
+            return !string.IsNullOrWhiteSpace(S(node, "blendEvent"))
+                || !string.IsNullOrWhiteSpace(S(node, "blendEventY"))
+                || HasNamedTosArray(node, "directChildBlendEvents")
+                || HasNamedTosArray(node, "directChildPoseTimeEvents")
+                || HasNamedTosArray(node, "sequenceChildBlendEvents")
+                || HasNamedTosArray(node, "sequenceChildPoseTimeEvents")
+                || node?["childThresholds"] is JArray thresholds && thresholds.Count > 0;
+        }
+
+        private static bool HasNamedTosArray(JObject node, string name)
+        {
+            return node?[name] is JArray values
+                && values.OfType<JObject>().Any(x => !string.IsNullOrWhiteSpace(S(x, "name")));
         }
 
         private static string S(JObject obj, string name)
@@ -812,7 +1461,20 @@ LIMIT 200000;";
 
         private sealed record CandidateRow(long Id, string ModelOutput, string AnimationOutput, JObject RawJson, JObject Model, JObject Animation);
 
-        private sealed record ClipNode(int NodeIndex, long PathId, int ClipSlot, double Duration, double CycleOffset, bool Mirror, JObject Clip);
+        private sealed record ClipNode(
+            int NodeIndex,
+            long PathId,
+            int ClipSlot,
+            double Duration,
+            double CycleOffset,
+            bool Mirror,
+            JObject Clip,
+            string SelectionRule,
+            string SelectionParameter,
+            double SelectionValue,
+            double SelectionThreshold);
+
+        private sealed record DefaultBaseLayerClipContext(int MachineIndex, JObject Clip);
 
         private sealed record AvatarResolution(bool HasProductionAvatar, string AvatarAsset, string MatchKey);
 

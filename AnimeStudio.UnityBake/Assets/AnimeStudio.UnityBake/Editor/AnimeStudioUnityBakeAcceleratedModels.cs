@@ -10,6 +10,8 @@ namespace AnimeStudio.UnityBake
         public string mode = "UnityBakeAccelerated";
         public string avatarAsset;
         public string avatarKey;
+        public AnimeStudioAvatarAsset avatar;
+        public string poseSolveMethod;
         public string outputJson;
         public string[] jointPaths;
         public List<UnityBakeAcceleratedClipRequest> clips = new List<UnityBakeAcceleratedClipRequest>();
@@ -41,17 +43,28 @@ namespace AnimeStudio.UnityBake
         public string status;
         public string message;
         public string unityVersion;
+        public string animationSolvePath;
+        public string outputAnimationData;
+        public bool requiresUnityToSolve;
+        public bool finalGltfAnimationRequired;
+        public string valueLayout;
         public string avatarAsset;
         public string avatarName;
         public string avatarKey;
+        public string avatarSource;
         public bool avatarValid;
         public bool avatarHuman;
         public string setPoseMethod;
         public int jointCount;
         public string[] jointPaths;
         public string[] muscleNames;
+        public int restValueCount;
+        public float[] restValues;
         public int clipCount;
         public int sampleCount;
+        public float elapsedMilliseconds;
+        public float solveMilliseconds;
+        public float samplesPerSecond;
         public bool writesLibraryIndex;
         public bool writesModelAnimations;
         public List<UnityBakeAcceleratedClipResult> clips = new List<UnityBakeAcceleratedClipResult>();
@@ -64,6 +77,8 @@ namespace AnimeStudio.UnityBake
         public string clipName;
         public float frameRate;
         public int sampleCount;
+        public float solveMilliseconds;
+        public float samplesPerSecond;
         public List<UnityBakeAcceleratedPoseResult> samples = new List<UnityBakeAcceleratedPoseResult>();
     }
 

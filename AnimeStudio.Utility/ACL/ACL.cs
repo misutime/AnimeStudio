@@ -143,4 +143,61 @@ namespace ACLLibs
 
         #endregion
     }
+
+    public struct AclTrackInfo
+    {
+        public int Result;
+        public uint Size;
+        public uint Version;
+        public uint TrackType;
+        public uint NumTracks;
+        public uint NumSamples;
+        public float SampleRate;
+        public float Duration;
+        public uint OutputFloatCount;
+    }
+
+    public static class EndfieldACL
+    {
+        private const string DLL_NAME = "acl_transform";
+
+        static EndfieldACL()
+        {
+            DllLoader.PreloadDll(DLL_NAME);
+        }
+
+        public static bool TryGetInfo(byte[] data, out AclTrackInfo info)
+        {
+            info = default;
+            if (data == null || data.Length == 0)
+            {
+                return false;
+            }
+
+            info = AnimeStudioAclGetInfo(data, (uint)data.Length);
+            return info.Result == 0;
+        }
+
+        public static bool TryDecompressSample(byte[] data, float sampleTime, float[] output, out int result)
+        {
+            result = -1;
+            if (data == null || data.Length == 0 || output == null || output.Length == 0)
+            {
+                return false;
+            }
+
+            result = AnimeStudioAclDecompressSample(data, (uint)data.Length, sampleTime, 0, output, (uint)output.Length);
+            return result == 0;
+        }
+
+        #region importfunctions
+
+        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
+        private static extern AclTrackInfo AnimeStudioAclGetInfo(byte[] data, uint dataSize);
+
+        [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int AnimeStudioAclDecompressSample(byte[] data, uint dataSize, float sampleTime, int roundingPolicy, float[] output, uint outputFloatCount);
+
+        #endregion
+    }
 }

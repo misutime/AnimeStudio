@@ -1,6 +1,7 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using AnimeStudio;
+using SevenZip;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -12,7 +13,7 @@ namespace AnimeStudio.CLI
     internal static class FastPreviewGltfBuilder
     {
         internal const string HumanoidSolverMode = "AnimeStudioInternalHumanoidMusclePreviewV1";
-        internal const string HumanoidSolverRestPoseSpace = "UnityAvatarPreSwingTwistInversePostLocalRotationAxisZYX_DistalTwistSourceLimitsUpperLegFootTwistY_KnownLimbRiskDiagnostics";
+        internal const string HumanoidSolverRestPoseSpace = "UnityAvatarPreSwingTwistInversePostLocalRotationAxisXYZ_RightRestAnchorCorrection_DistalTwistUsesAvatarTwistShare_FingerStructuralFallback_KnownStretchRiskDiagnostics";
         internal const string HumanoidSolverCacheVersion = HumanoidSolverMode + ":" + HumanoidSolverRestPoseSpace;
 
         public static bool TryGenerate(JObject modelEntry, JObject animationEntry, string animationName, string outputDirectory, out string gltfPath, out string message, bool forceInternalHumanoidSolve = false)
@@ -98,6 +99,7 @@ namespace AnimeStudio.CLI
             }
 
             var nodeMap = BuildNodePathMap(gltf, nodes);
+            curves = ResolveCurvePaths(curves, BuildAnimationPathMap(null, gltf, nodes, nodeMap));
             var blendShapeCurves = LoadBlendShapeCurves(decoded, gltf, nodes, nodeMap, out var blendShapeDiagnostic);
             var writer = new AnimationBinaryWriter();
             var samplers = new JArray();
@@ -163,10 +165,10 @@ namespace AnimeStudio.CLI
                         ["coordinateConversion"] = "Unity local TRS converted to glTF basis: position.x=-x, rotation.y/z=-y/-z",
                         ["partialDirectGltf"] = partialDirectGltf,
                         ["partialDirectGltfReason"] = partialDirectGltf
-                            ? (string)candidate?["partialDirectGltfReason"] ?? "This preview writes deterministic Transform TRS curves only. Full Humanoid/Muscle body motion still needs Unity bake or a trusted Humanoid solver."
+                            ? (string)candidate?["partialDirectGltfReason"] ?? "This preview writes deterministic Transform TRS curves only. Full Humanoid/Muscle body motion still needs AnimeStudio direct TRS solving before it can be a reusable animation asset."
                             : null,
                         ["note"] = partialDirectGltf
-                            ? "快速预览只写入 Transform TRS 曲线；完整 Humanoid/Muscle 动作仍需 Unity bake 或可信 Humanoid solver。"
+                            ? "快速预览只写入 Transform TRS 曲线；完整 Humanoid/Muscle 动作必须等 AnimeStudio 直接 TRS 求解通过后才能作为可复用动画。"
                             : "快速预览直接使用已导出 glTF 和 animation_asset.json decoded 曲线，不重新加载 Unity bundle。",
                     },
                 },
@@ -177,12 +179,870 @@ namespace AnimeStudio.CLI
             return true;
         }
 
+        public static bool TryExportStandaloneAnimation(
+            JObject modelEntry,
+            JObject animationEntry,
+            string animationName,
+            string outputDirectory,
+            out string gltfPath,
+            out string message,
+            bool forceInternalHumanoidSolve = false)
+        {
+            gltfPath = null;
+            message = null;
+
+            var model = modelEntry?["model"] as JObject;
+            var sourceGltf = (string)model?["output"];
+            var animationAsset = (string)animationEntry?["animationAsset"];
+            if (string.IsNullOrWhiteSpace(sourceGltf) || !File.Exists(sourceGltf))
+            {
+                message = "独立动画 glTF 缺少已导出的模型 glTF，无法复制目标骨架层级。";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(animationAsset) || !File.Exists(animationAsset))
+            {
+                message = "独立动画 glTF 缺少动画 sidecar JSON。";
+                return false;
+            }
+
+            var animationJson = JObject.Parse(File.ReadAllText(animationAsset));
+            var decoded = animationJson["decoded"] as JObject;
+            if (!string.Equals((string)decoded?["status"], "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                message = $"动画 sidecar 没有可用 decoded 曲线。{BuildDecodedHint(decoded)}";
+                return false;
+            }
+            var output = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(Path.GetDirectoryName(sourceGltf) ?? Directory.GetCurrentDirectory(), "AnimationGltf", SafeName(animationName))
+                : outputDirectory;
+            if (Directory.Exists(output))
+            {
+                Directory.Delete(output, recursive: true);
+            }
+            Directory.CreateDirectory(output);
+
+            var source = JObject.Parse(File.ReadAllText(sourceGltf));
+            var nodes = source["nodes"] as JArray;
+            if (nodes == null || nodes.Count == 0)
+            {
+                message = "模型 glTF 没有 nodes，无法导出绑定目标。";
+                return false;
+            }
+
+            var nodeMap = BuildNodePathMap(source, nodes);
+            var pathMap = BuildAnimationPathMap(animationJson, source, nodes, nodeMap);
+            var gltf = BuildSkinlessAnimationGltf(source);
+            var curves = LoadCurves(decoded);
+            curves = ResolveCurvePaths(curves, pathMap);
+            curves = NormalizeCurvePathsToPreferredNodePaths(curves, nodeMap);
+            var decodedTransformCurveCount = curves.Count;
+            var controllerLayerDiagnostic = new JObject();
+            var hasDirectTrsCurves = curves.Count > 0
+                && (bool?)decoded["directGltfReady"] != false;
+            var needsInternalHumanoidSolve = (bool?)decoded["requiresInternalHumanoidSolve"] == true
+                || string.Equals((string)decoded["playbackKind"], "HumanoidMuscleNeedsInternalSolver", StringComparison.OrdinalIgnoreCase);
+            var internalDiagnostic = new JObject();
+            var rootMotionDiagnostic = new JObject();
+            var blendShapeDiagnostic = new JObject();
+            var internalHumanoidCurveCount = 0;
+            var rootMotionCurveCount = 0;
+            var skippedBlendShapeCurveCount = 0;
+            var deduplicatedCurveCount = 0;
+
+            if (needsInternalHumanoidSolve)
+            {
+                if (!forceInternalHumanoidSolve && !hasDirectTrsCurves)
+                {
+                    message = "Humanoid/Muscle 动画需要 AnimeStudio 内部直接 TRS 求解。请显式传 --preview_force_internal_humanoid_solve；导出结果仍会标为实验/待视觉验收。";
+                    return false;
+                }
+
+                if (forceInternalHumanoidSolve)
+                {
+                    var avatar = model?["avatar"] as JObject;
+                    if (avatar?["internalSolver"] == null)
+                    {
+                        message = "Humanoid/Muscle 独立动画缺少 model.avatar.internalSolver。请用当前导出工具刷新模型 Avatar 元数据。";
+                        return false;
+                    }
+                    if (!HasRequiredHumanoidSolverPoseMetadata(avatar["internalSolver"] as JObject, out var metadataMessage))
+                    {
+                        message = metadataMessage;
+                        return false;
+                    }
+
+                    var humanoidCurves = LoadHumanoidMuscleCurves(avatar, decoded, nodes, nodeMap, out internalDiagnostic);
+                    var rootMotionCurves = LoadHumanoidRootMotionCurves(decoded, source, nodes, out rootMotionDiagnostic);
+                    var blendShapeCurves = LoadBlendShapeCurves(decoded, source, nodes, nodeMap, out blendShapeDiagnostic);
+                    // Humanoid/Muscle 求解出的 TRS 是同一 node/path 的最终动画结果。
+                    // 如果 sidecar 里同时残留了 helper/finger 的直接 Transform 曲线，先移除重复目标，避免 glTF duplicate channel。
+                    foreach (var solvedCurve in humanoidCurves.Concat(rootMotionCurves))
+                    {
+                        curves.RemoveAll(x =>
+                            string.Equals(x.Path, solvedCurve.Path, StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(x.TargetPath, solvedCurve.TargetPath, StringComparison.OrdinalIgnoreCase));
+                    }
+                    foreach (var rootCurve in rootMotionCurves)
+                    {
+                        curves.RemoveAll(x =>
+                            string.Equals(x.Path, rootCurve.Path, StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(x.TargetPath, rootCurve.TargetPath, StringComparison.OrdinalIgnoreCase));
+                    }
+                    curves.AddRange(humanoidCurves);
+                    curves.AddRange(rootMotionCurves);
+                    internalHumanoidCurveCount = humanoidCurves.Count;
+                    rootMotionCurveCount = rootMotionCurves.Count;
+                    skippedBlendShapeCurveCount = blendShapeCurves.Count;
+                    if (curves.Count == 0)
+                    {
+                        message = "Humanoid/Muscle 内部求解器没有生成任何可写入 standalone glTF 的 TRS 轨道。" + BuildHumanoidDiagnosticHint(internalDiagnostic);
+                        return false;
+                    }
+                }
+            }
+
+            if (curves.Count == 0)
+            {
+                message = HasBlendShapeFloatCurves(decoded)
+                    ? "当前独立动画 glTF 只导出骨骼/Transform TRS；BlendShape weights 需要目标 mesh/morph 映射，暂不作为 skinless 动画资产写出。"
+                    : $"decoded 曲线里没有 Transform TRS 轨道。{BuildDecodedHint(decoded)}";
+                return false;
+            }
+
+            curves = ComposeAnimatorControllerLayerCurves(
+                curves,
+                animationEntry,
+                animationAsset,
+                source,
+                nodes,
+                nodeMap,
+                pathMap,
+                out controllerLayerDiagnostic);
+            curves = DeduplicateCurvesByResolvedTarget(curves, nodeMap, out deduplicatedCurveCount);
+            var writer = new AnimationBinaryWriter();
+            var samplers = new JArray();
+            var channels = new JArray();
+            var matched = 0;
+
+            foreach (var curveGroup in curves.GroupBy(x => x.Path, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!TryFindNode(nodeMap, curveGroup.Key, out var nodeIndex))
+                {
+                    continue;
+                }
+
+                foreach (var curve in curveGroup)
+                {
+                    var samplerIndex = samplers.Count;
+                    var timeAccessor = writer.AddAccessor(gltf, curve.Times, "SCALAR");
+                    var valueAccessor = writer.AddAccessor(gltf, curve.Values, curve.ComponentCount == 4 ? "VEC4" : "VEC3");
+                    samplers.Add(new JObject
+                    {
+                        ["input"] = timeAccessor,
+                        ["interpolation"] = "LINEAR",
+                        ["output"] = valueAccessor,
+                    });
+                    channels.Add(new JObject
+                    {
+                        ["sampler"] = samplerIndex,
+                        ["target"] = new JObject
+                        {
+                            ["node"] = nodeIndex,
+                            ["path"] = curve.TargetPath,
+                        },
+                    });
+                    matched++;
+                }
+            }
+
+            if (matched == 0)
+            {
+                message = "独立动画曲线没有匹配到 glTF 节点；请检查 AnimationClip binding path 和模型骨架路径。";
+                return false;
+            }
+
+            writer.Flush(gltf, output, $"{SafeName(animationName)}.animation.bin");
+            gltf["animations"] = new JArray
+            {
+                new JObject
+                {
+                    ["name"] = animationName,
+                    ["samplers"] = samplers,
+                    ["channels"] = channels,
+                    ["extras"] = new JObject
+                    {
+                        ["animeStudioAnimationAsset"] = new JObject
+                        {
+                            ["mode"] = forceInternalHumanoidSolve && needsInternalHumanoidSolve
+                                ? "StandaloneSkinlessInternalHumanoidMuscleGltfAnimation"
+                                : "StandaloneSkinlessGltfAnimation",
+                            ["version"] = 2,
+                            ["sourceModelGltf"] = sourceGltf,
+                            ["animationAsset"] = animationAsset,
+                            ["matchedChannelCount"] = matched,
+                            ["curveCount"] = curves.Count,
+                            ["decodedTransformCurveCount"] = decodedTransformCurveCount,
+                            ["internalHumanoidCurveCount"] = internalHumanoidCurveCount,
+                            ["rootMotionCurveCount"] = rootMotionCurveCount,
+                            ["skippedBlendShapeCurveCount"] = skippedBlendShapeCurveCount,
+                            ["deduplicatedCurveCount"] = deduplicatedCurveCount,
+                            ["animatorControllerLayers"] = controllerLayerDiagnostic,
+                            ["forceInternalHumanoidSolve"] = forceInternalHumanoidSolve,
+                            ["experimental"] = forceInternalHumanoidSolve && needsInternalHumanoidSolve,
+                            ["notProductionReady"] = (forceInternalHumanoidSolve && needsInternalHumanoidSolve)
+                                || string.Equals((string)controllerLayerDiagnostic["status"], "applied", StringComparison.OrdinalIgnoreCase),
+                            ["notProductionReadyReason"] = forceInternalHumanoidSolve && needsInternalHumanoidSolve
+                                ? "internal_humanoid_muscle_solver_experimental_visual_validation_required"
+                                : string.Equals((string)controllerLayerDiagnostic["status"], "applied", StringComparison.OrdinalIgnoreCase)
+                                    ? "direct_animator_controller_layer_composition_requires_visual_validation"
+                                    : null,
+                            ["unityHumanoid"] = forceInternalHumanoidSolve && needsInternalHumanoidSolve
+                                ? new JObject
+                                {
+                                    ["present"] = true,
+                                    ["baked"] = false,
+                                    ["internalSolved"] = internalHumanoidCurveCount > 0,
+                                    ["solveMode"] = HumanoidSolverMode,
+                                    ["solverCacheVersion"] = HumanoidSolverCacheVersion,
+                                    ["diagnostics"] = internalDiagnostic,
+                                    ["rootMotion"] = rootMotionDiagnostic,
+                                    ["blendShape"] = blendShapeDiagnostic,
+                                }
+                                : null,
+                            ["coordinateConversion"] = "Unity local TRS converted to glTF basis: position.x=-x, rotation.y/z=-y/-z",
+                            ["note"] = forceInternalHumanoidSolve && needsInternalHumanoidSolve
+                                ? "此 glTF 只保留 node/rest TRS 和内部 Humanoid/Muscle 直接求解出的动画 channel，不带 mesh/material/texture/skin；未调用 Unity bake，仍需视觉验收。"
+                                : "此 glTF 只保留 node/rest TRS 和动画 channel，不带 mesh/material/texture/skin；合成时按节点路径/名称绑定到目标模型。",
+                        },
+                    },
+                }
+            };
+
+            gltfPath = Path.Combine(output, $"{SafeName(animationName)}.animation.gltf");
+            File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
+            message = forceInternalHumanoidSolve && needsInternalHumanoidSolve
+                ? $"Humanoid/Muscle 独立动画 glTF 完成: {matched} channel(s), internalHumanoid={internalHumanoidCurveCount}, rootMotion={rootMotionCurveCount}, status={(string)internalDiagnostic["status"] ?? "unknown"}"
+                : $"独立动画 glTF 完成: {matched} channel(s)";
+            return true;
+        }
+
+        private static JObject BuildSkinlessAnimationGltf(JObject source)
+        {
+            var gltf = new JObject
+            {
+                ["asset"] = source["asset"]?.DeepClone() ?? new JObject
+                {
+                    ["version"] = "2.0",
+                    ["generator"] = "AnimeStudio",
+                },
+                ["scene"] = source["scene"]?.DeepClone() ?? 0,
+                ["scenes"] = source["scenes"]?.DeepClone() ?? new JArray(),
+                ["nodes"] = source["nodes"]?.DeepClone() ?? new JArray(),
+                ["accessors"] = new JArray(),
+                ["bufferViews"] = new JArray(),
+                ["buffers"] = new JArray(),
+                ["animations"] = new JArray(),
+                ["extras"] = new JObject
+                {
+                    ["animeStudioAnimationAsset"] = new JObject
+                    {
+                        ["skinless"] = true,
+                        ["meshStripped"] = true,
+                        ["materialStripped"] = true,
+                    },
+                },
+            };
+
+            // 独立动画资产只需要目标节点；mesh/skin 引用留着会指向已移除的数据。
+            foreach (var node in gltf["nodes"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                node.Remove("mesh");
+                node.Remove("skin");
+                node.Remove("weights");
+            }
+
+            return gltf;
+        }
+
         private static List<CurveData> LoadCurves(JObject decoded)
         {
             var result = new List<CurveData>();
             AddVector3Curves(result, decoded["translations"] as JArray, "translation", ConvertUnityPositionToGltf);
             AddQuaternionCurves(result, decoded["rotations"] as JArray);
             AddVector3Curves(result, decoded["scales"] as JArray, "scale");
+            return result;
+        }
+
+        private static List<CurveData> ResolveCurvePaths(List<CurveData> curves, Dictionary<uint, string> pathMap)
+        {
+            if (curves == null || curves.Count == 0 || pathMap == null || pathMap.Count == 0)
+            {
+                return curves ?? new List<CurveData>();
+            }
+
+            return curves
+                .Select(curve => TryReadUnknownPathHash(curve.Path, out var hash) && pathMap.TryGetValue(hash, out var path)
+                    ? curve with { Path = path }
+                    : curve)
+                .ToList();
+        }
+
+        private static List<CurveData> NormalizeCurvePathsToPreferredNodePaths(List<CurveData> curves, Dictionary<string, int> nodeMap)
+        {
+            if (curves == null || curves.Count == 0 || nodeMap == null || nodeMap.Count == 0)
+            {
+                return curves ?? new List<CurveData>();
+            }
+
+            return curves
+                .Select(curve =>
+                {
+                    if (!TryFindNode(nodeMap, curve.Path, out var nodeIndex))
+                    {
+                        return curve;
+                    }
+
+                    var preferredPath = FindPreferredNodePath(nodeMap, nodeIndex);
+                    // Unity binding path 可能是 Root/Bone，hash 解析后可能是 ModelRoot/Root/Bone。
+                    // 先统一成 glTF 的完整节点路径，避免 base clip 和 additive layer 错过同一骨骼。
+                    return !string.IsNullOrWhiteSpace(preferredPath)
+                        ? curve with { Path = preferredPath }
+                        : curve;
+                })
+                .ToList();
+        }
+
+        private static Dictionary<uint, string> BuildAnimationPathMap(
+            JObject animationJson,
+            JObject gltf,
+            JArray nodes,
+            Dictionary<string, int> nodeMap)
+        {
+            var map = new Dictionary<uint, string>();
+            foreach (var binding in animationJson?["bindings"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var path = ((string)binding["path"])?.Replace('\\', '/').Trim();
+                var hash = (uint?)binding["pathHash"];
+                if (hash.HasValue && !string.IsNullOrWhiteSpace(path))
+                {
+                    map[hash.Value] = path;
+                }
+            }
+
+            foreach (var path in EnumerateComparableNodePaths(gltf, nodes, nodeMap))
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                map.TryAdd(CRC.CalculateDigestUTF8(path), path);
+            }
+
+            return map;
+        }
+
+        private static IEnumerable<string> EnumerateComparableNodePaths(JObject gltf, JArray nodes, Dictionary<string, int> nodeMap)
+        {
+            if (nodeMap == null)
+            {
+                yield break;
+            }
+
+            foreach (var path in nodeMap.Keys)
+            {
+                if (string.IsNullOrWhiteSpace(path) || !path.Contains('/'))
+                {
+                    continue;
+                }
+
+                yield return path;
+                var slash = path.IndexOf('/');
+                if (slash >= 0 && slash + 1 < path.Length)
+                {
+                    // Unity AnimationClip binding path 通常从模型根的子节点开始，例如 Root/Bip001。
+                    yield return path[(slash + 1)..];
+                }
+            }
+        }
+
+        private static bool TryReadUnknownPathHash(string path, out uint hash)
+        {
+            hash = 0;
+            if (string.IsNullOrWhiteSpace(path)
+                || !path.StartsWith("path_", StringComparison.OrdinalIgnoreCase)
+                || !uint.TryParse(path[5..], NumberStyles.Integer, CultureInfo.InvariantCulture, out hash))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static List<CurveData> ComposeAnimatorControllerLayerCurves(
+            List<CurveData> baseCurves,
+            JObject animationEntry,
+            string baseAnimationAsset,
+            JObject sourceGltf,
+            JArray nodes,
+            Dictionary<string, int> nodeMap,
+            Dictionary<uint, string> basePathMap,
+            out JObject diagnostic)
+        {
+            diagnostic = new JObject
+            {
+                ["status"] = "not_present",
+                ["mode"] = "DirectAnimatorControllerTransformLayerComposerV1",
+            };
+            var clips = FindAnimatorControllerAdditionalLayerClips(animationEntry);
+            if (clips.Length == 0)
+            {
+                return baseCurves;
+            }
+
+            var curveMap = baseCurves
+                .GroupBy(CurveTargetKey, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Last(), StringComparer.OrdinalIgnoreCase);
+            var layerReports = new JArray();
+            var appliedCurveCount = 0;
+            var skippedCurveCount = 0;
+            var appliedLayerCount = 0;
+            foreach (var clip in clips)
+            {
+                var report = new JObject
+                {
+                    ["name"] = (string)clip["name"],
+                    ["layerIndex"] = (int?)clip["layerIndex"] ?? 0,
+                    ["layerBlendingMode"] = (int?)clip["layerBlendingMode"] ?? 0,
+                };
+                layerReports.Add(report);
+
+                if (((int?)clip["layerBlendingMode"] ?? 0) != 1)
+                {
+                    report["status"] = "skipped_non_additive_layer";
+                    continue;
+                }
+
+                var layerAsset = ResolveAdditionalLayerAnimationAsset(clip, baseAnimationAsset);
+                report["animationAsset"] = layerAsset;
+                if (string.IsNullOrWhiteSpace(layerAsset) || !File.Exists(layerAsset))
+                {
+                    report["status"] = "missing_animation_asset";
+                    continue;
+                }
+
+                var layerJson = JObject.Parse(File.ReadAllText(layerAsset));
+                var decoded = layerJson["decoded"] as JObject;
+                if (!string.Equals((string)decoded?["status"], "ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    report["status"] = "decoded_not_ok";
+                    report["decodedStatus"] = (string)decoded?["status"];
+                    continue;
+                }
+
+                var pathMap = BuildAnimationPathMap(layerJson, sourceGltf, nodes, nodeMap);
+                foreach (var pair in basePathMap ?? new Dictionary<uint, string>())
+                {
+                    pathMap.TryAdd(pair.Key, pair.Value);
+                }
+
+                var layerCurves = ResolveCurvePaths(LoadCurves(decoded), pathMap);
+                layerCurves = NormalizeCurvePathsToPreferredNodePaths(layerCurves, nodeMap);
+                var mask = BuildLayerMask(clip, pathMap);
+                var layerApplied = 0;
+                var layerSkipped = 0;
+                var weight = Math.Clamp((float?)clip["layerDefaultWeight"] ?? 1.0f, 0.0f, 1.0f);
+                foreach (var layerCurve in layerCurves)
+                {
+                    if (!TryFindNode(nodeMap, layerCurve.Path, out var nodeIndex))
+                    {
+                        layerSkipped++;
+                        continue;
+                    }
+
+                    var resolvedPath = FindPreferredNodePath(nodeMap, nodeIndex) ?? layerCurve.Path;
+                    if (!LayerMaskAllows(mask, resolvedPath))
+                    {
+                        layerSkipped++;
+                        continue;
+                    }
+
+                    var normalizedLayerCurve = layerCurve with { Path = resolvedPath };
+                    var key = CurveTargetKey(normalizedLayerCurve);
+                    curveMap.TryGetValue(key, out var baseCurve);
+                    var composed = ComposeAdditiveCurve(baseCurve, normalizedLayerCurve, sourceGltf, nodes, nodeIndex, weight);
+                    curveMap[key] = composed;
+                    layerApplied++;
+                }
+
+                report["status"] = layerApplied > 0 ? "applied" : "no_matching_curves";
+                report["decodedCurveCount"] = layerCurves.Count;
+                report["appliedCurveCount"] = layerApplied;
+                report["skippedCurveCount"] = layerSkipped;
+                report["weight"] = weight;
+                report["mask"] = mask.Report;
+                appliedCurveCount += layerApplied;
+                skippedCurveCount += layerSkipped;
+                if (layerApplied > 0)
+                {
+                    appliedLayerCount++;
+                }
+            }
+
+            diagnostic["status"] = appliedLayerCount > 0 ? "applied" : "no_layers_applied";
+            diagnostic["layerCount"] = clips.Length;
+            diagnostic["appliedLayerCount"] = appliedLayerCount;
+            diagnostic["appliedCurveCount"] = appliedCurveCount;
+            diagnostic["skippedCurveCount"] = skippedCurveCount;
+            diagnostic["layers"] = layerReports;
+            return curveMap.Values.ToList();
+        }
+
+        private static JObject[] FindAnimatorControllerAdditionalLayerClips(JObject animationEntry)
+        {
+            var context = animationEntry?["animatorControllerContext"] as JObject
+                ?? animationEntry?["candidate"]?["animatorControllerContext"] as JObject;
+            return context?["additionalLayerClips"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+        }
+
+        private static string ResolveAdditionalLayerAnimationAsset(JObject clip, string baseAnimationAsset)
+        {
+            var value = (string)clip?["animationAsset"];
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return Path.IsPathRooted(value)
+                    ? value
+                    : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(baseAnimationAsset) ?? Directory.GetCurrentDirectory(), value));
+            }
+
+            return ResolveAdditionalLayerAnimationAssetFromLibrary(clip, baseAnimationAsset);
+        }
+
+        private static string ResolveAdditionalLayerAnimationAssetFromLibrary(JObject clip, string baseAnimationAsset)
+        {
+            var name = (string)clip?["name"];
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(baseAnimationAsset))
+            {
+                return null;
+            }
+
+            var libraryRoot = FindLibraryRootFromAnimationAsset(baseAnimationAsset);
+            var animationsRoot = string.IsNullOrWhiteSpace(libraryRoot) ? null : Path.Combine(libraryRoot, "Animations");
+            if (string.IsNullOrWhiteSpace(animationsRoot) || !Directory.Exists(animationsRoot))
+            {
+                return null;
+            }
+
+            var expectedPathId = (long?)clip?["pathId"];
+            foreach (var candidate in Directory.EnumerateFiles(animationsRoot, SafeName(name) + ".animation_asset.json", SearchOption.AllDirectories))
+            {
+                if (IsMatchingAnimationSidecar(candidate, name, expectedPathId))
+                {
+                    return candidate;
+                }
+            }
+
+            // 有些导出保留原始文件名而不是 SafeName；仍然要求 sidecar 内 name/pathId 精确匹配。
+            foreach (var candidate in Directory.EnumerateFiles(animationsRoot, "*.animation_asset.json", SearchOption.AllDirectories))
+            {
+                if (IsMatchingAnimationSidecar(candidate, name, expectedPathId))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsMatchingAnimationSidecar(string path, string expectedName, long? expectedPathId)
+        {
+            try
+            {
+                var json = JObject.Parse(File.ReadAllText(path));
+                if (!string.Equals((string)json["name"], expectedName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                if (expectedPathId.HasValue && (long?)json["pathId"] != expectedPathId.Value)
+                {
+                    return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string FindLibraryRootFromAnimationAsset(string animationAsset)
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(animationAsset));
+            while (!string.IsNullOrWhiteSpace(directory))
+            {
+                if (Directory.Exists(Path.Combine(directory, "Animations"))
+                    && (File.Exists(Path.Combine(directory, "library_index.db"))
+                        || File.Exists(Path.Combine(directory, "asset_catalog.jsonl"))
+                        || File.Exists(Path.Combine(directory, "model_animations.json"))))
+                {
+                    return directory;
+                }
+
+                directory = Path.GetDirectoryName(directory);
+            }
+
+            return null;
+        }
+
+        private static string CurveTargetKey(CurveData curve) => $"{curve.Path}|{curve.TargetPath}";
+
+        private static CurveData ComposeAdditiveCurve(
+            CurveData baseCurve,
+            CurveData layerCurve,
+            JObject sourceGltf,
+            JArray nodes,
+            int nodeIndex,
+            float weight)
+        {
+            var times = baseCurve?.Times?.Length > 0 ? baseCurve.Times : layerCurve.Times;
+            var values = new float[times.Length * layerCurve.ComponentCount];
+            var firstLayer = SampleCurve(layerCurve, layerCurve.Times.Length > 0 ? layerCurve.Times[0] : 0.0f, sourceGltf, nodes, nodeIndex);
+            for (var i = 0; i < times.Length; i++)
+            {
+                var time = times[i];
+                var baseValue = baseCurve != null
+                    ? SampleCurve(baseCurve, time, sourceGltf, nodes, nodeIndex)
+                    : ReadNodeDefault(sourceGltf, nodes, nodeIndex, layerCurve.TargetPath);
+                var layerValue = SampleCurve(layerCurve, time, sourceGltf, nodes, nodeIndex);
+                var combined = layerCurve.TargetPath switch
+                {
+                    "rotation" => ComposeAdditiveRotation(baseValue, firstLayer, layerValue, weight),
+                    "scale" => ComposeAdditiveVector(baseValue, firstLayer, layerValue, weight),
+                    _ => ComposeAdditiveVector(baseValue, firstLayer, layerValue, weight),
+                };
+                for (var c = 0; c < layerCurve.ComponentCount; c++)
+                {
+                    values[i * layerCurve.ComponentCount + c] = combined[c];
+                }
+            }
+
+            if (layerCurve.TargetPath == "rotation")
+            {
+                KeepQuaternionCurveContinuous(values);
+            }
+
+            return new CurveData(layerCurve.Path, layerCurve.TargetPath, layerCurve.ComponentCount, times, values);
+        }
+
+        private static float[] ComposeAdditiveVector(float[] baseValue, float[] firstLayer, float[] layerValue, float weight)
+        {
+            var result = new float[layerValue.Length];
+            for (var i = 0; i < result.Length; i++)
+            {
+                result[i] = baseValue[i] + (layerValue[i] - firstLayer[i]) * weight;
+            }
+            return result;
+        }
+
+        private static float[] ComposeAdditiveRotation(float[] baseValue, float[] firstLayer, float[] layerValue, float weight)
+        {
+            var baseQ = ToQuaternion(baseValue);
+            var firstQ = ToQuaternion(firstLayer);
+            var layerQ = ToQuaternion(layerValue);
+            var delta = Slerp(new QuaternionData(0, 0, 0, 1), Multiply(Inverse(firstQ), layerQ), weight);
+            var combined = NormalizeQuaternion(Multiply(baseQ, delta));
+            return new[] { combined.X, combined.Y, combined.Z, combined.W };
+        }
+
+        private static float[] SampleCurve(CurveData curve, float time, JObject sourceGltf, JArray nodes, int nodeIndex)
+        {
+            if (curve == null || curve.Times == null || curve.Times.Length == 0)
+            {
+                return ReadNodeDefault(sourceGltf, nodes, nodeIndex, curve?.TargetPath);
+            }
+            if (time <= curve.Times[0])
+            {
+                return ReadCurveValue(curve, 0);
+            }
+            if (time >= curve.Times[^1])
+            {
+                return ReadCurveValue(curve, curve.Times.Length - 1);
+            }
+            for (var i = 1; i < curve.Times.Length; i++)
+            {
+                if (time > curve.Times[i])
+                {
+                    continue;
+                }
+                var a = i - 1;
+                var b = i;
+                var span = curve.Times[b] - curve.Times[a];
+                var t = span <= 0 ? 0 : (time - curve.Times[a]) / span;
+                return curve.TargetPath == "rotation"
+                    ? SlerpCurveValue(curve, a, b, t)
+                    : LerpCurveValue(curve, a, b, t);
+            }
+            return ReadCurveValue(curve, curve.Times.Length - 1);
+        }
+
+        private static float[] ReadCurveValue(CurveData curve, int index)
+        {
+            var result = new float[curve.ComponentCount];
+            Array.Copy(curve.Values, index * curve.ComponentCount, result, 0, curve.ComponentCount);
+            return result;
+        }
+
+        private static float[] LerpCurveValue(CurveData curve, int a, int b, float t)
+        {
+            var result = new float[curve.ComponentCount];
+            for (var i = 0; i < result.Length; i++)
+            {
+                var av = curve.Values[a * curve.ComponentCount + i];
+                var bv = curve.Values[b * curve.ComponentCount + i];
+                result[i] = av + (bv - av) * t;
+            }
+            return result;
+        }
+
+        private static float[] SlerpCurveValue(CurveData curve, int a, int b, float t)
+        {
+            var q = Slerp(ToQuaternion(ReadCurveValue(curve, a)), ToQuaternion(ReadCurveValue(curve, b)), t);
+            return new[] { q.X, q.Y, q.Z, q.W };
+        }
+
+        private static float[] ReadNodeDefault(JObject sourceGltf, JArray nodes, int nodeIndex, string targetPath)
+        {
+            var node = nodes != null && nodeIndex >= 0 && nodeIndex < nodes.Count ? nodes[nodeIndex] as JObject : null;
+            return targetPath switch
+            {
+                "rotation" => ReadFloatArray(node?["rotation"] as JArray, 4) ?? new[] { 0f, 0f, 0f, 1f },
+                "scale" => ReadFloatArray(node?["scale"] as JArray, 3) ?? new[] { 1f, 1f, 1f },
+                _ => ReadFloatArray(node?["translation"] as JArray, 3) ?? new[] { 0f, 0f, 0f },
+            };
+        }
+
+        private static void KeepQuaternionCurveContinuous(float[] values)
+        {
+            for (var i = 1; i < values.Length / 4; i++)
+            {
+                var prev = (i - 1) * 4;
+                var cur = i * 4;
+                var dot = values[prev] * values[cur]
+                    + values[prev + 1] * values[cur + 1]
+                    + values[prev + 2] * values[cur + 2]
+                    + values[prev + 3] * values[cur + 3];
+                if (dot >= 0)
+                {
+                    continue;
+                }
+                values[cur] = -values[cur];
+                values[cur + 1] = -values[cur + 1];
+                values[cur + 2] = -values[cur + 2];
+                values[cur + 3] = -values[cur + 3];
+            }
+        }
+
+        private sealed class LayerMaskInfo
+        {
+            public HashSet<string> Paths { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public JObject Report { get; init; }
+        }
+
+        private static LayerMaskInfo BuildLayerMask(JObject clip, Dictionary<uint, string> pathMap)
+        {
+            var mask = new LayerMaskInfo
+            {
+                Report = new JObject
+                {
+                    ["source"] = "layerSkeletonMask",
+                    ["pathCount"] = 0,
+                    ["hashResolvedCount"] = 0,
+                    ["hashUnresolvedCount"] = 0,
+                },
+            };
+            var hashResolved = 0;
+            var hashUnresolved = 0;
+            foreach (var entry in clip?["layerSkeletonMask"]?["entries"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                if (((float?)entry["weight"] ?? 0) <= 0.0001f)
+                {
+                    continue;
+                }
+                var path = ((string)entry["path"])?.Replace('\\', '/').Trim();
+                if (string.IsNullOrWhiteSpace(path)
+                    && entry["pathHash"] != null
+                    && uint.TryParse(entry["pathHash"].ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var hash))
+                {
+                    if (pathMap != null && pathMap.TryGetValue(hash, out var resolved))
+                    {
+                        path = resolved;
+                        hashResolved++;
+                    }
+                    else
+                    {
+                        hashUnresolved++;
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    mask.Paths.Add(path);
+                }
+            }
+            mask.Report["pathCount"] = mask.Paths.Count;
+            mask.Report["hashResolvedCount"] = hashResolved;
+            mask.Report["hashUnresolvedCount"] = hashUnresolved;
+            return mask;
+        }
+
+        private static bool LayerMaskAllows(LayerMaskInfo mask, string path)
+        {
+            if (mask == null || mask.Paths.Count == 0)
+            {
+                return true;
+            }
+
+            return mask.Paths.Any(maskPath =>
+                string.Equals(path, maskPath, StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/" + maskPath, StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith(maskPath + "/", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static List<CurveData> DeduplicateCurvesByResolvedTarget(List<CurveData> curves, Dictionary<string, int> nodeMap, out int removedCount)
+        {
+            removedCount = 0;
+            if (curves == null || curves.Count <= 1)
+            {
+                return curves ?? new List<CurveData>();
+            }
+
+            var lastIndexByTarget = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < curves.Count; i++)
+            {
+                var curve = curves[i];
+                var key = TryFindNode(nodeMap, curve.Path, out var nodeIndex)
+                    ? $"{nodeIndex}:{curve.TargetPath}"
+                    : $"unresolved:{curve.Path}:{curve.TargetPath}";
+                lastIndexByTarget[key] = i;
+            }
+
+            var result = new List<CurveData>(curves.Count);
+            for (var i = 0; i < curves.Count; i++)
+            {
+                var curve = curves[i];
+                var key = TryFindNode(nodeMap, curve.Path, out var nodeIndex)
+                    ? $"{nodeIndex}:{curve.TargetPath}"
+                    : $"unresolved:{curve.Path}:{curve.TargetPath}";
+                if (lastIndexByTarget.TryGetValue(key, out var lastIndex) && lastIndex == i)
+                {
+                    result.Add(curve);
+                    continue;
+                }
+
+                removedCount++;
+            }
+
             return result;
         }
 
@@ -367,6 +1227,7 @@ namespace AnimeStudio.CLI
 
             var nodeMap = BuildNodePathMap(gltf, nodes);
             var curves = LoadCurves(decoded);
+            curves = ResolveCurvePaths(curves, BuildAnimationPathMap(null, gltf, nodes, nodeMap));
             var humanoidCurves = LoadHumanoidMuscleCurves(avatar, decoded, nodes, nodeMap, out var diagnostic);
             var rootMotionCurves = LoadHumanoidRootMotionCurves(decoded, gltf, nodes, out var rootMotionDiagnostic);
             var blendShapeCurves = LoadBlendShapeCurves(decoded, gltf, nodes, nodeMap, out var blendShapeDiagnostic);
@@ -481,6 +1342,8 @@ namespace AnimeStudio.CLI
             var status = (string)decoded["status"];
             var playbackKind = (string)decoded["playbackKind"];
             var bindingSource = (string)decoded["bindingSource"];
+            var decoderGapKind = (string)decoded["decoderGapKind"];
+            var decoderGapNextAction = (string)decoded["decoderGapNextAction"];
             var note = (string)decoded["note"];
             if (!string.IsNullOrWhiteSpace(status))
             {
@@ -494,6 +1357,14 @@ namespace AnimeStudio.CLI
             {
                 parts.Add($"bindingSource={bindingSource}");
             }
+            if (!string.IsNullOrWhiteSpace(decoderGapKind))
+            {
+                parts.Add($"decoderGapKind={decoderGapKind}");
+            }
+            if (!string.IsNullOrWhiteSpace(decoderGapNextAction))
+            {
+                parts.Add($"nextAction={decoderGapNextAction}");
+            }
             var decoderInput = decoded["decoderInput"] as JObject;
             if (decoderInput != null)
             {
@@ -503,7 +1374,9 @@ namespace AnimeStudio.CLI
                 var streamedCurves = (int?)decoderInput["streamedCurveCount"] ?? 0;
                 var denseCurves = (int?)decoderInput["denseCurveCount"] ?? 0;
                 var constantValues = (int?)decoderInput["constantValueCount"] ?? 0;
-                parts.Add($"decoderInput=bindings:{clipBindings},valueBindings:{valueBindings},acl:{aclCurves},streamed:{streamedCurves},dense:{denseCurves},constant:{constantValues}");
+                var valueDeltaCount = (int?)decoderInput["muscleValueDeltaCount"] ?? 0;
+                var valueDeltaOnly = (bool?)decoderInput["payloadSummary"]?["valueDeltaOnlyHumanoid"] == true;
+                parts.Add($"decoderInput=bindings:{clipBindings},valueBindings:{valueBindings},acl:{aclCurves},streamed:{streamedCurves},dense:{denseCurves},constant:{constantValues},muscleValueDelta:{valueDeltaCount},valueDeltaOnlyHumanoid:{valueDeltaOnly}");
             }
             if (!string.IsNullOrWhiteSpace(note))
             {
@@ -522,6 +1395,7 @@ namespace AnimeStudio.CLI
             var result = new List<CurveData>();
             var diagnostics = new JArray();
             var knownRiskTargets = new JArray();
+            var zeroPoseDiagnostics = new JArray();
             diagnostic = new JObject
             {
                 ["status"] = "experimental_internal_solver",
@@ -531,6 +1405,7 @@ namespace AnimeStudio.CLI
                 ["targetCount"] = HumanoidTarget.Targets.Length,
                 ["targets"] = diagnostics,
                 ["knownRiskTargets"] = knownRiskTargets,
+                ["zeroPoseDiagnostics"] = zeroPoseDiagnostics,
             };
 
             var humanBoneMap = ParseHumanBoneMap(avatar);
@@ -542,9 +1417,13 @@ namespace AnimeStudio.CLI
             var curves = LoadFloatCurves(decoded["floats"] as JArray);
             diagnostic["curveAttributes"] = new JArray(curves.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
             var matchingAttributes = SelectMatchingHumanoidMuscleAttributes(curves);
+            var matchingFingerAttributes = SelectMatchingHumanoidFingerAttributes(curves);
             diagnostic["matchingMuscleAttributes"] = new JArray(matchingAttributes);
             diagnostic["matchingMuscleCurveCount"] = matchingAttributes.Length;
             diagnostic["matchingMuscleKeyframeCount"] = matchingAttributes.Sum(x => curves.TryGetValue(x, out var keys) ? keys.Count : 0);
+            diagnostic["matchingFingerMuscleAttributes"] = new JArray(matchingFingerAttributes);
+            diagnostic["matchingFingerMuscleCurveCount"] = matchingFingerAttributes.Length;
+            diagnostic["matchingFingerMuscleKeyframeCount"] = matchingFingerAttributes.Sum(x => curves.TryGetValue(x, out var keys) ? keys.Count : 0);
             if (humanBoneIndex == null || solverNodes == null || solverAxes == null || curves.Count == 0)
             {
                 diagnostic["status"] = "missing_solver_input";
@@ -553,7 +1432,7 @@ namespace AnimeStudio.CLI
                 diagnostic["summary"] = BuildHumanoidDiagnosticSummary(diagnostics);
                 return result;
             }
-            if (matchingAttributes.Length == 0)
+            if (matchingAttributes.Length == 0 && matchingFingerAttributes.Length == 0)
             {
                 diagnostic["status"] = "no_humanoid_muscle_curves";
                 diagnostic["humanBoneCount"] = humanBoneMap.Count;
@@ -614,6 +1493,29 @@ namespace AnimeStudio.CLI
                 }
                 item["nodeIndex"] = nodeIndex;
 
+                var gltfRestUnity = ConvertGltfRotationToUnity(ReadNodeRotation(nodes[nodeIndex] as JObject));
+                var zeroRotation = BuildAvatarAxisLocalRotation(
+                    new Dictionary<string, List<FloatKey>>(StringComparer.OrdinalIgnoreCase),
+                    target,
+                    axis,
+                    0f,
+                    solver,
+                    humanBoneIndex,
+                    solverNodes,
+                    solverAxes);
+                var zeroVsRestDegrees = QuaternionAngleDegrees(zeroRotation, gltfRestUnity);
+                var restAnchorCorrection = BuildZeroPoseAnchorCorrection(zeroRotation, gltfRestUnity);
+                var correctedZeroRotation = ApplyZeroPoseAnchorCorrection(zeroRotation, restAnchorCorrection);
+                var correctedZeroVsRestDegrees = QuaternionAngleDegrees(correctedZeroRotation, gltfRestUnity);
+                item["rawZeroVsGltfRestDegrees"] = zeroVsRestDegrees;
+                item["zeroVsGltfRestDegrees"] = correctedZeroVsRestDegrees;
+                item["zeroAnchorCorrectionApplied"] = zeroVsRestDegrees > 0.001f;
+                item["zeroAnchorCorrectionDegrees"] = QuaternionAngleDegrees(restAnchorCorrection, new QuaternionData(0, 0, 0, 1));
+                item["zeroAnchorCorrectionUnity"] = ToJsonQuaternion(restAnchorCorrection);
+                item["zeroRotationUnity"] = ToJsonQuaternion(zeroRotation);
+                item["correctedZeroRotationUnity"] = ToJsonQuaternion(correctedZeroRotation);
+                item["gltfRestRotationUnity"] = ToJsonQuaternion(gltfRestUnity);
+
                 var hasCurve = HasFloatCurve(curves, target.XAttribute)
                     || HasFloatCurve(curves, target.YAttribute)
                     || HasFloatCurve(curves, target.ZAttribute)
@@ -627,8 +1529,9 @@ namespace AnimeStudio.CLI
                 var values = new List<float>();
                 foreach (var time in times)
                 {
-                    var rotation = BuildAvatarAxisLocalRotation(curves, target, axis, time, humanBoneIndex, solverNodes, solverAxes);
-                    var gltf = ConvertUnityRotationToGltf(new[] { rotation.X, rotation.Y, rotation.Z, rotation.W });
+                    var rotation = BuildAvatarAxisLocalRotation(curves, target, axis, time, solver, humanBoneIndex, solverNodes, solverAxes);
+                    var anchoredRotation = ApplyZeroPoseAnchorCorrection(rotation, restAnchorCorrection);
+                    var gltf = ConvertUnityRotationToGltf(new[] { anchoredRotation.X, anchoredRotation.Y, anchoredRotation.Z, anchoredRotation.W });
                     values.AddRange(gltf);
                 }
 
@@ -639,21 +1542,194 @@ namespace AnimeStudio.CLI
                 {
                     item["knownRisk"] = "limb_delta_formula_unverified";
                     item["knownRiskReason"] = riskReason;
-                    knownRiskTargets.Add(new JObject
+                    var riskItem = new JObject
                     {
                         ["humanBone"] = target.HumanBone,
                         ["reason"] = riskReason,
-                    });
+                        ["rawZeroVsGltfRestDegrees"] = zeroVsRestDegrees,
+                        ["zeroVsGltfRestDegrees"] = correctedZeroVsRestDegrees,
+                        ["zeroAnchorCorrectionDegrees"] = QuaternionAngleDegrees(restAnchorCorrection, new QuaternionData(0, 0, 0, 1)),
+                    };
+                    knownRiskTargets.Add(riskItem);
                 }
+
+                zeroPoseDiagnostics.Add(new JObject
+                {
+                    ["humanBone"] = target.HumanBone,
+                    ["nodeIndex"] = nodeIndex,
+                    ["path"] = targetPath,
+                    ["rawZeroVsGltfRestDegrees"] = zeroVsRestDegrees,
+                    ["zeroVsGltfRestDegrees"] = correctedZeroVsRestDegrees,
+                    ["zeroAnchorCorrectionDegrees"] = QuaternionAngleDegrees(restAnchorCorrection, new QuaternionData(0, 0, 0, 1)),
+                    ["zeroAnchorCorrectionApplied"] = zeroVsRestDegrees > 0.001f,
+                    ["knownRisk"] = item["knownRisk"] != null,
+                });
             }
 
+            var fingerCurves = LoadHumanoidFingerMuscleCurves(
+                avatar,
+                curves,
+                times,
+                nodes,
+                nodeMap,
+                humanBoneMap,
+                humanBoneIndex,
+                solverNodes,
+                solverAxes,
+                out var fingerDiagnostic);
+            result.AddRange(fingerCurves);
+            diagnostic["finger"] = fingerDiagnostic;
             diagnostic["solvedTrackCount"] = result.Count;
+            diagnostic["solvedBodyTrackCount"] = diagnostics.OfType<JObject>().Count(x => string.Equals((string)x["status"], "solved_experimental", StringComparison.OrdinalIgnoreCase));
+            diagnostic["solvedFingerTrackCount"] = fingerCurves.Count;
             diagnostic["knownRiskTargetCount"] = knownRiskTargets.Count;
             diagnostic["knownRiskMeaning"] = "这些骨骼命中了已知未完全复现 Unity 的 Humanoid limb delta 公式。glTF channel 已生成，但不能把它当作视觉验收通过；需要继续用 Unity oracle 反推 Forearm/LowerLeg 的成对 muscle delta 空间。";
+            diagnostic["zeroPoseSummary"] = BuildZeroPoseSummary(zeroPoseDiagnostics);
+            diagnostic["twistDistribution"] = new JObject
+            {
+                ["mode"] = "AvatarTwistShare",
+                ["armChildShare"] = ReadHumanoidTwistShare(solver, "arm", 1f),
+                ["foreArmChildShare"] = ReadHumanoidTwistShare(solver, "foreArm", 0f),
+                ["upperLegChildShare"] = ReadHumanoidTwistShare(solver, "upperLeg", 1f),
+                ["legChildShare"] = ReadHumanoidTwistShare(solver, "leg", 0f),
+                ["meaning"] = "Unity Avatar 的 twist 参数按父/子骨分配长骨 twist。childShare=1 表示全部写到远端子骨，childShare=0 表示全部写到近端父骨。",
+            };
             diagnostic["status"] = result.Count > 0
                 ? (knownRiskTargets.Count > 0 ? "experimental_solved_known_limb_formula_risk" : "experimental_solved")
                 : "no_tracks_solved";
             diagnostic["summary"] = BuildHumanoidDiagnosticSummary(diagnostics);
+            return result;
+        }
+
+        private static List<CurveData> LoadHumanoidFingerMuscleCurves(
+            JObject avatar,
+            Dictionary<string, List<FloatKey>> curves,
+            float[] times,
+            JArray nodes,
+            Dictionary<string, int> nodeMap,
+            Dictionary<string, string> humanBoneMap,
+            JArray humanBoneIndex,
+            JArray solverNodes,
+            JArray solverAxes,
+            out JObject diagnostic)
+        {
+            var result = new List<CurveData>();
+            var targetDiagnostics = new JArray();
+            var sideDiagnostics = new JArray();
+            var fingerAttributes = SelectMatchingHumanoidFingerAttributes(curves);
+            diagnostic = new JObject
+            {
+                ["status"] = fingerAttributes.Length == 0 ? "not_present" : "experimental_pending",
+                ["mode"] = "ExperimentalFingerMuscleStructuralFallbackV1",
+                ["source"] = "Unity AnimatorMuscle finger curves + Avatar left/right hand target + glTF hand child hierarchy",
+                ["curveAttributes"] = new JArray(fingerAttributes),
+                ["curveCount"] = fingerAttributes.Length,
+                ["targets"] = targetDiagnostics,
+                ["sides"] = sideDiagnostics,
+                ["limitSource"] = "genericFallbackNoAvatarFingerLimit",
+                ["warning"] = "Endfield 当前 AvatarConstant.m_HandBoneIndex 多为 -1，无法读取 Unity 每指节 limit。这里先把确定性 finger muscle 曲线落到 glTF TRS，轴向和幅度仍需 Unity oracle/视觉校准。",
+            };
+
+            if (fingerAttributes.Length == 0 || times == null || times.Length == 0)
+            {
+                return result;
+            }
+
+            foreach (var side in new[] { "Left", "Right" })
+            {
+                var sideItem = new JObject
+                {
+                    ["side"] = side,
+                };
+                sideDiagnostics.Add(sideItem);
+                if (!TryFindHumanoidHandNode(avatar, side, nodes, nodeMap, humanBoneMap, humanBoneIndex, solverNodes, solverAxes, out var handNodeIndex, out var handPath, out var handSource))
+                {
+                    sideItem["status"] = "missing_hand_node";
+                    continue;
+                }
+
+                sideItem["status"] = "hand_found";
+                sideItem["handNodeIndex"] = handNodeIndex;
+                sideItem["handPath"] = handPath;
+                sideItem["handSource"] = handSource;
+                sideItem["handBoneIndexUsable"] = HasUsableHandBoneIndex(avatar, side);
+                sideItem["mappingSource"] = sideItem.Value<bool>("handBoneIndexUsable")
+                    ? "AvatarHandBoneIndex"
+                    : "HandHierarchyStructuralFallback";
+
+                foreach (var target in FingerTarget.Build(side))
+                {
+                    var item = new JObject
+                    {
+                        ["side"] = side,
+                        ["finger"] = target.Finger,
+                        ["segment"] = target.Segment,
+                        ["nodeName"] = target.NodeName,
+                        ["stretchAttribute"] = target.StretchAttribute,
+                        ["spreadAttribute"] = target.SpreadAttribute,
+                    };
+                    targetDiagnostics.Add(item);
+
+                    var hasStretch = HasMeaningfulFingerFloatCurve(curves, target.StretchAttribute);
+                    var hasSpread = target.Segment == 1 && HasMeaningfulFingerFloatCurve(curves, target.SpreadAttribute);
+                    if (!hasStretch && !hasSpread)
+                    {
+                        item["status"] = "no_nonzero_curve";
+                        continue;
+                    }
+
+                    if (!TryFindDescendantByName(nodes, handNodeIndex, target.NodeName, out var nodeIndex))
+                    {
+                        item["status"] = "missing_finger_node";
+                        continue;
+                    }
+
+                    if (nodes[nodeIndex] is not JObject node)
+                    {
+                        item["status"] = "invalid_finger_node";
+                        continue;
+                    }
+
+                    var path = FindPreferredNodePath(nodeMap, nodeIndex);
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        item["status"] = "missing_finger_path";
+                        continue;
+                    }
+
+                    var rest = ConvertGltfRotationToUnity(ReadNodeRotation(node));
+                    var values = new List<float>(times.Length * 4);
+                    foreach (var time in times)
+                    {
+                        var stretch = SampleFingerCurve(curves, target.StretchAttribute, time);
+                        var spread = target.Segment == 1 ? SampleFingerCurve(curves, target.SpreadAttribute, time) : 0f;
+                        var rotation = BuildFingerLocalRotation(rest, target, stretch, spread);
+                        values.AddRange(ConvertUnityRotationToGltf(new[] { rotation.X, rotation.Y, rotation.Z, rotation.W }));
+                    }
+
+                    result.Add(new CurveData(path, "rotation", 4, times, values.ToArray()));
+                    item["status"] = "solved_experimental";
+                    item["nodeIndex"] = nodeIndex;
+                    item["path"] = path;
+                    item["keyframes"] = times.Length;
+                    item["mappingSource"] = sideItem["mappingSource"];
+                }
+            }
+
+            diagnostic["solvedTrackCount"] = result.Count;
+            diagnostic["status"] = result.Count > 0
+                ? "experimental_solved_structural_fallback"
+                : "no_tracks_solved";
+            diagnostic["summary"] = new JObject
+            {
+                ["targetCount"] = targetDiagnostics.Count,
+                ["solvedTargetCount"] = targetDiagnostics.OfType<JObject>().Count(x => string.Equals((string)x["status"], "solved_experimental", StringComparison.OrdinalIgnoreCase)),
+                ["statusCounts"] = JObject.FromObject(targetDiagnostics
+                    .OfType<JObject>()
+                    .GroupBy(x => (string)x["status"] ?? "unknown", StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase)),
+            };
             return result;
         }
 
@@ -710,6 +1786,263 @@ namespace AnimeStudio.CLI
                 .ToArray();
         }
 
+        private static string[] SelectMatchingHumanoidFingerAttributes(Dictionary<string, List<FloatKey>> curves)
+        {
+            if (curves == null || curves.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            return curves.Keys
+                .Where(IsHumanoidFingerAttribute)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static bool IsHumanoidFingerAttribute(string attribute)
+        {
+            if (string.IsNullOrWhiteSpace(attribute))
+            {
+                return false;
+            }
+
+            if ((attribute.StartsWith("LeftHand.", StringComparison.OrdinalIgnoreCase) ||
+                 attribute.StartsWith("RightHand.", StringComparison.OrdinalIgnoreCase))
+                && (attribute.EndsWith(".1 Stretched", StringComparison.OrdinalIgnoreCase) ||
+                    attribute.EndsWith(".2 Stretched", StringComparison.OrdinalIgnoreCase) ||
+                    attribute.EndsWith(".3 Stretched", StringComparison.OrdinalIgnoreCase) ||
+                    attribute.EndsWith(".Spread", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            foreach (var side in new[] { "Left", "Right" })
+            foreach (var finger in new[] { "Thumb", "Index", "Middle", "Ring", "Little" })
+            {
+                if (attribute.Equals($"{side} {finger} Spread", StringComparison.OrdinalIgnoreCase)
+                    || attribute.Equals($"{side} {finger} 1 Stretched", StringComparison.OrdinalIgnoreCase)
+                    || attribute.Equals($"{side} {finger} 2 Stretched", StringComparison.OrdinalIgnoreCase)
+                    || attribute.Equals($"{side} {finger} 3 Stretched", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasMeaningfulFingerFloatCurve(Dictionary<string, List<FloatKey>> curves, string attribute)
+        {
+            return HasMeaningfulFloatCurve(curves, attribute)
+                || HasMeaningfulFloatCurve(curves, ToLegacyFingerAttribute(attribute));
+        }
+
+        private static float SampleFingerCurve(Dictionary<string, List<FloatKey>> curves, string attribute, float time)
+        {
+            if (!string.IsNullOrWhiteSpace(attribute) && curves.ContainsKey(attribute))
+            {
+                return SampleCurve(curves, attribute, time);
+            }
+
+            var legacy = ToLegacyFingerAttribute(attribute);
+            return !string.IsNullOrWhiteSpace(legacy) && curves.ContainsKey(legacy)
+                ? SampleCurve(curves, legacy, time)
+                : 0f;
+        }
+
+        private static string ToLegacyFingerAttribute(string attribute)
+        {
+            if (string.IsNullOrWhiteSpace(attribute))
+            {
+                return null;
+            }
+
+            var parts = attribute.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 3)
+            {
+                return null;
+            }
+
+            var side = parts[0];
+            var finger = parts[1];
+            if (!side.Equals("Left", StringComparison.OrdinalIgnoreCase)
+                && !side.Equals("Right", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (parts.Length == 3 && parts[2].Equals("Spread", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{side}Hand.{finger}.Spread";
+            }
+
+            if (parts.Length == 4 && parts[3].Equals("Stretched", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{side}Hand.{finger}.{parts[2]} Stretched";
+            }
+
+            return null;
+        }
+
+        private static bool HasMeaningfulFloatCurve(Dictionary<string, List<FloatKey>> curves, string attribute)
+        {
+            if (string.IsNullOrWhiteSpace(attribute) || !curves.TryGetValue(attribute, out var keys) || keys.Count == 0)
+            {
+                return false;
+            }
+
+            var first = keys[0].Value;
+            return keys.Any(x => MathF.Abs(x.Value) > 0.000001f || MathF.Abs(x.Value - first) > 0.000001f);
+        }
+
+        private static bool TryFindHumanoidHandNode(
+            JObject avatar,
+            string side,
+            JArray nodes,
+            Dictionary<string, int> nodeMap,
+            Dictionary<string, string> humanBoneMap,
+            JArray humanBoneIndex,
+            JArray solverNodes,
+            JArray solverAxes,
+            out int nodeIndex,
+            out string path,
+            out string source)
+        {
+            nodeIndex = -1;
+            path = null;
+            source = null;
+            var humanBone = side + "Hand";
+            if (TryGetAvatarAxis(humanBone, humanBoneIndex, solverNodes, solverAxes, out var axis))
+            {
+                path = GetSolverNodePath(solverNodes, axis.SkeletonNodeIndex);
+                if (!string.IsNullOrWhiteSpace(path) && TryFindNode(nodeMap, path, out nodeIndex))
+                {
+                    source = "AvatarHumanBoneIndex";
+                    return true;
+                }
+            }
+
+            if (humanBoneMap != null &&
+                humanBoneMap.TryGetValue(humanBone, out var mappedBoneName) &&
+                !string.IsNullOrWhiteSpace(mappedBoneName) &&
+                TryFindNode(nodeMap, mappedBoneName, out nodeIndex))
+            {
+                path = FindPreferredNodePath(nodeMap, nodeIndex) ?? mappedBoneName;
+                source = "HumanDescriptionHumanBone";
+                return true;
+            }
+
+            var suffix = side.Equals("Left", StringComparison.OrdinalIgnoreCase) ? "_L_Hand" : "_R_Hand";
+            var match = nodeMap
+                .Where(x => x.Key.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.Key.Length)
+                .FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(match.Key))
+            {
+                nodeIndex = match.Value;
+                path = match.Key;
+                source = "GltfHandNameFallback";
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasUsableHandBoneIndex(JObject avatar, string side)
+        {
+            var key = side.Equals("Left", StringComparison.OrdinalIgnoreCase) ? "leftHandBoneIndex" : "rightHandBoneIndex";
+            return avatar?["internalSolver"]?["human"]?[key]?
+                .Values<int?>()
+                .Any(x => x.GetValueOrDefault(-1) >= 0) == true;
+        }
+
+        private static bool TryFindDescendantByName(JArray nodes, int rootIndex, string name, out int nodeIndex)
+        {
+            nodeIndex = -1;
+            if (nodes == null || rootIndex < 0 || rootIndex >= nodes.Count || string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            var pending = new Queue<int>();
+            foreach (var child in nodes[rootIndex]?["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+            {
+                pending.Enqueue(child);
+            }
+
+            while (pending.Count > 0)
+            {
+                var index = pending.Dequeue();
+                if (index < 0 || index >= nodes.Count || nodes[index] is not JObject node)
+                {
+                    continue;
+                }
+
+                if (string.Equals((string)node["name"], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    nodeIndex = index;
+                    return true;
+                }
+
+                foreach (var child in node["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+                {
+                    pending.Enqueue(child);
+                }
+            }
+
+            return false;
+        }
+
+        private static string FindPreferredNodePath(Dictionary<string, int> nodeMap, int nodeIndex)
+        {
+            if (nodeMap == null)
+            {
+                return null;
+            }
+
+            return nodeMap
+                .Where(x => x.Value == nodeIndex && x.Key.Contains('/'))
+                .OrderBy(x => x.Key.Length)
+                .Select(x => x.Key)
+                .FirstOrDefault()
+                ?? nodeMap
+                    .Where(x => x.Value == nodeIndex)
+                    .OrderBy(x => x.Key.Length)
+                    .Select(x => x.Key)
+                    .FirstOrDefault();
+        }
+
+        private static QuaternionData BuildFingerLocalRotation(QuaternionData rest, FingerTarget target, float stretch, float spread)
+        {
+            stretch = Math.Clamp(stretch, -1.5f, 1.5f);
+            spread = Math.Clamp(spread, -1.5f, 1.5f);
+
+            // Unity 指 muscle 的真实每指节 limit 在 Avatar native 求解器里。
+            // Endfield 当前没给可用 m_HandBoneIndex，所以这里用保守角度先把确定性曲线写成 TRS。
+            var bendDegrees = target.Finger.Equals("Thumb", StringComparison.OrdinalIgnoreCase)
+                ? target.Segment switch
+                {
+                    1 => 45f,
+                    2 => 55f,
+                    _ => 45f,
+                }
+                : target.Segment switch
+                {
+                    1 => 70f,
+                    2 => 80f,
+                    _ => 55f,
+                };
+            var bend = AxisAngleRadiansToQuaternion(0, 0, 1, DegreesToRadians(-stretch * bendDegrees));
+            var sideSign = target.Side.Equals("Left", StringComparison.OrdinalIgnoreCase) ? 1f : -1f;
+            var spreadRotation = target.Segment == 1
+                ? AxisAngleRadiansToQuaternion(0, 1, 0, DegreesToRadians(spread * 18f * sideSign))
+                : new QuaternionData(0, 0, 0, 1);
+            var delta = NormalizeQuaternion(Multiply(spreadRotation, bend));
+            return NormalizeQuaternion(Multiply(rest, delta));
+        }
+
+        private static float DegreesToRadians(float degrees) => degrees * (MathF.PI / 180f);
+
         private static JObject BuildHumanoidDiagnosticSummary(JArray diagnostics)
         {
             var items = diagnostics?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
@@ -736,6 +2069,65 @@ namespace AnimeStudio.CLI
                 ["missingGltfNodeHumanBones"] = new JArray(missingGltfNode),
                 ["noMatchingCurveHumanBones"] = new JArray(noMatchingCurve),
                 ["diagnosticMeaning"] = "no_matching_muscle_curve 表示该动画没有驱动这个人体骨；missing_avatar_axis / missing_gltf_node 表示模型 Avatar 或 glTF 节点映射缺口；solved_experimental 才进入当前内部 Humanoid TRS 预览。",
+            };
+        }
+
+        private static JObject BuildZeroPoseSummary(JArray zeroPoseDiagnostics)
+        {
+            var items = zeroPoseDiagnostics?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var solved = items
+                .Select(x => new
+                {
+                    HumanBone = (string)x["humanBone"],
+                    Path = (string)x["path"],
+                    RawDegrees = (float?)x["rawZeroVsGltfRestDegrees"] ?? (float?)x["zeroVsGltfRestDegrees"] ?? 0f,
+                    Degrees = (float?)x["zeroVsGltfRestDegrees"] ?? 0f,
+                    CorrectionDegrees = (float?)x["zeroAnchorCorrectionDegrees"] ?? 0f,
+                    CorrectionApplied = (bool?)x["zeroAnchorCorrectionApplied"] == true,
+                    KnownRisk = (bool?)x["knownRisk"] == true,
+                })
+                .ToArray();
+
+            var worst = solved
+                .OrderByDescending(x => x.RawDegrees)
+                .Take(8)
+                .Select(x => new JObject
+                {
+                    ["humanBone"] = x.HumanBone,
+                    ["path"] = x.Path,
+                    ["rawZeroVsGltfRestDegrees"] = x.RawDegrees,
+                    ["zeroVsGltfRestDegrees"] = x.Degrees,
+                    ["zeroAnchorCorrectionDegrees"] = x.CorrectionDegrees,
+                    ["zeroAnchorCorrectionApplied"] = x.CorrectionApplied,
+                    ["knownRisk"] = x.KnownRisk,
+                });
+
+            var knownRisk = solved
+                .Where(x => x.KnownRisk)
+                .OrderByDescending(x => x.RawDegrees)
+                .Select(x => new JObject
+                {
+                    ["humanBone"] = x.HumanBone,
+                    ["rawZeroVsGltfRestDegrees"] = x.RawDegrees,
+                    ["zeroVsGltfRestDegrees"] = x.Degrees,
+                    ["zeroAnchorCorrectionDegrees"] = x.CorrectionDegrees,
+                });
+
+            return new JObject
+            {
+                ["mode"] = "InternalSolverZeroRotationRestAnchoredToTargetGltfRest",
+                ["targetCount"] = solved.Length,
+                ["rawMaxDegrees"] = solved.Select(x => x.RawDegrees).DefaultIfEmpty(0f).Max(),
+                ["rawAverageDegrees"] = solved.Length == 0 ? 0f : solved.Average(x => x.RawDegrees),
+                ["maxDegrees"] = solved.Select(x => x.Degrees).DefaultIfEmpty(0f).Max(),
+                ["averageDegrees"] = solved.Length == 0 ? 0f : solved.Average(x => x.Degrees),
+                ["knownRiskRawMaxDegrees"] = solved.Where(x => x.KnownRisk).Select(x => x.RawDegrees).DefaultIfEmpty(0f).Max(),
+                ["knownRiskMaxDegrees"] = solved.Where(x => x.KnownRisk).Select(x => x.Degrees).DefaultIfEmpty(0f).Max(),
+                ["correctionMaxDegrees"] = solved.Select(x => x.CorrectionDegrees).DefaultIfEmpty(0f).Max(),
+                ["correctionAppliedCount"] = solved.Count(x => x.CorrectionApplied),
+                ["worst"] = new JArray(worst),
+                ["knownRisk"] = new JArray(knownRisk),
+                ["meaning"] = "rawZeroVsGltfRestDegrees 是内部公式在 muscle=0 时与目标 glTF rest pose 的原始夹角；zeroVsGltfRestDegrees 是应用 rest-anchor 校正后的残差。校正只把当前模型的零肌肉姿态锚回自己的 rest rotation，不代表 Forearm/LowerLeg 等 limb delta 公式已经通过视觉验收。",
             };
         }
 
@@ -913,15 +2305,26 @@ namespace AnimeStudio.CLI
             var skeleton = solver?["skeleton"] as JObject;
             var nodes = skeleton?["nodes"] as JArray;
             var humanSkeletonPose = skeleton?["humanSkeletonPose"] as JArray;
+            var avatarSkeleton = solver?["avatarSkeleton"] as JObject;
+            var avatarSkeletonNodes = avatarSkeleton?["nodes"] as JArray;
+            var avatarSkeletonDefaultPose = avatarSkeleton?["defaultPose"] as JArray;
             if (nodes == null || nodes.Count == 0)
             {
-                message = "Humanoid/Muscle 预览缺少 Avatar internalSolver.skeleton.nodes。请刷新模型 Avatar 元数据。";
-                return false;
+                if (avatarSkeletonNodes == null || avatarSkeletonNodes.Count == 0)
+                {
+                    message = "Humanoid/Muscle 预览缺少 Avatar internalSolver.skeleton.nodes / avatarSkeleton.nodes。请刷新模型 Avatar 元数据。";
+                    return false;
+                }
+                if (avatarSkeletonDefaultPose == null || avatarSkeletonDefaultPose.Count < avatarSkeletonNodes.Count)
+                {
+                    message = "Humanoid/Muscle 预览缺少完整 Avatar internalSolver.avatarSkeleton.defaultPose。请用当前导出工具刷新模型 Avatar 元数据后再生成预览。";
+                    return false;
+                }
             }
 
             // HumanPose -> 骨骼 TRS 不是单靠 preQ/postQ 就能稳定还原；Unity Avatar 的参考姿态
             // 是求解零姿态和后续校正的必要输入。旧索引缺这个字段时必须重导/回写，不能继续生成会扭曲的 glTF。
-            if (humanSkeletonPose == null || humanSkeletonPose.Count < nodes.Count)
+            if (nodes != null && nodes.Count > 0 && (humanSkeletonPose == null || humanSkeletonPose.Count < nodes.Count))
             {
                 message = "Humanoid/Muscle 预览缺少完整 Avatar internalSolver.skeleton.humanSkeletonPose。请用当前导出工具刷新模型 Avatar 元数据后再生成预览。";
                 return false;
@@ -1016,26 +2419,39 @@ namespace AnimeStudio.CLI
             HumanoidTarget target,
             AvatarAxis axis,
             float time,
+            JObject solver,
             JArray humanBoneIndex,
             JArray solverNodes,
             JArray solverAxes)
         {
             var angles = new float[3];
-            // Unity Avatar 轴系里 X 更接近 twist，Y/Z 更接近 swing。
-            // AnimationCurve 的常见顺序是 FrontBack/InOut/Twist，所以这里按 Z/Y/X 放回 Avatar 轴，
-            // 避免把屈伸当成 twist 写进小腿、前臂这类长骨。
-            AddMuscleAngle(angles, curves, target.XAttribute, time, target.HumanBone, axis, 2, humanBoneIndex, solverNodes, solverAxes);
-            AddMuscleAngle(angles, curves, target.YAttribute, time, target.HumanBone, axis, 1, humanBoneIndex, solverNodes, solverAxes);
-            AddMuscleAngle(angles, curves, target.ZAttribute, time, target.HumanBone, axis, 0, humanBoneIndex, solverNodes, solverAxes);
-            AddMuscleAngle(angles, curves, target.ExtraZAttribute, time, target.HumanBone, axis, 0, humanBoneIndex, solverNodes, solverAxes);
+            // Unity 的 Humanoid muscle 每个骨骼最多 3 个 DoF，和 AvatarLimit 里的 X/Y/Z 轴一一对应。
+            // preQ/postQ 会把这个 Avatar 轴系转成骨骼本地旋转，所以这里不要按肉眼的“twist/swing”重新洗牌。
+            AddMuscleAngle(angles, curves, target.XAttribute, time, target.HumanBone, axis, 0, solver, humanBoneIndex, solverNodes, solverAxes);
+            AddMuscleAngle(angles, curves, target.YAttribute, time, target.HumanBone, axis, 1, solver, humanBoneIndex, solverNodes, solverAxes);
+            AddMuscleAngle(angles, curves, target.ZAttribute, time, target.HumanBone, axis, 2, solver, humanBoneIndex, solverNodes, solverAxes);
+            AddMuscleAngle(angles, curves, target.ExtraZAttribute, time, target.HumanBone, axis, 2, solver, humanBoneIndex, solverNodes, solverAxes);
 
             var pre = ToQuaternion(axis.PreQ);
             var post = ToQuaternion(axis.PostQ);
-            // Unity Humanoid muscle 不是普通 XYZ Euler。X 是 twist，Y/Z 合成 swing；
+            // Unity Humanoid muscle 不是普通 XYZ Euler。X 单独旋转，Y/Z 合成 swing；
             // 最终写回骨骼本地旋转时使用 Avatar 轴系的 preQ 和 inverse(postQ)。
             var swing = SwingRadiansToQuaternion(angles[1], angles[2]);
             var twist = AxisAngleRadiansToQuaternion(1, 0, 0, angles[0]);
             return NormalizeQuaternion(Multiply(Multiply(Multiply(pre, swing), twist), Inverse(post)));
+        }
+
+        private static QuaternionData BuildZeroPoseAnchorCorrection(QuaternionData rawZeroRotation, QuaternionData targetRestRotation)
+        {
+            // Humanoid muscle 的 0 值姿态并不总等于 glTF 节点 rest rotation。
+            // 这里使用右乘锚点：rotation * inverse(rawZero) * targetRest。
+            // 它只把当前模型的 muscle=0 姿态锚回 rest，不代表 limb delta 公式已经验收通过。
+            return NormalizeQuaternion(Multiply(Inverse(rawZeroRotation), targetRestRotation));
+        }
+
+        private static QuaternionData ApplyZeroPoseAnchorCorrection(QuaternionData rotation, QuaternionData correction)
+        {
+            return NormalizeQuaternion(Multiply(rotation, correction));
         }
 
         private static void AddMuscleAngle(
@@ -1046,6 +2462,7 @@ namespace AnimeStudio.CLI
             string targetHumanBone,
             AvatarAxis targetAxis,
             int defaultAvatarAxis,
+            JObject solver,
             JArray humanBoneIndex,
             JArray solverNodes,
             JArray solverAxes)
@@ -1055,7 +2472,8 @@ namespace AnimeStudio.CLI
                 return;
             }
 
-            var value = SampleCurve(curves, attribute, time);
+            var value = SampleCurve(curves, attribute, time)
+                * ResolveHumanoidTwistShareScale(targetHumanBone, attribute, solver);
             if (MathF.Abs(value) <= 0.0000001f)
             {
                 return;
@@ -1074,6 +2492,99 @@ namespace AnimeStudio.CLI
             angles[targetAvatarAxis] += LimitMuscle(value, limitAxis.LimitMin, limitAxis.LimitMax, limitAxis.Sign, limitAvatarAxis);
         }
 
+        private static float ResolveHumanoidTwistShareScale(string humanBone, string attribute, JObject solver)
+        {
+            if (string.IsNullOrWhiteSpace(attribute) || !TryResolveHumanoidTwistFamily(attribute, out var family))
+            {
+                return 1f;
+            }
+
+            var childShare = ReadHumanoidTwistShare(solver, family, DefaultHumanoidTwistShare(family));
+            var parentShare = 1f - childShare;
+            if (IsHumanoidTwistParentTarget(humanBone, family))
+            {
+                return parentShare;
+            }
+            if (IsHumanoidTwistChildTarget(humanBone, family))
+            {
+                return childShare;
+            }
+            return 1f;
+        }
+
+        private static float ReadHumanoidTwistShare(JObject solver, string family, float fallback)
+        {
+            var value = (float?)solver?["twist"]?[family];
+            if (!value.HasValue)
+            {
+                return fallback;
+            }
+            return Math.Clamp(value.Value, 0f, 1f);
+        }
+
+        private static float DefaultHumanoidTwistShare(string family)
+        {
+            return family switch
+            {
+                "foreArm" => 0f,
+                "leg" => 0f,
+                _ => 1f,
+            };
+        }
+
+        private static bool TryResolveHumanoidTwistFamily(string attribute, out string family)
+        {
+            family = null;
+            if (attribute.IndexOf("Upper Leg Twist", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                family = "upperLeg";
+                return true;
+            }
+            if (attribute.IndexOf("Lower Leg Twist", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                family = "leg";
+                return true;
+            }
+            if (attribute.IndexOf("Arm Twist", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                attribute.IndexOf("Forearm", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                family = "arm";
+                return true;
+            }
+            if (attribute.IndexOf("Forearm Twist", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                family = "foreArm";
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IsHumanoidTwistParentTarget(string humanBone, string family) => family switch
+        {
+            "upperLeg" => string.Equals(humanBone, "LeftUpperLeg", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightUpperLeg", StringComparison.OrdinalIgnoreCase),
+            "leg" => string.Equals(humanBone, "LeftLowerLeg", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightLowerLeg", StringComparison.OrdinalIgnoreCase),
+            "arm" => string.Equals(humanBone, "LeftUpperArm", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightUpperArm", StringComparison.OrdinalIgnoreCase),
+            "foreArm" => string.Equals(humanBone, "LeftLowerArm", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightLowerArm", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+
+        private static bool IsHumanoidTwistChildTarget(string humanBone, string family) => family switch
+        {
+            "upperLeg" => string.Equals(humanBone, "LeftLowerLeg", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightLowerLeg", StringComparison.OrdinalIgnoreCase),
+            "leg" => string.Equals(humanBone, "LeftFoot", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightFoot", StringComparison.OrdinalIgnoreCase),
+            "arm" => string.Equals(humanBone, "LeftLowerArm", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightLowerArm", StringComparison.OrdinalIgnoreCase),
+            "foreArm" => string.Equals(humanBone, "LeftHand", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(humanBone, "RightHand", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+
         private static int ResolveTargetAvatarAxis(string attribute, int defaultAvatarAxis)
         {
             // Unity probe 显示 Foot Twist 写在 Foot 的 Y/swing 轴；Foot 自身 X 限位常为 0。
@@ -1089,7 +2600,7 @@ namespace AnimeStudio.CLI
             if (attribute.IndexOf("Lower Leg Twist", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 attribute.IndexOf("Forearm Twist", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                return 0;
+                return 2;
             }
             return targetAvatarAxis;
         }
@@ -1458,6 +2969,41 @@ namespace AnimeStudio.CLI
             );
         }
 
+        private static QuaternionData Slerp(QuaternionData a, QuaternionData b, float t)
+        {
+            a = NormalizeQuaternion(a);
+            b = NormalizeQuaternion(b);
+            t = Math.Clamp(t, 0f, 1f);
+            var dot = a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W;
+            if (dot < 0f)
+            {
+                b = new QuaternionData(-b.X, -b.Y, -b.Z, -b.W);
+                dot = -dot;
+            }
+
+            if (dot > 0.9995f)
+            {
+                return NormalizeQuaternion(new QuaternionData(
+                    a.X + (b.X - a.X) * t,
+                    a.Y + (b.Y - a.Y) * t,
+                    a.Z + (b.Z - a.Z) * t,
+                    a.W + (b.W - a.W) * t));
+            }
+
+            dot = Math.Clamp(dot, -1f, 1f);
+            var theta0 = MathF.Acos(dot);
+            var theta = theta0 * t;
+            var sinTheta = MathF.Sin(theta);
+            var sinTheta0 = MathF.Sin(theta0);
+            var s0 = MathF.Cos(theta) - dot * sinTheta / sinTheta0;
+            var s1 = sinTheta / sinTheta0;
+            return NormalizeQuaternion(new QuaternionData(
+                a.X * s0 + b.X * s1,
+                a.Y * s0 + b.Y * s1,
+                a.Z * s0 + b.Z * s1,
+                a.W * s0 + b.W * s1));
+        }
+
         private static QuaternionData Inverse(QuaternionData q)
         {
             var lengthSq = q.X * q.X + q.Y * q.Y + q.Z * q.Z + q.W * q.W;
@@ -1467,6 +3013,21 @@ namespace AnimeStudio.CLI
             }
             var inv = 1.0f / lengthSq;
             return new QuaternionData(-q.X * inv, -q.Y * inv, -q.Z * inv, q.W * inv);
+        }
+
+        private static float QuaternionAngleDegrees(QuaternionData a, QuaternionData b)
+        {
+            a = NormalizeQuaternion(a);
+            b = NormalizeQuaternion(b);
+            var dot = MathF.Abs(a.X * b.X + a.Y * b.Y + a.Z * b.Z + a.W * b.W);
+            dot = Math.Clamp(dot, -1f, 1f);
+            return 2f * MathF.Acos(dot) * (180f / MathF.PI);
+        }
+
+        private static JArray ToJsonQuaternion(QuaternionData q)
+        {
+            q = NormalizeQuaternion(q);
+            return new JArray(q.X, q.Y, q.Z, q.W);
         }
 
         private static QuaternionData NormalizeQuaternion(QuaternionData q)
@@ -1521,26 +3082,69 @@ namespace AnimeStudio.CLI
                 new("UpperChest", "UpperChest Front-Back", "UpperChest Left-Right", "UpperChest Twist Left-Right"),
                 new("Neck", "Neck Nod Down-Up", "Neck Tilt Left-Right", "Neck Turn Left-Right"),
                 new("Head", "Head Nod Down-Up", "Head Tilt Left-Right", "Head Turn Left-Right"),
-                new("LeftUpperLeg", "Left Upper Leg Front-Back", "Left Upper Leg In-Out", null),
-                new("RightUpperLeg", "Right Upper Leg Front-Back", "Right Upper Leg In-Out", null),
-                // Unity Humanoid 会把长骨 twist 写到下一节本地旋转：上腿->小腿，小腿->脚。
-                new("LeftLowerLeg", "Left Lower Leg Stretch", null, "Left Upper Leg Twist In-Out"),
-                new("RightLowerLeg", "Right Lower Leg Stretch", null, "Right Upper Leg Twist In-Out"),
+                new("LeftUpperLeg", "Left Upper Leg Front-Back", "Left Upper Leg In-Out", "Left Upper Leg Twist In-Out"),
+                new("RightUpperLeg", "Right Upper Leg Front-Back", "Right Upper Leg In-Out", "Right Upper Leg Twist In-Out"),
+                // Unity Avatar 的 twist 参数决定长骨 twist 在父/子骨之间的分配。
+                // Endfield 当前是 UpperLeg/Arm=1，Leg/ForeArm=0：上腿/上臂 twist 到远端，小腿/前臂 twist 留在近端。
+                new("LeftLowerLeg", "Left Lower Leg Stretch", null, "Left Upper Leg Twist In-Out", "Left Lower Leg Twist In-Out"),
+                new("RightLowerLeg", "Right Lower Leg Stretch", null, "Right Upper Leg Twist In-Out", "Right Lower Leg Twist In-Out"),
                 new("LeftFoot", "Left Foot Up-Down", null, "Left Foot Twist In-Out", "Left Lower Leg Twist In-Out"),
                 new("RightFoot", "Right Foot Up-Down", null, "Right Foot Twist In-Out", "Right Lower Leg Twist In-Out"),
                 new("LeftToes", "Left Toes Up-Down", null, null),
                 new("RightToes", "Right Toes Up-Down", null, null),
                 new("LeftShoulder", "Left Shoulder Down-Up", "Left Shoulder Front-Back", null),
                 new("RightShoulder", "Right Shoulder Down-Up", "Right Shoulder Front-Back", null),
-                new("LeftUpperArm", "Left Arm Down-Up", "Left Arm Front-Back", null),
-                new("RightUpperArm", "Right Arm Down-Up", "Right Arm Front-Back", null),
-                // 手臂 twist 同样写到远端：上臂->前臂，前臂->手。
-                new("LeftLowerArm", "Left Forearm Stretch", null, "Left Arm Twist In-Out"),
-                new("RightLowerArm", "Right Forearm Stretch", null, "Right Arm Twist In-Out"),
+                new("LeftUpperArm", "Left Arm Down-Up", "Left Arm Front-Back", "Left Arm Twist In-Out"),
+                new("RightUpperArm", "Right Arm Down-Up", "Right Arm Front-Back", "Right Arm Twist In-Out"),
+                new("LeftLowerArm", "Left Forearm Stretch", null, "Left Arm Twist In-Out", "Left Forearm Twist In-Out"),
+                new("RightLowerArm", "Right Forearm Stretch", null, "Right Arm Twist In-Out", "Right Forearm Twist In-Out"),
                 new("LeftHand", "Left Hand Down-Up", "Left Hand In-Out", "Left Forearm Twist In-Out"),
                 new("RightHand", "Right Hand Down-Up", "Right Hand In-Out", "Right Forearm Twist In-Out"),
                 new("Jaw", "Jaw Close", "Jaw Left-Right", null),
             };
+        }
+
+        private sealed record FingerTarget(
+            string Side,
+            string Finger,
+            int Slot,
+            int Segment,
+            string NodeName,
+            string StretchAttribute,
+            string SpreadAttribute)
+        {
+            public static IEnumerable<FingerTarget> Build(string side)
+            {
+                foreach (var finger in new[]
+                {
+                    ("Thumb", 0),
+                    ("Index", 1),
+                    ("Middle", 2),
+                    ("Ring", 3),
+                    ("Little", 4),
+                })
+                {
+                    for (var segment = 1; segment <= 3; segment++)
+                    {
+                        var nodeName = BuildNodeName(side, finger.Item2, segment);
+                        yield return new FingerTarget(
+                            side,
+                            finger.Item1,
+                            finger.Item2,
+                            segment,
+                            nodeName,
+                            $"{side} {finger.Item1} {segment} Stretched",
+                            segment == 1 ? $"{side} {finger.Item1} Spread" : null);
+                    }
+                }
+            }
+
+            private static string BuildNodeName(string side, int slot, int segment)
+            {
+                var sideToken = side.Equals("Left", StringComparison.OrdinalIgnoreCase) ? "L" : "R";
+                var suffix = segment == 1 ? string.Empty : (segment - 1).ToString(CultureInfo.InvariantCulture);
+                return $"Bip001_{sideToken}_Finger{slot}{suffix}";
+            }
         }
 
         private sealed class AnimationBinaryWriter

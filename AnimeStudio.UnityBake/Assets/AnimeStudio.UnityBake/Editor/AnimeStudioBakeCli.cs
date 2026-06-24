@@ -37,6 +37,17 @@ namespace AnimeStudio.UnityBake
                 return;
             }
 
+            var animatorControllerRecoveryPath = GetArgument("-animeStudioAnimatorControllerRecovery");
+            if (!string.IsNullOrWhiteSpace(animatorControllerRecoveryPath))
+            {
+                var result = AnimeStudioAnimatorControllerRecovery.Run(animatorControllerRecoveryPath);
+                if (result.status == "error")
+                {
+                    Fail(result.message);
+                }
+                return;
+            }
+
             var requestPath = GetArgument("-animeStudioBakeRequest");
             if (string.IsNullOrWhiteSpace(requestPath) || !File.Exists(requestPath))
             {

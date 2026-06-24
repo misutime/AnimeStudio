@@ -23,5 +23,6 @@ namespace AnimeStudio
         BlockFile,
         HygFile,
         VFSFile,
+        EndfieldVFSBlockFile,
     }
 }

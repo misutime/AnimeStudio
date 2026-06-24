@@ -427,10 +427,10 @@ namespace AnimeStudio.CLI
                         !containerExcludeFilters.IsNullOrEmpty()
                         && containerExcludeFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
                     // 显式 --path_ids 是定向诊断/刷新入口，已经精确到 Unity 对象。
-                    // 这类对象不应再被空 container 或源路径正则误杀，但仍要遵守类型和排除规则。
+                    // 默认 3D 路径/名字排除会过滤 UI、cutscene 等路径；精确 PathID 不能被这些默认规则误杀。
                     if (isPathIdExactMatch)
                     {
-                        return isFilteredType && !isNameExcluded && !isContainerExcluded;
+                        return isFilteredType;
                     }
 
                     return isMatchRegex
@@ -1785,6 +1785,10 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             {
                 return "NPC";
             }
+            if (HasToken(text, "npc|npcs"))
+            {
+                return "NPC";
+            }
             if (Regex.IsMatch(text, @"(^|/)units?(/|$)"))
             {
                 if (Regex.IsMatch(text, @"(^|/)vehicles?(/|$)|tank|ship|boat|submarine|carrier|frigate|corvette|helicopter|fighter|aircraft|artiller|cannon"))
@@ -1795,6 +1799,11 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
                 {
                     return "Animal";
                 }
+                return "Unit";
+            }
+            // enemy/monster/mob 是跨游戏通用素材语义，归 Unit；不按具体游戏私有前缀猜。
+            if (HasToken(text, "enemy|enemies|monster|monsters|mob|mobs"))
+            {
                 return "Unit";
             }
             if (HasToken(text, "soldier|warrior|worker|settler|archer|slinger|skirmisher|spearman|pikeman|axeman|swordsman|maceman|legionary|hastatus|hoplite|phalangite|conscript|raider|warlord|disciple|cavalry|horseman|javelin(?:eer)?|clubthrower|peltast"))
@@ -3396,7 +3405,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             map[key] = count + 1;
         }
 
-        public static void GenerateLibraryIndexes(string savePath, bool skipSqliteIndex = false)
+        public static void GenerateLibraryIndexes(string savePath, bool skipSqliteIndex = false, string sourceGame = null, string sourceIndexPath = null)
         {
             if (IncludeVfx)
             {
@@ -3442,6 +3451,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 }
 
                 var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+                AttachModelValidationForAnimationGate(savePath, models);
                 var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
                 ExplicitAnimationLinks structuralLinks;
                 using (ProfileLogger.Measure("library_index_build_animation_links", new Dictionary<string, object>
@@ -3476,13 +3486,13 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 }
                 else
                 {
-                    BuildDefaultLibrarySqliteIndex(savePath);
+                    BuildDefaultLibrarySqliteIndex(savePath, sourceGame, sourceIndexPath);
                 }
                 Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
             }
         }
 
-        public static void RebuildLibraryIndexes(string savePath)
+        public static void RebuildLibraryIndexes(string savePath, string sourceGame = null)
         {
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
             if (!File.Exists(catalogPath))
@@ -3501,11 +3511,12 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             ModelLibraryValidator.Generate(savePath);
 
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            AttachModelValidationForAnimationGate(savePath, models);
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
             var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
             WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
             LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
-            BuildDefaultLibrarySqliteIndex(savePath);
+            BuildDefaultLibrarySqliteIndex(savePath, sourceGame);
             Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). If unity_source_index.db exists beside the Library, SQLite rebuild restores deterministic Animator/Animation/Controller/PPtr candidates without full re-export.");
         }
 
@@ -3608,7 +3619,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             }
         }
 
-        private static void BuildDefaultLibrarySqliteIndex(string savePath)
+        private static void BuildDefaultLibrarySqliteIndex(string savePath, string sourceGame = null, string sourceIndexPath = null)
         {
             using (ProfileLogger.Measure("library_index_build_sqlite", new Dictionary<string, object>
             {
@@ -3617,7 +3628,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 try
                 {
-                    SQLiteLibraryIndexBuilder.Build(savePath);
+                    SQLiteLibraryIndexBuilder.Build(
+                        savePath,
+                        sourceIndexPath: sourceIndexPath,
+                        sourceGame: FirstNonEmpty(sourceGame, Game?.Name));
                 }
                 catch (Exception e)
                 {
@@ -3883,6 +3897,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                                 {
                                     model = BuildModelBindingAsset(model),
                                     candidateCount = candidates.Length,
+                                    usableCandidateCount = candidates.Count(x => x.modelReadyForAnimation),
+                                    modelReadyForAnimation = BuildModelAnimationGate(model).Ready,
+                                    modelAnimationGate = BuildModelAnimationGateJson(BuildModelAnimationGate(model)),
                                     embeddedAnimationCount = (int?)model["animationCount"] ?? 0,
                                     candidates,
                                     notes = candidates.Length == 0
@@ -3924,6 +3941,234 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 AssetReadmeGenerator.Generate(savePath);
             }
+        }
+
+        private static void AttachModelValidationForAnimationGate(string savePath, IReadOnlyList<JObject> models)
+        {
+            var validationByOutput = ReadModelValidationByOutputForAnimationGate(savePath);
+            if (validationByOutput.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var model in models)
+            {
+                var output = NormalizeLibraryOutputForAnimationGate(savePath, JsonText(model, "output"));
+                if (validationByOutput.TryGetValue(output, out var validation))
+                {
+                    model["modelValidation"] = validation.DeepClone();
+                }
+            }
+        }
+
+        private static Dictionary<string, JObject> ReadModelValidationByOutputForAnimationGate(string savePath)
+        {
+            var path = Path.Combine(savePath, "model_validation.json");
+            if (!File.Exists(path))
+            {
+                return new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            try
+            {
+                var report = JObject.Parse(File.ReadAllText(path).TrimStart('\uFEFF'));
+                return report["models"]?
+                    .OfType<JObject>()
+                    .Where(x => !string.IsNullOrWhiteSpace(JsonText(x, "Path")))
+                    .GroupBy(x => NormalizeLibraryOutputForAnimationGate(savePath, JsonText(x, "Path")), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase)
+                    ?? new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException e)
+            {
+                Logger.Warning($"Skipping invalid model_validation.json for model-first animation gate: {e.Message}");
+                return new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static ModelAnimationGate BuildModelAnimationGate(JObject model)
+        {
+            var reasons = new List<string>();
+            var validation = model?["modelValidation"] as JObject;
+            var body = validation?["Body"] as JObject;
+
+            if (validation == null)
+            {
+                reasons.Add("model_validation_missing");
+            }
+
+            var status = JsonText(validation, "Status");
+            if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("model_validation_not_ok");
+            }
+
+            var bodyStatus = JsonText(body, "ModelBodyStatus");
+            if (!string.IsNullOrWhiteSpace(bodyStatus) && !string.Equals(bodyStatus, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("model_body_not_ok");
+            }
+
+            if ((JsonLong(model, "meshCount") ?? JsonLong(body, "PrimitiveCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_mesh");
+            }
+            if ((JsonLong(model, "vertexCount") ?? JsonLong(body, "PositionVertexCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_vertices");
+            }
+            if ((JsonLong(model, "materialCount") ?? JsonLong(body, "MaterialCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_materials");
+            }
+            if ((JsonLong(model, "textureCount") ?? JsonLong(body, "TextureCount") ?? 0) <= 0
+                && (JsonLong(model, "materialImageCount") ?? JsonLong(body, "ImageCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_textures");
+            }
+            if ((JsonLong(model, "materialImageCount") ?? JsonLong(body, "ImageCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_material_images");
+            }
+            if (JsonBool(model, "materialMissingRendererBinding"))
+            {
+                reasons.Add("missing_renderer_material_binding");
+            }
+            if ((JsonLong(model, "unresolvedModelDependencyCount") ?? 0) > 0)
+            {
+                reasons.Add("unresolved_model_dependencies");
+            }
+            if ((JsonLong(body, "MissingImageCount") ?? 0) > 0)
+            {
+                reasons.Add("missing_images");
+            }
+            if ((JsonLong(body, "EmptyImageCount") ?? 0) > 0)
+            {
+                reasons.Add("empty_images");
+            }
+            if ((JsonLong(body, "SkinnedMeshNodeCount") ?? 0) > 0
+                && body?["HasCompleteSkinBinding"]?.Type == JTokenType.Boolean
+                && !body["HasCompleteSkinBinding"].Value<bool>())
+            {
+                reasons.Add("incomplete_skin_binding");
+            }
+            if (IsDiagnosticModelInstance(model))
+            {
+                reasons.Add("diagnostic_instance_not_default_animation_gate");
+            }
+
+            var evidence = new JObject
+            {
+                ["rule"] = "只有模型 Mesh/UV/材质/贴图/skin/bbox 和来源域先过关，才允许进入默认动画预览或生产结论。Unity 显式关系会保留作诊断。",
+                ["name"] = JsonText(model, "name"),
+                ["output"] = JsonText(model, "output"),
+                ["resourceKind"] = JsonText(model, "resourceKind"),
+                ["container"] = JsonText(model, "container"),
+                ["source"] = JsonText(model, "source"),
+                ["modelValidationPresent"] = validation != null,
+                ["modelValidationStatus"] = status,
+                ["modelBodyStatus"] = bodyStatus,
+                ["meshCount"] = JsonLong(model, "meshCount") ?? JsonLong(body, "PrimitiveCount"),
+                ["vertexCount"] = JsonLong(model, "vertexCount") ?? JsonLong(body, "PositionVertexCount"),
+                ["materialCount"] = JsonLong(model, "materialCount") ?? JsonLong(body, "MaterialCount"),
+                ["textureCount"] = JsonLong(model, "textureCount") ?? JsonLong(body, "TextureCount"),
+                ["materialImageCount"] = JsonLong(model, "materialImageCount") ?? JsonLong(body, "ImageCount"),
+                ["skinCount"] = JsonLong(model, "skinCount") ?? JsonLong(body, "SkinCount"),
+                ["unresolvedModelDependencyCount"] = JsonLong(model, "unresolvedModelDependencyCount") ?? 0,
+                ["unresolvedModelDependencyTypes"] = model?["unresolvedModelDependencyTypes"]?.DeepClone(),
+                ["missingImageCount"] = JsonLong(body, "MissingImageCount") ?? 0,
+                ["emptyImageCount"] = JsonLong(body, "EmptyImageCount") ?? 0,
+            };
+
+            var distinctReasons = reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            return new ModelAnimationGate(
+                distinctReasons.Length == 0,
+                distinctReasons.Length == 0 ? "ready" : "blocked",
+                distinctReasons,
+                evidence);
+        }
+
+        private static JObject BuildModelAnimationGateJson(ModelAnimationGate gate)
+        {
+            return new JObject
+            {
+                ["status"] = gate.Status,
+                ["ready"] = gate.Ready,
+                ["reasons"] = new JArray(gate.Reasons ?? Array.Empty<string>()),
+                ["evidence"] = gate.Evidence != null ? (JObject)gate.Evidence.DeepClone() : new JObject(),
+            };
+        }
+
+        private static bool IsDiagnosticModelInstance(JObject model)
+        {
+            var text = string.Join(
+                "/",
+                new[] { JsonText(model, "container"), JsonText(model, "source"), JsonText(model, "name"), JsonText(model, "output") }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+            return Regex.IsMatch(
+                text,
+                @"(^|[/_.\-\s])(?:dialog|timeline|levelseq|ui|uimodel|preview|deco|pose|camera|cutscene|postmodel|abilityentity|tmpobject|tmp)(?:$|[/_.\-\s0-9])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        private static string NormalizeLibraryOutputForAnimationGate(string root, string output)
+        {
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                if (Path.IsPathRooted(output))
+                {
+                    var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var fullOutput = Path.GetFullPath(output);
+                    if (fullOutput.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                        || fullOutput.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    {
+                        output = Path.GetRelativePath(fullRoot, fullOutput);
+                    }
+                }
+            }
+            catch
+            {
+                // 旧索引或外部工具可能写入非标准路径。归一化失败时保留原文本做 key。
+            }
+
+            return output.Replace('\\', '/').TrimStart('/');
+        }
+
+        private static string JsonText(JObject obj, string name)
+        {
+            return obj?[name]?.Type == JTokenType.Null ? null : obj?[name]?.ToString();
+        }
+
+        private static long? JsonLong(JObject obj, string name)
+        {
+            var token = obj?[name];
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return null;
+            }
+
+            return token.Type == JTokenType.Integer || long.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
+                ? token.Value<long>()
+                : null;
+        }
+
+        private static bool JsonBool(JObject obj, string name)
+        {
+            var token = obj?[name];
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return false;
+            }
+
+            return token.Type == JTokenType.Boolean
+                ? token.Value<bool>()
+                : bool.TryParse(token.ToString(), out var value) && value;
         }
 
         public static void ExportAudioLibrary(string savePath)
@@ -4044,6 +4289,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
 
             var compactModels = orderedModels.Select((model, index) => new
             {
+                modelAnimationGate = BuildModelAnimationGateJson(BuildModelAnimationGate(model)),
+                modelReadyForAnimation = BuildModelAnimationGate(model).Ready,
                 id = modelIdsByIndex[index],
                 name = (string)model["name"],
                 resourceKind = (string)model["resourceKind"],
@@ -4108,11 +4355,17 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                         confidence = x.Confidence,
                         relation = x.Relation,
                         relationSource = x.Source,
+                        modelReadyForAnimation = x.ModelReadyForAnimation,
+                        modelAnimationBlockedReason = x.ModelAnimationBlockedReason,
+                        modelAnimationGate = BuildModelAnimationGateJson(x.ModelAnimationGate),
+                        directGltfPreviewReady = x.ModelReadyForAnimation,
+                        productionAnimationReady = false,
+                        productionAnimationBlockedReason = x.ModelReadyForAnimation ? null : "model_not_animation_ready",
                         requiresHumanoidBake = false,
                         legacyUnityBakeSupported = x.RequiresHumanoidBake,
                         requiresInternalHumanoidSolve = x.RequiresInternalHumanoidSolve,
                         animationCapability = ClassifyAnimationCapability(x.Animation, x),
-                        nextAction = GetAnimationNextAction(x.Animation, x),
+                        nextAction = x.ModelReadyForAnimation ? GetAnimationNextAction(x.Animation, x) : "fix_model_first",
                         matchReasons = x.Reasons,
                         matchedBindingPaths = TruncateArray(x.MatchedBindingPaths, 16),
                         matchedVisibleMeshBindingPaths = TruncateArray(x.MatchedVisibleMeshBindingPaths, 16),
@@ -4124,6 +4377,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 {
                     modelId = modelIdsByIndex[index],
                     candidateCount = candidates.Length,
+                    usableCandidateCount = candidates.Count(x => x.modelReadyForAnimation),
+                    modelReadyForAnimation = BuildModelAnimationGate(model).Ready,
+                    modelAnimationGate = BuildModelAnimationGateJson(BuildModelAnimationGate(model)),
                     candidates,
                 };
             }).ToArray();
@@ -4525,6 +4781,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             var unmatchedPaths = match.UnmatchedPaths?.Length > 0 ? match.UnmatchedPaths : null;
             var reasons = relation.Reasons ?? Array.Empty<string>();
             var requiresInternalHumanoidSolve = IsHumanoidCharacterTarget(model) && IsHumanoidAnimationAsset(animation);
+            var modelGate = BuildModelAnimationGate(model);
             if (match.MatchedPathCount > 0)
             {
                 reasons = reasons
@@ -4544,6 +4801,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 ModelBoneCount = (int?)model["boneCount"] ?? 0,
                 ModelMeshCount = (int?)model["meshCount"] ?? 0,
                 ModelTextureCount = (int?)model["textureCount"] ?? 0,
+                ModelReadyForAnimation = modelGate.Ready,
+                ModelAnimationBlockedReason = modelGate.Ready ? null : string.Join(",", modelGate.Reasons),
+                ModelAnimationGate = modelGate,
                 Animation = animation,
                 Relation = relation.Relation,
                 Source = "explicit",
@@ -4658,13 +4918,19 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 requiresHumanoidBake = false,
                 legacyUnityBakeSupported = link.RequiresHumanoidBake,
                 requiresInternalHumanoidSolve = link.RequiresInternalHumanoidSolve,
+                modelReadyForAnimation = link.ModelReadyForAnimation,
+                modelAnimationBlockedReason = link.ModelAnimationBlockedReason,
+                modelAnimationGate = BuildModelAnimationGateJson(link.ModelAnimationGate),
+                directGltfPreviewReady = link.ModelReadyForAnimation,
+                productionAnimationReady = false,
+                productionAnimationBlockedReason = link.ModelReadyForAnimation ? null : "model_not_animation_ready",
                 verification = new
                 {
                     status = link.Confidence,
                     channelCount = (int?)null,
                     note = BuildAnimationCapabilityNote(animation, link),
                 },
-                nextAction = GetAnimationNextAction(animation, link),
+                nextAction = link.ModelReadyForAnimation ? GetAnimationNextAction(animation, link) : "fix_model_first",
             };
         }
 
@@ -4781,9 +5047,15 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 return "NonCharacterTransformNeedsMapping";
             }
 
-            if (link?.RequiresHumanoidBake == true || (isCharacter && isHumanoidLike))
+            if (isMixedHumanoidTransform
+                && coreTransformCount >= 3
+                && link?.MatchedBindingPaths != null
+                && link.MatchedBindingPaths.Length >= 4)
             {
-                return "HumanoidBodyNeedsInternalSolver";
+                // Endfield 这类 clip 会同时带 Humanoid/Muscle 和直接 Transform TRS。
+                // 有确定模型绑定时，先把可直接播放的 TRS 写进 glTF；Muscle 求解另行诊断，
+                // 不能让未验收的 Humanoid solver 覆盖已经解出的骨骼曲线。
+                return "TransformBodyPreviewReady";
             }
             if (isTransformBodyAnimation && coreTransformCount >= 3)
             {
@@ -4791,13 +5063,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     ? "TransformBodyPreviewReady"
                     : "NonCharacterTransformNeedsMapping";
             }
-            if (link?.Source == "structural"
-                && isMixedHumanoidTransform
-                && coreTransformCount >= 3
-                && link.MatchedBindingPaths != null
-                && link.MatchedBindingPaths.Length >= 4)
+            if (link?.RequiresHumanoidBake == true || (isCharacter && isHumanoidLike))
             {
-                return "TransformBodyPreviewReady";
+                return "HumanoidBodyNeedsInternalSolver";
             }
             if (isAuxiliaryAnimation || isTransformAnimation)
             {
@@ -5449,6 +5717,12 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             public bool requiresHumanoidBake { get; set; }
             public bool legacyUnityBakeSupported { get; set; }
             public bool requiresInternalHumanoidSolve { get; set; }
+            public bool modelReadyForAnimation { get; set; }
+            public string modelAnimationBlockedReason { get; set; }
+            public JObject modelAnimationGate { get; set; }
+            public bool directGltfPreviewReady { get; set; }
+            public bool productionAnimationReady { get; set; }
+            public string productionAnimationBlockedReason { get; set; }
             public object verification { get; set; }
             public string nextAction { get; set; }
         }
@@ -5501,6 +5775,9 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             public int ModelBoneCount { get; set; }
             public int ModelMeshCount { get; set; }
             public int ModelTextureCount { get; set; }
+            public bool ModelReadyForAnimation { get; set; }
+            public string ModelAnimationBlockedReason { get; set; }
+            public ModelAnimationGate ModelAnimationGate { get; set; }
             public JObject Animation { get; set; }
             public string Confidence { get; set; }
             public string Relation { get; set; }
@@ -5517,6 +5794,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             public string[] SemanticSharedTags { get; set; }
             public string[] SemanticRejectedTags { get; set; }
         }
+
+        private sealed record ModelAnimationGate(bool Ready, string Status, string[] Reasons, JObject Evidence);
 
         private sealed class ExplicitAnimationRelation
         {

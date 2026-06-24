@@ -71,7 +71,8 @@ namespace AnimeStudio
                 FingerType finger = (FingerType)(delta / dofSize);
                 delta = delta % dofSize;
                 FingerDoFType dof = (FingerDoFType)delta;
-                return $"{arm.ToBoneType().ToAttributeString()}.{finger.ToAttributeString()}.{dof.ToAttributeString()}";
+                var side = arm == ArmType.LeftHand ? "Left" : "Right";
+                return $"{side} {finger.ToAttributeString()} {dof.ToAttributeString()}";
             }
             if (_this < HumanoidMuscleType.Last)
             {

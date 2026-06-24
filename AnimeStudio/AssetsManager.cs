@@ -19,6 +19,9 @@ namespace AnimeStudio
         public bool LoadSerializedFileExternals = true;
         public bool StoreUnparsedObjects = true;
         public Func<ClassIDType, bool> ObjectParseFilter;
+        public Func<string, bool> EndfieldVfsInnerFileFilter;
+        public int EndfieldVfsInnerFileLimit;
+        public bool EndfieldVfsInnerFileFilterIsDiagnostic = true;
         public string SpecifyUnityVersion;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
@@ -219,6 +222,7 @@ namespace AnimeStudio
                     LoadAssetsFile(reader);
                     break;
                 case FileType.BundleFile:
+                case FileType.EndfieldVFSBlockFile:
                     LoadGameBlockFile(reader);
                     break;
                 case FileType.WebFile:
@@ -561,6 +565,9 @@ namespace AnimeStudio
                     case FileType.VFSFile:
                         file = new VFSFile(reader, reader.FullPath, Game.Type);
                         break;
+                    case FileType.EndfieldVFSBlockFile:
+                        file = new EndfieldVfsBlockFile(reader, Game.Type, EndfieldVfsInnerFileFilter, EndfieldVfsInnerFileLimit, EndfieldVfsInnerFileFilterIsDiagnostic);
+                        break;
                 }
 
                 if (file == null)
@@ -581,10 +588,24 @@ namespace AnimeStudio
                     CurrentLoadInnerFile = innerFile.fileName;
                     var dummyPath = Path.Combine(Path.GetDirectoryName(reader.FullPath), innerFile.fileName);
                     var cabReader = new FileReader(dummyPath, innerFile.stream);
+                    // VFS/Bundle 内层文件名是定位缺材质、缺贴图 CAB 的关键线索，写进 originalPath 方便源索引追溯。
+                    var embeddedSourcePath = BuildEmbeddedSourcePath(originalPath ?? reader.FullPath, innerFile.path);
                     if (cabReader.FileType == FileType.AssetsFile)
                     {
                         CurrentLoadPhase = "load_bundle_inner_assets_file";
-                        LoadAssetsFromMemory(cabReader, originalPath ?? reader.FullPath, file.m_Header.unityRevision, originalOffset);
+                        LoadAssetsFromMemory(cabReader, embeddedSourcePath, file.m_Header.unityRevision, originalOffset);
+                    }
+                    else if (cabReader.FileType == FileType.BundleFile
+                        || cabReader.FileType == FileType.ENCRFile
+                        || cabReader.FileType == FileType.Blb3File
+                        || cabReader.FileType == FileType.MhyFile
+                        || cabReader.FileType == FileType.HygFile
+                        || cabReader.FileType == FileType.VFSFile
+                        || cabReader.FileType == FileType.EndfieldVFSBlockFile)
+                    {
+                        // Endfield 新版 VFS 里放的是 UnityFS bundle，需要再拆一层。
+                        CurrentLoadPhase = "load_nested_bundle";
+                        LoadGameBlockFile(cabReader, embeddedSourcePath, originalOffset, false);
                     }
                     else
                     {
@@ -616,6 +637,9 @@ namespace AnimeStudio
                     case FileType.VFSFile:
                         name = nameof(VFSFile);
                         break;
+                    case FileType.EndfieldVFSBlockFile:
+                        name = nameof(EndfieldVfsBlockFile);
+                        break;
                 }
                 Logger.Error($"Game type mismatch, Expected {name} but got {Game.Name} ({Game.GetType().Name}) !!");
             }
@@ -632,6 +656,16 @@ namespace AnimeStudio
             {
                 reader.Dispose();
             }
+        }
+
+        private static string BuildEmbeddedSourcePath(string outerPath, string innerPath)
+        {
+            if (string.IsNullOrWhiteSpace(innerPath))
+            {
+                return outerPath ?? string.Empty;
+            }
+
+            return $"{outerPath ?? string.Empty}|{innerPath.Replace('\\', '/')}";
         }
 
         public void CheckStrippedVersion(SerializedFile assetsFile)

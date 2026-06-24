@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using AnimeStudio.CLI.Properties;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SharpGLTF.Schema2;
@@ -192,9 +193,18 @@ namespace AnimeStudio.CLI
                 Studio.IncludeVfx = o.IncludeVfx;
                 CliExportOptions.IncludeVfx = o.IncludeVfx;
 
+                if (o.SyncUnityBakeAcceleratedWorker)
+                {
+                    if (!UnityBakeAcceleratedWorkerVerifier.SyncAndCheck(o.UnityProject?.FullName, o.UnityEditor?.FullName, runSmokeTest: true))
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
                 if (o.CheckUnityBakeAcceleratedWorker)
                 {
-                    if (!UnityBakeAcceleratedWorkerVerifier.Check(o.UnityProject?.FullName, o.UnityEditor?.FullName))
+                    if (!UnityBakeAcceleratedWorkerVerifier.Check(o.UnityProject?.FullName, o.UnityEditor?.FullName, runSmokeTest: true))
                     {
                         Environment.ExitCode = 1;
                     }
@@ -216,6 +226,18 @@ namespace AnimeStudio.CLI
                             o.UnityBakeAcceleratedWorkerQueue.FullName,
                             o.UnityBakeOutput?.FullName);
                     if (!ok)
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
+                if (o.ApplyUnityBakeAcceleratedResult != null)
+                {
+                    var bakedGltf = UnityBakeAcceleratedResultApplier.Apply(
+                        o.ApplyUnityBakeAcceleratedResult.FullName,
+                        o.BakedGltfOutput?.FullName);
+                    if (string.IsNullOrWhiteSpace(bakedGltf))
                     {
                         Environment.ExitCode = 1;
                     }
@@ -277,6 +299,66 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.ListModelAnimationsFromLibrary != null)
+                {
+                    ModelAnimationCandidateLister.ListFromLibrary(
+                        o.ListModelAnimationsFromLibrary.FullName,
+                        o.PreviewModel,
+                        o.PackAnimations ?? o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PackLimit,
+                        o.IndexPath?.FullName
+                    );
+                    return;
+                }
+
+                if (o.ExportAnimationGltfFromLibrary != null)
+                {
+                    var animationGltfPath = PreviewGltfGenerator.ExportStandaloneAnimationFromLibrary(
+                        o.ExportAnimationGltfFromLibrary.FullName,
+                        o.GameName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewForceInternalHumanoidSolve
+                    );
+                    if (string.IsNullOrWhiteSpace(animationGltfPath))
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
+                if (o.ExportAnimationGltfFromFiles != null)
+                {
+                    var animationGltfPath = PreviewGltfGenerator.ExportStandaloneAnimationFromFiles(
+                        o.ExportAnimationGltfFromFiles.FullName,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewForceInternalHumanoidSolve,
+                        o.PackAnimations
+                    );
+                    if (string.IsNullOrWhiteSpace(animationGltfPath))
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
+                if (o.MergeAnimationGltf != null)
+                {
+                    var mergedGltfPath = PreviewGltfGenerator.MergeStandaloneAnimationGltf(
+                        o.MergeAnimationGltf.FullName,
+                        o.PreviewAnimation,
+                        o.PreviewOutput?.FullName
+                    );
+                    if (string.IsNullOrWhiteSpace(mergedGltfPath))
+                    {
+                        Environment.ExitCode = 1;
+                    }
+                    return;
+                }
+
                 if (o.PackModelAnimations != null)
                 {
                     PreviewGltfGenerator.GeneratePack(
@@ -325,6 +407,7 @@ namespace AnimeStudio.CLI
 
                 if (o.GenerateUnityBakeRequest != null)
                 {
+                    WarnUnityBakeDeprecated();
                     UnityBakeRequestGenerator.Generate(
                         o.GenerateUnityBakeRequest.FullName,
                         o.PreviewModel,
@@ -335,21 +418,28 @@ namespace AnimeStudio.CLI
                         o.UnityEditor?.FullName,
                         o.UnityBakeModelPrefab,
                         o.UnityBakeAnimationClip,
+                        o.UnityBakeAnimatorController,
                         o.UnityBakeAvatarAsset,
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
                         o.UnityProbeMuscles,
+                        o.UnityBakeEnableIkGoalDriver,
+                        o.UnityBakeRebuildEditorCurveClip,
+                        o.UnityBakeIgnoreImportedAvatar,
+                        o.UnityBakeClipFilterMode,
                         o.RunUnityBake,
                         o.UnityBakeWorkerQueue?.FullName,
                         o.BakedGltfOutput?.FullName,
                         o.BakedFbxOutput?.FullName,
-                        o.Blender?.FullName
+                        o.Blender?.FullName,
+                        o.UnityBakeSampleRecoverableSkippedLayersDiagnostic
                     );
                     return;
                 }
 
                 if (o.GenerateUnityBakeRequestFromLibrary != null)
                 {
+                    WarnUnityBakeDeprecated();
                     UnityBakeRequestGenerator.GenerateFromLibrary(
                         o.GenerateUnityBakeRequestFromLibrary.FullName,
                         o.PreviewModel,
@@ -360,22 +450,29 @@ namespace AnimeStudio.CLI
                         o.UnityEditor?.FullName,
                         o.UnityBakeModelPrefab,
                         o.UnityBakeAnimationClip,
+                        o.UnityBakeAnimatorController,
                         o.UnityBakeAvatarAsset,
                         o.UnityBakeOutput?.FullName,
                         o.UnityBakeFps,
                         o.UnityProbeMuscles,
+                        o.UnityBakeEnableIkGoalDriver,
+                        o.UnityBakeRebuildEditorCurveClip,
+                        o.UnityBakeIgnoreImportedAvatar,
+                        o.UnityBakeClipFilterMode,
                         o.RunUnityBake,
                         o.UnityBakeWorkerQueue?.FullName,
                         o.BakedGltfOutput?.FullName,
                         o.BakedFbxOutput?.FullName,
                         o.Blender?.FullName,
-                        o.IndexPath?.FullName
+                        o.IndexPath?.FullName,
+                        o.UnityBakeSampleRecoverableSkippedLayersDiagnostic
                     );
                     return;
                 }
 
                 if (o.BakeAnimationPreviewsFromLibrary != null)
                 {
+                    WarnUnityBakeDeprecated();
                     TryPrepareAnimatorControllerBakeContext(o, o.BakeAnimationPreviewsFromLibrary.FullName);
                     UnityBakeRequestGenerator.GenerateBatchFromLibrary(
                         o.BakeAnimationPreviewsFromLibrary.FullName,
@@ -387,21 +484,59 @@ namespace AnimeStudio.CLI
                         o.UnityEditor?.FullName,
                         o.UnityBakeModelPrefab,
                         o.UnityBakeAnimationClip,
+                        o.UnityBakeAnimatorController,
                         o.UnityBakeAvatarAsset,
                         o.UnityBakeFps,
                         o.RunUnityBake,
+                        o.UnityBakeClipFilterMode,
                         o.UnityBakeWorkerQueue?.FullName,
                         o.BakedFbxOutput?.FullName,
                         o.Blender?.FullName,
                         o.PreviewValidationLimit,
                         o.IndexPath?.FullName,
-                        o.PreviewValidationForce
+                        o.PreviewValidationForce,
+                        o.UnityProbeMuscles,
+                        o.UnityBakeEnableIkGoalDriver,
+                        o.UnityBakeRebuildEditorCurveClip,
+                        o.UnityBakeSampleRecoverableSkippedLayersDiagnostic
                     );
+                    return;
+                }
+
+                if (o.GenerateUnityBakeAcceleratedRequestFromLibrary != null)
+                {
+                    // Endfield 这类 Humanoid/Muscle 动画经常依赖 AnimatorController 的
+                    // state、BlendTree、layer 和实际 Unity AnimationClip asset。加速求解前
+                    // 也必须先刷新这些确定性上下文，避免把单个 clip 误当完整动作。
+                    TryPrepareAnimatorControllerBakeContext(o, o.GenerateUnityBakeAcceleratedRequestFromLibrary.FullName);
+                    var requestPath = UnityBakeRequestGenerator.GenerateAcceleratedFromLibrary(
+                        o.GenerateUnityBakeAcceleratedRequestFromLibrary.FullName,
+                        o.PreviewModel,
+                        o.PackAnimations ?? o.PreviewAnimation,
+                        o.PreviewOutput?.FullName,
+                        o.UnityProject?.FullName,
+                        o.UnityEditor?.FullName,
+                        o.UnityBakeAnimatorController,
+                        o.UnityBakeAvatarAsset,
+                        o.UnityBakeOutput?.FullName,
+                        o.UnityBakeFps,
+                        o.RunUnityBake,
+                        o.UnityBakeClipFilterMode,
+                        o.UnityBakeAllowGeneratedControllerDiagnostic,
+                        o.UnityBakeAcceleratedWorkerQueue?.FullName,
+                        o.IndexPath?.FullName,
+                        o.UnityBakeSampleRecoverableSkippedLayersDiagnostic
+                    );
+                    if (string.IsNullOrWhiteSpace(requestPath))
+                    {
+                        Environment.ExitCode = 1;
+                    }
                     return;
                 }
 
                 if (o.ApplyUnityBakeResult != null)
                 {
+                    WarnUnityBakeDeprecated();
                     var bakedGltf = UnityBakeResultApplier.Apply(
                         o.ApplyUnityBakeResult.FullName,
                         o.BakedGltfOutput?.FullName
@@ -415,6 +550,7 @@ namespace AnimeStudio.CLI
 
                 if (o.CompareUnityBakeResult != null)
                 {
+                    WarnUnityBakeDeprecated();
                     UnityBakeComparisonReporter.Compare(
                         o.CompareUnityBakeResult.FullName,
                         o.CompareGltf?.FullName,
@@ -456,7 +592,7 @@ namespace AnimeStudio.CLI
                         SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(strictSourceIndex, requireHealthy: true);
                     }
 
-                    Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName);
+                    Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName, o.GameName);
                     return;
                 }
 
@@ -474,7 +610,7 @@ namespace AnimeStudio.CLI
                         SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(strictSourceIndex, requireHealthy: true);
                     }
 
-                    SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName, o.SkipSqliteFileIndex, o.SkipSqliteSidecarScan, o.SkipSqliteJsonDocuments, o.SourceIndex?.FullName);
+                    SQLiteLibraryIndexBuilder.Build(o.BuildSqliteIndex.FullName, o.IndexPath?.FullName, o.SkipSqliteFileIndex, o.SkipSqliteSidecarScan, o.SkipSqliteJsonDocuments, o.SourceIndex?.FullName, o.GameName);
                     TryAutoRecoverUnityBakeAssets(o, o.BuildSqliteIndex.FullName, null, null);
                     return;
                 }
@@ -482,6 +618,34 @@ namespace AnimeStudio.CLI
                 if (o.VerifySourceIndex != null)
                 {
                     SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(o.VerifySourceIndex.FullName, requireHealthy: o.RequireFreshSourceAnimationRelations);
+                    return;
+                }
+
+                if (o.EnsureSourceIndexQueryIndexes != null)
+                {
+                    SQLiteSourceIndexBuilder.EnsureQueryIndexes(o.EnsureSourceIndexQueryIndexes.FullName);
+                    return;
+                }
+
+                if (o.ListSourceModelCandidates != null)
+                {
+                    SourceModelCandidateLister.List(
+                        o.ListSourceModelCandidates.FullName,
+                        o.PreviewOutput?.FullName ?? o.Output?.FullName,
+                        ResolveSourceModelCandidateSelector(o),
+                        o.SourceCandidateLimit,
+                        o.IncludeStaticMeshes);
+                    return;
+                }
+
+                if (o.ListSourceModelAnimations != null)
+                {
+                    SourceModelAnimationLister.List(
+                        o.ListSourceModelAnimations.FullName,
+                        o.PreviewOutput?.FullName,
+                        o.PreviewModel,
+                        o.PackAnimations ?? o.PreviewAnimation,
+                        o.SourceCandidateLimit);
                     return;
                 }
 
@@ -497,6 +661,7 @@ namespace AnimeStudio.CLI
 
                 if (o.RecoverImportedAvatarAssets != null)
                 {
+                    WarnUnityBakeDeprecated();
                     var unitySettings = ResolveUnityBakeSettings(o, o.RecoverImportedAvatarAssets.FullName);
                     if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
                     {
@@ -537,13 +702,15 @@ namespace AnimeStudio.CLI
                         o.AvatarRecoveryLimit,
                         o.AvatarRecoveryForce,
                         o.RunUnityBake || !string.IsNullOrWhiteSpace(unitySettings.UnityEditor),
-                        o.IndexPath?.FullName
+                        o.IndexPath?.FullName,
+                        o.SourceIndex?.FullName
                     );
                     return;
                 }
 
                 if (o.RecoverImportedAnimationClips != null)
                 {
+                    WarnUnityBakeDeprecated();
                     var unitySettings = ResolveUnityBakeSettings(o, o.RecoverImportedAnimationClips.FullName);
                     if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
                     {
@@ -559,6 +726,41 @@ namespace AnimeStudio.CLI
                         o.AvatarRecoveryLimit,
                         o.AvatarRecoveryForce,
                         o.IndexPath?.FullName);
+                    return;
+                }
+
+                if (o.RecoverImportedAnimatorControllers != null)
+                {
+                    WarnUnityBakeDeprecated();
+                    var unitySettings = ResolveUnityBakeSettings(o, o.RecoverImportedAnimatorControllers.FullName);
+                    if (o.RunUnityBake && string.IsNullOrWhiteSpace(unitySettings.UnityProject))
+                    {
+                        Logger.Error("--recover_imported_animator_controllers with --run_unity_bake requires a Unity bake project. Configure it once in Browser Unity settings, write .as_browser_cache\\unity_bake_settings.json, set ANIMESTUDIO_UNITY_BAKE_PROJECT, or pass --unity_project.");
+                        return;
+                    }
+                    if (o.UnityFileInspect == null || !File.Exists(o.UnityFileInspect.FullName))
+                    {
+                        Logger.Error("--recover_imported_animator_controllers requires --unity_file_inspect pointing to unity_file_inspect.json.");
+                        return;
+                    }
+                    if (string.IsNullOrWhiteSpace(unitySettings.UnityProject))
+                    {
+                        Logger.Info("--recover_imported_animator_controllers is running in request-only diagnostic mode because no valid Unity bake project is configured.");
+                    }
+
+                    AnimatorControllerAssetRecoveryExporter.Recover(
+                        o.RecoverImportedAnimatorControllers.FullName,
+                        unitySettings.UnityProject,
+                        unitySettings.UnityEditor,
+                        o.UnityFileInspect.FullName,
+                        o.PreviewModel,
+                        o.PreviewAnimation,
+                        o.AvatarRecoveryLimit,
+                        o.AvatarRecoveryForce,
+                        o.RunUnityBake,
+                        o.IndexPath?.FullName,
+                        o.SourceIndex?.FullName,
+                        o.AnimatorControllerClipLibrary?.Select(x => x.FullName));
                     return;
                 }
 
@@ -582,7 +784,7 @@ namespace AnimeStudio.CLI
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --ensure_source_index_query_indexes, --list_source_model_candidates, --list_source_model_animations, --locate_endfield_cabs, --locate_endfield_missing_source_cabs, --build_endfield_cab_location_index, --locate_endfield_strings, --inspect_endfield_manifest_deps, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -638,6 +840,59 @@ namespace AnimeStudio.CLI
                 if (o.DumpUnityBlockChunks)
                 {
                     UnityBlockChunkDumper.Dump(o.Input.FullName, o.Output.FullName, game);
+                    return;
+                }
+                if (o.LocateEndfieldStrings != null && o.LocateEndfieldStrings.Length > 0)
+                {
+                    EndfieldCabLocator.LocateStrings(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.LocateEndfieldStrings,
+                        o.EndfieldVfsFileFilter);
+                    return;
+                }
+                if (o.LocateEndfieldCabs != null && o.LocateEndfieldCabs.Length > 0)
+                {
+                    EndfieldCabLocator.Locate(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.LocateEndfieldCabs,
+                        o.EndfieldVfsFileFilter,
+                        o.EndfieldVfsFileLimit);
+                    return;
+                }
+                if (o.BuildEndfieldCabLocationIndex)
+                {
+                    EndfieldCabLocator.BuildLocationIndex(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.EndfieldVfsFileFilter,
+                        o.EndfieldVfsFileLimit);
+                    return;
+                }
+                if (o.LocateEndfieldMissingSourceCabs != null)
+                {
+                    EndfieldCabLocator.LocateMissingSourceCabs(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.LocateEndfieldMissingSourceCabs.FullName,
+                        o.EndfieldVfsFileFilter,
+                        o.EndfieldVfsFileLimit,
+                        o.EndfieldCabLocationIndex?.FullName,
+                        o.SourceCandidateLimit);
+                    return;
+                }
+                if (o.InspectEndfieldManifestDeps != null && o.InspectEndfieldManifestDeps.Length > 0)
+                {
+                    EndfieldManifestDependencyInspector.Inspect(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.InspectEndfieldManifestDeps);
                     return;
                 }
                 CliExportOptions.OutputRoot = o.Output.FullName;
@@ -729,9 +984,115 @@ namespace AnimeStudio.CLI
                     TypeFlags.SetType(ClassIDType.ResourceManager, true, false);
                 }
 
+                var endfieldVfsInnerFileFilter = BuildEndfieldVfsInnerFileFilter(o.EndfieldVfsFileFilter);
+                var endfieldVfsInnerFileLimit = Math.Max(0, o.EndfieldVfsFileLimit);
+                if (o.EndfieldManifestDeps != null)
+                {
+                    if (!game.Type.IsArknightsEndfieldGroup())
+                    {
+                        Logger.Error("--endfield_manifest_deps only supports Arknights Endfield.");
+                        return;
+                    }
+                    if (o.EndfieldVfsFileFilter == null || o.EndfieldVfsFileFilter.Length == 0)
+                    {
+                        Logger.Error("--endfield_manifest_deps requires --endfield_vfs_files to select root bundle(s).");
+                        return;
+                    }
+
+                    EndfieldManifestDependencyInspector.DependencyExpandedFilter manifestFilter;
+                    try
+                    {
+                        manifestFilter = EndfieldManifestDependencyInspector.BuildDependencyExpandedInnerFileFilter(
+                            o.EndfieldManifestDeps.FullName,
+                            o.EndfieldVfsFileFilter);
+                    }
+                    catch (Exception e) when (e is IOException || e is InvalidDataException || e is ArgumentException)
+                    {
+                        Logger.Error($"Failed to parse Endfield manifest dependency closure: {e.Message}");
+                        return;
+                    }
+
+                    if (manifestFilter.RootBundles.Length == 0)
+                    {
+                        Logger.Error("--endfield_manifest_deps did not find any manifest root bundle matched by --endfield_vfs_files.");
+                        return;
+                    }
+
+                    endfieldVfsInnerFileFilter = manifestFilter.Filter;
+                    endfieldVfsInnerFileLimit = 0;
+                    Logger.Warning("--endfield_manifest_deps is diagnostic source-index dependency mode. It expands selected root bundle(s) to root + direct Endfield manifest dependencies and must be validated before production full Library use.");
+                    Logger.Info($"Endfield manifest direct deps selected roots={manifestFilter.RootBundles.Length}, selectedBundles={manifestFilter.ClosureBundles.Length}, manifestBundles={manifestFilter.ManifestBundleCount}, encoding={manifestFilter.InputEncoding}.");
+                    Logger.Info($"Endfield manifest direct deps root sample: {string.Join(", ", manifestFilter.RootBundles.Take(8))}{(manifestFilter.RootBundles.Length > 8 ? " ..." : string.Empty)}");
+                }
+                if (!o.EndfieldSourceCabClosure.IsNullOrEmpty())
+                {
+                    if (!game.Type.IsArknightsEndfieldGroup())
+                    {
+                        Logger.Error("--endfield_source_cab_closure only supports Arknights Endfield.");
+                        return;
+                    }
+
+                    var closureFilters = new List<EndfieldCabLocator.SourceCabClosureFilter>();
+                    foreach (var report in o.EndfieldSourceCabClosure)
+                    {
+                        EndfieldCabLocator.SourceCabClosureFilter closureFilter;
+                        try
+                        {
+                            closureFilter = EndfieldCabLocator.BuildSourceCabClosureInnerFileFilter(
+                                report.FullName,
+                                o.EndfieldSourceCabClosureDomains);
+                        }
+                        catch (Exception e) when (e is IOException || e is InvalidDataException || e is JsonException || e is ArgumentException)
+                        {
+                            Logger.Error($"Failed to read Endfield source CAB closure report: {e.Message}");
+                            return;
+                        }
+
+                        if (closureFilter.BundleFiles.Length == 0)
+                        {
+                            Logger.Error($"--endfield_source_cab_closure did not contain any locatedUnityBundleFiles: {report.FullName}");
+                            return;
+                        }
+
+                        closureFilters.Add(closureFilter);
+                    }
+
+                    var previousFilter = endfieldVfsInnerFileFilter;
+                    endfieldVfsInnerFileFilter = innerFile =>
+                        (previousFilter != null && previousFilter(innerFile))
+                        || closureFilters.Any(closure => closure.Filter(innerFile));
+                    endfieldVfsInnerFileLimit = 0;
+                    Logger.Warning("--endfield_source_cab_closure is diagnostic source-index closure mode. It includes missing Mesh/Material/Texture CAB bundles located from an existing source index report; validate the rebuilt model itself before animation smoke.");
+                    var closureBundles = closureFilters
+                        .SelectMany(x => x.BundleFiles)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    Logger.Info($"Endfield source CAB closure reports={closureFilters.Count}, selectedBundles={closureBundles.Length}, selectedCabs={closureFilters.Sum(x => x.SelectedCabCount)}, foundCabs={closureFilters.Sum(x => x.FoundTargetCount)}.");
+                    if (!o.EndfieldSourceCabClosureDomains.IsNullOrEmpty())
+                    {
+                        Logger.Info($"Endfield source CAB closure domains: {string.Join(", ", o.EndfieldSourceCabClosureDomains)}");
+                    }
+                    if (o.EndfieldSourceCabClosureIncludeAutoRoots)
+                    {
+                        Logger.Warning("--endfield_source_cab_closure_include_auto_roots may expand Endfield VFS root/context coverage into a very large diagnostic source index. Prefer explicit --endfield_vfs_files roots for model-first smoke reproduction when a candidate root bundle is known.");
+                    }
+                    Logger.Info($"Endfield source CAB closure bundle sample: {string.Join(", ", closureBundles.Take(8))}{(closureBundles.Length > 8 ? " ..." : string.Empty)}");
+                }
+                if (endfieldVfsInnerFileFilter != null || endfieldVfsInnerFileLimit > 0 || !o.EndfieldSourceCabClosure.IsNullOrEmpty())
+                {
+                    Logger.Warning("--endfield_vfs_files / --endfield_vfs_file_limit is diagnostic only. It narrows .blc inner UnityFS files for smoke tests and must not be used for production full Library source indexes.");
+                }
+                if (o.EndfieldVfsKeepSameLengthSupplemental)
+                {
+                    Logger.Warning("--endfield_vfs_keep_same_length_supplemental is a slow Endfield VFS full-closure diagnostic mode. Use it to chase unresolved material/CAB targets, not as the default production source-index path.");
+                }
+
                 assetsManager.Silent = o.Silent;
                 assetsManager.Game = game;
                 assetsManager.SpecifyUnityVersion = o.UnityVersion;
+                assetsManager.EndfieldVfsInnerFileFilter = endfieldVfsInnerFileFilter;
+                assetsManager.EndfieldVfsInnerFileLimit = endfieldVfsInnerFileLimit;
                 if (o.Key != default)
                 {
                     MiHoYoBinData.Encrypted = true;
@@ -774,7 +1135,11 @@ namespace AnimeStudio.CLI
                         game,
                         o.UnityVersion,
                         Math.Max(1, o.BatchFiles),
-                        o.IndexPath?.FullName
+                        o.IndexPath?.FullName,
+                        endfieldVfsInnerFileFilter,
+                        endfieldVfsInnerFileLimit,
+                        o.EndfieldVfsKeepSameLengthSupplemental,
+                        o.EndfieldSourceCabClosureIncludeAutoRoots
                     );
                     return;
                 }
@@ -839,9 +1204,16 @@ namespace AnimeStudio.CLI
                         o.Output.FullName,
                         game,
                         o.UnityVersion,
-                        Math.Max(1, o.BatchFiles)
+                        Math.Max(1, o.BatchFiles),
+                        null,
+                        endfieldVfsInnerFileFilter,
+                        endfieldVfsInnerFileLimit,
+                        o.EndfieldVfsKeepSameLengthSupplemental,
+                        o.EndfieldSourceCabClosureIncludeAutoRoots
                     );
                 }
+
+                ExpandTargetedAnimatorControllerBaseClipPathIds(o, sourceIndexPath);
 
                 if (!string.IsNullOrWhiteSpace(sourceIndexPath))
                 {
@@ -860,6 +1232,7 @@ namespace AnimeStudio.CLI
                     {
                         assetsManager.ResolveDependencies = true;
                     }
+                    TryApplyEndfieldVfsSourceIndexInnerFilter(o, game, inputBaseFolder, sourceIndexPath, files, assetsManager);
                 }
                 else if (o.WorkMode == WorkMode.Library || o.WorkMode == WorkMode.AudioLibrary)
                 {
@@ -1062,9 +1435,14 @@ namespace AnimeStudio.CLI
                         {
                             Logger.Info("Skipping library SQLite index build because --skip_sqlite_index is set.");
                         }
-                        GenerateLibraryIndexes(o.Output.FullName, skipSqliteIndex: o.SkipSqliteIndex);
+                        GenerateLibraryIndexes(
+                            o.Output.FullName,
+                            skipSqliteIndex: o.SkipSqliteIndex,
+                            sourceGame: game?.Name,
+                            sourceIndexPath: sourceIndexPath);
                         if (!o.SkipSqliteIndex)
                         {
+                            TryRefreshAnimatorControllerContextsAfterTargetedExport(o, o.Output.FullName, sourceIndexPath);
                             TryAutoRecoverUnityBakeAssets(o, o.Output.FullName, game, inputBaseFolder);
                         }
                     }
@@ -1123,12 +1501,757 @@ namespace AnimeStudio.CLI
                 .ToArray();
         }
 
+        private static Func<string, bool> BuildEndfieldVfsInnerFileFilter(Regex[] filters)
+        {
+            if (filters.IsNullOrEmpty())
+            {
+                return null;
+            }
+
+            return fileName =>
+            {
+                var normalized = NormalizeSourceFileFilter(fileName);
+                return filters.Any(filter => filter.IsMatch(normalized));
+            };
+        }
+
+        private static void ExpandTargetedAnimatorControllerBaseClipPathIds(Options o, string sourceIndexPath)
+        {
+            if (o == null
+                || o.WorkMode != WorkMode.Library
+                || o.PathIdFilter.IsNullOrEmpty())
+            {
+                return;
+            }
+
+            var selected = o.PathIdFilter.ToHashSet();
+            var added = new HashSet<long>();
+            var sources = new JArray();
+
+            AddBaseClipDependenciesFromInspect(o.UnityFileInspect?.FullName, selected, added, sources);
+            AddBaseClipDependenciesFromSourceIndex(sourceIndexPath, selected, added, sources);
+            if (o.IncludeAnimatorControllerClipClosure)
+            {
+                AddControllerClipClosureFromSourceIndex(sourceIndexPath, selected, added, sources);
+            }
+            if (added.Count == 0)
+            {
+                return;
+            }
+
+            o.PathIdFilter = selected.Concat(added).Distinct().ToArray();
+            var reason = o.IncludeAnimatorControllerClipClosure
+                ? "AnimatorController baseLayerClip/controller clip closure"
+                : "AnimatorController baseLayerClip dependency";
+            Logger.Info($"Expanded --path_ids with {added.Count} deterministic {reason} clip(s): {string.Join(", ", added.Take(12))}{(added.Count > 12 ? ", ..." : "")}");
+            TryWritePathIdExpansionReport(o.Output?.FullName, selected, added, sources);
+        }
+
+        private static void TryRefreshAnimatorControllerContextsAfterTargetedExport(
+            Options o,
+            string outputRoot,
+            string sourceIndexPath)
+        {
+            if (o == null
+                || o.WorkMode != WorkMode.Library
+                || o.PathIdFilter.IsNullOrEmpty()
+                || string.IsNullOrWhiteSpace(outputRoot)
+                || string.IsNullOrWhiteSpace(o.UnityFileInspect?.FullName)
+                || !File.Exists(o.UnityFileInspect.FullName)
+                || string.IsNullOrWhiteSpace(sourceIndexPath)
+                || !File.Exists(sourceIndexPath))
+            {
+                return;
+            }
+
+            try
+            {
+                AnimatorControllerContextRefresher.Refresh(
+                    outputRoot,
+                    o.UnityFileInspect.FullName,
+                    sourceIndexPath,
+                    indexPath: null,
+                    modelSelector: o.PreviewModel,
+                    animationSelector: o.PreviewAnimation);
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to auto-refresh AnimatorController context after targeted Library export: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static void AddBaseClipDependenciesFromInspect(
+            string unityFileInspectPath,
+            HashSet<long> selected,
+            HashSet<long> added,
+            JArray sources)
+        {
+            if (string.IsNullOrWhiteSpace(unityFileInspectPath) || !File.Exists(unityFileInspectPath))
+            {
+                return;
+            }
+
+            Dictionary<long, long[]> dependencies;
+            try
+            {
+                dependencies = AnimatorControllerContextRefresher.FindBaseLayerClipDependencies(unityFileInspectPath, selected);
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to expand --path_ids from unity_file_inspect AnimatorController context: {e.GetType().Name}: {e.Message}");
+                return;
+            }
+
+            foreach (var item in dependencies.OrderBy(x => x.Key))
+            {
+                foreach (var basePathId in item.Value)
+                {
+                    if (selected.Contains(basePathId) || !added.Add(basePathId))
+                    {
+                        continue;
+                    }
+
+                    sources.Add(new JObject
+                    {
+                        ["source"] = "unity_file_inspect.animatorControllerContext.baseLayerClip",
+                        ["selectedClipPathId"] = item.Key,
+                        ["baseLayerClipPathId"] = basePathId,
+                    });
+                }
+            }
+        }
+
+        private static void AddBaseClipDependenciesFromSourceIndex(
+            string sourceIndexPath,
+            HashSet<long> selected,
+            HashSet<long> added,
+            JArray sources)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                return;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT to_path_id, raw_json
+FROM source_relations INDEXED BY idx_source_relations_relation
+WHERE relation='animatorController.clip';";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (reader.IsDBNull(0))
+                    {
+                        continue;
+                    }
+
+                    var selectedClipPathId = reader.GetInt64(0);
+                    if (!selected.Contains(selectedClipPathId) || reader.IsDBNull(1))
+                    {
+                        continue;
+                    }
+
+                    JObject raw;
+                    try
+                    {
+                        raw = JObject.Parse(reader.GetString(1));
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    var basePathId = ReadBaseLayerClipPathId(raw["details"]?["baseLayerClip"]);
+                    if (basePathId == null
+                        || basePathId.Value == selectedClipPathId
+                        || selected.Contains(basePathId.Value)
+                        || !added.Add(basePathId.Value))
+                    {
+                        continue;
+                    }
+
+                    sources.Add(new JObject
+                    {
+                        ["source"] = "unity_source_index.source_relations.animatorController.clip.baseLayerClip",
+                        ["controllerPathId"] = (long?)raw["from"]?["pathId"],
+                        ["controllerName"] = (string)raw["from"]?["name"],
+                        ["selectedClipPathId"] = selectedClipPathId,
+                        ["baseLayerClipPathId"] = basePathId.Value,
+                    });
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to expand --path_ids from unity_source_index AnimatorController relations: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static void AddControllerClipClosureFromSourceIndex(
+            string sourceIndexPath,
+            HashSet<long> selected,
+            HashSet<long> added,
+            JArray sources)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                Logger.Warning("--include_animator_controller_clip_closure was requested but no unity_source_index.db is available.");
+                return;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                var controllers = FindControllersForSelectedClips(connection, selected.Concat(added).ToHashSet());
+                if (controllers.Count == 0)
+                {
+                    return;
+                }
+
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT from_path_id, from_name, to_path_id, raw_json
+FROM source_relations INDEXED BY idx_source_relations_relation
+WHERE relation='animatorController.clip'
+  AND from_path_id=$controllerPathId
+  AND to_path_id IS NOT NULL;";
+                var controllerParameter = command.CreateParameter();
+                controllerParameter.ParameterName = "$controllerPathId";
+                command.Parameters.Add(controllerParameter);
+
+                foreach (var controller in controllers.OrderBy(x => x.Key))
+                {
+                    controllerParameter.Value = controller.Key;
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        if (reader.IsDBNull(2))
+                        {
+                            continue;
+                        }
+
+                        var clipPathId = reader.GetInt64(2);
+                        if (selected.Contains(clipPathId) || !added.Add(clipPathId))
+                        {
+                            continue;
+                        }
+
+                        var details = TryParseRawJson(reader.IsDBNull(3) ? null : reader.GetString(3))?["details"];
+                        sources.Add(new JObject
+                        {
+                            ["source"] = "unity_source_index.source_relations.animatorController.clip.closure",
+                            ["controllerPathId"] = controller.Key,
+                            ["controllerName"] = controller.Value ?? string.Empty,
+                            ["clipPathId"] = clipPathId,
+                            ["controllerClipIndex"] = (int?)details?["controllerClipIndex"],
+                            ["stateName"] = (string)details?["stateName"],
+                            ["statePath"] = (string)details?["statePath"],
+                            ["rule"] = "显式诊断闭包：同一个 AnimatorController.m_AnimationClips 引用到的 AnimationClip 一起导出，用于恢复 Unity worker 所需的 controller clip 依赖；不新增模型-动画推荐关系。",
+                        });
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to expand --path_ids from AnimatorController clip closure: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static Dictionary<long, string> FindControllersForSelectedClips(SqliteConnection connection, HashSet<long> selected)
+        {
+            var result = new Dictionary<long, string>();
+            if (selected == null || selected.Count == 0)
+            {
+                return result;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT DISTINCT from_path_id, from_name
+FROM source_relations INDEXED BY idx_source_relations_relation
+WHERE relation='animatorController.clip'
+  AND to_path_id=$clipPathId
+  AND from_path_id IS NOT NULL;";
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "$clipPathId";
+            command.Parameters.Add(parameter);
+
+            foreach (var clipPathId in selected)
+            {
+                parameter.Value = clipPathId;
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (reader.IsDBNull(0))
+                    {
+                        continue;
+                    }
+
+                    var controllerPathId = reader.GetInt64(0);
+                    var controllerName = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    result[controllerPathId] = controllerName;
+                }
+            }
+
+            return result;
+        }
+
+        private static JObject TryParseRawJson(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            try
+            {
+                return JObject.Parse(raw);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static long? ReadBaseLayerClipPathId(JToken baseLayerClip)
+        {
+            if (baseLayerClip is not JObject baseObject)
+            {
+                return null;
+            }
+
+            return (long?)baseObject["clip"]?["pathId"]
+                ?? (long?)baseObject["pathId"];
+        }
+
+        private static void TryWritePathIdExpansionReport(
+            string outputRoot,
+            HashSet<long> selected,
+            HashSet<long> added,
+            JArray sources)
+        {
+            if (string.IsNullOrWhiteSpace(outputRoot))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(outputRoot);
+                var report = new JObject
+                {
+                    ["status"] = "ok",
+                    ["rule"] = "定向 Library 导出会把 AnimatorController 显式上下文中的 baseLayerClip 或显式请求的 controller clip 闭包一起加入 --path_ids，避免非 base layer / additive clip 单独入库后被误当作完整身体动作，并可补齐 ImportedAnimatorController 所需的 clip 依赖。这里只补导资产，不新增模型-动画绑定关系。",
+                    ["selectedPathIds"] = new JArray(selected.OrderBy(x => x)),
+                    ["addedBaseLayerClipPathIds"] = new JArray(added.OrderBy(x => x)),
+                    ["sources"] = sources,
+                };
+                File.WriteAllText(
+                    Path.Combine(outputRoot, "path_id_dependency_expansion.json"),
+                    report.ToString(Formatting.Indented));
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to write path_id_dependency_expansion.json: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static void TryApplyEndfieldVfsSourceIndexInnerFilter(
+            Options o,
+            Game game,
+            string inputBaseFolder,
+            string sourceIndexPath,
+            string[] files,
+            AssetsManager assetsManager)
+        {
+            if (game == null
+                || !game.Type.IsArknightsEndfieldGroup()
+                || string.IsNullOrWhiteSpace(sourceIndexPath)
+                || !File.Exists(sourceIndexPath)
+                || !o.EndfieldVfsFileFilter.IsNullOrEmpty()
+                || !o.EndfieldSourceCabClosure.IsNullOrEmpty()
+                || o.EndfieldVfsFileLimit > 0
+                || (o.NameFilter.IsNullOrEmpty() && o.PathIdFilter.IsNullOrEmpty()))
+            {
+                return;
+            }
+
+            var endfieldSources = files
+                .Where(path => SQLiteSourceIndexBuilder.IsLikelyUnityLoadableFile(path, game)
+                    && string.Equals(Path.GetExtension(path), ".blc", StringComparison.OrdinalIgnoreCase))
+                .Select(path => NormalizeSourceFileForMatch(path, inputBaseFolder))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (endfieldSources.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var innerFiles = ResolveEndfieldVfsInnerFilesFromSourceIndex(
+                    sourceIndexPath,
+                    endfieldSources,
+                    o.NameFilter,
+                    o.PathIdFilter);
+                if (innerFiles.Count == 0)
+                {
+                    return;
+                }
+
+                assetsManager.EndfieldVfsInnerFileFilter = BuildExactEndfieldVfsInnerFileFilter(innerFiles);
+                assetsManager.EndfieldVfsInnerFileLimit = 0;
+                assetsManager.EndfieldVfsInnerFileFilterIsDiagnostic = false;
+                Logger.Info($"Endfield VFS source-index target filter selected {innerFiles.Count} inner UnityFS file(s) from explicit --names/--path_ids and CAB dependency closure.");
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to derive Endfield VFS inner-file filter from source index; falling back to current VFS loading behavior. {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static HashSet<string> ResolveEndfieldVfsInnerFilesFromSourceIndex(
+            string sourceIndexPath,
+            HashSet<string> sourcePaths,
+            Regex[] nameFilters,
+            long[] pathIdFilters)
+        {
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
+            connection.Open();
+
+            var cabToInnerFile = LoadEndfieldCabInnerFileMap(connection, sourcePaths);
+            if (cabToInnerFile.Count == 0)
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var selectedCabs = SelectEndfieldCabsForTargetObjects(connection, sourcePaths, nameFilters, pathIdFilters);
+            var includeRelationClosure = HasSqliteIndexWithLeadingColumns(
+                connection,
+                "source_relations",
+                "from_file");
+            if (!includeRelationClosure)
+            {
+                // 主源索引很大时，source_relations 可能只有 from_path_id 前缀索引。
+                // 这种情况下按 from_file 做闭包会全表扫描 1.5 亿级关系，定向导出会像卡死。
+                // 先保留已索引的 source_externals 闭包，并在日志里明确这是保守降级。
+                Logger.Warning("Endfield VFS source-index target filter skips source_relations CAB closure because no leading from_file index exists; using indexed source_externals closure only. Build a source_relations(from_file) query index or pass explicit closure reports if this targeted model misses dependencies.");
+                ProfileLogger.Event("endfield_vfs_target_filter_relation_closure_skipped", new Dictionary<string, object>
+                {
+                    ["reason"] = "missing_source_relations_from_file_index",
+                    ["selectedCabCount"] = selectedCabs.Count
+                });
+            }
+
+            ExpandEndfieldCabDependencyClosure(connection, selectedCabs, cabToInnerFile, includeRelationClosure);
+
+            return selectedCabs
+                .Where(cabToInnerFile.ContainsKey)
+                .Select(cab => cabToInnerFile[cab])
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static Dictionary<string, string> LoadEndfieldCabInnerFileMap(SqliteConnection connection, HashSet<string> sourcePaths)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT source_path, serialized_file, name
+FROM source_objects
+WHERE type='AssetBundle'
+  AND name <> '';";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var source = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (!MatchesEndfieldIndexedSource(source, sourcePaths))
+                {
+                    continue;
+                }
+
+                var cab = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                var innerFile = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                if (!string.IsNullOrWhiteSpace(cab) && !string.IsNullOrWhiteSpace(innerFile))
+                {
+                    result[cab] = NormalizeSourceFileFilter(innerFile);
+                }
+            }
+
+            return result;
+        }
+
+        private static HashSet<string> SelectEndfieldCabsForTargetObjects(
+            SqliteConnection connection,
+            HashSet<string> sourcePaths,
+            Regex[] nameFilters,
+            long[] pathIdFilters)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var pathIds = (pathIdFilters ?? Array.Empty<long>()).ToHashSet();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT source_path, serialized_file, name, path_id
+FROM source_objects
+WHERE type <> 'AssetBundle';";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var source = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (!MatchesEndfieldIndexedSource(source, sourcePaths))
+                {
+                    continue;
+                }
+
+                var name = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                var pathId = reader.IsDBNull(3) ? 0 : reader.GetInt64(3);
+                var nameMatched = !nameFilters.IsNullOrEmpty() && nameFilters.Any(filter => filter.IsMatch(name ?? string.Empty));
+                var pathIdMatched = pathIds.Count > 0 && pathIds.Contains(pathId);
+                if (!nameMatched && !pathIdMatched)
+                {
+                    continue;
+                }
+
+                var cab = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                if (!string.IsNullOrWhiteSpace(cab))
+                {
+                    result.Add(cab);
+                }
+            }
+
+            return result;
+        }
+
+        private static void ExpandEndfieldCabDependencyClosure(
+            SqliteConnection connection,
+            HashSet<string> selectedCabs,
+            Dictionary<string, string> cabToInnerFile,
+            bool includeRelationClosure)
+        {
+            var queue = new Queue<string>(selectedCabs);
+            using var externalCommand = connection.CreateCommand();
+            externalCommand.CommandText = @"
+SELECT file_name
+FROM source_externals
+WHERE serialized_file=$cab
+  AND file_name <> '';";
+            var externalCab = externalCommand.Parameters.Add("$cab", SqliteType.Text);
+
+            using var relationCommand = includeRelationClosure ? connection.CreateCommand() : null;
+            SqliteParameter relationCab = null;
+            if (relationCommand != null)
+            {
+                relationCommand.CommandText = @"
+SELECT to_file
+FROM source_relations
+WHERE from_file=$cab
+  AND to_file <> '';";
+                relationCab = relationCommand.Parameters.Add("$cab", SqliteType.Text);
+            }
+
+            while (queue.Count > 0)
+            {
+                var cab = queue.Dequeue();
+
+                externalCab.Value = cab;
+                using (var reader = externalCommand.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        AddCabIfKnown(reader.IsDBNull(0) ? null : reader.GetString(0));
+                    }
+                }
+
+                if (relationCommand == null || relationCab == null)
+                {
+                    continue;
+                }
+
+                relationCab.Value = cab;
+                using (var reader = relationCommand.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        AddCabIfKnown(reader.IsDBNull(0) ? null : reader.GetString(0));
+                    }
+                }
+            }
+
+            void AddCabIfKnown(string candidate)
+            {
+                if (string.IsNullOrWhiteSpace(candidate)
+                    || !cabToInnerFile.ContainsKey(candidate)
+                    || !selectedCabs.Add(candidate))
+                {
+                    return;
+                }
+
+                queue.Enqueue(candidate);
+            }
+        }
+
+        private static bool HasSqliteIndexWithLeadingColumns(
+            SqliteConnection connection,
+            string tableName,
+            params string[] columns)
+        {
+            if (columns == null || columns.Length == 0)
+            {
+                return false;
+            }
+
+            using var indexCommand = connection.CreateCommand();
+            indexCommand.CommandText = $"PRAGMA index_list('{tableName.Replace("'", "''")}');";
+            using var indexReader = indexCommand.ExecuteReader();
+            var indexNames = new List<string>();
+            while (indexReader.Read())
+            {
+                if (!indexReader.IsDBNull(1))
+                {
+                    indexNames.Add(indexReader.GetString(1));
+                }
+            }
+
+            foreach (var indexName in indexNames)
+            {
+                using var infoCommand = connection.CreateCommand();
+                infoCommand.CommandText = $"PRAGMA index_info('{indexName.Replace("'", "''")}');";
+                using var infoReader = infoCommand.ExecuteReader();
+                var indexColumns = new List<string>();
+                while (infoReader.Read())
+                {
+                    if (!infoReader.IsDBNull(2))
+                    {
+                        indexColumns.Add(infoReader.GetString(2));
+                    }
+                }
+
+                if (indexColumns.Count < columns.Length)
+                {
+                    continue;
+                }
+
+                var matches = true;
+                for (var i = 0; i < columns.Length; i++)
+                {
+                    if (!string.Equals(indexColumns[i], columns[i], StringComparison.OrdinalIgnoreCase))
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static Func<string, bool> BuildExactEndfieldVfsInnerFileFilter(IEnumerable<string> innerFiles)
+        {
+            var selected = innerFiles
+                .Select(NormalizeSourceFileFilter)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var selectedByFileName = selected
+                .GroupBy(GetNormalizedFileName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(path => "/" + path).ToArray(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            return fileName =>
+            {
+                var normalized = NormalizeSourceFileFilter(fileName);
+                if (selected.Contains(normalized))
+                {
+                    return true;
+                }
+
+                // 这里会被 Endfield VFS 每个内部文件调用。先按文件名定位少量候选，
+                // 再保留旧的后缀兼容，避免全量 selected.Any 带来的成倍扫描。
+                var leaf = GetNormalizedFileName(normalized);
+                return selectedByFileName.TryGetValue(leaf, out var suffixes)
+                    && suffixes.Any(suffix => normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+            };
+        }
+
+        private static bool MatchesEndfieldIndexedSource(string sourcePath, HashSet<string> sourcePaths)
+        {
+            if (sourcePaths == null || sourcePaths.Count == 0)
+            {
+                return false;
+            }
+
+            var normalized = NormalizeSourceFileFilter(sourcePath ?? string.Empty);
+            if (sourcePaths.Contains(normalized))
+            {
+                return true;
+            }
+
+            var vfsRelative = NormalizeEndfieldVfsRelativeSource(normalized);
+            if (!string.IsNullOrWhiteSpace(vfsRelative) && sourcePaths.Contains(vfsRelative))
+            {
+                return true;
+            }
+
+            // Endfield 源索引里的对象来源是 “外层.blc|内部.ab|CAB”。
+            // 定向导出时 files 列表只有外层 .blc；这里按外层段匹配，才能从
+            // --source_index + --names 精确反推出目标 inner UnityFS 文件。
+            var pipe = normalized.IndexOf('|');
+            if (pipe > 0)
+            {
+                var outerSource = normalized[..pipe];
+                if (sourcePaths.Contains(outerSource))
+                {
+                    return true;
+                }
+
+                var outerVfsRelative = NormalizeEndfieldVfsRelativeSource(outerSource);
+                if (!string.IsNullOrWhiteSpace(outerVfsRelative) && sourcePaths.Contains(outerVfsRelative))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string NormalizeEndfieldVfsRelativeSource(string sourcePath)
+        {
+            var normalized = NormalizeSourceFileFilter(sourcePath ?? string.Empty);
+            var marker = "/VFS/";
+            var index = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                return string.Empty;
+            }
+
+            return normalized[(index + marker.Length)..].Trim('/');
+        }
+
         private static string NormalizeSourceFileFilter(string path)
         {
             return path
                 .Trim()
                 .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                 .Replace('\\', '/');
+        }
+
+        private static string GetNormalizedFileName(string normalizedPath)
+        {
+            normalizedPath ??= string.Empty;
+            var index = normalizedPath.LastIndexOf('/');
+            return index >= 0 ? normalizedPath[(index + 1)..] : normalizedPath;
         }
 
         private static string NormalizeSourceFileForMatch(string path, string inputRoot)
@@ -1253,11 +2376,33 @@ namespace AnimeStudio.CLI
         private static object BuildAnimatorControllerInspect(AnimatorController controller)
         {
             var stateMachines = controller.m_Controller?.m_StateMachineArray ?? new List<StateMachineConstant>();
+            var parseBytesRead = controller.reader?.Position - controller.reader?.byteStart;
+            var parseBytesLeft = controller.reader?.BytesLeft();
             return new
             {
                 name = controller.Name,
                 pathId = controller.m_PathID,
+                byteSize = controller.byteSize,
+                parseBytesRead,
+                parseBytesLeft,
+                parseStatus = parseBytesLeft == 0
+                    ? "exact"
+                    : parseBytesLeft > 0
+                        ? "underread"
+                        : "overread",
+                typeTreeDumpPreview = TryBuildTypeTreeDumpPreview(controller, 50000),
                 tosCount = controller.m_TOS?.Count ?? 0,
+                tosSamples = controller.m_TOS?
+                    .OrderBy(x => x.Value, StringComparer.Ordinal)
+                    .Take(1000)
+                    .Select(x => new
+                    {
+                        hash = x.Key,
+                        hashHex = $"0x{x.Key:X8}",
+                        path = x.Value,
+                    })
+                    .ToArray() ?? Array.Empty<object>(),
+                controllerValueDefaults = DescribeControllerValueDefaultsForInspect(controller),
                 clips = controller.m_AnimationClips?.Select((x, index) => new
                 {
                     index,
@@ -1269,6 +2414,13 @@ namespace AnimeStudio.CLI
                     index,
                     stateMachineIndex = x.m_StateMachineIndex,
                     stateMachineMotionSetIndex = x.m_StateMachineMotionSetIndex,
+                    binding = x.m_Binding,
+                    blendingMode = x.m_LayerBlendingMode,
+                    defaultWeight = x.m_DefaultWeight,
+                    iKPass = x.m_IKPass,
+                    syncedLayerAffectsTiming = x.m_SyncedLayerAffectsTiming,
+                    bodyMask = DescribeHumanPoseMaskForInspect(x.m_BodyMask),
+                    skeletonMask = DescribeSkeletonMaskForInspect(x.m_SkeletonMask, controller.m_TOS),
                 }).ToArray() ?? Array.Empty<object>(),
                 stateMachines = stateMachines.Select((machine, machineIndex) => new
                 {
@@ -1285,8 +2437,11 @@ namespace AnimeStudio.CLI
                         fullPath = TryGetTos(controller, state.m_FullPathID),
                         speed = state.m_Speed,
                         cycleOffset = state.m_CycleOffset,
+                        iKOnFeet = state.m_IKOnFeet,
                         loop = state.m_Loop,
                         mirror = state.m_Mirror,
+                        transitions = DescribeTransitionsForInspect(state.m_TransitionConstantArray, controller.m_TOS),
+                        stateParameters = DescribeStateParametersForInspect(state.m_StateParameterConstantArray, controller.m_TOS),
                         blendTreeIndexArray = state.m_BlendTreeConstantIndexArray,
                         blendTrees = state.m_BlendTreeConstantArray?.Select((tree, treeIndex) => new
                         {
@@ -1301,6 +2456,23 @@ namespace AnimeStudio.CLI
                                 blendEventY = TryGetTos(controller, node.m_BlendEventYID),
                                 childIndices = node.m_ChildIndices,
                                 childThresholds = node.m_ChildThresholdArray,
+                                blend1dChildThresholds = node.m_Blend1dData?.m_ChildThresholdArray,
+                                directChildBlendEventIds = node.m_BlendDirectData?.m_ChildBlendEventIDArray,
+                                directChildBlendEvents = DescribeTosArrayForInspect(node.m_BlendDirectData?.m_ChildBlendEventIDArray, controller.m_TOS),
+                                directChildPoseTimeEventIds = node.m_BlendDirectData?.m_ChildPoseTimeEventIDArray,
+                                directChildPoseTimeEvents = DescribeTosArrayForInspect(node.m_BlendDirectData?.m_ChildPoseTimeEventIDArray, controller.m_TOS),
+                                directNormalizedBlendValues = node.m_BlendDirectData?.m_NormalizedBlendValues,
+                                directUsePoseTimeValues = node.m_BlendDirectData?.m_UsePoseTimeValues,
+                                sequenceChildBlendEventIds = node.m_BlendSequenceData?.m_ChildBlendEventIDArray,
+                                sequenceChildBlendEvents = DescribeTosArrayForInspect(node.m_BlendSequenceData?.m_ChildBlendEventIDArray, controller.m_TOS),
+                                sequenceChildPoseTimeEventIds = node.m_BlendSequenceData?.m_ChildPoseTimeEventIDArray,
+                                sequenceChildPoseTimeEvents = DescribeTosArrayForInspect(node.m_BlendSequenceData?.m_ChildPoseTimeEventIDArray, controller.m_TOS),
+                                sequenceNormalizedBlendValues = node.m_BlendSequenceData?.m_NormalizedBlendValues,
+                                sequenceUsePoseTimeValues = node.m_BlendSequenceData?.m_UsePoseTimeValues,
+                                sequenceChildSpeed = node.m_BlendSequenceData?.m_ChildSpeed,
+                                sequenceChildLodThreshold = node.m_BlendSequenceData?.m_ChildLodThreshold,
+                                sequenceChildAbilityThreshold = node.m_BlendSequenceData?.m_ChildAbilityThreshold,
+                                sequenceChildCullingMode = node.m_BlendSequenceData?.m_ChildCullingMode,
                                 clipId = node.m_ClipID,
                                 clip = TryGetTos(controller, node.m_ClipID),
                                 clipSlot = TryGetAnimatorControllerClipSlot(controller, node.m_ClipID),
@@ -1312,8 +2484,315 @@ namespace AnimeStudio.CLI
                             }).ToArray() ?? Array.Empty<object>(),
                         }).ToArray() ?? Array.Empty<object>(),
                     }).ToArray() ?? Array.Empty<object>(),
+                    anyStateTransitions = DescribeTransitionsForInspect(machine.m_AnyStateTransitionConstantArray, controller.m_TOS),
+                    selectorStates = machine.m_SelectorStateConstantArray?.Select((selector, selectorIndex) => new
+                    {
+                        selectorIndex,
+                        fullPathId = selector.m_FullPathID,
+                        fullPath = TryGetTos(controller, selector.m_FullPathID),
+                        isEntry = selector.m_isEntry,
+                        transitions = selector.m_TransitionConstantArray?.Select((transition, transitionIndex) => new
+                        {
+                            transitionIndex,
+                            destination = transition.m_Destination,
+                            conditions = DescribeConditionsForInspect(transition.m_ConditionConstantArray, controller.m_TOS),
+                        }).ToArray() ?? Array.Empty<object>(),
+                    }).ToArray() ?? Array.Empty<object>(),
                 }).ToArray(),
             };
+        }
+
+        private static JObject DescribeControllerValueDefaultsForInspect(AnimatorController controller)
+        {
+            var values = controller?.m_Controller?.m_Values?.m_ValueArray ?? new List<ValueConstant>();
+            var defaults = controller?.m_Controller?.m_DefaultValues;
+            var items = new JArray();
+            foreach (var value in values.Take(4096))
+            {
+                var resolvedDefault = ResolveControllerDefaultValue(defaults, value);
+                var item = new JObject
+                {
+                    ["id"] = value.m_ID,
+                    ["idHex"] = $"0x{value.m_ID:X8}",
+                    ["name"] = TryGetTos(controller, value.m_ID),
+                    ["typeId"] = value.m_TypeID,
+                    ["typeIdHex"] = $"0x{value.m_TypeID:X8}",
+                    ["type"] = value.m_Type,
+                    ["typeName"] = DescribeAnimatorControllerParameterType(value.m_Type),
+                    ["index"] = value.m_Index,
+                    ["defaultCandidates"] = DescribeControllerDefaultCandidates(defaults, value.m_Index),
+                    ["rule"] = "diagnostic_only: resolvedDefault* records the AnimatorController serialized parameter default. It is deterministic controller data, but runtime-updated game parameters are still not recovered.",
+                };
+                if (resolvedDefault != null)
+                {
+                    item["resolvedDefaultKind"] = resolvedDefault.Kind;
+                    item["resolvedDefaultValue"] = JToken.FromObject(resolvedDefault.Value);
+                    item["resolvedDefaultSource"] = resolvedDefault.Source;
+                }
+                items.Add(item);
+            }
+
+            return new JObject
+            {
+                ["valueCount"] = values.Count,
+                ["emittedValueCount"] = items.Count,
+                ["truncated"] = values.Count > items.Count,
+                ["defaultBoolCount"] = defaults?.m_BoolValues?.Length ?? 0,
+                ["defaultIntCount"] = defaults?.m_IntValues?.Length ?? 0,
+                ["defaultFloatCount"] = defaults?.m_FloatValues?.Length ?? 0,
+                ["defaultPositionCount"] = defaults?.m_PositionValues?.Length ?? 0,
+                ["defaultQuaternionCount"] = defaults?.m_QuaternionValues?.Length ?? 0,
+                ["defaultScaleCount"] = defaults?.m_ScaleValues?.Length ?? 0,
+                ["values"] = items,
+            };
+        }
+
+        private static JObject DescribeControllerDefaultCandidates(ValueArray defaults, uint index)
+        {
+            var result = new JObject();
+            var i = unchecked((int)index);
+            if (defaults == null || i < 0)
+            {
+                return result;
+            }
+
+            if (defaults.m_BoolValues != null && i < defaults.m_BoolValues.Length)
+            {
+                result["bool"] = defaults.m_BoolValues[i];
+            }
+            if (defaults.m_IntValues != null && i < defaults.m_IntValues.Length)
+            {
+                result["int"] = defaults.m_IntValues[i];
+            }
+            if (defaults.m_FloatValues != null && i < defaults.m_FloatValues.Length)
+            {
+                result["float"] = defaults.m_FloatValues[i];
+            }
+            if (defaults.m_PositionValues != null && i < defaults.m_PositionValues.Length)
+            {
+                var v = defaults.m_PositionValues[i];
+                result["position"] = new JArray(v.X, v.Y, v.Z);
+            }
+            if (defaults.m_QuaternionValues != null && i < defaults.m_QuaternionValues.Length)
+            {
+                var q = defaults.m_QuaternionValues[i];
+                result["quaternion"] = new JArray(q.X, q.Y, q.Z, q.W);
+            }
+            if (defaults.m_ScaleValues != null && i < defaults.m_ScaleValues.Length)
+            {
+                var v = defaults.m_ScaleValues[i];
+                result["scale"] = new JArray(v.X, v.Y, v.Z);
+            }
+
+            return result;
+        }
+
+        private static ControllerDefaultValue ResolveControllerDefaultValue(ValueArray defaults, ValueConstant value)
+        {
+            if (defaults == null || value == null)
+            {
+                return null;
+            }
+
+            var i = unchecked((int)value.m_Index);
+            if (i < 0)
+            {
+                return null;
+            }
+
+            // Unity AnimatorController 参数枚举：Float=1, Int=3, Bool=4, Trigger=9。
+            // 这里只解析明确的默认值来源；运行时脚本改写的参数仍需要额外证据。
+            switch (value.m_Type)
+            {
+                case 1 when defaults.m_FloatValues != null && i < defaults.m_FloatValues.Length:
+                    return new ControllerDefaultValue("float", defaults.m_FloatValues[i], "m_DefaultValues.m_FloatValues");
+                case 3 when defaults.m_IntValues != null && i < defaults.m_IntValues.Length:
+                    return new ControllerDefaultValue("int", defaults.m_IntValues[i], "m_DefaultValues.m_IntValues");
+                case 4 when defaults.m_BoolValues != null && i < defaults.m_BoolValues.Length:
+                    return new ControllerDefaultValue("bool", defaults.m_BoolValues[i], "m_DefaultValues.m_BoolValues");
+                case 9 when defaults.m_BoolValues != null && i < defaults.m_BoolValues.Length:
+                    return new ControllerDefaultValue("trigger", defaults.m_BoolValues[i], "m_DefaultValues.m_BoolValues");
+                default:
+                    return null;
+            }
+        }
+
+        private static string DescribeAnimatorControllerParameterType(uint type)
+        {
+            return type switch
+            {
+                1 => "Float",
+                3 => "Int",
+                4 => "Bool",
+                9 => "Trigger",
+                _ => "Unknown",
+            };
+        }
+
+        private sealed record ControllerDefaultValue(string Kind, object Value, string Source);
+
+        private static JObject DescribeHumanPoseMaskForInspect(HumanPoseMask mask)
+        {
+            if (mask == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["word0"] = mask.word0,
+                ["word1"] = mask.word1,
+                ["word2"] = mask.word2,
+                ["isEmpty"] = mask.word0 == 0 && mask.word1 == 0 && mask.word2 == 0,
+                ["rawHex"] = new JArray(
+                    $"0x{mask.word0:X8}",
+                    $"0x{mask.word1:X8}",
+                    $"0x{mask.word2:X8}"),
+            };
+        }
+
+        private static JObject DescribeSkeletonMaskForInspect(SkeletonMask mask, IReadOnlyDictionary<uint, string> tos)
+        {
+            if (mask?.m_Data == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["count"] = mask.m_Data.Count,
+                ["nonZeroCount"] = mask.m_Data.Count(x => Math.Abs(x.m_Weight) > 0.0001f),
+                ["entries"] = new JArray(mask.m_Data.Select(x => new JObject
+                {
+                    ["pathHash"] = x.m_PathHash,
+                    ["pathHashHex"] = $"0x{x.m_PathHash:X8}",
+                    ["path"] = tos != null && tos.TryGetValue(x.m_PathHash, out var path) ? path : null,
+                    ["weight"] = x.m_Weight,
+                })),
+            };
+        }
+
+        private static object[] DescribeStateParametersForInspect(StateParameterConstant[] parameters, IReadOnlyDictionary<uint, string> tos)
+        {
+            return parameters?
+                .Select(x => new
+                {
+                    nameId = x.m_NameID,
+                    nameIdHex = $"0x{unchecked((uint)x.m_NameID):X8}",
+                    name = tos != null && tos.TryGetValue(unchecked((uint)x.m_NameID), out var name) ? name : null,
+                    value = x.m_Value,
+                })
+                .ToArray()
+                ?? Array.Empty<object>();
+        }
+
+        private static object[] DescribeTosArrayForInspect(IEnumerable<uint> ids, IReadOnlyDictionary<uint, string> tos)
+        {
+            return ids?
+                .Select((id, index) => new
+                {
+                    index,
+                    id,
+                    idHex = $"0x{id:X8}",
+                    name = TryGetTos(tos, id),
+                })
+                .ToArray()
+                ?? Array.Empty<object>();
+        }
+
+        private static object[] DescribeTransitionsForInspect(IEnumerable<TransitionConstant> transitions, IReadOnlyDictionary<uint, string> tos)
+        {
+            return transitions?
+                .Select((transition, transitionIndex) => new
+                {
+                    transitionIndex,
+                    destinationState = transition.m_DestinationState,
+                    fullPathId = transition.m_FullPathID,
+                    fullPath = TryGetTos(tos, transition.m_FullPathID),
+                    id = transition.m_ID,
+                    userId = transition.m_UserID,
+                    duration = transition.m_TransitionDuration,
+                    offset = transition.m_TransitionOffset,
+                    exitTime = transition.m_ExitTime,
+                    hasExitTime = transition.m_HasExitTime,
+                    hasFixedDuration = transition.m_HasFixedDuration,
+                    interruptionSource = transition.m_InterruptionSource,
+                    orderedInterruption = transition.m_OrderedInterruption,
+                    canTransitionToSelf = transition.m_CanTransitionToSelf,
+                    conditions = DescribeConditionsForInspect(transition.m_ConditionConstantArray, tos),
+                })
+                .ToArray()
+                ?? Array.Empty<object>();
+        }
+
+        private static object[] DescribeConditionsForInspect(IEnumerable<ConditionConstant> conditions, IReadOnlyDictionary<uint, string> tos)
+        {
+            return conditions?
+                .Select((condition, conditionIndex) => new
+                {
+                    conditionIndex,
+                    mode = condition.m_ConditionMode,
+                    modeName = DescribeAnimatorConditionMode(condition.m_ConditionMode),
+                    eventId = condition.m_EventID,
+                    eventIdHex = $"0x{condition.m_EventID:X8}",
+                    eventName = TryGetTos(tos, condition.m_EventID),
+                    threshold = condition.m_EventThreshold,
+                    exitTime = condition.m_ExitTime,
+                })
+                .ToArray()
+                ?? Array.Empty<object>();
+        }
+
+        private static string DescribeAnimatorConditionMode(uint mode)
+        {
+            return mode switch
+            {
+                1 => "If",
+                2 => "IfNot",
+                3 => "Greater",
+                4 => "Less",
+                6 => "Equals",
+                7 => "NotEqual",
+                _ => "Unknown",
+            };
+        }
+
+        private static string TryGetTos(IReadOnlyDictionary<uint, string> tos, uint id)
+        {
+            return tos != null && tos.TryGetValue(id, out var value)
+                ? value
+                : null;
+        }
+
+        private static string TryBuildTypeTreeDumpPreview(AnimeStudio.Object obj, int maxChars)
+        {
+            if (obj?.reader == null || obj.serializedType?.m_Type == null)
+            {
+                return null;
+            }
+
+            var pos = obj.reader.Position;
+            try
+            {
+                obj.reader.Reset();
+                var dump = obj.Dump();
+                if (string.IsNullOrWhiteSpace(dump))
+                {
+                    return null;
+                }
+
+                return dump.Length <= maxChars
+                    ? dump
+                    : dump[..maxChars] + "\n...<truncated>";
+            }
+            catch (Exception e)
+            {
+                return $"{e.GetType().Name}: {e.Message}";
+            }
+            finally
+            {
+                obj.reader.Position = pos;
+            }
         }
 
         private static int? TryGetAnimatorControllerClipSlot(AnimatorController controller, uint clipId)
@@ -1605,10 +3084,48 @@ namespace AnimeStudio.CLI
             }
         }
 
+        private static string ResolveSourceModelCandidateSelector(Options o)
+        {
+            if (!string.IsNullOrWhiteSpace(o?.PreviewModel))
+            {
+                return o.PreviewModel;
+            }
+
+            var nameFilters = o?.NameFilter?
+                .Where(x => x != null)
+                .Select(x => x.ToString())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            if (nameFilters != null && nameFilters.Length > 0)
+            {
+                return nameFilters.Length == 1
+                    ? nameFilters[0]
+                    : string.Join("|", nameFilters.Select(x => "(" + x + ")"));
+            }
+
+            var containerFilters = o?.ContainerFilter?
+                .Where(x => x != null)
+                .Select(x => x.ToString())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            if (containerFilters != null && containerFilters.Length > 0)
+            {
+                return containerFilters.Length == 1
+                    ? containerFilters[0]
+                    : string.Join("|", containerFilters.Select(x => "(" + x + ")"));
+            }
+
+            return null;
+        }
+
         private static void TryAutoRecoverUnityBakeAssets(Options o, string libraryRoot, Game game, string sourceRoot)
         {
-            TryAutoRecoverImportedAvatarAssets(o, libraryRoot, game, sourceRoot);
-            TryAutoRecoverImportedAnimationClips(o, libraryRoot);
+            Logger.Info("Legacy game-specific Unity bake asset auto recovery is deprecated and skipped by default. Production animation export must end as glTF TRS/weights; UnityBakeAccelerated remains allowed when it is deterministic, automated, high-throughput, and visually validated.");
+        }
+
+        private static void WarnUnityBakeDeprecated()
+        {
+            Logger.Warning("External Unity-project bake workflow is deprecated. Treat generated Unity project/plugin/helper bake requests/results as diagnostic legacy output only; production animation assets must be directly reusable glTF TRS/weights data generated by AnimeStudio.");
         }
 
         private static void TryPrepareAnimatorControllerBakeContext(Options o, string libraryRoot)
@@ -1649,7 +3166,9 @@ namespace AnimeStudio.CLI
                     unitySettings.UnityProject,
                     o.PreviewModel,
                     o.PackAnimations ?? o.PreviewAnimation,
-                    limit: Math.Max(1, o.PreviewValidationLimit <= 0 ? 1 : o.PreviewValidationLimit),
+                    // AnimatorController 诊断需要同状态的 additional layer clips；
+                    // 这里不能被 preview limit 截掉，否则生成的 controller 上下文会缺层。
+                    limit: 0,
                     force: false,
                     explicitIndexPath: o.IndexPath?.FullName);
             }
@@ -1706,7 +3225,8 @@ namespace AnimeStudio.CLI
                     limit: 0,
                     force: false,
                     runProbe: !string.IsNullOrWhiteSpace(unitySettings.UnityEditor),
-                    explicitIndexPath: o.IndexPath?.FullName);
+                    explicitIndexPath: o.IndexPath?.FullName,
+                    sourceIndexPath: o.SourceIndex?.FullName);
             }
             catch (Exception e)
             {

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers.Binary;
 using System.IO;
 using System.Linq;
 using static AnimeStudio.ImportHelper;
@@ -60,6 +61,12 @@ namespace AnimeStudio
                             Logger.Verbose("File is VFS !!");
                             Position = 0;
                             return FileType.VFSFile;
+                        }
+                        if (IsEndfieldVfsBlockList())
+                        {
+                            Logger.Verbose("File is Endfield VFS block list !!");
+                            Position = 0;
+                            return FileType.EndfieldVFSBlockFile;
                         }
                         Position = 0;
                         byte[] magic = ReadBytes(2);
@@ -131,6 +138,27 @@ namespace AnimeStudio
                         Logger.Verbose($"Parsed signature does not match any of the supported signatures, assuming resource file");
                         return FileType.ResourceFile;
                     }
+            }
+        }
+
+        private bool IsEndfieldVfsBlockList()
+        {
+            var originalPosition = Position;
+            try
+            {
+                if (!string.Equals(Path.GetExtension(FileName), ".blc", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (BaseStream.Length < 16)
+                    return false;
+
+                Position = 0;
+                Span<byte> versionBytes = stackalloc byte[4];
+                Read(versionBytes);
+                return BinaryPrimitives.ReadInt32LittleEndian(versionBytes) == 3;
+            }
+            finally
+            {
+                Position = originalPosition;
             }
         }
 

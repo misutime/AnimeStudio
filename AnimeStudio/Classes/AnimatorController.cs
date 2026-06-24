@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
+using SevenZip;
 
 namespace AnimeStudio
 {
@@ -291,19 +293,21 @@ namespace AnimeStudio
     public class BlendDirectDataConstant
     {
         public uint[] m_ChildBlendEventIDArray;
+        public uint[] m_ChildPoseTimeEventIDArray;
         public bool m_NormalizedBlendValues;
+        public bool m_UsePoseTimeValues;
 
         public BlendDirectDataConstant(ObjectReader reader)
         {
             m_ChildBlendEventIDArray = reader.ReadUInt32Array();
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                var m_ChildPoseTimeEventIDArray = reader.ReadUInt32Array();
+                m_ChildPoseTimeEventIDArray = reader.ReadUInt32Array();
             }
             m_NormalizedBlendValues = reader.ReadBoolean();
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                var m_UsePoseTimeValues = reader.ReadBoolean();
+                m_UsePoseTimeValues = reader.ReadBoolean();
             }
             reader.AlignStream();
         }
@@ -412,6 +416,7 @@ namespace AnimeStudio
         public Blend1dDataConstant m_Blend1dData;
         public Blend2dDataConstant m_Blend2dData;
         public BlendDirectDataConstant m_BlendDirectData;
+        public BlendSequenceDataConstant m_BlendSequenceData;
         public List<BlendTreeTriangle> m_Triangles;
         public uint m_ClipID;
         public uint m_ClipIndex;
@@ -463,7 +468,7 @@ namespace AnimeStudio
 
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                var m_BlendSequenceData = new BlendSequenceDataConstant(reader);
+                m_BlendSequenceData = new BlendSequenceDataConstant(reader);
             }
 
             m_ClipID = reader.ReadUInt32();
@@ -532,6 +537,7 @@ namespace AnimeStudio
         public bool m_WriteDefaultValues;
         public bool m_Loop;
         public bool m_Mirror;
+        public StateParameterConstant[] m_StateParameterConstantArray;
 
         private static bool HasMDBBlendRate(SerializedType type) => type.Match("EC609A57E104C0459D2694035D42E771");
 
@@ -619,7 +625,7 @@ namespace AnimeStudio
                 var m_CullingMode = reader.ReadUInt32();
                 reader.AlignStream();
                 var numStateParameterConstant = reader.ReadInt32();
-                var m_StateParameterConstantArray = new StateParameterConstant[numStateParameterConstant];
+                m_StateParameterConstantArray = new StateParameterConstant[numStateParameterConstant];
                 for (int i = 0; i < numStateParameterConstant; i++)
                 {
                     m_StateParameterConstantArray[i] = new StateParameterConstant(reader);
@@ -852,9 +858,23 @@ namespace AnimeStudio
 
             int tosSize = reader.ReadInt32();
             m_TOS = new Dictionary<uint, string>();
-            for (int i = 0; i < tosSize; i++)
+            if (reader.Game.Type.IsArknightsEndfieldGroup())
             {
-                m_TOS.Add(reader.ReadUInt32(), reader.ReadAlignedString());
+                // Endfield 正式版把旧 Unity 的 hash->string m_TOS 改成了字符串数组 m_TOSData。
+                // 状态机里仍保存 CRC32 hash，所以这里按 Unity/TypeTree 口径重建查表。
+                for (int i = 0; i < tosSize; i++)
+                {
+                    var value = reader.ReadAlignedString();
+                    var hash = CRC.CalculateDigestUTF8(value ?? string.Empty);
+                    m_TOS.TryAdd(hash, value);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < tosSize; i++)
+                {
+                    m_TOS.Add(reader.ReadUInt32(), reader.ReadAlignedString());
+                }
             }
 
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
@@ -874,7 +894,78 @@ namespace AnimeStudio
                 m_AnimationClips.Add(new PPtr<AnimationClip>(reader));
             }
 
+            if (reader.Game.Type.IsArknightsEndfieldGroup())
+            {
+                TryReadEndfieldAnimatorControllerTail(reader);
+            }
+
             // TODO add some more stuff maybe?
+        }
+
+        private static void TryReadEndfieldAnimatorControllerTail(ObjectReader reader)
+        {
+            var pos = reader.Position;
+            try
+            {
+                // 这段来自 Endfield TypeTree 的尾部诊断字段：
+                // StateMachineBehaviourVectorDescription、m_StateMachineBehaviours、
+                // m_MultiThreadedStateMachine、m_ClothCalculatorType、m_EnableOptClipBindings、m_ReserveCount。
+                // 当前只完整消费最常见的空 behaviour 表，避免非空表结构未确认时误读后续对象。
+                if (reader.BytesLeft() < 12)
+                {
+                    return;
+                }
+
+                var behaviourRangeCount = reader.ReadInt32();
+                if (behaviourRangeCount != 0)
+                {
+                    reader.Position = pos;
+                    return;
+                }
+
+                var behaviourIndexCount = reader.ReadInt32();
+                if (behaviourIndexCount < 0 || behaviourIndexCount > 4096 || reader.BytesLeft() < behaviourIndexCount * sizeof(int) + sizeof(int))
+                {
+                    reader.Position = pos;
+                    return;
+                }
+
+                for (var i = 0; i < behaviourIndexCount; i++)
+                {
+                    reader.ReadInt32();
+                }
+
+                var behaviourCount = reader.ReadInt32();
+                if (behaviourCount != 0)
+                {
+                    reader.Position = pos;
+                    return;
+                }
+
+                if (reader.BytesLeft() <= 0)
+                {
+                    return;
+                }
+
+                reader.ReadBoolean(); // m_MultiThreadedStateMachine
+                reader.AlignStream();
+                if (reader.BytesLeft() >= sizeof(int))
+                {
+                    reader.ReadInt32(); // m_ClothCalculatorType
+                }
+                if (reader.BytesLeft() >= 1)
+                {
+                    reader.ReadBoolean(); // m_EnableOptClipBindings
+                }
+                if (reader.BytesLeft() >= 1)
+                {
+                    reader.ReadByte(); // m_ReserveCount
+                }
+            }
+            catch (EndOfStreamException)
+            {
+                reader.Position = pos;
+            }
         }
     }
 }

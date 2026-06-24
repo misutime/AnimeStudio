@@ -85,7 +85,8 @@ namespace AnimeStudio.CLI
                 var expectedRoot = Directory.Exists(expectedInputRoot)
                     ? Path.GetFullPath(expectedInputRoot)
                     : Path.GetDirectoryName(Path.GetFullPath(expectedInputRoot));
-                if (!string.Equals(NormalizeRoot(sourceRoot), NormalizeRoot(expectedRoot), StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(NormalizeRoot(sourceRoot), NormalizeRoot(expectedRoot), StringComparison.OrdinalIgnoreCase)
+                    && !IsEndfieldVfsLayerRootMatch(sourceRoot, expectedRoot, expectedGame))
                 {
                     throw new InvalidDataException($"SQLite source index root does not match input. index={sourceRoot}, input={expectedRoot}");
                 }
@@ -125,6 +126,37 @@ namespace AnimeStudio.CLI
                 FailedBatches = failedBatches,
             };
             return CurrentLoadResult;
+        }
+
+        private static bool IsEndfieldVfsLayerRootMatch(string indexRoot, string inputRoot, string expectedGame)
+        {
+            if (string.IsNullOrWhiteSpace(expectedGame)
+                || !expectedGame.Contains("ArknightsEndfield", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var normalizedIndex = NormalizeRoot(indexRoot);
+            var normalizedInput = NormalizeRoot(inputRoot);
+
+            // 新版 Endfield 源索引会把 sourceRoot 提升到 Endfield_Data，
+            // 但旧导出命令常传 StreamingAssets/VFS 或 Persistent/VFS。
+            // 这里仅允许这组三层目录互相兼容，不放宽普通 Unity 游戏的 root 校验。
+            return IsEndfieldDataRootForVfsLayer(normalizedIndex, normalizedInput)
+                || IsEndfieldDataRootForVfsLayer(normalizedInput, normalizedIndex);
+        }
+
+        private static bool IsEndfieldDataRootForVfsLayer(string possibleDataRoot, string possibleVfsRoot)
+        {
+            if (string.IsNullOrWhiteSpace(possibleDataRoot) || string.IsNullOrWhiteSpace(possibleVfsRoot))
+            {
+                return false;
+            }
+
+            var streaming = NormalizeRoot(Path.Combine(possibleDataRoot, "StreamingAssets", "VFS"));
+            var persistent = NormalizeRoot(Path.Combine(possibleDataRoot, "Persistent", "VFS"));
+            return string.Equals(possibleVfsRoot, streaming, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(possibleVfsRoot, persistent, StringComparison.OrdinalIgnoreCase);
         }
 
         public static void WriteUsageReport(string outputRoot, LoadResult result)

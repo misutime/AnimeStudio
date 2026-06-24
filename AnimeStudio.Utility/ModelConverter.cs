@@ -13,6 +13,16 @@ namespace AnimeStudio
         Reference
     }
 
+    public class ModelConversionIssue
+    {
+        public string Kind { get; set; }
+        public string Name { get; set; }
+        public string Source { get; set; }
+        public string External { get; set; }
+        public long PathId { get; set; }
+        public string Detail { get; set; }
+    }
+
     public class ModelConverter : IImported
     {
         public ImportedFrame RootFrame { get; protected set; }
@@ -21,6 +31,7 @@ namespace AnimeStudio
         public List<ImportedTexture> TextureList { get; protected set; } = new List<ImportedTexture>();
         public List<ImportedKeyframedAnimation> AnimationList { get; protected set; } = new List<ImportedKeyframedAnimation>();
         public List<ImportedMorph> MorphList { get; protected set; } = new List<ImportedMorph>();
+        public List<ModelConversionIssue> ConversionIssues { get; } = new List<ModelConversionIssue>();
 
         private Options options;
         private Avatar avatar;
@@ -648,7 +659,7 @@ namespace AnimeStudio
             MeshList.Add(iMesh);
         }
 
-        private static Mesh GetMesh(Renderer meshR)
+        private Mesh GetMesh(Renderer meshR)
         {
             if (meshR is SkinnedMeshRenderer sMesh)
             {
@@ -659,6 +670,13 @@ namespace AnimeStudio
 
                 sMesh.m_GameObject.TryGet(out var gameObject);
                 var externalName = GetExternalFileName(sMesh.m_Mesh.m_FileID, sMesh.assetsFile);
+                RecordConversionIssue(
+                    "unresolvedSkinnedMesh",
+                    gameObject?.m_Name,
+                    sMesh.assetsFile?.originalPath ?? sMesh.assetsFile?.fileName,
+                    externalName,
+                    sMesh.m_Mesh.m_PathID,
+                    $"rendererPathId={sMesh.m_PathID}");
                 Logger.Warning(
                     $"Unable to resolve SkinnedMeshRenderer mesh for {gameObject?.m_Name ?? "<unknown>"} " +
                     $"rendererPathId={sMesh.m_PathID} source={sMesh.assetsFile?.originalPath ?? sMesh.assetsFile?.fileName} " +
@@ -675,11 +693,19 @@ namespace AnimeStudio
                         return m_Mesh;
                     }
 
+                    var externalName = GetExternalFileName(m_GameObject.m_MeshFilter.m_Mesh.m_FileID, m_GameObject.m_MeshFilter.assetsFile);
+                    RecordConversionIssue(
+                        "unresolvedMeshFilterMesh",
+                        m_GameObject?.m_Name,
+                        m_GameObject?.assetsFile?.originalPath ?? m_GameObject?.assetsFile?.fileName,
+                        externalName,
+                        m_GameObject.m_MeshFilter.m_Mesh.m_PathID,
+                        null);
                     Logger.Warning(
                         $"Unable to resolve MeshFilter mesh for {m_GameObject?.m_Name ?? "<unknown>"} " +
                         $"source={m_GameObject?.assetsFile?.originalPath ?? m_GameObject?.assetsFile?.fileName} " +
                         $"meshFileId={m_GameObject.m_MeshFilter.m_Mesh.m_FileID} " +
-                        $"meshExternal={GetExternalFileName(m_GameObject.m_MeshFilter.m_Mesh.m_FileID, m_GameObject.m_MeshFilter.assetsFile)} " +
+                        $"meshExternal={externalName} " +
                         $"meshPathId={m_GameObject.m_MeshFilter.m_Mesh.m_PathID}."
                     );
                 }
@@ -856,12 +882,19 @@ namespace AnimeStudio
                     {
                         if (!texEnv.Value.m_Texture.TryGet<Texture2D>(out var m_Texture2D)) //TODO other Texture
                         {
-                            if (!texEnv.Value.m_Texture.IsNull)
-                            {
-                                Logger.Warning($"Unable to resolve texture {texEnv.Key} for material {mat.m_Name}.");
-                            }
-                            continue;
+                        if (!texEnv.Value.m_Texture.IsNull)
+                        {
+                            RecordConversionIssue(
+                                "unresolvedMaterialTexture",
+                                mat.m_Name,
+                                mat.assetsFile?.originalPath ?? mat.assetsFile?.fileName,
+                                GetExternalFileName(texEnv.Value.m_Texture.m_FileID, mat.assetsFile),
+                                texEnv.Value.m_Texture.m_PathID,
+                                texEnv.Key);
+                            Logger.Warning($"Unable to resolve texture {texEnv.Key} for material {mat.m_Name}.");
                         }
+                        continue;
+                    }
 
                         var texture = new ImportedMaterialTexture();
                         iMat.Textures.Add(texture);
@@ -1070,6 +1103,19 @@ namespace AnimeStudio
             destination.UnityVersion = source.UnityVersion;
             destination.Platform = source.Platform;
             destination.RawDataSize = source.RawDataSize;
+        }
+
+        private void RecordConversionIssue(string kind, string name, string source, string external, long pathId, string detail)
+        {
+            ConversionIssues.Add(new ModelConversionIssue
+            {
+                Kind = kind ?? "unknown",
+                Name = name ?? string.Empty,
+                Source = source ?? string.Empty,
+                External = external ?? string.Empty,
+                PathId = pathId,
+                Detail = detail ?? string.Empty,
+            });
         }
 
         private string GetTextureNameExtension()

@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using ACLLibs;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -16,8 +17,11 @@ namespace AnimeStudio.CLI
     public static class SQLiteSourceIndexBuilder
     {
         private const long LargeSourceIndexFileBytes = 256L * 1024L * 1024L;
+        private const long EndfieldVfsInnerBatchBytes = 512L * 1024L * 1024L;
+        private const int EndfieldVfsInnerBatchMinFileCount = 2048;
         private const int SourceIndexWriteCommitInterval = 10_000;
         private const int SourceIndexMaxLightweightArrayCount = 100_000;
+        private const string SourceRelationFeatures = "assetBundle.preload,assetBundle.containerAsset,assetBundle.containerPreload,resourceManager.container";
         private static readonly TimeSpan SourceIndexHeartbeatInterval = TimeSpan.FromSeconds(30);
 
         public static string WriteAnimationRelationHealthReport(string sourceIndexPath, string outputPath = null, bool requireHealthy = false)
@@ -41,6 +45,9 @@ namespace AnimeStudio.CLI
             var health = report["animationRelationHealth"] as JObject;
             var status = health?["status"]?.ToString() ?? "unknown";
             Logger.Info($"Unity source animation relation health status: {status}");
+            var materialHealth = report["materialRelationHealth"] as JObject;
+            var materialStatus = materialHealth?["status"]?.ToString() ?? "unknown";
+            Logger.Info($"Unity source material relation health status: {materialStatus}");
             if (requireHealthy && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
             {
                 var note = health?["note"]?.ToString() ?? "Source index animation relation health is not ok.";
@@ -52,13 +59,48 @@ namespace AnimeStudio.CLI
             return reportPath;
         }
 
+        public static void EnsureQueryIndexes(string sourceIndexPath)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                throw new FileNotFoundException($"Unity source index not found: {sourceIndexPath}", sourceIndexPath);
+            }
+
+            SQLitePCL.Batteries_V2.Init();
+            var dbPath = Path.GetFullPath(sourceIndexPath);
+            using var connection = new SqliteConnection($"Data Source={dbPath}");
+            connection.Open();
+            using var profile = ProfileLogger.Measure("source_index_ensure_query_indexes", new Dictionary<string, object>
+            {
+                ["sourceIndex"] = dbPath,
+            });
+
+            EnsureIndex(connection, "idx_serialized_files_name", "serialized_files", "file_name");
+            EnsureIndex(connection, "idx_source_objects_source_path", "source_objects", "source_path, path_id");
+            EnsureIndex(connection, "idx_source_objects_file_path", "source_objects", "serialized_file, path_id");
+            EnsureIndex(connection, "idx_source_objects_type", "source_objects", "type");
+            EnsureIndex(connection, "idx_source_objects_name", "source_objects", "name");
+            EnsureIndex(connection, "idx_source_externals_file", "source_externals", "serialized_file, file_id");
+            // 关系查询多数从已选模型/Avatar/Controller 的 PathID 出发。PathID 放第一位，避免 Endfield 这类超大表退化成按 relation 全扫。
+            EnsureIndex(connection, "idx_source_relations_from", "source_relations", "from_path_id, relation, from_file");
+            EnsureIndex(connection, "idx_source_relations_to", "source_relations", "to_path_id, relation, to_file");
+            EnsureIndex(connection, "idx_source_relations_relation", "source_relations", "relation");
+            EnsureIndex(connection, "idx_source_animation_bindings_clip", "source_animation_bindings", "animation_file, animation_path_id");
+            CheckpointSourceIndex(connection, dbPath);
+            Logger.Info($"SQLite source query indexes are ready: {dbPath}");
+        }
+
         public static string Build(
             string inputPath,
             string outputPath,
             Game game,
             string unityVersion,
             int batchFiles,
-            string indexPath = null)
+            string indexPath = null,
+            Func<string, bool> endfieldVfsInnerFileFilter = null,
+            int endfieldVfsInnerFileLimit = 0,
+            bool endfieldVfsKeepSameLengthSupplemental = false,
+            bool endfieldVfsIncludeAutoRootsWithExplicitFilter = false)
         {
             using var totalProfile = ProfileLogger.Measure("source_index_total", new Dictionary<string, object>
             {
@@ -93,6 +135,7 @@ namespace AnimeStudio.CLI
             string sourceRoot;
             string[] sourceFiles;
             string[] loadableFiles;
+            EndfieldVfsSourceSelection endfieldVfsSelection = EndfieldVfsSourceSelection.Empty;
             using (ProfileLogger.Measure("source_index_scan_files", new Dictionary<string, object>
             {
                 ["inputPath"] = inputPath,
@@ -104,11 +147,30 @@ namespace AnimeStudio.CLI
                 sourceFiles = Directory.Exists(inputPath)
                     ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
                     : new[] { Path.GetFullPath(inputPath) };
+                sourceFiles = ExpandEndfieldVfsLayerSourceFiles(inputPath, game, ref sourceRoot, sourceFiles);
                 loadableFiles = sourceFiles
                     .Where(x => IsLikelyUnityLoadableFile(x, game))
                     .OrderBy(x => SafeFileLength(x))
                     .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
+            }
+
+            var hasExplicitEndfieldVfsDiagnosticFilter = endfieldVfsInnerFileFilter != null || endfieldVfsInnerFileLimit > 0;
+            var includeEndfieldAutoRootsWithExplicitFilter = hasExplicitEndfieldVfsDiagnosticFilter
+                && endfieldVfsIncludeAutoRootsWithExplicitFilter
+                && game.Type.IsArknightsEndfieldGroup();
+            if (!hasExplicitEndfieldVfsDiagnosticFilter || includeEndfieldAutoRootsWithExplicitFilter)
+            {
+                endfieldVfsSelection = SelectEndfieldVfsSourceFiles(loadableFiles, game, endfieldVfsKeepSameLengthSupplemental);
+                if (!hasExplicitEndfieldVfsDiagnosticFilter && endfieldVfsSelection.SkippedDuplicateCount > 0)
+                {
+                    loadableFiles = endfieldVfsSelection.SelectedFiles;
+                    Logger.Info($"Endfield VFS source selection skipped {endfieldVfsSelection.SkippedDuplicateCount} duplicate .blc file(s); selected {loadableFiles.Length} Unity-loadable file(s).");
+                }
+                else if (includeEndfieldAutoRootsWithExplicitFilter)
+                {
+                    Logger.Info($"Endfield VFS source index keeps default auto root/context selection ({endfieldVfsSelection.SelectedFiles.Length} source file(s)) and adds explicit inner-file closure matches from all loadable VFS files.");
+                }
             }
 
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
@@ -124,6 +186,9 @@ namespace AnimeStudio.CLI
                 ["lightweightRendererObjects"] = 0,
                 ["lightweightRendererRelations"] = 0,
                 ["lightweightRendererFailures"] = 0,
+                ["lightweightMonoBehaviourObjects"] = 0,
+                ["lightweightMonoBehaviourRelations"] = 0,
+                ["lightweightMonoBehaviourFailures"] = 0,
                 ["failedBatches"] = 0,
             };
 
@@ -146,8 +211,37 @@ namespace AnimeStudio.CLI
                 InsertMetadata(connection, transaction, "game", game.Name);
                 InsertMetadata(connection, transaction, "unityVersionOverride", unityVersion ?? string.Empty);
                 InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
-                InsertMetadata(connection, transaction, "animationRelationFeatures", "animatorController.clip,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip");
+                InsertMetadata(connection, transaction, "animationRelationFeatures", "animatorController.clip,animatorController.blendTreeParameter,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip,monoBehaviour.script,monoBehaviour.pptr");
+                InsertMetadata(connection, transaction, "sourceRelationFeatures", SourceRelationFeatures);
                 InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。This database indexes Unity source files, SerializedFiles, objects, PPtr relations, and animation bindings without exporting assets.");
+                if (hasExplicitEndfieldVfsDiagnosticFilter)
+                {
+                    InsertMetadata(connection, transaction, "endfieldVfsPartialDiagnostic", "true");
+                    InsertMetadata(connection, transaction, "endfieldVfsPartialDiagnosticRule", "This source index was built with an explicit Endfield .blc inner-file filter/limit for smoke tests. Do not use it as a production full Library dependency index.");
+                    InsertMetadata(connection, transaction, "endfieldVfsInnerFileLimit", Math.Max(0, endfieldVfsInnerFileLimit).ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "endfieldVfsKeepSameLengthSupplemental", endfieldVfsKeepSameLengthSupplemental ? "true" : "false");
+                    InsertMetadata(connection, transaction, "endfieldVfsIncludeAutoRootsWithExplicitFilter", includeEndfieldAutoRootsWithExplicitFilter ? "true" : "false");
+                    if (includeEndfieldAutoRootsWithExplicitFilter)
+                    {
+                        InsertMetadata(connection, transaction, "endfieldVfsAutoRootSourceFileCount", endfieldVfsSelection.SelectedFiles.Length.ToString(CultureInfo.InvariantCulture));
+                        InsertMetadata(connection, transaction, "endfieldVfsDuplicateSkippedCount", endfieldVfsSelection.SkippedDuplicateCount.ToString(CultureInfo.InvariantCulture));
+                        InsertMetadata(connection, transaction, "endfieldVfsSupplementalInnerFileCount", endfieldVfsSelection.SupplementalInnerFileCount.ToString(CultureInfo.InvariantCulture));
+                    }
+                }
+                else if (loadableFiles.Any(path => IsLikelyEndfieldVfsFile(path, game)))
+                {
+                    InsertMetadata(connection, transaction, "endfieldVfsAutoInnerBatch", "true");
+                    InsertMetadata(connection, transaction, "endfieldVfsAutoInnerBatchRule", "Endfield .blc files are indexed by loading their inner UnityFS bundle files in batches. This preserves full source coverage without loading a whole VFS group at once.");
+                    InsertMetadata(connection, transaction, "endfieldVfsSourceSelectionRule", endfieldVfsKeepSameLengthSupplemental
+                        ? "Strict diagnostic mode: when Persistent/VFS and StreamingAssets/VFS share the same Endfield VFS bucket, source indexing treats Persistent as primary but keeps all supplemental StreamingAssets inner UnityFS files unless the outer .blc bytes are identical. This can be very slow and is intended for unresolved material/CAB closure investigation."
+                        : "Default production mode: when Persistent/VFS and StreamingAssets/VFS share the same Endfield VFS bucket, source indexing treats Persistent as primary and keeps supplemental StreamingAssets inner UnityFS files only when the inner name is absent from Persistent or the same inner name has a different byte length. Same-name same-length entries are counted but skipped by default; use --endfield_vfs_keep_same_length_supplemental only for slow diagnostic closure checks.");
+                    InsertMetadata(connection, transaction, "endfieldVfsKeepSameLengthSupplemental", endfieldVfsKeepSameLengthSupplemental ? "true" : "false");
+                    InsertMetadata(connection, transaction, "endfieldVfsDuplicateSkippedCount", endfieldVfsSelection.SkippedDuplicateCount.ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "endfieldVfsDifferentNamedPairCount", endfieldVfsSelection.DifferentNamedPairCount.ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "endfieldVfsSameNamedDifferentLengthInnerFileCount", endfieldVfsSelection.SameNamedDifferentLengthInnerFileCount.ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "endfieldVfsSameNamedSameLengthInnerFileCount", endfieldVfsSelection.SameNamedSameLengthInnerFileCount.ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "endfieldVfsSupplementalInnerFileCount", endfieldVfsSelection.SupplementalInnerFileCount.ToString(CultureInfo.InvariantCulture));
+                }
                 using (ProfileLogger.Measure("source_index_insert_source_files", new Dictionary<string, object>
                 {
                     ["fileCount"] = sourceFiles.Length,
@@ -159,17 +253,41 @@ namespace AnimeStudio.CLI
             }
 
             var effectiveBatch = Math.Max(1, batchFiles);
-            var batches = BuildLoadBatches(loadableFiles, effectiveBatch);
-            Logger.Info($"SQLite source index will load {loadableFiles.Length}/{sourceFiles.Length} source file(s); skipped {sourceFiles.Length - loadableFiles.Length} sidecar/non-Unity file(s).");
+            var endfieldAutoRootFiles = includeEndfieldAutoRootsWithExplicitFilter
+                ? endfieldVfsSelection.SelectedFiles
+                    .Select(Path.GetFullPath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : null;
+            var batches = BuildLoadBatches(
+                loadableFiles,
+                effectiveBatch,
+                game,
+                hasExplicitEndfieldVfsDiagnosticFilter,
+                endfieldVfsSelection.InnerFileFilters,
+                endfieldVfsInnerFileFilter,
+                includeEndfieldAutoRootsWithExplicitFilter,
+                endfieldAutoRootFiles);
+            var endfieldInnerBatchCount = batches.Count(x => x.IsEndfieldVfsInnerBatch);
+            if (endfieldInnerBatchCount > 0)
+            {
+                Logger.Info($"Endfield VFS source index will load {endfieldInnerBatchCount} inner UnityFS batch(es) instead of expanding each .blc in one pass.");
+            }
+            Logger.Info($"SQLite source index will load {loadableFiles.Length}/{sourceFiles.Length} source file(s) through {batches.Count} batch(es); skipped {sourceFiles.Length - loadableFiles.Length} sidecar/non-Unity file(s).");
             for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
             {
                 var batch = batches[batchIndex];
-                var largest = batch
+                var largest = batch.Files
                     .Select(x => new { Path = x, Bytes = SafeFileLength(x) })
                     .OrderByDescending(x => x.Bytes)
                     .FirstOrDefault();
-                var batchBytes = batch.Sum(SafeFileLength);
-                Logger.Info($"[source-index {batchIndex + 1}/{batches.Count}] Loading {batch.Length} file(s), {FormatBytes(batchBytes)}; largest {MakeRelativeOrName(sourceRoot, largest?.Path)} ({FormatBytes(largest?.Bytes ?? 0)}).");
+                var batchBytes = batch.Files.Sum(SafeFileLength);
+                var endfieldBatchNote = batch.IsEndfieldVfsInnerBatch
+                    ? $", Endfield inner files={batch.EndfieldVfsInnerFiles.Length}, inner bytes={FormatBytes(batch.EndfieldVfsInnerBytes)}"
+                    : string.Empty;
+                Logger.Info($"[source-index {batchIndex + 1}/{batches.Count}] Loading {batch.Files.Length} file(s), {FormatBytes(batchBytes)}{endfieldBatchNote}; largest {MakeRelativeOrName(sourceRoot, largest?.Path)} ({FormatBytes(largest?.Bytes ?? 0)}).");
+                var batchEndfieldFilter = batch.IsEndfieldVfsInnerBatch
+                    ? BuildExactEndfieldVfsInnerFileFilter(batch.EndfieldVfsInnerFiles)
+                    : endfieldVfsInnerFileFilter;
                 var manager = new AssetsManager
                 {
                     Game = game,
@@ -179,6 +297,9 @@ namespace AnimeStudio.CLI
                     SkipProcess = true,
                     StoreUnparsedObjects = false,
                     ObjectParseFilter = ShouldParseObjectForSourceIndex,
+                    EndfieldVfsInnerFileFilter = batchEndfieldFilter,
+                    EndfieldVfsInnerFileLimit = batch.IsEndfieldVfsInnerBatch ? 0 : Math.Max(0, endfieldVfsInnerFileLimit),
+                    EndfieldVfsInnerFileFilterIsDiagnostic = !batch.IsEndfieldVfsInnerBatch,
                     Silent = true,
                 };
 
@@ -188,22 +309,24 @@ namespace AnimeStudio.CLI
                     {
                         ["batchIndex"] = batchIndex + 1,
                         ["totalBatches"] = batches.Count,
-                        ["batchFileCount"] = batch.Length,
+                        ["batchFileCount"] = batch.Files.Length,
                         ["batchBytes"] = batchBytes,
                         ["largestFile"] = MakeRelativeOrName(sourceRoot, largest?.Path),
                         ["largestFileBytes"] = largest?.Bytes ?? 0,
-                        ["isLargeSingleton"] = batch.Length == 1 && batchBytes >= LargeSourceIndexFileBytes,
+                        ["isLargeSingleton"] = batch.Files.Length == 1 && batchBytes >= LargeSourceIndexFileBytes,
+                        ["endfieldVfsInnerFileCount"] = batch.EndfieldVfsInnerFiles?.Length ?? 0,
+                        ["endfieldVfsInnerBytes"] = batch.EndfieldVfsInnerBytes,
                     }))
                     {
                         using var heartbeat = StartSourceIndexLoadHeartbeat(
                             batchIndex + 1,
                             batches.Count,
-                            batch.Length,
+                            batch.Files.Length,
                             batchBytes,
                             MakeRelativeOrName(sourceRoot, largest?.Path),
                             largest?.Bytes ?? 0,
                             manager);
-                        manager.LoadFiles(batch);
+                        manager.LoadFiles(batch.Files);
                     }
 
                     using (ProfileLogger.Measure("source_index_write_batch", new Dictionary<string, object>
@@ -259,11 +382,107 @@ namespace AnimeStudio.CLI
                 ["dbPath"] = dbPath,
             }))
             {
-                Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+                CheckpointSourceIndex(connection, dbPath);
             }
 
             Logger.Info($"SQLite Unity source index written: {dbPath}");
             return dbPath;
+        }
+
+        private static string[] ExpandEndfieldVfsLayerSourceFiles(
+            string inputPath,
+            Game game,
+            ref string sourceRoot,
+            string[] sourceFiles)
+        {
+            if (game == null
+                || !game.Type.IsArknightsEndfieldGroup()
+                || !Directory.Exists(inputPath))
+            {
+                return sourceFiles;
+            }
+
+            var endfieldDataRoot = TryGetEndfieldDataRootFromVfsPath(inputPath);
+            if (string.IsNullOrWhiteSpace(endfieldDataRoot))
+            {
+                return sourceFiles;
+            }
+
+            var vfsRoots = new[]
+                {
+                    Path.Combine(endfieldDataRoot, "Persistent", "VFS"),
+                    Path.Combine(endfieldDataRoot, "StreamingAssets", "VFS"),
+                }
+                .Where(Directory.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (vfsRoots.Length <= 1)
+            {
+                return sourceFiles;
+            }
+
+            var expandedFiles = vfsRoots
+                .SelectMany(root => Directory.GetFiles(root, "*.*", SearchOption.AllDirectories))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (expandedFiles.Length <= sourceFiles.Length)
+            {
+                return sourceFiles;
+            }
+
+            sourceRoot = endfieldDataRoot;
+            Logger.Info($"Endfield VFS source scan includes Persistent/Streaming layers under {endfieldDataRoot}; files {sourceFiles.Length} -> {expandedFiles.Length}.");
+            return expandedFiles;
+        }
+
+        private static string TryGetEndfieldDataRootFromVfsPath(string path)
+        {
+            var normalized = Path.GetFullPath(path)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            var markers = new[]
+            {
+                $"{Path.DirectorySeparatorChar}StreamingAssets{Path.DirectorySeparatorChar}VFS",
+                $"{Path.DirectorySeparatorChar}Persistent{Path.DirectorySeparatorChar}VFS",
+            };
+
+            foreach (var marker in markers)
+            {
+                var index = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (index <= 0)
+                {
+                    continue;
+                }
+
+                var candidate = normalized[..index];
+                if (Directory.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static void CheckpointSourceIndex(SqliteConnection connection, string dbPath)
+        {
+            const long largeCheckpointDatabaseBytes = 64L * 1024L * 1024L * 1024L;
+            const long largeCheckpointWalBytes = 8L * 1024L * 1024L * 1024L;
+
+            var databaseBytes = SafeFileLength(dbPath);
+            var walPath = dbPath + "-wal";
+            var walBytes = SafeFileLength(walPath);
+            if (databaseBytes >= largeCheckpointDatabaseBytes || walBytes >= largeCheckpointWalBytes)
+            {
+                Logger.Warning(
+                    "SQLite source index is very large; using PASSIVE WAL checkpoint instead of TRUNCATE to avoid multi-hour finalization. " +
+                    $"Keep the .db/.db-wal/.db-shm files together until a later maintenance checkpoint. db={FormatBytes(databaseBytes)}, wal={FormatBytes(walBytes)}");
+                Execute(connection, "PRAGMA wal_checkpoint(PASSIVE);");
+                return;
+            }
+
+            Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
         }
 
         private static void CreateSchema(SqliteConnection connection)
@@ -349,10 +568,57 @@ CREATE INDEX idx_source_objects_file_path ON source_objects(serialized_file, pat
 CREATE INDEX idx_source_objects_type ON source_objects(type);
 CREATE INDEX idx_source_objects_name ON source_objects(name);
 CREATE INDEX idx_source_externals_file ON source_externals(serialized_file, file_id);
-CREATE INDEX idx_source_relations_from ON source_relations(from_file, from_path_id);
-CREATE INDEX idx_source_relations_to ON source_relations(to_file, to_path_id);
+CREATE INDEX idx_source_relations_from ON source_relations(from_path_id, relation, from_file);
+CREATE INDEX idx_source_relations_to ON source_relations(to_path_id, relation, to_file);
 CREATE INDEX idx_source_relations_relation ON source_relations(relation);
 CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(animation_file, animation_path_id);");
+        }
+
+        private static void EnsureIndex(SqliteConnection connection, string indexName, string tableName, string columnsSql)
+        {
+            var expectedColumns = columnsSql
+                .Split(',')
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            var currentColumns = ReadIndexColumns(connection, indexName);
+            if (currentColumns.SequenceEqual(expectedColumns, StringComparer.OrdinalIgnoreCase))
+            {
+                Logger.Info($"SQLite source index exists: {indexName}({string.Join(", ", currentColumns)})");
+                return;
+            }
+
+            if (currentColumns.Length > 0)
+            {
+                Logger.Warning($"Rebuilding SQLite source index {indexName}: current=({string.Join(", ", currentColumns)}), expected=({columnsSql}).");
+                Execute(connection, $"DROP INDEX IF EXISTS {indexName};");
+            }
+            else
+            {
+                Logger.Info($"Creating SQLite source index {indexName}({columnsSql}).");
+            }
+
+            Execute(connection, $"CREATE INDEX {indexName} ON {tableName}({columnsSql});");
+        }
+
+        private static string[] ReadIndexColumns(SqliteConnection connection, string indexName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA index_info({indexName});";
+            var rows = new List<(int Seq, string Name)>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var seq = reader.IsDBNull(0) ? 0 : Convert.ToInt32(reader.GetValue(0), CultureInfo.InvariantCulture);
+                var name = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                rows.Add((seq, name));
+            }
+
+            return rows
+                .OrderBy(x => x.Seq)
+                .Select(x => x.Name)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
         }
 
         private static void InsertSourceFiles(SqliteConnection connection, SqliteTransaction transaction, string sourceRoot, string[] files)
@@ -556,6 +822,22 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         ["avatar"] = BuildPPtrJson(animator.m_Avatar?.m_FileID ?? 0, animator.m_Avatar?.m_PathID ?? 0),
                         ["controller"] = BuildPPtrJson(animator.m_Controller?.m_FileID ?? 0, animator.m_Controller?.m_PathID ?? 0),
                         ["hasTransformHierarchy"] = animator.m_HasTransformHierarchy,
+                    };
+                    break;
+                case MonoBehaviour monoBehaviour:
+                    raw["monoBehaviour"] = new JObject
+                    {
+                        ["script"] = BuildPPtrJson(monoBehaviour.m_Script?.m_FileID ?? 0, monoBehaviour.m_Script?.m_PathID ?? 0),
+                        ["scriptName"] = monoBehaviour.m_Script?.Name,
+                        ["enabled"] = monoBehaviour.m_Enabled != 0,
+                    };
+                    break;
+                case MonoScript monoScript:
+                    raw["monoScript"] = new JObject
+                    {
+                        ["className"] = monoScript.m_ClassName,
+                        ["namespace"] = monoScript.m_Namespace,
+                        ["assemblyName"] = monoScript.m_AssemblyName,
                     };
                     break;
                 case Avatar avatar:
@@ -770,6 +1052,21 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         AddPPtrRelation(connection, transaction, counts, "animation.clip", animation, ptr.m_FileID, ptr.m_PathID, "AnimationClip", null);
                     }
                     break;
+                case MonoBehaviour monoBehaviour:
+                    WriteComponentGameObject(connection, transaction, monoBehaviour, counts);
+                    // MonoBehaviour 字段不直接升级为动画关系；这里先记录脚本归属，
+                    // 方便后续在确定性配置/TypeTree 里继续追模型和动画的真实引用链。
+                    AddPPtrRelation(connection, transaction, counts, "monoBehaviour.script", monoBehaviour, monoBehaviour.m_Script.m_FileID, monoBehaviour.m_Script.m_PathID, "MonoScript", new
+                    {
+                        scriptName = monoBehaviour.m_Script.Name,
+                    });
+                    break;
+                case AssetBundle assetBundle:
+                    WriteAssetBundleRelations(connection, transaction, assetBundle, counts);
+                    break;
+                case ResourceManager resourceManager:
+                    WriteResourceManagerRelations(connection, transaction, resourceManager, counts);
+                    break;
                 case AnimatorController controller:
                     WriteAnimatorControllerClipRelations(connection, transaction, controller, counts);
                     break;
@@ -829,12 +1126,72 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
         }
 
+        private static void WriteAssetBundleRelations(SqliteConnection connection, SqliteTransaction transaction, AssetBundle assetBundle, Dictionary<string, long> counts)
+        {
+            var preloadTable = assetBundle.m_PreloadTable ?? new List<PPtr<AnimeStudio.Object>>();
+            for (var preloadIndex = 0; preloadIndex < preloadTable.Count; preloadIndex++)
+            {
+                var ptr = preloadTable[preloadIndex];
+                AddPPtrRelation(connection, transaction, counts, "assetBundle.preload", assetBundle, ptr.m_FileID, ptr.m_PathID, "Object", new
+                {
+                    preloadIndex,
+                });
+            }
+
+            foreach (var pair in assetBundle.m_Container ?? Enumerable.Empty<KeyValuePair<string, AssetInfo>>())
+            {
+                var container = pair.Key ?? string.Empty;
+                var info = pair.Value;
+                if (info == null)
+                {
+                    continue;
+                }
+
+                // container/preload 是 Unity 原始资源归属证据，只能辅助定位依赖，
+                // 不能单独升级成模型-动画默认绑定关系。
+                AddPPtrRelation(connection, transaction, counts, "assetBundle.containerAsset", assetBundle, info.asset.m_FileID, info.asset.m_PathID, "Object", new
+                {
+                    container,
+                    preloadIndex = info.preloadIndex,
+                    preloadSize = info.preloadSize,
+                });
+
+                var start = Math.Max(0, info.preloadIndex);
+                var end = Math.Min(preloadTable.Count, start + Math.Max(0, info.preloadSize));
+                for (var tableIndex = start; tableIndex < end; tableIndex++)
+                {
+                    var ptr = preloadTable[tableIndex];
+                    AddPPtrRelation(connection, transaction, counts, "assetBundle.containerPreload", assetBundle, ptr.m_FileID, ptr.m_PathID, "Object", new
+                    {
+                        container,
+                        preloadIndex = info.preloadIndex,
+                        preloadSize = info.preloadSize,
+                        preloadTableIndex = tableIndex,
+                        preloadOffset = tableIndex - start,
+                    });
+                }
+            }
+        }
+
+        private static void WriteResourceManagerRelations(SqliteConnection connection, SqliteTransaction transaction, ResourceManager resourceManager, Dictionary<string, long> counts)
+        {
+            foreach (var pair in resourceManager.m_Container ?? Enumerable.Empty<KeyValuePair<string, PPtr<AnimeStudio.Object>>>())
+            {
+                var ptr = pair.Value;
+                AddPPtrRelation(connection, transaction, counts, "resourceManager.container", resourceManager, ptr.m_FileID, ptr.m_PathID, "Object", new
+                {
+                    container = pair.Key ?? string.Empty,
+                });
+            }
+        }
+
         private static void WriteAnimatorControllerClipRelations(SqliteConnection connection, SqliteTransaction transaction, AnimatorController controller, Dictionary<string, long> counts)
         {
             var clips = controller.m_AnimationClips ?? new List<PPtr<AnimationClip>>();
             var usedClipSlots = new HashSet<int>();
             var stateMachines = controller.m_Controller?.m_StateMachineArray ?? new List<StateMachineConstant>();
             var layerMap = BuildAnimatorControllerLayerMap(controller);
+            var defaultBaseLayerClip = BuildDefaultBaseLayerClip(controller, stateMachines, layerMap);
 
             for (var machineIndex = 0; machineIndex < stateMachines.Count; machineIndex++)
             {
@@ -854,22 +1211,38 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         var nodes = trees[treeIndex].m_NodeArray ?? new List<BlendTreeNodeConstant>();
                         for (var nodeIndex = 0; nodeIndex < nodes.Count; nodeIndex++)
                         {
+                            var layerContexts = layers.Count > 0
+                                ? layers
+                                : new List<AnimatorControllerLayerContext> { new AnimatorControllerLayerContext(-1, 0, 0, 0, 1f, false, false) };
                             var node = nodes[nodeIndex];
+                            WriteAnimatorControllerBlendTreeParameterRelation(
+                                connection,
+                                transaction,
+                                counts,
+                                controller,
+                                layerContexts,
+                                machineIndex,
+                                stateIndex,
+                                state,
+                                treeIndex,
+                                nodeIndex,
+                                node);
                             if (!TryGetAnimatorControllerClipSlot(controller, node.m_ClipID, out var clipSlot, out var clipPtr))
                             {
                                 continue;
                             }
 
                             usedClipSlots.Add(clipSlot);
-                            var layerContexts = layers.Count > 0
-                                ? layers
-                                : new List<AnimatorControllerLayerContext> { new AnimatorControllerLayerContext(-1, 0, 0, 0, 1f, false, false) };
 
                             // AnimatorController 里的 node.m_ClipID 在原神这类资源里是 m_AnimationClips 的槽位。
                             // 记录 state/blend/node 上下文，避免后续把叶子 clip 误当完整动作。
-                            var baseLayerClip = treeIndex > 0 && baseLayerClipsByNode.TryGetValue(nodeIndex, out var baseClip)
-                                ? baseClip
-                                : null;
+                            var baseLayerClip = ResolveAnimatorControllerBaseLayerClip(
+                                treeIndex,
+                                nodeIndex,
+                                machineIndex,
+                                layerContexts,
+                                baseLayerClipsByNode,
+                                defaultBaseLayerClip);
                             AddPPtrRelation(connection, transaction, counts, "animatorController.clip", controller, clipPtr.m_FileID, clipPtr.m_PathID, "AnimationClip", new
                             {
                                 source = "AnimatorController.m_Controller.stateMachine.blendTree.node",
@@ -885,6 +1258,8 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                                     layerDefaultWeight = layer.DefaultWeight,
                                     layerIKPass = layer.IKPass,
                                     layerSyncedLayerAffectsTiming = layer.SyncedLayerAffectsTiming,
+                                    layerBodyMask = layer.BodyMask,
+                                    layerSkeletonMask = layer.SkeletonMask,
                                 }).ToArray(),
                                 stateMachineIndex = machineIndex,
                                 stateIndex,
@@ -896,8 +1271,13 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                                 stateFullPathId = state.m_FullPathID,
                                 stateSpeed = state.m_Speed,
                                 stateCycleOffset = state.m_CycleOffset,
+                                stateIKOnFeet = state.m_IKOnFeet,
                                 stateLoop = state.m_Loop,
                                 stateMirror = state.m_Mirror,
+                                stateTransitions = DescribeTransitions(state.m_TransitionConstantArray, controller.m_TOS),
+                                stateTransitionConditionCount = CountTransitionConditions(state.m_TransitionConstantArray),
+                                stateParameters = DescribeStateParameters(state.m_StateParameterConstantArray, controller.m_TOS),
+                                controllerValueDefaults = DescribeControllerValueDefaultSummary(controller),
                                 stateBlendTreeIndexArray = state.m_BlendTreeConstantIndexArray,
                                 blendTreeIndex = treeIndex,
                                 nodeIndex,
@@ -908,6 +1288,19 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                                 nodeBlendEventYId = node.m_BlendEventYID,
                                 nodeChildIndices = node.m_ChildIndices,
                                 nodeChildThresholds = node.m_ChildThresholdArray,
+                                nodeBlend1dChildThresholds = node.m_Blend1dData?.m_ChildThresholdArray,
+                                nodeDirectChildBlendEvents = DescribeTosArray(node.m_BlendDirectData?.m_ChildBlendEventIDArray, controller.m_TOS),
+                                nodeDirectChildPoseTimeEvents = DescribeTosArray(node.m_BlendDirectData?.m_ChildPoseTimeEventIDArray, controller.m_TOS),
+                                nodeDirectNormalizedBlendValues = node.m_BlendDirectData?.m_NormalizedBlendValues,
+                                nodeDirectUsePoseTimeValues = node.m_BlendDirectData?.m_UsePoseTimeValues,
+                                nodeSequenceChildBlendEvents = DescribeTosArray(node.m_BlendSequenceData?.m_ChildBlendEventIDArray, controller.m_TOS),
+                                nodeSequenceChildPoseTimeEvents = DescribeTosArray(node.m_BlendSequenceData?.m_ChildPoseTimeEventIDArray, controller.m_TOS),
+                                nodeSequenceNormalizedBlendValues = node.m_BlendSequenceData?.m_NormalizedBlendValues,
+                                nodeSequenceUsePoseTimeValues = node.m_BlendSequenceData?.m_UsePoseTimeValues,
+                                nodeSequenceChildSpeed = node.m_BlendSequenceData?.m_ChildSpeed,
+                                nodeSequenceChildLodThreshold = node.m_BlendSequenceData?.m_ChildLodThreshold,
+                                nodeSequenceChildAbilityThreshold = node.m_BlendSequenceData?.m_ChildAbilityThreshold,
+                                nodeSequenceChildCullingMode = node.m_BlendSequenceData?.m_ChildCullingMode,
                                 nodeClipId = node.m_ClipID,
                                 nodeClipIndex = node.m_ClipIndex,
                                 nodeDuration = node.m_Duration,
@@ -934,6 +1327,273 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     hasStateMachineNodeContext = false,
                 });
             }
+        }
+
+        private static void WriteAnimatorControllerBlendTreeParameterRelation(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            Dictionary<string, long> counts,
+            AnimatorController controller,
+            IReadOnlyList<AnimatorControllerLayerContext> layerContexts,
+            int machineIndex,
+            int stateIndex,
+            StateConstant state,
+            int treeIndex,
+            int nodeIndex,
+            BlendTreeNodeConstant node)
+        {
+            var parameterRefs = DescribeAnimatorControllerNodeParameterRefs(node, controller.m_TOS);
+            if (parameterRefs.Count == 0)
+            {
+                return;
+            }
+
+            var clipSlot = -1;
+            PPtr<AnimationClip> clipPtr = null;
+            var hasClip = TryGetAnimatorControllerClipSlot(controller, node.m_ClipID, out clipSlot, out clipPtr);
+            if (InsertPPtrRelation(
+                connection,
+                transaction,
+                "animatorController.blendTreeParameter",
+                "explicit_controller_structure",
+                controller.assetsFile,
+                MakeRelativeOrName(null, controller.assetsFile?.originalPath ?? controller.assetsFile?.fullName),
+                controller.assetsFile?.fileName ?? string.Empty,
+                controller.type.ToString(),
+                controller.Name ?? string.Empty,
+                controller.m_PathID,
+                0,
+                0,
+                "AnimatorControllerParameter",
+                new
+                {
+                    count = parameterRefs.Count,
+                    source = "AnimatorController.m_Controller.stateMachine.blendTree.node",
+                    rule = "diagnostic_only: parameter references come from serialized AnimatorController BlendTree/direct/sequence data; they do not set runtime values or prove animation correctness by themselves.",
+                    stateMachineIndex = machineIndex,
+                    stateIndex,
+                    stateName = TryGetTos(controller, state.m_NameID),
+                    stateNameId = state.m_NameID,
+                    stateFullPath = TryGetTos(controller, state.m_FullPathID),
+                    stateFullPathId = state.m_FullPathID,
+                    stateParameters = DescribeStateParameters(state.m_StateParameterConstantArray, controller.m_TOS),
+                    layers = DescribeAnimatorControllerLayerContexts(layerContexts),
+                    blendTreeIndex = treeIndex,
+                    nodeIndex,
+                    nodeBlendType = node.m_BlendType,
+                    nodeChildIndices = node.m_ChildIndices,
+                    nodeChildThresholds = node.m_ChildThresholdArray,
+                    nodeBlend1dChildThresholds = node.m_Blend1dData?.m_ChildThresholdArray,
+                    nodeClipId = node.m_ClipID,
+                    nodeClipIndex = node.m_ClipIndex,
+                    nodeHasClip = hasClip,
+                    nodeClip = hasClip
+                        ? DescribePPtr(controller.assetsFile, clipPtr.m_FileID, clipPtr.m_PathID, "AnimationClip")
+                        : null,
+                    controllerClipIndex = hasClip ? clipSlot : -1,
+                    parameters = parameterRefs,
+                    directNormalizedBlendValues = node.m_BlendDirectData?.m_NormalizedBlendValues,
+                    directUsePoseTimeValues = node.m_BlendDirectData?.m_UsePoseTimeValues,
+                    sequenceNormalizedBlendValues = node.m_BlendSequenceData?.m_NormalizedBlendValues,
+                    sequenceUsePoseTimeValues = node.m_BlendSequenceData?.m_UsePoseTimeValues,
+                    sequenceChildSpeed = node.m_BlendSequenceData?.m_ChildSpeed,
+                    sequenceChildLodThreshold = node.m_BlendSequenceData?.m_ChildLodThreshold,
+                    sequenceChildAbilityThreshold = node.m_BlendSequenceData?.m_ChildAbilityThreshold,
+                    sequenceChildCullingMode = node.m_BlendSequenceData?.m_ChildCullingMode,
+                }))
+            {
+                counts["sourceRelations"]++;
+            }
+        }
+
+        private static JArray DescribeAnimatorControllerNodeParameterRefs(BlendTreeNodeConstant node, IReadOnlyDictionary<uint, string> tos)
+        {
+            var result = new JArray();
+
+            void Add(string source, uint id, int index = -1)
+            {
+                if (id == 0 || id == uint.MaxValue)
+                {
+                    return;
+                }
+
+                var item = new JObject
+                {
+                    ["source"] = source,
+                    ["id"] = id,
+                    ["idHex"] = $"0x{id:X8}",
+                    ["name"] = TryGetTos(tos, id),
+                };
+                if (index >= 0)
+                {
+                    item["index"] = index;
+                }
+
+                result.Add(item);
+            }
+
+            Add("blendEvent", node.m_BlendEventID);
+            Add("blendEventY", node.m_BlendEventYID);
+            AddArray("directChildBlendEvent", node.m_BlendDirectData?.m_ChildBlendEventIDArray);
+            AddArray("directChildPoseTimeEvent", node.m_BlendDirectData?.m_ChildPoseTimeEventIDArray);
+            AddArray("sequenceChildBlendEvent", node.m_BlendSequenceData?.m_ChildBlendEventIDArray);
+            AddArray("sequenceChildPoseTimeEvent", node.m_BlendSequenceData?.m_ChildPoseTimeEventIDArray);
+            return result;
+
+            void AddArray(string source, IEnumerable<uint> ids)
+            {
+                var index = 0;
+                foreach (var id in ids ?? Array.Empty<uint>())
+                {
+                    Add(source, id, index++);
+                }
+            }
+        }
+
+        private static JArray DescribeAnimatorControllerLayerContexts(IReadOnlyList<AnimatorControllerLayerContext> layers)
+        {
+            return new JArray((layers ?? Array.Empty<AnimatorControllerLayerContext>()).Select(layer => new JObject
+            {
+                ["layerIndex"] = layer.LayerIndex,
+                ["layerStateMachineIndex"] = layer.StateMachineIndex,
+                ["layerStateMachineMotionSetIndex"] = layer.StateMachineMotionSetIndex,
+                ["layerBinding"] = layer.Binding,
+                ["layerBlendingMode"] = layer.BlendingMode,
+                ["layerDefaultWeight"] = layer.DefaultWeight,
+                ["layerIKPass"] = layer.IKPass,
+                ["layerSyncedLayerAffectsTiming"] = layer.SyncedLayerAffectsTiming,
+                ["layerBodyMask"] = layer.BodyMask,
+                ["layerSkeletonMask"] = layer.SkeletonMask,
+            }));
+        }
+
+        private static JObject ResolveAnimatorControllerBaseLayerClip(
+            int treeIndex,
+            int nodeIndex,
+            int machineIndex,
+            IReadOnlyList<AnimatorControllerLayerContext> layerContexts,
+            IReadOnlyDictionary<int, JObject> baseLayerClipsByNode,
+            AnimatorControllerDefaultBaseLayerClip defaultBaseLayerClip)
+        {
+            if (treeIndex > 0 && baseLayerClipsByNode.TryGetValue(nodeIndex, out var sameStateBaseClip))
+            {
+                return sameStateBaseClip;
+            }
+
+            if (defaultBaseLayerClip == null || machineIndex == defaultBaseLayerClip.MachineIndex)
+            {
+                return null;
+            }
+
+            if (layerContexts == null || !layerContexts.Any(x => x.LayerIndex > 0))
+            {
+                return null;
+            }
+
+            return (JObject)defaultBaseLayerClip.Clip.DeepClone();
+        }
+
+        private static AnimatorControllerDefaultBaseLayerClip BuildDefaultBaseLayerClip(
+            AnimatorController controller,
+            IReadOnlyList<StateMachineConstant> stateMachines,
+            IReadOnlyDictionary<int, List<AnimatorControllerLayerContext>> layerMap)
+        {
+            if (controller == null || stateMachines == null || stateMachines.Count == 0)
+            {
+                return null;
+            }
+
+            var baseLayer = layerMap?
+                .SelectMany(x => x.Value ?? new List<AnimatorControllerLayerContext>())
+                .OrderBy(x => x.LayerIndex)
+                .FirstOrDefault(x => x.LayerIndex == 0)
+                ?? layerMap?
+                    .SelectMany(x => x.Value ?? new List<AnimatorControllerLayerContext>())
+                    .OrderBy(x => x.LayerIndex)
+                    .FirstOrDefault();
+            var baseMachineIndex = baseLayer?.StateMachineIndex ?? 0;
+            if (baseMachineIndex < 0 || baseMachineIndex >= stateMachines.Count)
+            {
+                return null;
+            }
+
+            var machine = stateMachines[baseMachineIndex];
+            var states = machine.m_StateConstantArray ?? new List<StateConstant>();
+            if (machine.m_DefaultState > int.MaxValue || machine.m_DefaultState >= states.Count)
+            {
+                return null;
+            }
+
+            var stateIndex = unchecked((int)machine.m_DefaultState);
+            var state = states[stateIndex];
+            if (!TryBuildUniqueStateClip(controller, baseMachineIndex, stateIndex, state, out var clip))
+            {
+                return null;
+            }
+
+            return new AnimatorControllerDefaultBaseLayerClip(baseMachineIndex, clip);
+        }
+
+        private static bool TryBuildUniqueStateClip(
+            AnimatorController controller,
+            int stateMachineIndex,
+            int stateIndex,
+            StateConstant state,
+            out JObject clip)
+        {
+            clip = null;
+            var trees = state?.m_BlendTreeConstantArray ?? new List<BlendTreeConstant>();
+            var clips = new Dictionary<long, JObject>();
+            for (var treeIndex = 0; treeIndex < trees.Count; treeIndex++)
+            {
+                var nodes = trees[treeIndex].m_NodeArray ?? new List<BlendTreeNodeConstant>();
+                for (var nodeIndex = 0; nodeIndex < nodes.Count; nodeIndex++)
+                {
+                    var node = nodes[nodeIndex];
+                    if (!TryGetAnimatorControllerClipSlot(controller, node.m_ClipID, out var clipSlot, out var clipPtr))
+                    {
+                        continue;
+                    }
+
+                    var pathId = clipPtr.m_PathID;
+                    if (!clips.ContainsKey(pathId))
+                    {
+                        clips[pathId] = new JObject
+                        {
+                            ["controllerClipIndex"] = clipSlot,
+                            ["nodeIndex"] = nodeIndex,
+                            ["treeIndex"] = treeIndex,
+                            ["nodeClipId"] = node.m_ClipID,
+                            ["clip"] = DescribePPtr(controller.assetsFile, clipPtr.m_FileID, clipPtr.m_PathID, "AnimationClip"),
+                            ["stateMachineIndex"] = stateMachineIndex,
+                            ["stateIndex"] = stateIndex,
+                            ["stateName"] = TryGetTos(controller, state.m_NameID),
+                            ["stateNameId"] = state.m_NameID,
+                            ["statePath"] = TryGetTos(controller, state.m_PathID),
+                            ["statePathId"] = state.m_PathID,
+                            ["stateFullPath"] = TryGetTos(controller, state.m_FullPathID),
+                            ["stateFullPathId"] = state.m_FullPathID,
+                            ["stateSpeed"] = state.m_Speed,
+                            ["stateCycleOffset"] = state.m_CycleOffset,
+                            ["stateIKOnFeet"] = state.m_IKOnFeet,
+                            ["stateLoop"] = state.m_Loop,
+                            ["stateMirror"] = state.m_Mirror,
+                            ["stateTransitions"] = DescribeTransitions(state.m_TransitionConstantArray, controller.m_TOS),
+                            ["stateTransitionConditionCount"] = CountTransitionConditions(state.m_TransitionConstantArray),
+                            ["source"] = "AnimatorController.baseLayer.defaultState",
+                            ["rule"] = "same AnimatorController base layer default state resolved to exactly one deterministic body clip",
+                        };
+                    }
+                }
+            }
+
+            if (clips.Count != 1)
+            {
+                return false;
+            }
+
+            clip = clips.Values.First();
+            return true;
         }
 
         private static Dictionary<int, JObject> BuildBaseLayerClipsByNode(AnimatorController controller, List<BlendTreeConstant> trees)
@@ -965,6 +1625,23 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             return result;
         }
 
+        private static JObject DescribeControllerValueDefaultSummary(AnimatorController controller)
+        {
+            var values = controller?.m_Controller?.m_Values?.m_ValueArray ?? new List<ValueConstant>();
+            var defaults = controller?.m_Controller?.m_DefaultValues;
+            return new JObject
+            {
+                ["valueCount"] = values.Count,
+                ["defaultBoolCount"] = defaults?.m_BoolValues?.Length ?? 0,
+                ["defaultIntCount"] = defaults?.m_IntValues?.Length ?? 0,
+                ["defaultFloatCount"] = defaults?.m_FloatValues?.Length ?? 0,
+                ["defaultPositionCount"] = defaults?.m_PositionValues?.Length ?? 0,
+                ["defaultQuaternionCount"] = defaults?.m_QuaternionValues?.Length ?? 0,
+                ["defaultScaleCount"] = defaults?.m_ScaleValues?.Length ?? 0,
+                ["rule"] = "diagnostic_only: raw AnimatorController m_Values/m_DefaultValues counts only; full value rows are emitted by unity_file_inspect.json to avoid source_index relation bloat.",
+            };
+        }
+
         private static Dictionary<int, List<AnimatorControllerLayerContext>> BuildAnimatorControllerLayerMap(AnimatorController controller)
         {
             var result = new Dictionary<int, List<AnimatorControllerLayerContext>>();
@@ -987,10 +1664,140 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     layer.m_DefaultWeight,
                     layer.m_IKPass,
                     layer.m_SyncedLayerAffectsTiming,
-                    layer.m_LayerBlendingMode));
+                    layer.m_LayerBlendingMode,
+                    DescribeHumanPoseMask(layer.m_BodyMask),
+                    DescribeSkeletonMask(layer.m_SkeletonMask, controller.m_TOS)));
             }
 
             return result;
+        }
+
+        private static JObject DescribeHumanPoseMask(HumanPoseMask mask)
+        {
+            if (mask == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["word0"] = mask.word0,
+                ["word1"] = mask.word1,
+                ["word2"] = mask.word2,
+                ["isEmpty"] = mask.word0 == 0 && mask.word1 == 0 && mask.word2 == 0,
+                ["rawHex"] = new JArray(
+                    $"0x{mask.word0:X8}",
+                    $"0x{mask.word1:X8}",
+                    $"0x{mask.word2:X8}"),
+            };
+        }
+
+        private static JObject DescribeSkeletonMask(SkeletonMask mask, IReadOnlyDictionary<uint, string> tos)
+        {
+            if (mask?.m_Data == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["count"] = mask.m_Data.Count,
+                ["nonZeroCount"] = mask.m_Data.Count(x => Math.Abs(x.m_Weight) > 0.0001f),
+                ["entries"] = new JArray(mask.m_Data.Select(x => new JObject
+                {
+                    ["pathHash"] = x.m_PathHash,
+                    ["pathHashHex"] = $"0x{x.m_PathHash:X8}",
+                    ["path"] = tos != null && tos.TryGetValue(x.m_PathHash, out var path) ? path : null,
+                    ["weight"] = x.m_Weight,
+                })),
+            };
+        }
+
+        private static JArray DescribeStateParameters(StateParameterConstant[] parameters, IReadOnlyDictionary<uint, string> tos)
+        {
+            return new JArray((parameters ?? Array.Empty<StateParameterConstant>()).Select(x => new JObject
+            {
+                ["nameId"] = x.m_NameID,
+                ["nameIdHex"] = $"0x{unchecked((uint)x.m_NameID):X8}",
+                ["name"] = tos != null && tos.TryGetValue(unchecked((uint)x.m_NameID), out var name) ? name : null,
+                ["value"] = x.m_Value,
+            }));
+        }
+
+        private static JArray DescribeTosArray(IEnumerable<uint> ids, IReadOnlyDictionary<uint, string> tos)
+        {
+            return new JArray((ids ?? Array.Empty<uint>()).Select((id, index) => new JObject
+            {
+                ["index"] = index,
+                ["id"] = id,
+                ["idHex"] = $"0x{id:X8}",
+                ["name"] = TryGetTos(tos, id),
+            }));
+        }
+
+        private static JArray DescribeTransitions(IEnumerable<TransitionConstant> transitions, IReadOnlyDictionary<uint, string> tos)
+        {
+            return new JArray((transitions ?? Array.Empty<TransitionConstant>()).Select((transition, transitionIndex) => new JObject
+            {
+                ["transitionIndex"] = transitionIndex,
+                ["destinationState"] = transition.m_DestinationState,
+                ["fullPathId"] = transition.m_FullPathID,
+                ["fullPath"] = TryGetTos(tos, transition.m_FullPathID),
+                ["id"] = transition.m_ID,
+                ["userId"] = transition.m_UserID,
+                ["duration"] = transition.m_TransitionDuration,
+                ["offset"] = transition.m_TransitionOffset,
+                ["exitTime"] = transition.m_ExitTime,
+                ["hasExitTime"] = transition.m_HasExitTime,
+                ["hasFixedDuration"] = transition.m_HasFixedDuration,
+                ["interruptionSource"] = transition.m_InterruptionSource,
+                ["orderedInterruption"] = transition.m_OrderedInterruption,
+                ["canTransitionToSelf"] = transition.m_CanTransitionToSelf,
+                ["conditionCount"] = transition.m_ConditionConstantArray?.Count ?? 0,
+                ["conditions"] = DescribeConditions(transition.m_ConditionConstantArray, tos),
+            }));
+        }
+
+        private static JArray DescribeConditions(IEnumerable<ConditionConstant> conditions, IReadOnlyDictionary<uint, string> tos)
+        {
+            return new JArray((conditions ?? Array.Empty<ConditionConstant>()).Select((condition, conditionIndex) => new JObject
+            {
+                ["conditionIndex"] = conditionIndex,
+                ["mode"] = condition.m_ConditionMode,
+                ["modeName"] = DescribeAnimatorConditionMode(condition.m_ConditionMode),
+                ["eventId"] = condition.m_EventID,
+                ["eventIdHex"] = $"0x{condition.m_EventID:X8}",
+                ["eventName"] = TryGetTos(tos, condition.m_EventID),
+                ["threshold"] = condition.m_EventThreshold,
+                ["exitTime"] = condition.m_ExitTime,
+            }));
+        }
+
+        private static int CountTransitionConditions(IEnumerable<TransitionConstant> transitions)
+        {
+            return (transitions ?? Array.Empty<TransitionConstant>())
+                .Sum(x => x.m_ConditionConstantArray?.Count ?? 0);
+        }
+
+        private static string DescribeAnimatorConditionMode(uint mode)
+        {
+            return mode switch
+            {
+                1 => "If",
+                2 => "IfNot",
+                3 => "Greater",
+                4 => "Less",
+                6 => "Equals",
+                7 => "NotEqual",
+                _ => "Unknown",
+            };
+        }
+
+        private static string TryGetTos(IReadOnlyDictionary<uint, string> tos, uint id)
+        {
+            return tos != null && tos.TryGetValue(id, out var value)
+                ? value
+                : null;
         }
 
         private static bool TryGetAnimatorControllerClipSlot(AnimatorController controller, uint clipId, out int clipSlot, out PPtr<AnimationClip> clipPtr)
@@ -1021,7 +1828,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 
         private sealed class AnimatorControllerLayerContext
         {
-            public AnimatorControllerLayerContext(int layerIndex, int stateMachineIndex, int stateMachineMotionSetIndex, uint binding, float defaultWeight, bool ikPass, bool syncedLayerAffectsTiming, int blendingMode = 0)
+            public AnimatorControllerLayerContext(int layerIndex, int stateMachineIndex, int stateMachineMotionSetIndex, uint binding, float defaultWeight, bool ikPass, bool syncedLayerAffectsTiming, int blendingMode = 0, JObject bodyMask = null, JObject skeletonMask = null)
             {
                 LayerIndex = layerIndex;
                 StateMachineIndex = stateMachineIndex;
@@ -1031,6 +1838,8 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                 IKPass = ikPass;
                 SyncedLayerAffectsTiming = syncedLayerAffectsTiming;
                 BlendingMode = blendingMode;
+                BodyMask = bodyMask;
+                SkeletonMask = skeletonMask;
             }
 
             public int LayerIndex { get; }
@@ -1041,7 +1850,11 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             public bool IKPass { get; }
             public bool SyncedLayerAffectsTiming { get; }
             public int BlendingMode { get; }
+            public JObject BodyMask { get; }
+            public JObject SkeletonMask { get; }
         }
+
+        private sealed record AnimatorControllerDefaultBaseLayerClip(int MachineIndex, JObject Clip);
 
         private static int TryWriteLightweightRendererRelations(
             SqliteConnection connection,
@@ -1052,25 +1865,40 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             Dictionary<string, long> counts,
             SourceIndexWriteProgress progress)
         {
-            if (!IsLightweightRendererRelationType(objectInfo.classID))
+            var isMonoBehaviour = objectInfo.classID == (int)ClassIDType.MonoBehaviour;
+            if (!IsLightweightRendererRelationType(objectInfo.classID) && !isMonoBehaviour)
             {
                 return 0;
             }
 
-            counts["lightweightRendererObjects"]++;
-            progress.LightweightRendererObjects++;
+            if (isMonoBehaviour)
+            {
+                counts["lightweightMonoBehaviourObjects"]++;
+            }
+            else
+            {
+                counts["lightweightRendererObjects"]++;
+                progress.LightweightRendererObjects++;
+            }
 
             if (objectInfo.serializedType?.m_Type?.m_Nodes == null || objectInfo.serializedType.m_Type.m_Nodes.Count == 0)
             {
-                return IsFallbackParsedRendererType(objectInfo.classID)
+                return !isMonoBehaviour && IsFallbackParsedRendererType(objectInfo.classID)
                     ? TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, "missing_typetree")
                     : 0;
             }
 
             if (!IsObjectRangeReadable(assetsFile, objectInfo))
             {
-                counts["lightweightRendererFailures"]++;
-                progress.LightweightRendererFailures++;
+                if (isMonoBehaviour)
+                {
+                    counts["lightweightMonoBehaviourFailures"]++;
+                }
+                else
+                {
+                    counts["lightweightRendererFailures"]++;
+                    progress.LightweightRendererFailures++;
+                }
                 return 0;
             }
 
@@ -1102,9 +1930,16 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         relation.Details))
                     {
                         counts["sourceRelations"]++;
-                        counts["lightweightRendererRelations"]++;
                         progress.RelationsWritten = counts["sourceRelations"];
-                        progress.LightweightRendererRelations++;
+                        if (isMonoBehaviour)
+                        {
+                            counts["lightweightMonoBehaviourRelations"]++;
+                        }
+                        else
+                        {
+                            counts["lightweightRendererRelations"]++;
+                            progress.LightweightRendererRelations++;
+                        }
                         relationCount++;
                     }
                 }
@@ -1113,9 +1948,9 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
             catch (Exception e) when (e is EndOfStreamException || e is IOException || e is InvalidDataException || e is OverflowException || e is ArgumentOutOfRangeException)
             {
-                return IsFallbackParsedRendererType(objectInfo.classID)
+                return !isMonoBehaviour && IsFallbackParsedRendererType(objectInfo.classID)
                     ? TryWriteFallbackParsedRendererRelations(connection, transaction, sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name)
-                    : RecordLightweightRendererFailure(sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name, e);
+                    : RecordLightweightRelationFailure(sourceRoot, assetsFile, objectInfo, counts, progress, e.GetType().Name, e, isMonoBehaviour);
             }
         }
 
@@ -1165,27 +2000,36 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
             catch (Exception e) when (e is EndOfStreamException || e is IOException || e is InvalidDataException || e is OverflowException || e is ArgumentOutOfRangeException)
             {
-                return RecordLightweightRendererFailure(sourceRoot, assetsFile, objectInfo, counts, progress, reason, e);
+                return RecordLightweightRelationFailure(sourceRoot, assetsFile, objectInfo, counts, progress, reason, e, false);
             }
         }
 
-        private static int RecordLightweightRendererFailure(
+        private static int RecordLightweightRelationFailure(
             string sourceRoot,
             SerializedFile assetsFile,
             ObjectInfo objectInfo,
             Dictionary<string, long> counts,
             SourceIndexWriteProgress progress,
             string reason,
-            Exception e)
+            Exception e,
+            bool isMonoBehaviour)
         {
-            counts["lightweightRendererFailures"]++;
-            progress.LightweightRendererFailures++;
+            if (isMonoBehaviour)
+            {
+                counts["lightweightMonoBehaviourFailures"]++;
+            }
+            else
+            {
+                counts["lightweightRendererFailures"]++;
+                progress.LightweightRendererFailures++;
+            }
             ProfileLogger.Event("source_index_lightweight_renderer_failed", new Dictionary<string, object>
             {
                 ["source"] = MakeRelativeOrName(sourceRoot, assetsFile.originalPath ?? assetsFile.fullName),
                 ["file"] = assetsFile.fileName ?? string.Empty,
                 ["pathId"] = objectInfo.m_PathID,
                 ["type"] = Enum.IsDefined(typeof(ClassIDType), objectInfo.classID) ? ((ClassIDType)objectInfo.classID).ToString() : objectInfo.classID.ToString(CultureInfo.InvariantCulture),
+                ["readerKind"] = isMonoBehaviour ? "MonoBehaviourPPtr" : "RendererMaterialVfxPPtr",
                 ["reason"] = reason,
                 ["errorType"] = e.GetType().Name,
                 ["message"] = e.Message,
@@ -1355,6 +2199,7 @@ VALUES ($relation, $confidence, $fromSource, $fromFile, $fromType, $fromName, $f
                 animation = DescribeObject(clip),
                 hasMuscleClip = clip.m_MuscleClip != null,
                 bindingCount = entries.Length,
+                endfieldAclInfo = DescribeEndfieldAclInfo(clip),
                 bindings = entries.Take(1024).ToArray(),
                 truncated = entries.Length > 1024,
             };
@@ -1371,6 +2216,72 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             command.Parameters.AddWithValue("$hasMuscleClip", clip.m_MuscleClip != null ? 1 : 0);
             command.Parameters.AddWithValue("$rawJson", JsonConvert.SerializeObject(raw));
             command.ExecuteNonQuery();
+        }
+
+        private static JObject DescribeEndfieldAclInfo(AnimationClip clip)
+        {
+            var buffer = clip?.m_AclCompressedBuffer;
+            if (buffer == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["version"] = buffer.Version,
+                ["outputTrackCount"] = buffer.OutputTrackCount,
+                ["rootTrackCount"] = buffer.RootTrackCount,
+                ["rootPosIndex"] = buffer.RootPosIndex,
+                ["rootRotIndex"] = buffer.RootRotIndex,
+                ["rootScaleIndex"] = buffer.RootScaleIndex,
+                ["floatCurveCount"] = buffer.FloatCurveCount,
+                ["transformBuffer"] = DescribeAclBufferInfo(buffer.TransformBufferData),
+                ["rootMotionBuffer"] = DescribeAclBufferInfo(buffer.RootMotionBufferData),
+                ["floatBuffer"] = DescribeAclBufferInfo(buffer.FloatBufferData),
+                ["defaultIndexCount"] = buffer.m_DefaultIndexs?.Length ?? 0,
+                ["constantIndexCount"] = buffer.m_ConstantIndexs?.Length ?? 0,
+                ["constantValueCount"] = buffer.m_ConstantValues?.Length ?? 0,
+            };
+        }
+
+        private static JObject DescribeAclBufferInfo(byte[] data)
+        {
+            var result = new JObject
+            {
+                ["byteCount"] = data?.Length ?? 0,
+            };
+            if (data == null || data.Length == 0)
+            {
+                return result;
+            }
+
+            try
+            {
+                if (EndfieldACL.TryGetInfo(data, out var info))
+                {
+                    result["status"] = "ok";
+                    result["result"] = info.Result;
+                    result["size"] = info.Size;
+                    result["version"] = info.Version;
+                    result["trackType"] = info.TrackType;
+                    result["numTracks"] = info.NumTracks;
+                    result["numSamples"] = info.NumSamples;
+                    result["sampleRate"] = info.SampleRate;
+                    result["duration"] = info.Duration;
+                    result["outputFloatCount"] = info.OutputFloatCount;
+                }
+                else
+                {
+                    result["status"] = "unreadable";
+                }
+            }
+            catch (Exception ex)
+            {
+                result["status"] = "error";
+                result["error"] = ex.GetType().Name + ": " + ex.Message;
+            }
+
+            return result;
         }
 
         private static JObject DescribeObject(AnimeStudio.Object obj)
@@ -1415,8 +2326,12 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 ["database"] = dbPath,
                 ["sourceRoot"] = sourceRoot,
                 ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
-                ["animationRelationFeatures"] = "animatorController.clip,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip",
+                ["animationRelationFeatures"] = "animatorController.clip,animatorController.blendTreeParameter,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip,monoBehaviour.script,monoBehaviour.pptr",
+                ["sourceRelationFeatures"] = SourceRelationFeatures,
                 ["animationRelationHealth"] = BuildAnimationRelationHealth(connection),
+                ["sourceRelationHealth"] = BuildSourceRelationHealth(connection),
+                ["modelDependencyHealth"] = BuildModelDependencyHealth(connection),
+                ["materialRelationHealth"] = BuildMaterialRelationHealth(connection),
                 ["rule"] = "索引要全，导出要精。Source SQLite v1 stores Unity source files, SerializedFiles, Objects, externals, PPtr relations, and animation bindings.",
                 ["inputFileCount"] = fileCount,
                 ["counts"] = JObject.FromObject(counts),
@@ -1431,8 +2346,9 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 "核心原则：索引要全，导出要精。源索引中出现的对象不代表默认素材库会导出，也不代表视觉验收通过。\n\n" +
                 "Renderer/Skin 关系采用 SourceIndex 专用轻量读取：优先按 Unity TypeTree 捕获 `component.gameObject`、`renderer.material`、`skinnedMeshRenderer.mesh/rootBone/bones`；TypeTree 不可用时仅对当前 Renderer 小对象做受控 fallback 解析。失败会记录为 partial/failure，不会阻塞整个索引。\n\n" +
                 "主要表：`source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。\n\n" +
+                "容器关系：当前源索引会记录 `assetBundle.preload`、`assetBundle.containerAsset`、`assetBundle.containerPreload` 和 `resourceManager.container`。它们用于追来源、依赖闭包、静态 Mesh 主资源识别和缺件排查；container/path 仍是 fallback/诊断信号，不能单独升级成默认模型-动画绑定。\n\n" +
                 "性能日志：启用 `--profile_log` 后，重点比较 `source_index_load_batch`、`source_index_write_batch`、`source_index_load_batch_heartbeat`、`source_index_write_batch_heartbeat`、`source_index_create_sql_indexes` 和 `source_index_total`。长时间大文件处理时，heartbeat 会持续记录当前文件、对象序号、关系计数和内存。\n\n" +
-                "统计项：`lightweightRendererObjects` 是索引阶段尝试补关系的 Renderer 数；`lightweightRendererRelations` 是成功补到的 mesh/material/bone/gameObject 关系数；`lightweightRendererFailures` 是单对象失败数，通常代表版本字段不兼容或对象数据异常。\n\n" +
+                "统计项：`lightweightRendererObjects` 是索引阶段尝试补关系的 Renderer 数；`lightweightRendererRelations` 是成功补到的 mesh/material/bone/gameObject 关系数；`lightweightMonoBehaviourRelations` 是通过 TypeTree 捕获到的脚本 PPtr 关系数。MonoBehaviour PPtr 只作为确定性线索保留，不能直接升级成模型动画绑定。\n\n" +
                 "第二阶段当前重点是建好可查询底座；后续导出器可以逐步改为读取这个数据库来减少重复扫描。\n");
         }
 
@@ -1449,9 +2365,13 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                     ["sourceRoot"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='sourceRoot' LIMIT 1;"),
                     ["game"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='game' LIMIT 1;"),
                     ["animationRelationFeatures"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='animationRelationFeatures' LIMIT 1;"),
+                    ["sourceRelationFeatures"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='sourceRelationFeatures' LIMIT 1;"),
                     ["createdUtc"] = ScalarString(connection, "SELECT value FROM metadata WHERE key='createdUtc' LIMIT 1;"),
                 },
                 ["animationRelationHealth"] = BuildAnimationRelationHealth(connection),
+                ["sourceRelationHealth"] = BuildSourceRelationHealth(connection),
+                ["modelDependencyHealth"] = BuildModelDependencyHealth(connection),
+                ["materialRelationHealth"] = BuildMaterialRelationHealth(connection),
                 ["avatarOracleHealth"] = BuildAvatarOracleHealth(connection),
             };
         }
@@ -1459,6 +2379,11 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
         private static JObject BuildAnimationRelationHealth(SqliteConnection connection)
         {
             var overrideControllerObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='AnimatorOverrideController';");
+            var monoBehaviourObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='MonoBehaviour';");
+            var controllerClipResolvedTargets = SourceRelationResolvedTargetCount(connection, "animatorController.clip", "AnimationClip");
+            var legacyClipResolvedTargets = SourceRelationResolvedTargetCount(connection, "animation.clip", "AnimationClip");
+            var overrideOriginalClipResolvedTargets = SourceRelationResolvedTargetCount(connection, "animatorOverrideController.originalClip", "AnimationClip");
+            var overrideClipResolvedTargets = SourceRelationResolvedTargetCount(connection, "animatorOverrideController.overrideClip", "AnimationClip");
             var relationCounts = new JObject
             {
                 ["animator.controller"] = SourceRelationCount(connection, "animator.controller"),
@@ -1469,26 +2394,471 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 ["animatorOverrideController.originalClip"] = SourceRelationCount(connection, "animatorOverrideController.originalClip"),
                 ["animatorOverrideController.overrideClip"] = SourceRelationCount(connection, "animatorOverrideController.overrideClip"),
                 ["animatorOverrideController.clipPair"] = SourceRelationCount(connection, "animatorOverrideController.clipPair"),
+                ["monoBehaviour.script"] = SourceRelationCount(connection, "monoBehaviour.script"),
+                ["monoBehaviour.pptr"] = SourceRelationCount(connection, "monoBehaviour.pptr"),
             };
             var clipPairs = (long)relationCounts["animatorOverrideController.clipPair"];
             var overrideSets = (long)relationCounts["animatorOverrideController.overrideSet"];
+            var controllerClips = (long)relationCounts["animatorController.clip"];
+            var legacyClips = (long)relationCounts["animation.clip"];
+            var overrideOriginalClips = (long)relationCounts["animatorOverrideController.originalClip"];
+            var overrideClips = (long)relationCounts["animatorOverrideController.overrideClip"];
+            var monoBehaviourPptr = (long)relationCounts["monoBehaviour.pptr"];
+            var controllerClipMissingTargets = Math.Max(0, controllerClips - controllerClipResolvedTargets);
+            var legacyClipMissingTargets = Math.Max(0, legacyClips - legacyClipResolvedTargets);
+            var overrideOriginalClipMissingTargets = Math.Max(0, overrideOriginalClips - overrideOriginalClipResolvedTargets);
+            var overrideClipMissingTargets = Math.Max(0, overrideClips - overrideClipResolvedTargets);
             var nonEmptyOverrideSets = SourceRelationTargetCountPositive(connection, "animatorOverrideController.overrideSet");
             var staleOverridePairs = overrideControllerObjects > 0
                 && (overrideSets == 0 || (nonEmptyOverrideSets > 0 && clipPairs == 0));
+            var missingControllerClipTargets = controllerClipMissingTargets > 0;
+            var missingAnimationClipTargets = legacyClipMissingTargets > 0
+                || overrideOriginalClipMissingTargets > 0
+                || overrideClipMissingTargets > 0;
+            var missingMonoBehaviourPptr = monoBehaviourObjects > 0 && monoBehaviourPptr == 0;
+            var issues = new JArray();
+            if (staleOverridePairs)
+            {
+                issues.Add("staleAnimatorOverrideControllerPairs");
+            }
+            if (missingControllerClipTargets)
+            {
+                issues.Add("missingAnimatorControllerClipTargets");
+            }
+            if (legacyClipMissingTargets > 0)
+            {
+                issues.Add("missingLegacyAnimationClipTargets");
+            }
+            if (overrideOriginalClipMissingTargets > 0 || overrideClipMissingTargets > 0)
+            {
+                issues.Add("missingAnimatorOverrideControllerClipTargets");
+            }
+            if (missingMonoBehaviourPptr)
+            {
+                issues.Add("missingMonoBehaviourPptrIndex");
+            }
             return new JObject
             {
-                ["status"] = staleOverridePairs ? "warning" : "ok",
+                ["status"] = staleOverridePairs || missingControllerClipTargets || missingAnimationClipTargets || missingMonoBehaviourPptr ? "warning" : "ok",
                 ["objectCounts"] = new JObject
                 {
                     ["AnimatorOverrideController"] = overrideControllerObjects,
+                    ["MonoBehaviour"] = monoBehaviourObjects,
                 },
                 ["relationCounts"] = relationCounts,
+                ["resolvedTargetCounts"] = new JObject
+                {
+                    ["animatorController.clip"] = controllerClipResolvedTargets,
+                    ["animation.clip"] = legacyClipResolvedTargets,
+                    ["animatorOverrideController.originalClip"] = overrideOriginalClipResolvedTargets,
+                    ["animatorOverrideController.overrideClip"] = overrideClipResolvedTargets,
+                },
+                ["missingTargetCounts"] = new JObject
+                {
+                    ["animatorController.clip"] = controllerClipMissingTargets,
+                    ["animation.clip"] = legacyClipMissingTargets,
+                    ["animatorOverrideController.originalClip"] = overrideOriginalClipMissingTargets,
+                    ["animatorOverrideController.overrideClip"] = overrideClipMissingTargets,
+                },
                 ["nonEmptyOverrideSetCount"] = nonEmptyOverrideSets,
                 ["staleOverridePairIndex"] = staleOverridePairs,
+                ["missingControllerClipTargets"] = missingControllerClipTargets,
+                ["missingAnimationClipTargets"] = missingAnimationClipTargets,
+                ["missingMonoBehaviourPptrIndex"] = missingMonoBehaviourPptr,
+                ["issues"] = issues,
+                ["missingAnimatorControllerClipTargetSamples"] = BuildMissingRelationTargetSamples(connection, "animatorController.clip", "AnimationClip", 16),
+                ["missingAnimationClipTargetSamples"] = BuildMissingRelationTargetSamples(connection, "animation.clip", "AnimationClip", 16),
+                ["missingAnimatorOverrideOriginalClipTargetSamples"] = BuildMissingRelationTargetSamples(connection, "animatorOverrideController.originalClip", "AnimationClip", 16),
+                ["missingAnimatorOverrideClipTargetSamples"] = BuildMissingRelationTargetSamples(connection, "animatorOverrideController.overrideClip", "AnimationClip", 16),
                 ["note"] = staleOverridePairs
                     ? "源目录存在 AnimatorOverrideController，但缺少当前工具写入的 animatorOverrideController.overrideSet/clipPair 精确标记。旧索引即使有分离的 originalClip/overrideClip，也不能可靠表达 original -> override 或空替换表；请用当前工具重建源索引。"
+                    : missingControllerClipTargets || missingAnimationClipTargets
+                        ? "源索引包含 AnimatorController、legacy Animation 或 AnimatorOverrideController 指向 AnimationClip 的显式关系，但部分目标没有解析到真实 AnimationClip。请用完整源目录重建索引或继续补 VFS/CAB 依赖闭包，不能把缺 clip 目标的样本推进到动画 smoke。"
+                    : missingMonoBehaviourPptr
+                        ? "源索引包含 MonoBehaviour 对象，但没有 monoBehaviour.pptr 关系。Endfield 这类游戏可能把正式角色模型、配置和控制器关系藏在脚本字段里；请用当前工具重建源索引后再做生产级动画关系判断。"
                     : "源索引包含当前工具可检查的动画显式关系。Library 候选仍需结合 glTF 预览验证。"
             };
+        }
+
+        private static JObject BuildSourceRelationHealth(SqliteConnection connection)
+        {
+            var assetBundleObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='AssetBundle';");
+            var resourceManagerObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='ResourceManager';");
+            var relationCounts = new JObject
+            {
+                ["assetBundle.preload"] = SourceRelationCount(connection, "assetBundle.preload"),
+                ["assetBundle.containerAsset"] = SourceRelationCount(connection, "assetBundle.containerAsset"),
+                ["assetBundle.containerPreload"] = SourceRelationCount(connection, "assetBundle.containerPreload"),
+                ["resourceManager.container"] = SourceRelationCount(connection, "resourceManager.container"),
+            };
+            var assetBundleRelationCount = (long)relationCounts["assetBundle.preload"]
+                + (long)relationCounts["assetBundle.containerAsset"]
+                + (long)relationCounts["assetBundle.containerPreload"];
+            var resourceManagerRelationCount = (long)relationCounts["resourceManager.container"];
+            var missingAssetBundleContainerIndex = assetBundleObjects > 0 && assetBundleRelationCount == 0;
+            var missingResourceManagerContainerIndex = resourceManagerObjects > 0 && resourceManagerRelationCount == 0;
+            var issues = new JArray();
+            if (missingAssetBundleContainerIndex)
+            {
+                issues.Add("missingAssetBundleContainerIndex");
+            }
+            if (missingResourceManagerContainerIndex)
+            {
+                issues.Add("missingResourceManagerContainerIndex");
+            }
+
+            return new JObject
+            {
+                ["status"] = missingAssetBundleContainerIndex || missingResourceManagerContainerIndex ? "warning" : "ok",
+                ["features"] = SourceRelationFeatures,
+                ["objectCounts"] = new JObject
+                {
+                    ["AssetBundle"] = assetBundleObjects,
+                    ["ResourceManager"] = resourceManagerObjects,
+                },
+                ["relationCounts"] = relationCounts,
+                ["missingAssetBundleContainerIndex"] = missingAssetBundleContainerIndex,
+                ["missingResourceManagerContainerIndex"] = missingResourceManagerContainerIndex,
+                ["issues"] = issues,
+                ["note"] = missingAssetBundleContainerIndex || missingResourceManagerContainerIndex
+                    ? "源索引包含 AssetBundle/ResourceManager 对象，但缺少当前工具写入的 container/preload 关系。需要用当前工具重建源索引，才能可靠追踪容器来源、依赖闭包、静态 Mesh 主资源和缺件问题。"
+                    : "源索引包含当前工具可检查的 Unity 容器/preload 关系。它们是来源和依赖证据，不能单独作为模型-动画默认绑定。"
+            };
+        }
+
+        private static JObject BuildMaterialRelationHealth(SqliteConnection connection)
+        {
+            var materialObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='Material';");
+            var textureObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type IN ('Texture2D', 'Texture2DArray');");
+            var meshRendererObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='MeshRenderer';");
+            var skinnedRendererObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='SkinnedMeshRenderer';");
+            var rendererMaterialRelations = SourceRelationCount(connection, "renderer.material");
+            var rendererMaterialDistinctEdges = ScalarLong(connection, @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+WHERE r.relation = 'renderer.material';");
+            var rendererMaterialResolvedTargets = ScalarLong(connection, @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+JOIN source_objects o
+  ON o.serialized_file = r.to_file
+ AND o.path_id = r.to_path_id
+ AND o.type = 'Material'
+WHERE r.relation = 'renderer.material';");
+            var materialTextureRelations = SourceRelationCount(connection, "material.texture");
+            var materialTextureDistinctEdges = ScalarLong(connection, @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+WHERE r.relation = 'material.texture';");
+            var materialTextureResolvedTargets = ScalarLong(connection, @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+JOIN source_objects o
+  ON o.serialized_file = r.to_file
+ AND o.path_id = r.to_path_id
+ AND o.type IN ('Texture2D', 'Texture2DArray')
+WHERE r.relation = 'material.texture';");
+            var materialsWithTexture = ScalarLong(connection, @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id)
+FROM source_relations r
+JOIN source_objects material
+  ON material.serialized_file = r.from_file
+ AND material.path_id = r.from_path_id
+ AND material.type = 'Material'
+WHERE r.relation = 'material.texture';");
+            var rendererMaterialMissingTargets = Math.Max(0, rendererMaterialDistinctEdges - rendererMaterialResolvedTargets);
+            var materialTextureMissingTargets = Math.Max(0, materialTextureDistinctEdges - materialTextureResolvedTargets);
+            var missingRendererMaterialTargets = rendererMaterialDistinctEdges > 0 && rendererMaterialMissingTargets > 0;
+            var missingMaterialTextureTargets = materialTextureDistinctEdges > 0 && materialTextureMissingTargets > 0;
+            var missingRendererMaterialTargetSamples = BuildMissingRelationTargetSamples(connection, "renderer.material", "Material", 16);
+            var missingMaterialTextureTargetSamples = BuildMissingRelationTargetSamples(connection, "material.texture", "Texture2D", 16);
+            var issues = new JArray();
+            if (missingRendererMaterialTargets)
+            {
+                issues.Add("missingRendererMaterialTargets");
+            }
+            if (missingMaterialTextureTargets)
+            {
+                issues.Add("missingMaterialTextureTargets");
+            }
+
+            return new JObject
+            {
+                ["status"] = missingRendererMaterialTargets || missingMaterialTextureTargets ? "warning" : "ok",
+                ["objectCounts"] = new JObject
+                {
+                    ["Material"] = materialObjects,
+                    ["Texture2DOrArray"] = textureObjects,
+                    ["MeshRenderer"] = meshRendererObjects,
+                    ["SkinnedMeshRenderer"] = skinnedRendererObjects,
+                },
+                ["relationCounts"] = new JObject
+                {
+                    ["renderer.material"] = rendererMaterialRelations,
+                    ["material.texture"] = materialTextureRelations,
+                },
+                ["distinctRelationCounts"] = new JObject
+                {
+                    ["renderer.material"] = rendererMaterialDistinctEdges,
+                    ["material.texture"] = materialTextureDistinctEdges,
+                },
+                ["resolvedTargetCounts"] = new JObject
+                {
+                    ["renderer.material"] = rendererMaterialResolvedTargets,
+                    ["material.texture"] = materialTextureResolvedTargets,
+                },
+                ["missingTargetCounts"] = new JObject
+                {
+                    ["renderer.material"] = rendererMaterialMissingTargets,
+                    ["material.texture"] = materialTextureMissingTargets,
+                },
+                ["materialsWithTexture"] = materialsWithTexture,
+                ["missingRendererMaterialTargets"] = missingRendererMaterialTargets,
+                ["missingMaterialTextureTargets"] = missingMaterialTextureTargets,
+                ["issues"] = issues,
+                ["missingRendererMaterialTargetSamples"] = missingRendererMaterialTargetSamples,
+                ["missingMaterialTextureTargetSamples"] = missingMaterialTextureTargetSamples,
+                ["note"] = missingRendererMaterialTargets
+                    ? "源索引包含 Renderer -> Material PPtr，但大量目标没有解析到真实 Material。模型第一阶段不能把这类样本当作材质完整；应检查完整源目录、VFS/CAB 依赖闭包或源索引解析覆盖。"
+                    : missingMaterialTextureTargets
+                        ? "源索引包含 Material -> Texture PPtr，但部分目标没有解析到真实 Texture。模型可先作为材质诊断样本，不能直接作为贴图完整验收。"
+                        : "源索引里的 Renderer/Material/Texture 关系目标已在当前数据库中解析。模型仍需导出 glTF 和视觉验收。"
+            };
+        }
+
+        private static JObject BuildModelDependencyHealth(SqliteConnection connection)
+        {
+            var meshObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='Mesh';");
+            var meshFilterObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='MeshFilter';");
+            var skinnedRendererObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='SkinnedMeshRenderer';");
+            var animatorObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='Animator';");
+            var avatarObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='Avatar';");
+            var meshFilterMeshRelations = SourceRelationCount(connection, "meshFilter.mesh");
+            var skinnedMeshRelations = SourceRelationCount(connection, "skinnedMeshRenderer.mesh");
+            var animatorAvatarRelations = SourceRelationCount(connection, "animator.avatar");
+            var meshFilterMeshDistinctEdges = DistinctRelationEdgeCount(connection, "meshFilter.mesh");
+            var skinnedMeshDistinctEdges = DistinctRelationEdgeCount(connection, "skinnedMeshRenderer.mesh");
+            var animatorAvatarDistinctEdges = DistinctRelationEdgeCount(connection, "animator.avatar");
+            var meshFilterMeshResolvedTargets = SourceRelationDistinctResolvedTargetCount(connection, "meshFilter.mesh", "Mesh");
+            var skinnedMeshResolvedTargets = SourceRelationDistinctResolvedTargetCount(connection, "skinnedMeshRenderer.mesh", "Mesh");
+            var animatorAvatarResolvedTargets = SourceRelationDistinctResolvedTargetCount(connection, "animator.avatar", "Avatar");
+            var optimizedAnimatorNullAvatarCount = ScalarLong(connection, @"
+WITH visible_containers AS (
+    SELECT DISTINCT json_extract(preload.raw_json, '$.details.container') AS container_path
+    FROM source_relations preload
+    JOIN source_objects renderer
+      ON renderer.serialized_file = preload.to_file
+     AND renderer.path_id = preload.to_path_id
+     AND renderer.type IN ('SkinnedMeshRenderer', 'MeshRenderer')
+    WHERE preload.relation = 'assetBundle.containerPreload'
+      AND COALESCE(json_extract(preload.raw_json, '$.details.container'), '') <> ''
+)
+SELECT COUNT(DISTINCT animator.serialized_file || ':' || animator.path_id)
+FROM source_relations preload
+JOIN visible_containers vc
+  ON vc.container_path = json_extract(preload.raw_json, '$.details.container')
+JOIN source_objects animator
+  ON animator.serialized_file = preload.to_file
+ AND animator.path_id = preload.to_path_id
+ AND animator.type = 'Animator'
+WHERE preload.relation = 'assetBundle.containerPreload'
+  AND COALESCE(json_extract(animator.raw_json, '$.animator.hasTransformHierarchy'), 1) = 0
+  AND COALESCE(json_extract(animator.raw_json, '$.animator.avatar.isNull'), 1) = 1;");
+            var meshFilterMeshMissingTargets = Math.Max(0, meshFilterMeshDistinctEdges - meshFilterMeshResolvedTargets);
+            var skinnedMeshMissingTargets = Math.Max(0, skinnedMeshDistinctEdges - skinnedMeshResolvedTargets);
+            var animatorAvatarMissingTargets = Math.Max(0, animatorAvatarDistinctEdges - animatorAvatarResolvedTargets);
+            var missingMeshTargets = (meshFilterMeshDistinctEdges > 0 && meshFilterMeshMissingTargets > 0)
+                || (skinnedMeshDistinctEdges > 0 && skinnedMeshMissingTargets > 0);
+            var missingAvatarTargets = animatorAvatarDistinctEdges > 0 && animatorAvatarMissingTargets > 0;
+            var optimizedAnimatorNullAvatar = optimizedAnimatorNullAvatarCount > 0;
+            var missingModelTargets = missingMeshTargets || missingAvatarTargets || optimizedAnimatorNullAvatar;
+            var issues = new JArray();
+            if (meshFilterMeshDistinctEdges > 0 && meshFilterMeshMissingTargets > 0)
+            {
+                issues.Add("missingMeshFilterMeshTargets");
+            }
+            if (skinnedMeshDistinctEdges > 0 && skinnedMeshMissingTargets > 0)
+            {
+                issues.Add("missingSkinnedMeshTargets");
+            }
+            if (missingAvatarTargets)
+            {
+                issues.Add("missingAnimatorAvatarTargets");
+            }
+            if (optimizedAnimatorNullAvatar)
+            {
+                issues.Add("optimizedAnimatorNullAvatar");
+            }
+
+            return new JObject
+            {
+                ["status"] = missingModelTargets ? "warning" : "ok",
+                ["objectCounts"] = new JObject
+                {
+                    ["Mesh"] = meshObjects,
+                    ["MeshFilter"] = meshFilterObjects,
+                    ["SkinnedMeshRenderer"] = skinnedRendererObjects,
+                    ["Animator"] = animatorObjects,
+                    ["Avatar"] = avatarObjects,
+                },
+                ["relationCounts"] = new JObject
+                {
+                    ["meshFilter.mesh"] = meshFilterMeshRelations,
+                    ["skinnedMeshRenderer.mesh"] = skinnedMeshRelations,
+                    ["animator.avatar"] = animatorAvatarRelations,
+                },
+                ["distinctRelationCounts"] = new JObject
+                {
+                    ["meshFilter.mesh"] = meshFilterMeshDistinctEdges,
+                    ["skinnedMeshRenderer.mesh"] = skinnedMeshDistinctEdges,
+                    ["animator.avatar"] = animatorAvatarDistinctEdges,
+                },
+                ["resolvedTargetCounts"] = new JObject
+                {
+                    ["meshFilter.mesh"] = meshFilterMeshResolvedTargets,
+                    ["skinnedMeshRenderer.mesh"] = skinnedMeshResolvedTargets,
+                    ["animator.avatar"] = animatorAvatarResolvedTargets,
+                },
+                ["missingTargetCounts"] = new JObject
+                {
+                    ["meshFilter.mesh"] = meshFilterMeshMissingTargets,
+                    ["skinnedMeshRenderer.mesh"] = skinnedMeshMissingTargets,
+                    ["animator.avatar"] = animatorAvatarMissingTargets,
+                },
+                ["missingMeshTargets"] = missingMeshTargets,
+                ["missingAnimatorAvatarTargets"] = missingAvatarTargets,
+                ["optimizedAnimatorNullAvatarCount"] = optimizedAnimatorNullAvatarCount,
+                ["optimizedAnimatorNullAvatar"] = optimizedAnimatorNullAvatar,
+                ["issues"] = issues,
+                ["missingMeshFilterMeshTargetSamples"] = BuildMissingRelationTargetSamples(connection, "meshFilter.mesh", "Mesh", 16),
+                ["missingSkinnedMeshTargetSamples"] = BuildMissingRelationTargetSamples(connection, "skinnedMeshRenderer.mesh", "Mesh", 16),
+                ["missingAnimatorAvatarTargetSamples"] = BuildMissingRelationTargetSamples(connection, "animator.avatar", "Avatar", 16),
+                ["optimizedAnimatorNullAvatarSamples"] = BuildOptimizedAnimatorNullAvatarSamples(connection, 16),
+                ["note"] = missingMeshTargets
+                    ? "源索引包含 Renderer/MeshFilter -> Mesh PPtr，但部分目标 Mesh 没有解析进当前数据库。模型第一阶段不能把这类样本当作完整模型；应继续补 VFS/CAB 依赖闭包或使用完整源索引。"
+                    : missingAvatarTargets
+                        ? "源索引包含 Animator -> Avatar PPtr，但部分目标 Avatar 没有解析进当前数据库。优化层级或 Humanoid/Skinned 模型可能无法恢复骨骼，模型第一阶段不能继续推进动画。"
+                        : optimizedAnimatorNullAvatar
+                            ? "源索引里存在 hasTransformHierarchy=false 但 Animator.m_Avatar 为空的优化层级 Animator。这类根对象无法通过补 CAB 修复，模型第一阶段应换可用主模型或显式降级为诊断样本。"
+                            : "源索引里的 MeshFilter/SkinnedMeshRenderer -> Mesh 和 Animator -> Avatar 目标已在当前数据库中解析，且没有发现空 Avatar 的优化层级 Animator。模型仍需导出 glTF 和视觉验收。"
+            };
+        }
+
+        private static JArray BuildOptimizedAnimatorNullAvatarSamples(SqliteConnection connection, int limit)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+WITH visible_containers AS (
+    SELECT DISTINCT json_extract(preload.raw_json, '$.details.container') AS container_path
+    FROM source_relations preload
+    JOIN source_objects renderer
+      ON renderer.serialized_file = preload.to_file
+     AND renderer.path_id = preload.to_path_id
+     AND renderer.type IN ('SkinnedMeshRenderer', 'MeshRenderer')
+    WHERE preload.relation = 'assetBundle.containerPreload'
+      AND COALESCE(json_extract(preload.raw_json, '$.details.container'), '') <> ''
+)
+SELECT animator.source_path, animator.serialized_file, animator.path_id, animator.name,
+       json_extract(preload.raw_json, '$.details.container') AS container_path
+FROM source_relations preload
+JOIN visible_containers vc
+  ON vc.container_path = json_extract(preload.raw_json, '$.details.container')
+JOIN source_objects animator
+  ON animator.serialized_file = preload.to_file
+ AND animator.path_id = preload.to_path_id
+ AND animator.type = 'Animator'
+WHERE preload.relation = 'assetBundle.containerPreload'
+  AND COALESCE(json_extract(animator.raw_json, '$.animator.hasTransformHierarchy'), 1) = 0
+  AND COALESCE(json_extract(animator.raw_json, '$.animator.avatar.isNull'), 1) = 1
+ORDER BY animator.source_path COLLATE NOCASE, animator.name COLLATE NOCASE
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$limit", Math.Max(1, limit));
+            var samples = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                samples.Add(new JObject
+                {
+                    ["sourcePath"] = ReadString(reader, "source_path"),
+                    ["serializedFile"] = ReadString(reader, "serialized_file"),
+                    ["pathId"] = ReadInt64(reader, "path_id"),
+                    ["name"] = ReadString(reader, "name"),
+                    ["containerPath"] = ReadString(reader, "container_path"),
+                    ["issue"] = "hasTransformHierarchy=false but Animator.m_Avatar is null"
+                });
+            }
+
+            return samples;
+        }
+
+        private static JArray BuildMissingRelationTargetSamples(SqliteConnection connection, string relation, string targetType, int limit)
+        {
+            var targetTypeFilter = targetType == "Texture2D"
+                ? "target.type IN ('Texture2D', 'Texture2DArray')"
+                : "target.type = $targetType";
+            using var command = connection.CreateCommand();
+            command.CommandText = $@"
+SELECT
+    r.to_file,
+    r.to_path_id,
+    r.to_type_hint,
+    COUNT(*) AS relation_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS distinct_referrer_count,
+    COUNT(DISTINCT r.from_source) AS source_file_count,
+    MIN(r.from_source) AS sample_from_source,
+    MIN(r.from_file) AS sample_from_file,
+    MIN(r.from_type) AS sample_from_type,
+    MIN(r.from_name) AS sample_from_name,
+    MIN(r.from_path_id) AS sample_from_path_id,
+    MIN(e.file_name) AS sample_external_file_name,
+    MIN(e.path_name) AS sample_external_path_name,
+    MIN(e.guid) AS sample_external_guid
+FROM source_relations r
+LEFT JOIN source_objects target
+  ON target.serialized_file = r.to_file
+ AND target.path_id = r.to_path_id
+ AND {targetTypeFilter}
+LEFT JOIN source_externals e
+  ON e.serialized_file = r.from_file
+ AND e.file_id = r.to_file_id
+WHERE r.relation = $relation
+  AND target.id IS NULL
+GROUP BY r.to_file, r.to_path_id, r.to_type_hint
+ORDER BY relation_count DESC, distinct_referrer_count DESC
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$relation", relation);
+            command.Parameters.AddWithValue("$targetType", targetType);
+            command.Parameters.AddWithValue("$limit", limit);
+            var samples = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                samples.Add(new JObject
+                {
+                    ["targetFile"] = ReadString(reader, "to_file"),
+                    ["targetPathId"] = ReadInt64(reader, "to_path_id"),
+                    ["targetTypeHint"] = ReadString(reader, "to_type_hint"),
+                    ["relationCount"] = ReadInt64(reader, "relation_count"),
+                    ["distinctReferrerCount"] = ReadInt64(reader, "distinct_referrer_count"),
+                    ["sourceFileCount"] = ReadInt64(reader, "source_file_count"),
+                    ["sampleReferrer"] = new JObject
+                    {
+                        ["source"] = ReadString(reader, "sample_from_source"),
+                        ["serializedFile"] = ReadString(reader, "sample_from_file"),
+                        ["type"] = ReadString(reader, "sample_from_type"),
+                        ["name"] = ReadString(reader, "sample_from_name"),
+                        ["pathId"] = ReadInt64(reader, "sample_from_path_id"),
+                    },
+                    ["sampleExternal"] = new JObject
+                    {
+                        ["fileName"] = ReadString(reader, "sample_external_file_name"),
+                        ["pathName"] = ReadString(reader, "sample_external_path_name"),
+                        ["guid"] = ReadString(reader, "sample_external_guid"),
+                    },
+                });
+            }
+
+            return samples;
         }
 
         private static JObject BuildAvatarOracleHealth(SqliteConnection connection)
@@ -1553,11 +2923,66 @@ WHERE type='Avatar'
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
         }
 
+        private static long SourceRelationResolvedTargetCount(SqliteConnection connection, string relation, string targetType)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(*)
+FROM source_relations r
+JOIN source_objects o
+  ON o.serialized_file = r.to_file
+ AND o.path_id = r.to_path_id
+ AND o.type = $targetType
+WHERE r.relation = $relation;";
+            command.Parameters.AddWithValue("$relation", relation);
+            command.Parameters.AddWithValue("$targetType", targetType);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static long DistinctRelationEdgeCount(SqliteConnection connection, string relation)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+WHERE r.relation = $relation;";
+            command.Parameters.AddWithValue("$relation", relation);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static long SourceRelationDistinctResolvedTargetCount(SqliteConnection connection, string relation, string targetType)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+JOIN source_objects o
+  ON o.serialized_file = r.to_file
+ AND o.path_id = r.to_path_id
+ AND o.type = $targetType
+WHERE r.relation = $relation;";
+            command.Parameters.AddWithValue("$relation", relation);
+            command.Parameters.AddWithValue("$targetType", targetType);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
         private static long ScalarLong(SqliteConnection connection, string sql)
         {
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static string ReadString(SqliteDataReader reader, string column)
+        {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? string.Empty : reader.GetString(ordinal);
+        }
+
+        private static long ReadInt64(SqliteDataReader reader, string column)
+        {
+            var ordinal = reader.GetOrdinal(column);
+            return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
         }
 
         private static string ScalarString(SqliteConnection connection, string sql)
@@ -1602,40 +3027,499 @@ WHERE type='Avatar'
             command.ExecuteNonQuery();
         }
 
-        private static List<string[]> BuildLoadBatches(string[] files, int batchFiles)
+        private static List<SourceIndexLoadBatch> BuildLoadBatches(
+            string[] files,
+            int batchFiles,
+            Game game,
+            bool hasExplicitEndfieldVfsDiagnosticFilter,
+            IReadOnlyDictionary<string, string[]> endfieldVfsInnerFileFilters = null,
+            Func<string, bool> endfieldExplicitInnerFileFilter = null,
+            bool includeEndfieldAutoRootsWithExplicitFilter = false,
+            HashSet<string> endfieldAutoRootFiles = null)
         {
-            var batches = new List<string[]>();
+            var batches = new List<SourceIndexLoadBatch>();
             var current = new List<string>(batchFiles);
+
+            void FlushCurrent()
+            {
+                if (current.Count == 0)
+                {
+                    return;
+                }
+
+                batches.Add(SourceIndexLoadBatch.ForFiles(current.ToArray()));
+                current.Clear();
+            }
 
             foreach (var file in files)
             {
+                if (IsLikelyEndfieldVfsFile(file, game)
+                    && (!hasExplicitEndfieldVfsDiagnosticFilter || includeEndfieldAutoRootsWithExplicitFilter))
+                {
+                    FlushCurrent();
+                    string[] selectedInnerFiles = null;
+                    endfieldVfsInnerFileFilters?.TryGetValue(Path.GetFullPath(file), out selectedInnerFiles);
+                    var autoRootSelected = !hasExplicitEndfieldVfsDiagnosticFilter
+                        || (endfieldAutoRootFiles != null && endfieldAutoRootFiles.Contains(Path.GetFullPath(file)));
+                    var includeAllAutoInnerFiles = autoRootSelected && selectedInnerFiles == null;
+                    var closureFilter = includeEndfieldAutoRootsWithExplicitFilter
+                        ? endfieldExplicitInnerFileFilter
+                        : null;
+                    AddEndfieldVfsInnerBatches(
+                        batches,
+                        file,
+                        game,
+                        batchFiles,
+                        selectedInnerFiles,
+                        closureFilter,
+                        includeAllAutoInnerFiles);
+                    continue;
+                }
+
                 var length = SafeFileLength(file);
                 if (length >= LargeSourceIndexFileBytes)
                 {
-                    if (current.Count > 0)
-                    {
-                        batches.Add(current.ToArray());
-                        current.Clear();
-                    }
-
-                    batches.Add(new[] { file });
+                    FlushCurrent();
+                    batches.Add(SourceIndexLoadBatch.ForFiles(new[] { file }));
                     continue;
                 }
 
                 current.Add(file);
                 if (current.Count >= batchFiles)
                 {
-                    batches.Add(current.ToArray());
-                    current.Clear();
+                    FlushCurrent();
                 }
             }
 
-            if (current.Count > 0)
+            FlushCurrent();
+            return batches;
+        }
+
+        private static EndfieldVfsSourceSelection SelectEndfieldVfsSourceFiles(string[] files, Game game, bool keepSameLengthSupplemental)
+        {
+            if (files == null || files.Length == 0 || game == null || !game.Type.IsArknightsEndfieldGroup())
             {
-                batches.Add(current.ToArray());
+                return EndfieldVfsSourceSelection.FromSelected(files ?? Array.Empty<string>());
             }
 
-            return batches;
+            var selected = new List<string>(files.Length);
+            var innerFileFilters = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            var endfieldGroups = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in files)
+            {
+                if (!IsLikelyEndfieldVfsFile(file, game))
+                {
+                    selected.Add(file);
+                    continue;
+                }
+
+                var key = GetEndfieldVfsBucketKey(file);
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    selected.Add(file);
+                    continue;
+                }
+
+                if (!endfieldGroups.TryGetValue(key, out var group))
+                {
+                    group = new List<string>();
+                    endfieldGroups[key] = group;
+                }
+                group.Add(file);
+            }
+
+            var skippedDuplicates = 0;
+            var differentNamedPairs = 0;
+            var sameNamedDifferentLengthInnerFiles = 0;
+            var sameNamedSameLengthInnerFiles = 0;
+            foreach (var group in endfieldGroups.Values)
+            {
+                if (group.Count == 1)
+                {
+                    selected.Add(group[0]);
+                    continue;
+                }
+
+                var ordered = group
+                    // 先选本机 chunk 闭包完整的 VFS。Endfield 的 Persistent 目录可能只有
+                    // 热更新元数据或少量 chunk，盲目优先会让源索引丢 Mesh/材质依赖。
+                    .OrderByDescending(path => GetEndfieldVfsReadableUnityBundleChunkRatio(path, game))
+                    .ThenByDescending(IsPersistentEndfieldVfsPath)
+                    .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                var primary = ordered[0];
+                selected.Add(primary);
+                var primaryReadableRatio = GetEndfieldVfsReadableUnityBundleChunkRatio(primary, game);
+                if (primaryReadableRatio < 1.0)
+                {
+                    Logger.Warning($"Endfield VFS selected primary has incomplete local chunks ({primaryReadableRatio:P0} readable): {primary}");
+                }
+                var primaryInnerFiles = ListEndfieldVfsInnerFiles(primary, game);
+                var primaryInnerLengths = primaryInnerFiles
+                    .GroupBy(x => NormalizeEndfieldVfsInnerFileName(x.FileName), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => x.Max(entry => Math.Max(0, entry.Length)),
+                        StringComparer.OrdinalIgnoreCase);
+                foreach (var file in ordered.Skip(1))
+                {
+                    if (AreSameFileContent(primary, file))
+                    {
+                        skippedDuplicates++;
+                        continue;
+                    }
+
+                    var extraEntries = ListEndfieldVfsInnerFiles(file, game)
+                        .OrderBy(x => x.FileName, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    if (extraEntries.Length == 0)
+                    {
+                        skippedDuplicates++;
+                        continue;
+                    }
+
+                    var sameNameDifferentLengthCount = extraEntries.Count(x =>
+                    {
+                        var normalized = NormalizeEndfieldVfsInnerFileName(x.FileName);
+                        return primaryInnerLengths.TryGetValue(normalized, out var primaryLength)
+                            && primaryLength != Math.Max(0, x.Length);
+                    });
+                    var sameNameSameLengthCount = extraEntries.Count(x =>
+                    {
+                        var normalized = NormalizeEndfieldVfsInnerFileName(x.FileName);
+                        return primaryInnerLengths.TryGetValue(normalized, out var primaryLength)
+                            && primaryLength == Math.Max(0, x.Length);
+                    });
+                    var extraInnerFiles = extraEntries
+                        .Where(x =>
+                        {
+                            var normalized = NormalizeEndfieldVfsInnerFileName(x.FileName);
+                            if (!primaryInnerLengths.TryGetValue(normalized, out var primaryLength))
+                            {
+                                return true;
+                            }
+
+                            if (primaryLength != Math.Max(0, x.Length))
+                            {
+                                return true;
+                            }
+
+                            return keepSameLengthSupplemental;
+                        })
+                        .Select(x => x.FileName)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    if (extraInnerFiles.Length == 0)
+                    {
+                        skippedDuplicates++;
+                        sameNamedDifferentLengthInnerFiles += sameNameDifferentLengthCount;
+                        sameNamedSameLengthInnerFiles += sameNameSameLengthCount;
+                        Logger.Info($"Endfield VFS skips supplemental StreamingAssets block for {GetEndfieldVfsBucketKey(file)} because only same-name same-length inner files were found ({sameNameSameLengthCount} counted). Use --endfield_vfs_keep_same_length_supplemental for strict diagnostic closure.");
+                        continue;
+                    }
+
+                    selected.Add(file);
+                    innerFileFilters[Path.GetFullPath(file)] = extraInnerFiles;
+                    differentNamedPairs++;
+                    sameNamedDifferentLengthInnerFiles += sameNameDifferentLengthCount;
+                    sameNamedSameLengthInnerFiles += sameNameSameLengthCount;
+                    Logger.Info($"Endfield VFS keeps {extraInnerFiles.Length} supplemental StreamingAssets inner file(s) for {GetEndfieldVfsBucketKey(file)} ({sameNameDifferentLengthCount} same-name length-changed, {sameNameSameLengthCount} same-name same-length {(keepSameLengthSupplemental ? "kept" : "skipped")}).");
+                }
+            }
+
+            var selectedArray = selected
+                .OrderBy(x => SafeFileLength(x))
+                .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            return new EndfieldVfsSourceSelection(selectedArray, skippedDuplicates, differentNamedPairs, sameNamedDifferentLengthInnerFiles, sameNamedSameLengthInnerFiles, innerFileFilters);
+        }
+
+        private static IReadOnlyList<EndfieldVfsBlockFile.UnityBundleEntry> ListEndfieldVfsInnerFiles(string blockListPath, Game game)
+        {
+            try
+            {
+                return EndfieldVfsBlockFile.ListUnityBundleFiles(blockListPath, game.Type)
+                    .Where(x => !string.IsNullOrWhiteSpace(x.FileName))
+                    .ToArray();
+            }
+            catch (Exception e) when (e is IOException || e is InvalidDataException || e is InvalidCastException || e is ArgumentException)
+            {
+                Logger.Warning($"Unable to compare Endfield VFS inner files; keeping full block: {blockListPath}. {e.GetType().Name}: {e.Message}");
+                return Array.Empty<EndfieldVfsBlockFile.UnityBundleEntry>();
+            }
+        }
+
+        private static string GetEndfieldVfsBucketKey(string path)
+        {
+            var normalized = Path.GetFullPath(path).Replace('\\', '/');
+            var marker = "/VFS/";
+            var markerIndex = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex < 0)
+            {
+                return string.Empty;
+            }
+
+            var relative = normalized[(markerIndex + marker.Length)..].Trim('/');
+            var slash = relative.IndexOf('/');
+            return slash > 0 ? relative[..slash] : Path.GetFileNameWithoutExtension(relative);
+        }
+
+        private static bool IsPersistentEndfieldVfsPath(string path)
+        {
+            var normalized = Path.GetFullPath(path).Replace('\\', '/');
+            return normalized.Contains("/Persistent/VFS/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static double GetEndfieldVfsReadableUnityBundleChunkRatio(string path, Game game)
+        {
+            try
+            {
+                var entries = EndfieldVfsBlockFile.ListFileEntries(path, game.Type)
+                    .Where(IsEndfieldUnityBundleEntry)
+                    .ToArray();
+                if (entries.Length == 0)
+                {
+                    return 0.0;
+                }
+
+                var blockDir = Path.GetDirectoryName(path) ?? string.Empty;
+                var chunkFiles = entries
+                    .Select(x => x.ChunkFileName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (chunkFiles.Length == 0)
+                {
+                    return 0.0;
+                }
+
+                var readableChunks = chunkFiles.Count(chunk => File.Exists(Path.Combine(blockDir, chunk)));
+                return readableChunks / (double)chunkFiles.Length;
+            }
+            catch (Exception e) when (e is IOException || e is InvalidDataException || e is InvalidCastException || e is ArgumentException)
+            {
+                Logger.Warning($"Unable to check Endfield VFS chunk closure; treating as unreadable: {path}. {e.GetType().Name}: {e.Message}");
+                return 0.0;
+            }
+        }
+
+        private static bool IsEndfieldUnityBundleEntry(EndfieldVfsBlockFile.VfsFileEntry entry)
+        {
+            // EndfieldVfsBlockFile 的内部枚举值：InitBundle=2, Bundle=11。
+            return entry != null && (entry.BlockTypeId == 2 || entry.BlockTypeId == 11);
+        }
+
+        private static bool AreSameFileContent(string left, string right)
+        {
+            if (string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var leftInfo = new FileInfo(left);
+            var rightInfo = new FileInfo(right);
+            if (!leftInfo.Exists || !rightInfo.Exists || leftInfo.Length != rightInfo.Length)
+            {
+                return false;
+            }
+
+            return string.Equals(ComputeFileSha256(left), ComputeFileSha256(right), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ComputeFileSha256(string path)
+        {
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            return Convert.ToHexString(sha.ComputeHash(stream));
+        }
+
+        private static void AddEndfieldVfsInnerBatches(
+            List<SourceIndexLoadBatch> batches,
+            string blockListPath,
+            Game game,
+            int batchFiles,
+            string[] selectedInnerFiles = null,
+            Func<string, bool> additionalInnerFileFilter = null,
+            bool includeAllInnerFiles = false)
+        {
+            IReadOnlyList<EndfieldVfsBlockFile.UnityBundleEntry> entries;
+            try
+            {
+                entries = EndfieldVfsBlockFile.ListUnityBundleFiles(blockListPath, game.Type);
+            }
+            catch (Exception e) when (e is IOException || e is InvalidDataException || e is InvalidCastException || e is ArgumentException)
+            {
+                Logger.Warning($"Unable to enumerate Endfield VFS inner files for batching. Falling back to normal load: {blockListPath}. {e.GetType().Name}: {e.Message}");
+                batches.Add(SourceIndexLoadBatch.ForFiles(new[] { blockListPath }));
+                return;
+            }
+
+            if (entries.Count == 0)
+            {
+                Logger.Verbose($"Skipped Endfield VFS block without Unity bundle entries during source-index batching: {blockListPath}");
+                return;
+            }
+
+            if (!includeAllInnerFiles && (selectedInnerFiles != null || additionalInnerFileFilter != null))
+            {
+                var selected = (selectedInnerFiles ?? Array.Empty<string>())
+                    .Select(NormalizeEndfieldVfsInnerFileName)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                entries = entries
+                    .Where(x =>
+                    {
+                        var normalized = NormalizeEndfieldVfsInnerFileName(x.FileName);
+                        return selected.Contains(normalized)
+                            || (additionalInnerFileFilter != null && additionalInnerFileFilter(x.FileName));
+                    })
+                    .ToArray();
+                if (entries.Count == 0)
+                {
+                    Logger.Verbose($"Skipped Endfield VFS block because supplemental inner-file selection is empty: {blockListPath}");
+                    return;
+                }
+            }
+
+            var maxFiles = Math.Max(EndfieldVfsInnerBatchMinFileCount, Math.Max(1, batchFiles) * 8);
+            var current = new List<string>(maxFiles);
+            var currentBytes = 0L;
+
+            void Flush()
+            {
+                if (current.Count == 0)
+                {
+                    return;
+                }
+
+                batches.Add(SourceIndexLoadBatch.ForEndfieldVfsInnerFiles(
+                    blockListPath,
+                    current.ToArray(),
+                    currentBytes));
+                current.Clear();
+                currentBytes = 0;
+            }
+
+            foreach (var entry in entries.OrderBy(x => x.Length).ThenBy(x => x.FileName, StringComparer.OrdinalIgnoreCase))
+            {
+                if (current.Count > 0
+                    && (current.Count >= maxFiles || currentBytes + Math.Max(0, entry.Length) > EndfieldVfsInnerBatchBytes))
+                {
+                    Flush();
+                }
+
+                current.Add(entry.FileName);
+                currentBytes += Math.Max(0, entry.Length);
+            }
+
+            Flush();
+        }
+
+        private static Func<string, bool> BuildExactEndfieldVfsInnerFileFilter(IEnumerable<string> innerFiles)
+        {
+            var selected = innerFiles
+                .Select(NormalizeEndfieldVfsInnerFileName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var selectedByFileName = selected
+                .GroupBy(GetNormalizedFileName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(path => "/" + path).ToArray(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            return fileName =>
+            {
+                var normalized = NormalizeEndfieldVfsInnerFileName(fileName);
+                if (selected.Contains(normalized))
+                {
+                    return true;
+                }
+
+                // 这里每个批次会扫完整 VFS 元数据。不能对每个条目遍历全部 selected，
+                // 先按文件名缩小候选，再保留旧的后缀兼容。
+                var leaf = GetNormalizedFileName(normalized);
+                return selectedByFileName.TryGetValue(leaf, out var suffixes)
+                    && suffixes.Any(suffix => normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+            };
+        }
+
+        private static string NormalizeEndfieldVfsInnerFileName(string fileName)
+        {
+            return (fileName ?? string.Empty)
+                .Trim()
+                .TrimStart('/', '\\')
+                .Replace('\\', '/');
+        }
+
+        private static string GetNormalizedFileName(string normalizedPath)
+        {
+            normalizedPath ??= string.Empty;
+            var index = normalizedPath.LastIndexOf('/');
+            return index >= 0 ? normalizedPath[(index + 1)..] : normalizedPath;
+        }
+
+        private sealed class SourceIndexLoadBatch
+        {
+            public string[] Files { get; private set; }
+            public string[] EndfieldVfsInnerFiles { get; private set; }
+            public long EndfieldVfsInnerBytes { get; private set; }
+            public bool IsEndfieldVfsInnerBatch => EndfieldVfsInnerFiles != null && EndfieldVfsInnerFiles.Length > 0;
+
+            public static SourceIndexLoadBatch ForFiles(string[] files)
+            {
+                return new SourceIndexLoadBatch
+                {
+                    Files = files ?? Array.Empty<string>(),
+                };
+            }
+
+            public static SourceIndexLoadBatch ForEndfieldVfsInnerFiles(string blockListPath, string[] innerFiles, long innerBytes)
+            {
+                return new SourceIndexLoadBatch
+                {
+                    Files = new[] { blockListPath },
+                    EndfieldVfsInnerFiles = innerFiles ?? Array.Empty<string>(),
+                    EndfieldVfsInnerBytes = innerBytes,
+                };
+            }
+        }
+
+        private sealed class EndfieldVfsSourceSelection
+        {
+            public EndfieldVfsSourceSelection(
+                string[] selectedFiles,
+                int skippedDuplicateCount,
+                int differentNamedPairCount,
+                int sameNamedDifferentLengthInnerFileCount,
+                int sameNamedSameLengthInnerFileCount,
+                IReadOnlyDictionary<string, string[]> innerFileFilters = null)
+            {
+                SelectedFiles = selectedFiles ?? Array.Empty<string>();
+                SkippedDuplicateCount = skippedDuplicateCount;
+                DifferentNamedPairCount = differentNamedPairCount;
+                SameNamedDifferentLengthInnerFileCount = sameNamedDifferentLengthInnerFileCount;
+                SameNamedSameLengthInnerFileCount = sameNamedSameLengthInnerFileCount;
+                InnerFileFilters = innerFileFilters ?? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+                SupplementalInnerFileCount = InnerFileFilters.Values.Sum(x => x?.Length ?? 0);
+            }
+
+            public static EndfieldVfsSourceSelection Empty { get; } = new(Array.Empty<string>(), 0, 0, 0, 0);
+
+            public string[] SelectedFiles { get; }
+            public int SkippedDuplicateCount { get; }
+            public int DifferentNamedPairCount { get; }
+            public int SameNamedDifferentLengthInnerFileCount { get; }
+            public int SameNamedSameLengthInnerFileCount { get; }
+            public IReadOnlyDictionary<string, string[]> InnerFileFilters { get; }
+            public int SupplementalInnerFileCount { get; }
+
+            public static EndfieldVfsSourceSelection FromSelected(string[] selectedFiles)
+            {
+                return new EndfieldVfsSourceSelection(selectedFiles ?? Array.Empty<string>(), 0, 0, 0, 0);
+            }
         }
 
         private static bool IsObjectRangeReadable(SerializedFile assetsFile, ObjectInfo objectInfo)
@@ -1683,6 +3567,8 @@ WHERE type='Avatar'
                 or ClassIDType.MeshFilter
                 or ClassIDType.AnimationClip
                 or ClassIDType.Avatar
+                or ClassIDType.MonoBehaviour
+                or ClassIDType.MonoScript
                 or ClassIDType.AssetBundle
                 or ClassIDType.ResourceManager;
         }
@@ -1760,6 +3646,7 @@ WHERE type='Avatar'
 
             private object ReadNode(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string parentPath)
             {
+                ValidateNodeIndex(nodeList, index, parentPath);
                 var node = nodeList[index];
                 var path = string.IsNullOrEmpty(parentPath) ? node.m_Name : $"{parentPath}.{node.m_Name}";
                 var align = (node.m_MetaFlag & 0x4000) != 0;
@@ -1769,7 +3656,7 @@ WHERE type='Avatar'
                 {
                     var ptr = new PPtr<AnimeStudio.Object>(reader);
                     CapturePPtr(path, ptr.m_FileID, ptr.m_PathID);
-                    index = GetNodeEnd(nodeList, index) - 1;
+                    index = GetNodeEnd(nodeList, index, path) - 1;
                     if (align)
                     {
                         binaryReader.AlignStream();
@@ -1838,7 +3725,7 @@ WHERE type='Avatar'
                         break;
                     case "string":
                         returnValue = binaryReader.ReadAlignedString();
-                        index = GetNodeEnd(nodeList, index) - 1;
+                        index = GetNodeEnd(nodeList, index, path) - 1;
                         break;
                     case "TypelessData":
                         {
@@ -1848,7 +3735,7 @@ WHERE type='Avatar'
                                 throw new InvalidDataException($"Invalid TypelessData size {size} while reading lightweight renderer relation.");
                             }
                             binaryReader.ReadBytes(size);
-                            index = GetNodeEnd(nodeList, index) - 1;
+                            index = GetNodeEnd(nodeList, index, path) - 1;
                             break;
                         }
                     case "map":
@@ -1861,7 +3748,7 @@ WHERE type='Avatar'
                         }
                         else
                         {
-                            var end = GetNodeEnd(nodeList, index);
+                            var end = GetNodeEnd(nodeList, index, path);
                             for (var child = index + 1; child < end; child++)
                             {
                                 _ = ReadNode(nodeList, binaryReader, ref child, path);
@@ -1887,8 +3774,16 @@ WHERE type='Avatar'
 
             private void ReadArray(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string path)
             {
+                ValidateNodeIndex(nodeList, index, path);
+                ValidateNodeIndex(nodeList, index + 1, path);
+                // Unity TypeTree 的 vector 通常是: vector -> Array -> size -> data。
+                // Endfield 个别对象的轻量 TypeTree 不完整时，不能让单个对象打断全量源索引。
                 var arrayAlign = (nodeList[index + 1].m_MetaFlag & 0x4000) != 0;
-                var vector = GetNodes(nodeList, index);
+                var vector = GetNodes(nodeList, index, path);
+                if (vector.Count <= 3)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer array typetree at {path}: expected vector data node, got {vector.Count} node(s).");
+                }
                 index += vector.Count - 1;
                 var size = binaryReader.ReadInt32();
                 if (size < 0 || size > SourceIndexMaxLightweightArrayCount)
@@ -1910,11 +3805,22 @@ WHERE type='Avatar'
 
             private void ReadMap(List<TypeTreeNode> nodeList, EndianBinaryReader binaryReader, ref int index, string path)
             {
-                var map = GetNodes(nodeList, index);
+                ValidateNodeIndex(nodeList, index, path);
+                // Unity map TypeTree 里 key/value 子树位置比较固定，但不同游戏版本可能裁掉空结构。
+                // 这里显式报坏结构，交给外层记录 lightweightRendererFailures。
+                var map = GetNodes(nodeList, index, path);
+                if (map.Count <= 4)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer map typetree at {path}: expected key/value nodes, got {map.Count} node(s).");
+                }
                 index += map.Count - 1;
-                var first = GetNodes(map, 4);
+                var first = GetNodes(map, 4, path + ".key");
                 var next = 4 + first.Count;
-                var second = GetNodes(map, next);
+                if (next >= map.Count)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer map typetree at {path}: missing value node after key subtree.");
+                }
+                var second = GetNodes(map, next, path + ".value");
                 var size = binaryReader.ReadInt32();
                 if (size < 0 || size > SourceIndexMaxLightweightArrayCount)
                 {
@@ -1955,6 +3861,28 @@ WHERE type='Avatar'
             {
                 if (pathId == 0)
                 {
+                    return;
+                }
+
+                if (reader.type == ClassIDType.MonoBehaviour)
+                {
+                    // 脚本字段只作为确定性原始引用入库，不直接升级成模型-动画候选。
+                    // m_GameObject / m_Script 已由解析后的 MonoBehaviour 明确写入，避免重复。
+                    if (!EndsWithField(path, "m_GameObject") && !EndsWithField(path, "m_Script"))
+                    {
+                        relations.Add(new LightweightPPtrRelation
+                        {
+                            Relation = "monoBehaviour.pptr",
+                            FileId = fileId,
+                            PathId = pathId,
+                            TypeHint = "Object",
+                            Details = new
+                            {
+                                path,
+                                field = GetLastFieldName(path),
+                            },
+                        });
+                    }
                     return;
                 }
 
@@ -2218,13 +4146,20 @@ WHERE type='Avatar'
                     || path.Contains("." + fieldName + ".", StringComparison.Ordinal);
             }
 
-            private static List<TypeTreeNode> GetNodes(List<TypeTreeNode> nodeList, int index)
+            private static List<TypeTreeNode> GetNodes(List<TypeTreeNode> nodeList, int index, string path)
             {
-                return nodeList.GetRange(index, GetNodeEnd(nodeList, index) - index);
+                var end = GetNodeEnd(nodeList, index, path);
+                var count = end - index;
+                if (count <= 0)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer typetree range at {path}: index={index}, end={end}, count={nodeList?.Count ?? 0}.");
+                }
+                return nodeList.GetRange(index, count);
             }
 
-            private static int GetNodeEnd(List<TypeTreeNode> nodeList, int index)
+            private static int GetNodeEnd(List<TypeTreeNode> nodeList, int index, string path)
             {
+                ValidateNodeIndex(nodeList, index, path);
                 var level = nodeList[index].m_Level;
                 var end = index + 1;
                 while (end < nodeList.Count && nodeList[end].m_Level > level)
@@ -2232,6 +4167,30 @@ WHERE type='Avatar'
                     end++;
                 }
                 return end;
+            }
+
+            private static void ValidateNodeIndex(List<TypeTreeNode> nodeList, int index, string path)
+            {
+                if (nodeList == null || nodeList.Count == 0)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer typetree at {path}: node list is empty.");
+                }
+
+                if (index < 0 || index >= nodeList.Count)
+                {
+                    throw new InvalidDataException($"Invalid lightweight renderer typetree index at {path}: index={index}, count={nodeList.Count}.");
+                }
+            }
+
+            private static string GetLastFieldName(string path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    return null;
+                }
+
+                var index = path.LastIndexOf('.');
+                return index >= 0 && index < path.Length - 1 ? path[(index + 1)..] : path;
             }
         }
 
@@ -2471,6 +4430,11 @@ WHERE type='Avatar'
                 return true;
             }
 
+            if (IsLikelyEndfieldVfsFile(path, game))
+            {
+                return true;
+            }
+
             var extension = Path.GetExtension(path);
             if (string.IsNullOrEmpty(extension))
             {
@@ -2526,6 +4490,24 @@ WHERE type='Avatar'
 
             var normalized = Path.GetFullPath(path).Replace('\\', '/');
             return normalized.Contains("/AssetBundles/blocks/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsLikelyEndfieldVfsFile(string path, Game game)
+        {
+            if (game == null || !game.Type.IsArknightsEndfieldGroup())
+            {
+                return false;
+            }
+
+            var extension = Path.GetExtension(path);
+            if (!string.Equals(extension, ".blc", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var normalized = Path.GetFullPath(path).Replace('\\', '/');
+            return normalized.Contains("/StreamingAssets/VFS/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Persistent/VFS/", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasUnityBundleHeader(string path)

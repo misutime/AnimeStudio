@@ -26,8 +26,14 @@ namespace AnimeStudio.PInvoke
 
         private static string GetDirectedDllDirectory()
         {
-            var localPath = Process.GetCurrentProcess().MainModule.FileName;
-            var localDir = Path.GetDirectoryName(localPath);
+            // dotnet AnimeStudio.CLI.dll 启动时 MainModule 会指向 dotnet.exe。
+            // native 依赖跟随应用输出目录，所以优先使用 AppContext.BaseDirectory。
+            var localDir = AppContext.BaseDirectory;
+            if (string.IsNullOrWhiteSpace(localDir))
+            {
+                var localPath = Process.GetCurrentProcess().MainModule.FileName;
+                localDir = Path.GetDirectoryName(localPath);
+            }
 
             var subDir = Environment.Is64BitProcess ? "x64" : "x86";
 

@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -41,7 +43,14 @@ namespace AnimeStudio.CLI
             ".rawtex"
         };
 
-        public static string Build(string exportRoot, string indexPath = null, bool skipFileIndex = false, bool skipSidecarScan = false, bool skipJsonDocuments = false, string sourceIndexPath = null)
+        public static string Build(
+            string exportRoot,
+            string indexPath = null,
+            bool skipFileIndex = false,
+            bool skipSidecarScan = false,
+            bool skipJsonDocuments = false,
+            string sourceIndexPath = null,
+            string sourceGame = null)
         {
             if (string.IsNullOrWhiteSpace(exportRoot) || !Directory.Exists(exportRoot))
             {
@@ -63,6 +72,7 @@ namespace AnimeStudio.CLI
 
             var totalWatch = Stopwatch.StartNew();
             Logger.Info($"Building SQLite library index: {dbPath}");
+            var resolvedSourceGame = FirstNonEmpty(sourceGame, ReadExistingAssetLibrarySourceGame(root), string.Empty);
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             using var connection = new SqliteConnection($"Data Source={dbPath}");
             connection.Open();
@@ -90,8 +100,8 @@ namespace AnimeStudio.CLI
             InsertMetadata(connection, transaction, "schemaVersion", "1");
             InsertMetadata(connection, transaction, "libraryKind", "AssetLibrary");
             InsertMetadata(connection, transaction, "sourceTool", "AnimeStudio");
-            InsertMetadata(connection, transaction, "sourceGame", "");
-            InsertMetadata(connection, transaction, "capabilities", "{\"models\":true,\"animations\":true,\"animationPreviewComposer\":\"AnimeStudio.CLI compose-preview\"}");
+            InsertMetadata(connection, transaction, "sourceGame", resolvedSourceGame);
+            InsertMetadata(connection, transaction, "capabilities", "{\"models\":false,\"animations\":false}");
             InsertMetadata(connection, transaction, "root", root);
             InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。SQLite v1 indexes exported Library/AudioLibrary artifacts; raw Unity source graph indexing will extend this schema later.");
@@ -100,6 +110,8 @@ namespace AnimeStudio.CLI
             counts["textureAssets"] = RunCountStage("texture assets", () => ImportTextureAssets(connection, transaction, root));
             counts["assets"] = assetCatalogRows + counts["textureAssets"];
             counts["assetCatalog"] = assetCatalogRows;
+            counts["textureLinks"] = RunCountStage("texture links", () => ImportTextureLinks(connection, transaction, root));
+            counts["modelValidation"] = RunCountStage("model validation", () => ImportModelValidation(connection, transaction, root));
             counts["modelBindingPaths"] = RunCountStage("model binding paths", () => ImportModelBindingPaths(connection, transaction, root));
             counts["unityAssets"] = 0;
             counts["unityRelations"] = 0;
@@ -130,10 +142,35 @@ namespace AnimeStudio.CLI
             counts["modelAnimationCandidateModelSummary"] = RunCountStage("model animation candidate summaries", () => BuildModelAnimationCandidateSummaries(connection));
             counts["modelAnimationRelations"] = RunCountStage("unified model animation relations", () => BuildUnifiedModelAnimationRelations(connection));
 
+            var capabilities = BuildAssetLibraryCapabilities(connection);
+            RunStage("write capability metadata", () => WriteCapabilityMetadata(connection, capabilities));
             RunStage("write summary", () => WriteSummary(connection, root, dbPath, counts, skipFileIndex, skipSidecarScan, sourceIndexPath));
-            RunStage("write asset library manifest", () => WriteUnifiedAssetLibraryManifest(root, counts));
+            RunStage("write asset library manifest", () => WriteUnifiedAssetLibraryManifest(root, resolvedSourceGame, capabilities));
             Logger.Info($"SQLite library index written: {dbPath}; elapsed={totalWatch.Elapsed.TotalSeconds:F1}s");
             return dbPath;
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            return values?.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+        }
+
+        private static string ReadExistingAssetLibrarySourceGame(string root)
+        {
+            var manifestPath = Path.Combine(root, "asset_library.json");
+            if (!File.Exists(manifestPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                return (string)JObject.Parse(File.ReadAllText(manifestPath))["sourceGame"];
+            }
+            catch (Exception e) when (e is IOException || e is JsonException)
+            {
+                return null;
+            }
         }
 
         private static void CreateSchema(SqliteConnection connection)
@@ -352,6 +389,13 @@ CREATE TABLE texture_links (
     asset_id INTEGER,
     texture_output TEXT,
     usage TEXT,
+    source TEXT,
+    shared TEXT,
+    sha256 TEXT,
+    size_bytes INTEGER,
+    extension TEXT,
+    hard_linked INTEGER,
+    link_error TEXT,
     raw_json TEXT
 );
 CREATE TABLE material_sidecars (
@@ -400,6 +444,11 @@ CREATE TABLE library_reports (
                 "CREATE INDEX idx_relation_animations_relation ON relation_animations(relation_id, is_usable_candidate);",
                 "CREATE INDEX idx_relation_animations_output ON relation_animations(output);",
                 "CREATE INDEX idx_relation_animations_source ON relation_animations(relation_source, output);",
+                "CREATE INDEX idx_model_validation_output ON model_validation(output);",
+                "CREATE INDEX idx_model_validation_status ON model_validation(status);",
+                "CREATE INDEX idx_texture_links_asset ON texture_links(asset_id);",
+                "CREATE INDEX idx_texture_links_shared ON texture_links(shared);",
+                "CREATE INDEX idx_texture_links_sha256 ON texture_links(sha256);",
                 "CREATE INDEX idx_export_manifest_output ON export_manifest(output);",
                 "CREATE INDEX idx_files_kind ON files(kind);",
             };
@@ -517,9 +566,13 @@ INSERT INTO assets(kind, resource_kind, name, source_type, container, source, pa
 VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $rawJson);";
             var p = AddParameters(command, "$kind", "$resourceKind", "$name", "$sourceType", "$container", "$source", "$pathId", "$output", "$audioKind", "$animationType", "$skeletonHash", "$rawJson");
 
+            var rows = ReadJsonLines(path).ToList();
+            AttachModelValidation(root, rows);
+
             long count = 0;
-            foreach (var obj in ReadJsonLines(path))
+            foreach (var obj in rows)
             {
+                EnrichAnimationCatalogFromSidecar(root, obj);
                 Set(p, "$kind", S(obj, "kind"));
                 Set(p, "$resourceKind", S(obj, "resourceKind"));
                 Set(p, "$name", S(obj, "name") ?? S(obj, "text"));
@@ -536,6 +589,127 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 count++;
             }
             return count;
+        }
+
+        private static long ImportModelValidation(SqliteConnection connection, SqliteTransaction transaction, string root)
+        {
+            var validationByOutput = ReadModelValidationByOutput(root);
+            if (validationByOutput.Count == 0)
+            {
+                return 0;
+            }
+
+            var assetIdsByOutput = LoadAssetIdsByOutput(connection, root, "Model");
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+INSERT OR REPLACE INTO model_validation(asset_id, output, status, mesh_count, material_count, texture_count, skin_count, bone_count, animation_count, bbox_min_x, bbox_min_y, bbox_min_z, bbox_max_x, bbox_max_y, bbox_max_z, raw_json)
+VALUES ($assetId, $output, $status, $meshCount, $materialCount, $textureCount, $skinCount, $boneCount, $animationCount, $bboxMinX, $bboxMinY, $bboxMinZ, $bboxMaxX, $bboxMaxY, $bboxMaxZ, $rawJson);";
+            var p = AddParameters(
+                command,
+                "$assetId",
+                "$output",
+                "$status",
+                "$meshCount",
+                "$materialCount",
+                "$textureCount",
+                "$skinCount",
+                "$boneCount",
+                "$animationCount",
+                "$bboxMinX",
+                "$bboxMinY",
+                "$bboxMinZ",
+                "$bboxMaxX",
+                "$bboxMaxY",
+                "$bboxMaxZ",
+                "$rawJson");
+
+            long count = 0;
+            foreach (var (output, validation) in validationByOutput)
+            {
+                if (!assetIdsByOutput.TryGetValue(output, out var assetId))
+                {
+                    continue;
+                }
+
+                var body = validation["Body"] as JObject;
+                var bounds = body?["Bounds"] as JObject;
+                var min = bounds?["Min"]?.Values<double>().ToArray() ?? Array.Empty<double>();
+                var max = bounds?["Max"]?.Values<double>().ToArray() ?? Array.Empty<double>();
+
+                Set(p, "$assetId", assetId);
+                Set(p, "$output", output);
+                Set(p, "$status", S(validation, "Status"));
+                Set(p, "$meshCount", I(validation["Counts"] as JObject, "Meshes") ?? I(body, "PrimitiveCount"));
+                Set(p, "$materialCount", I(validation["Counts"] as JObject, "Materials") ?? I(body, "MaterialCount"));
+                Set(p, "$textureCount", I(validation["Counts"] as JObject, "Textures") ?? I(body, "TextureCount"));
+                Set(p, "$skinCount", I(validation["Counts"] as JObject, "Skins") ?? I(body, "SkinCount"));
+                Set(p, "$boneCount", I(body, "SkinJointCount"));
+                Set(p, "$animationCount", 0);
+                Set(p, "$bboxMinX", min.Length > 0 ? min[0] : null);
+                Set(p, "$bboxMinY", min.Length > 1 ? min[1] : null);
+                Set(p, "$bboxMinZ", min.Length > 2 ? min[2] : null);
+                Set(p, "$bboxMaxX", max.Length > 0 ? max[0] : null);
+                Set(p, "$bboxMaxY", max.Length > 1 ? max[1] : null);
+                Set(p, "$bboxMaxZ", max.Length > 2 ? max[2] : null);
+                Set(p, "$rawJson", validation.ToString(Formatting.None));
+                command.ExecuteNonQuery();
+                count++;
+            }
+
+            return count;
+        }
+
+        private static Dictionary<string, long> LoadAssetIdsByOutput(SqliteConnection connection, string root, string kind)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT id, output FROM assets WHERE kind=$kind AND output IS NOT NULL AND output<>'';";
+            command.Parameters.AddWithValue("$kind", kind);
+
+            var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result[NormalizeLibraryOutputForJoin(root, reader.GetString(1))] = reader.GetInt64(0);
+            }
+
+            return result;
+        }
+
+        private static void EnrichAnimationCatalogFromSidecar(string root, JObject obj)
+        {
+            if (!string.Equals(S(obj, "kind"), "Animation", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var sidecarPath = ResolveLibraryPath(root, S(obj, "animationAsset"));
+            if (string.IsNullOrWhiteSpace(sidecarPath) || !File.Exists(sidecarPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var sidecar = JObject.Parse(File.ReadAllText(sidecarPath));
+                var decoded = sidecar["decoded"] as JObject;
+                // assets.raw_json 只放筛选需要的轻量状态，不塞完整 keyframes，避免大库 SQLite 膨胀。
+                obj["directGltfAnimationStatus"] = sidecar["directGltfAnimationStatus"];
+                obj["directTrsAnimationReady"] = sidecar["directTrsAnimationReady"];
+                obj["directWeightsAnimationReady"] = sidecar["directWeightsAnimationReady"];
+                obj["needsDirectTrsAnimation"] = sidecar["needsDirectTrsAnimation"];
+                obj["deprecatedUnityBakeOnly"] = sidecar["deprecatedUnityBakeOnly"];
+                obj["decodedStatus"] = decoded?["status"];
+                obj["decodedPlaybackKind"] = decoded?["playbackKind"];
+                obj["decoderGapKind"] = decoded?["decoderGapKind"];
+                obj["decoderGapNextAction"] = decoded?["decoderGapNextAction"];
+                obj["valueDeltaOnlyHumanoid"] = decoded?["decoderInput"]?["payloadSummary"]?["valueDeltaOnlyHumanoid"];
+                obj["muscleValueDeltaCount"] = decoded?["decoderInput"]?["muscleValueDeltaCount"];
+            }
+            catch (Exception e)
+            {
+                obj["animationSidecarReadError"] = $"{e.GetType().Name}: {e.Message}";
+            }
         }
 
         private static long ImportTextureAssets(SqliteConnection connection, SqliteTransaction transaction, string root)
@@ -628,6 +802,237 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 .Replace('\\', '/')
                 .Split('/', StringSplitOptions.RemoveEmptyEntries);
             return parts.Length > 1 ? parts[0] : "Textures";
+        }
+
+        private static long ImportTextureLinks(SqliteConnection connection, SqliteTransaction transaction, string root)
+        {
+            using var select = connection.CreateCommand();
+            select.Transaction = transaction;
+            select.CommandText = @"
+SELECT id, output, name
+FROM assets
+WHERE kind='Model'
+  AND output IS NOT NULL
+  AND output <> '';";
+
+            var models = new List<(long Id, string Output, string Name)>();
+            using (var reader = select.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    models.Add((reader.GetInt64(0), ReadNullableString(reader, 1), ReadNullableString(reader, 2)));
+                }
+            }
+
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = @"
+INSERT INTO texture_links(asset_id, texture_output, usage, source, shared, sha256, size_bytes, extension, hard_linked, link_error, raw_json)
+VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes, $extension, $hardLinked, $linkError, $rawJson);";
+            var p = AddParameters(insert, "$assetId", "$textureOutput", "$usage", "$source", "$shared", "$sha256", "$sizeBytes", "$extension", "$hardLinked", "$linkError", "$rawJson");
+
+            long count = 0;
+            foreach (var model in models)
+            {
+                var modelPath = ResolveLibraryPath(root, model.Output);
+                if (string.IsNullOrWhiteSpace(modelPath)
+                    || !File.Exists(modelPath)
+                    || !string.Equals(Path.GetExtension(modelPath), ".gltf", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                foreach (var link in ReadGltfTextureLinks(root, modelPath, model.Output))
+                {
+                    Set(p, "$assetId", model.Id);
+                    Set(p, "$textureOutput", link.Shared);
+                    Set(p, "$usage", link.Usage);
+                    Set(p, "$source", link.Source);
+                    Set(p, "$shared", link.Shared);
+                    Set(p, "$sha256", link.Sha256);
+                    Set(p, "$sizeBytes", link.SizeBytes);
+                    Set(p, "$extension", link.Extension);
+                    Set(p, "$hardLinked", link.HardLinked);
+                    Set(p, "$linkError", link.LinkError);
+                    Set(p, "$rawJson", link.RawJson.ToString(Formatting.None));
+                    insert.ExecuteNonQuery();
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static IEnumerable<TextureLinkRow> ReadGltfTextureLinks(string root, string gltfPath, string modelOutput)
+        {
+            JObject gltf;
+            try
+            {
+                gltf = JObject.Parse(File.ReadAllText(gltfPath));
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Skipping texture_links for invalid glTF: {gltfPath}: {e.Message}");
+                yield break;
+            }
+
+            var imageUsage = BuildGltfImageUsageMap(gltf);
+            var images = gltf["images"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            for (var imageIndex = 0; imageIndex < images.Length; imageIndex++)
+            {
+                var image = images[imageIndex];
+                var uri = S(image, "uri");
+                var usages = imageUsage.TryGetValue(imageIndex, out var usageSet) && usageSet.Count > 0
+                    ? usageSet.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
+                    : new[] { $"image:{imageIndex}" };
+                var usage = string.Join(",", usages);
+                var source = $"{NormalizeLibraryOutputForJoin(root, modelOutput)}#{uri ?? $"image:{imageIndex}"}";
+                var shared = string.Empty;
+                string sha256 = null;
+                long? sizeBytes = null;
+                string extension = null;
+                int? hardLinked = null;
+                string linkError = null;
+                string texturePath = null;
+
+                if (string.IsNullOrWhiteSpace(uri))
+                {
+                    linkError = "missing_image_uri";
+                }
+                else if (IsDataUri(uri))
+                {
+                    linkError = "embedded_data_uri";
+                }
+                else if (IsAbsoluteUri(uri))
+                {
+                    linkError = "absolute_or_remote_uri";
+                    shared = uri;
+                }
+                else
+                {
+                    texturePath = ResolveGltfUriPath(Path.GetDirectoryName(gltfPath) ?? root, uri);
+                    shared = File.Exists(texturePath) ? MakeRelative(root, texturePath) : NormalizeGltfRelativeUri(uri);
+                    extension = Path.GetExtension(texturePath).TrimStart('.').ToLowerInvariant();
+                    if (File.Exists(texturePath))
+                    {
+                        var info = new FileInfo(texturePath);
+                        sizeBytes = info.Length;
+                        sha256 = ComputeSha256(texturePath);
+                        hardLinked = IsLikelyHardLinked(info) ? 1 : 0;
+                    }
+                    else
+                    {
+                        linkError = "missing_texture_file";
+                    }
+                }
+
+                var raw = new JObject
+                {
+                    ["modelOutput"] = NormalizeLibraryOutputForJoin(root, modelOutput),
+                    ["gltf"] = MakeRelative(root, gltfPath),
+                    ["imageIndex"] = imageIndex,
+                    ["uri"] = uri,
+                    ["usage"] = usage,
+                    ["shared"] = shared,
+                    ["sha256"] = sha256,
+                    ["sizeBytes"] = sizeBytes,
+                    ["extension"] = extension,
+                    ["hardLinked"] = hardLinked,
+                    ["linkError"] = linkError,
+                    ["rule"] = "由 glTF images/textures/materials 的确定性 URI 引用写入；不按文件名猜材质关系。"
+                };
+
+                yield return new TextureLinkRow(source, shared, usage, sha256, sizeBytes, extension, hardLinked, linkError, raw);
+            }
+        }
+
+        private static Dictionary<int, HashSet<string>> BuildGltfImageUsageMap(JObject gltf)
+        {
+            var result = new Dictionary<int, HashSet<string>>();
+            var textures = gltf["textures"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            void Add(int imageIndex, string usage)
+            {
+                if (imageIndex < 0)
+                {
+                    return;
+                }
+                if (!result.TryGetValue(imageIndex, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    result[imageIndex] = set;
+                }
+                set.Add(usage);
+            }
+
+            foreach (var material in gltf["materials"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var materialName = S(material, "name");
+                AddTextureUsage(material["pbrMetallicRoughness"]?["baseColorTexture"] as JObject, "baseColorTexture", materialName);
+                AddTextureUsage(material["pbrMetallicRoughness"]?["metallicRoughnessTexture"] as JObject, "metallicRoughnessTexture", materialName);
+                AddTextureUsage(material["normalTexture"] as JObject, "normalTexture", materialName);
+                AddTextureUsage(material["occlusionTexture"] as JObject, "occlusionTexture", materialName);
+                AddTextureUsage(material["emissiveTexture"] as JObject, "emissiveTexture", materialName);
+            }
+
+            return result;
+
+            void AddTextureUsage(JObject textureInfo, string slot, string materialName)
+            {
+                var textureIndex = (int?)textureInfo?["index"];
+                if (textureIndex == null || textureIndex.Value < 0 || textureIndex.Value >= textures.Length)
+                {
+                    return;
+                }
+
+                var imageIndex = (int?)textures[textureIndex.Value]["source"];
+                if (imageIndex == null)
+                {
+                    return;
+                }
+
+                Add(imageIndex.Value, string.IsNullOrWhiteSpace(materialName) ? slot : $"{materialName}:{slot}");
+            }
+        }
+
+        private static string ResolveGltfUriPath(string directory, string uri)
+        {
+            return Path.GetFullPath(Path.Combine(directory, NormalizeGltfRelativeUri(uri).Replace('/', Path.DirectorySeparatorChar)));
+        }
+
+        private static string NormalizeGltfRelativeUri(string uri)
+        {
+            try
+            {
+                return Uri.UnescapeDataString(uri ?? string.Empty).Replace('\\', '/').TrimStart('/');
+            }
+            catch (UriFormatException)
+            {
+                return (uri ?? string.Empty).Replace('\\', '/').TrimStart('/');
+            }
+        }
+
+        private static bool IsDataUri(string uri)
+        {
+            return uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsAbsoluteUri(string uri)
+        {
+            return Uri.TryCreate(uri, UriKind.Absolute, out var parsed) && !string.IsNullOrWhiteSpace(parsed.Scheme);
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using var stream = File.OpenRead(path);
+            var hash = SHA256.HashData(stream);
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+
+        private static bool IsLikelyHardLinked(FileInfo info)
+        {
+            // .NET 在不同平台上没有统一暴露 hardlink count；这里先记录当前文件是否存在为普通文件。
+            // 后续如果导出器真正建立共享硬链接，可在写入阶段显式记录。
+            return false;
         }
 
         private static long ImportModelBindingPaths(SqliteConnection connection, SqliteTransaction transaction, string root)
@@ -725,6 +1130,7 @@ VALUES ($modelOutput, $bindingPath, $bindingType, $rawJson);";
                 .Where(x => !string.IsNullOrWhiteSpace(x.Id) && !string.IsNullOrWhiteSpace(x.Output))
                 .ToDictionary(x => x.Id, x => x.Output, StringComparer.OrdinalIgnoreCase)
                 ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var modelCatalogByOutput = ReadModelCatalogByOutput(root);
 
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
@@ -759,14 +1165,32 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
                         continue;
                     }
 
+                    var rawCandidate = (JObject)candidate.DeepClone();
+                    if (modelCatalogByOutput.TryGetValue(NormalizeLibraryOutputForJoin(root, modelOutput), out var modelCatalog))
+                    {
+                        ApplyModelAnimationGate(rawCandidate, BuildModelAnimationGate(modelCatalog));
+                    }
+                    else
+                    {
+                        ApplyModelAnimationGate(rawCandidate, new ModelAnimationGate(
+                            false,
+                            "blocked",
+                            new[] { "model_catalog_missing" },
+                            new JObject
+                            {
+                                ["rule"] = "没有模型 catalog 证据时不能进入动画阶段。",
+                                ["modelOutput"] = modelOutput,
+                            }));
+                    }
+
                     Set(p, "$modelOutput", modelOutput);
                     Set(p, "$animationOutput", animationOutput);
                     Set(p, "$relationSource", relationSource);
                     Set(p, "$confidence", confidence);
                     Set(p, "$score", D(candidate, "score"));
-                    Set(p, "$status", "explicit");
-                    Set(p, "$needsValidation", 0);
-                    Set(p, "$rawJson", candidate.ToString(Formatting.None));
+                    Set(p, "$status", GetExplicitCandidateStatus(rawCandidate));
+                    Set(p, "$needsValidation", NeedsExplicitCandidateValidation(rawCandidate) ? 1 : 0);
+                    Set(p, "$rawJson", rawCandidate.ToString(Formatting.None));
                     command.ExecuteNonQuery();
                     count++;
                 }
@@ -799,15 +1223,54 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
             }
 
             var catalog = ReadJsonLines(catalogPath).ToList();
+            AttachModelValidation(root, catalog);
+            var modelCatalog = catalog
+                .Where(x => string.Equals(S(x, "kind"), "Model", StringComparison.OrdinalIgnoreCase))
+                .Where(IsPrefabLikeModel)
+                .Where(x => !string.IsNullOrWhiteSpace(S(x, "output")))
+                .ToList();
+            var animationCatalog = catalog
+                .Where(x => string.Equals(S(x, "kind"), "Animation", StringComparison.OrdinalIgnoreCase))
+                .Where(x => !string.IsNullOrWhiteSpace(S(x, "output")))
+                .ToList();
+
+            if (modelCatalog.Count == 0 || animationCatalog.Count == 0)
+            {
+                // 模型优先阶段常常只导出静态模型。没有动画资产时不加载完整源动画图，
+                // 避免小样本重建 SQLite 也扫描几百万条 source_relations。
+                return 0;
+            }
+
+            var smallLibrary = modelCatalog.Count <= 100 && animationCatalog.Count <= 1000;
+            var sourceIndexHasReverseRelationIndex = SourceIndexHasIndex(sourceIndex, "idx_source_relations_to");
+            if (smallLibrary)
+            {
+                var fastCount = TryImportExplicitModelAnimationCandidatesFromSourceIndexFast(
+                    connection,
+                    transaction,
+                    sourceIndex,
+                    modelCatalog,
+                    animationCatalog);
+                if (fastCount > 0)
+                {
+                    Logger.Info($"SQLite library index used targeted source-index animation import for small Library; rows={fastCount}");
+                    return fastCount;
+                }
+
+                if (!sourceIndexHasReverseRelationIndex)
+                {
+                    Logger.Warning("SQLite library index skipped full source animation graph fallback because idx_source_relations_to is missing. 小样本索引只保留已导出的 sidecar/显式候选，避免在超大 source_relations 上全表扫描；如需补齐反查候选，请在源索引副本上补建 idx_source_relations_to。");
+                    return 0;
+                }
+            }
+
             var graph = SourceAnimationGraph.Load(sourceIndex);
             if (graph.Objects.Count == 0)
             {
                 return 0;
             }
 
-            var models = catalog
-                .Where(x => string.Equals(S(x, "kind"), "Model", StringComparison.OrdinalIgnoreCase))
-                .Where(IsPrefabLikeModel)
+            var models = modelCatalog
                 .Select(x => new CatalogAsset(
                     graph.KeyFromCatalog(x),
                     S(x, "name"),
@@ -815,8 +1278,7 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
                     x))
                 .Where(x => x.Key.IsValid && !string.IsNullOrWhiteSpace(x.Output))
                 .ToList();
-            var animations = catalog
-                .Where(x => string.Equals(S(x, "kind"), "Animation", StringComparison.OrdinalIgnoreCase))
+            var animations = animationCatalog
                 .Select(x => new CatalogAsset(
                     graph.KeyFromCatalog(x),
                     S(x, "name"),
@@ -835,8 +1297,8 @@ VALUES ($modelOutput, $animationOutput, $relationSource, $confidence, $score, $s
             command.Transaction = transaction;
             command.CommandText = @"
 INSERT INTO model_animation_candidates(model_output, animation_output, relation_source, confidence, score, status, needs_validation, raw_json)
-VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index', 100, 'explicit', 0, $rawJson);";
-            var p = AddParameters(command, "$modelOutput", "$animationOutput", "$rawJson");
+VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index', 100, $status, $needsValidation, $rawJson);";
+            var p = AddParameters(command, "$modelOutput", "$animationOutput", "$status", "$needsValidation", "$rawJson");
 
             long count = 0;
             var processedModels = 0;
@@ -865,6 +1327,8 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                     var raw = BuildExplicitSourceCandidateJson(model.Raw, animation.Raw, relation);
                     Set(p, "$modelOutput", model.Output);
                     Set(p, "$animationOutput", animation.Output);
+                    Set(p, "$status", GetExplicitCandidateStatus(raw));
+                    Set(p, "$needsValidation", NeedsExplicitCandidateValidation(raw) ? 1 : 0);
                     Set(p, "$rawJson", raw.ToString(Formatting.None));
                     command.ExecuteNonQuery();
                     count++;
@@ -889,6 +1353,597 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
             return count;
         }
 
+        private static long TryImportExplicitModelAnimationCandidatesFromSourceIndexFast(
+            SqliteConnection libraryConnection,
+            SqliteTransaction transaction,
+            string sourceIndex,
+            List<JObject> modelCatalog,
+            List<JObject> animationCatalog)
+        {
+            try
+            {
+                using var sourceConnection = new SqliteConnection($"Data Source={sourceIndex};Mode=ReadOnly");
+                sourceConnection.Open();
+                var hasReverseRelationIndex = HasSqliteIndex(sourceConnection, "idx_source_relations_to");
+                var hasRelationIndex = HasSqliteIndex(sourceConnection, "idx_source_relations_relation");
+                var animations = new Dictionary<SourceKey, CatalogAsset>();
+                foreach (var animation in animationCatalog)
+                {
+                    if (TryResolveSourceIndexObject(sourceConnection, animation, out var key))
+                    {
+                        key = key.Normalize();
+                        if (!animations.ContainsKey(key))
+                        {
+                            animations[key] = new CatalogAsset(key, S(animation, "name"), S(animation, "output"), animation);
+                        }
+                    }
+                }
+
+                if (animations.Count == 0)
+                {
+                    return 0;
+                }
+
+                using var insert = libraryConnection.CreateCommand();
+                insert.Transaction = transaction;
+                insert.CommandText = @"
+INSERT INTO model_animation_candidates(model_output, animation_output, relation_source, confidence, score, status, needs_validation, raw_json)
+VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index', 100, $status, $needsValidation, $rawJson);";
+                var p = AddParameters(insert, "$modelOutput", "$animationOutput", "$status", "$needsValidation", "$rawJson");
+
+                long count = 0;
+                long resolvedModels = 0;
+                var insertedOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var modelRaw in modelCatalog)
+                {
+                    if (!TryResolveSourceIndexObject(sourceConnection, modelRaw, out var modelKey))
+                    {
+                        continue;
+                    }
+                    resolvedModels++;
+
+                    var model = new CatalogAsset(modelKey, S(modelRaw, "name"), S(modelRaw, "output"), modelRaw);
+                    if (!model.Key.IsValid || string.IsNullOrWhiteSpace(model.Output))
+                    {
+                        continue;
+                    }
+
+                    foreach (var relation in LoadTargetedSourceRelations(sourceConnection, model.Key, S(modelRaw, "sourceType"), hasReverseRelationIndex, hasRelationIndex))
+                    {
+                        if (!animations.TryGetValue(relation.ClipKey.Normalize(), out var animation))
+                        {
+                            continue;
+                        }
+
+                        if (!insertedOutputs.Add(model.Output + "|" + animation.Output))
+                        {
+                            continue;
+                        }
+
+                        var raw = BuildExplicitSourceCandidateJson(model.Raw, animation.Raw, relation);
+                        Set(p, "$modelOutput", model.Output);
+                        Set(p, "$animationOutput", animation.Output);
+                        Set(p, "$status", GetExplicitCandidateStatus(raw));
+                        Set(p, "$needsValidation", NeedsExplicitCandidateValidation(raw) ? 1 : 0);
+                        Set(p, "$rawJson", raw.ToString(Formatting.None));
+                        insert.ExecuteNonQuery();
+                        count++;
+                    }
+                }
+
+                Logger.Info($"Targeted source-index animation import probe: models={resolvedModels}/{modelCatalog.Count}, animations={animations.Count}/{animationCatalog.Count}, rows={count}");
+                return count;
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Targeted source-index animation import failed; falling back to full source graph. {e.GetType().Name}: {e.Message}");
+                return 0;
+            }
+        }
+
+        private static IEnumerable<SourceAnimationRelation> LoadTargetedSourceRelations(SqliteConnection sourceConnection, SourceKey modelKey, string sourceType, bool hasReverseRelationIndex, bool hasRelationIndex)
+        {
+            if (string.Equals(sourceType, "Animator", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var relation in LoadTargetedAnimatorRelations(sourceConnection, modelKey, "animator.controller.clip", "Model source is an Animator with an explicit RuntimeAnimatorController."))
+                {
+                    yield return relation;
+                }
+
+                yield break;
+            }
+
+            if (!hasReverseRelationIndex)
+            {
+                // GameObject/Prefab -> Animator/Animation 需要“谁指向这个模型”的反查。
+                // Endfield 大源索引常为了磁盘和构建耗时省掉 idx_source_relations_to，
+                // 此时不能用缺索引 SQL 触发全表扫描；已有 model_animations sidecar 仍会先被导入。
+                if (hasRelationIndex)
+                {
+                    foreach (var relation in LoadTargetedSharedAvatarControllerRelationsFromForwardConfig(sourceConnection, modelKey))
+                    {
+                        yield return relation;
+                    }
+                }
+
+                yield break;
+            }
+
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+SELECT controllerClip.to_file, controllerClip.to_path_id,
+       'gameObject.hierarchy.animator.controller.clip' AS relation_kind,
+       controllerClip.raw_json,
+       animator.from_name
+FROM source_relations animator INDEXED BY idx_source_relations_to
+JOIN source_relations controllerRel INDEXED BY idx_source_relations_from
+  ON controllerRel.from_file = animator.from_file
+ AND controllerRel.from_path_id = animator.from_path_id
+ AND controllerRel.relation = 'animator.controller'
+JOIN source_objects controller
+  ON controller.serialized_file = controllerRel.to_file
+ AND controller.path_id = controllerRel.to_path_id
+ AND controller.type = 'AnimatorController'
+JOIN source_relations controllerClip INDEXED BY idx_source_relations_from
+  ON controllerClip.from_file = controller.serialized_file
+ AND controllerClip.from_path_id = controller.path_id
+ AND controllerClip.relation = 'animatorController.clip'
+WHERE animator.to_file = $modelFile
+  AND animator.to_path_id = $modelPathId
+  AND animator.relation = 'component.gameObject'
+  AND animator.from_type = 'Animator'
+UNION ALL
+SELECT clipRel.to_file, clipRel.to_path_id,
+       'gameObject.hierarchy.animation.clip' AS relation_kind,
+       NULL AS raw_json,
+       animation.from_name
+FROM source_relations animation INDEXED BY idx_source_relations_to
+JOIN source_relations clipRel INDEXED BY idx_source_relations_from
+  ON clipRel.from_file = animation.from_file
+ AND clipRel.from_path_id = animation.from_path_id
+ AND clipRel.relation = 'animation.clip'
+WHERE animation.to_file = $modelFile
+  AND animation.to_path_id = $modelPathId
+  AND animation.relation = 'component.gameObject'
+  AND animation.from_type = 'Animation';";
+            command.Parameters.AddWithValue("$modelFile", modelKey.File);
+            command.Parameters.AddWithValue("$modelPathId", modelKey.PathId);
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var relationKind = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                    var componentName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                    var reason = relationKind.Contains(".animation.", StringComparison.OrdinalIgnoreCase)
+                        ? $"Animation component '{componentName}' explicitly references this clip."
+                        : $"Animator '{componentName}' is attached to the exported GameObject hierarchy.";
+                    yield return new SourceAnimationRelation(
+                        KeyFromRelation(reader, 0, 1).Normalize(),
+                        relationKind,
+                        reason,
+                        TryReadAnimatorControllerContextForCandidate(reader.IsDBNull(3) ? null : reader.GetString(3)));
+                }
+            }
+
+            foreach (var relation in LoadTargetedSharedAvatarControllerRelations(sourceConnection, modelKey))
+            {
+                yield return relation;
+            }
+        }
+
+        private static IEnumerable<SourceAnimationRelation> LoadTargetedSharedAvatarControllerRelations(SqliteConnection sourceConnection, SourceKey modelKey)
+        {
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+WITH model_configs AS (
+    SELECT DISTINCT inbound.from_file, inbound.from_path_id
+    FROM source_relations inbound INDEXED BY idx_source_relations_to
+    WHERE inbound.relation = 'monoBehaviour.pptr'
+      AND inbound.to_file = $modelFile
+      AND inbound.to_path_id = $modelPathId
+),
+config_avatars AS (
+    SELECT DISTINCT
+        cfg.from_file AS config_file,
+        cfg.from_path_id AS config_path_id,
+        COALESCE(configObj.name, '') AS config_name,
+        avatarRel.to_file AS avatar_file,
+        avatarRel.to_path_id AS avatar_path_id,
+        COALESCE(avatarObj.name, '') AS avatar_name
+    FROM model_configs cfg
+    JOIN source_relations avatarRel INDEXED BY idx_source_relations_from
+      ON avatarRel.from_file = cfg.from_file
+     AND avatarRel.from_path_id = cfg.from_path_id
+     AND avatarRel.relation = 'monoBehaviour.pptr'
+    JOIN source_objects avatarObj
+      ON avatarObj.serialized_file = avatarRel.to_file
+     AND avatarObj.path_id = avatarRel.to_path_id
+     AND avatarObj.type = 'Avatar'
+    LEFT JOIN source_objects configObj
+      ON configObj.serialized_file = cfg.from_file
+     AND configObj.path_id = cfg.from_path_id
+)
+SELECT DISTINCT
+       controllerClip.to_file,
+       controllerClip.to_path_id,
+       controllerClip.raw_json,
+       COALESCE(animator.name, '') AS animator_name,
+       animator.serialized_file AS animator_file,
+       animator.path_id AS animator_path_id,
+       COALESCE(controller.name, '') AS controller_name,
+       controller.serialized_file AS controller_file,
+       controller.path_id AS controller_path_id,
+       COALESCE(go.name, '') AS animator_go_name,
+       go.serialized_file AS animator_go_file,
+       go.path_id AS animator_go_path_id,
+       config_avatars.config_name,
+       config_avatars.config_file,
+       config_avatars.config_path_id,
+       config_avatars.avatar_name,
+       config_avatars.avatar_file,
+       config_avatars.avatar_path_id
+FROM config_avatars
+JOIN source_relations avatarUse INDEXED BY idx_source_relations_to
+  ON avatarUse.to_file = config_avatars.avatar_file
+ AND avatarUse.to_path_id = config_avatars.avatar_path_id
+ AND avatarUse.relation = 'animator.avatar'
+JOIN source_objects animator
+  ON animator.serialized_file = avatarUse.from_file
+ AND animator.path_id = avatarUse.from_path_id
+ AND animator.type = 'Animator'
+JOIN source_relations controllerRel INDEXED BY idx_source_relations_from
+  ON controllerRel.from_file = animator.serialized_file
+ AND controllerRel.from_path_id = animator.path_id
+ AND controllerRel.relation = 'animator.controller'
+JOIN source_objects controller
+  ON controller.serialized_file = controllerRel.to_file
+ AND controller.path_id = controllerRel.to_path_id
+JOIN source_relations controllerClip INDEXED BY idx_source_relations_from
+  ON controllerClip.from_file = controller.serialized_file
+ AND controllerClip.from_path_id = controller.path_id
+ AND controllerClip.relation = 'animatorController.clip'
+LEFT JOIN source_relations goRel INDEXED BY idx_source_relations_from
+  ON goRel.from_file = animator.serialized_file
+ AND goRel.from_path_id = animator.path_id
+ AND goRel.relation = 'component.gameObject'
+LEFT JOIN source_objects go
+  ON go.serialized_file = goRel.to_file
+ AND go.path_id = goRel.to_path_id;";
+            command.Parameters.AddWithValue("$modelFile", modelKey.File);
+            command.Parameters.AddWithValue("$modelPathId", modelKey.PathId);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var evidence = new JObject
+                {
+                    ["bridge"] = "configPrefabAvatarToAnimatorController",
+                    ["configName"] = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    ["configFile"] = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    ["configPathId"] = reader.IsDBNull(14) ? JValue.CreateNull() : new JValue(reader.GetInt64(14)),
+                    ["avatarName"] = reader.IsDBNull(15) ? null : reader.GetString(15),
+                    ["avatarFile"] = reader.IsDBNull(16) ? null : reader.GetString(16),
+                    ["avatarPathId"] = reader.IsDBNull(17) ? JValue.CreateNull() : new JValue(reader.GetInt64(17)),
+                    ["animatorName"] = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    ["animatorFile"] = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    ["animatorPathId"] = reader.IsDBNull(5) ? JValue.CreateNull() : new JValue(reader.GetInt64(5)),
+                    ["animatorModelName"] = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    ["animatorModelFile"] = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    ["animatorModelPathId"] = reader.IsDBNull(11) ? JValue.CreateNull() : new JValue(reader.GetInt64(11)),
+                    ["controllerName"] = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    ["controllerFile"] = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ["controllerPathId"] = reader.IsDBNull(8) ? JValue.CreateNull() : new JValue(reader.GetInt64(8)),
+                };
+                yield return new SourceAnimationRelation(
+                    KeyFromRelation(reader, 0, 1).Normalize(),
+                    "sharedAvatarController",
+                    "Model config explicitly points to this prefab and Avatar; an Animator using the same Avatar explicitly references the Controller clip.",
+                    TryReadAnimatorControllerContextForCandidate(reader.IsDBNull(2) ? null : reader.GetString(2)),
+                    evidence);
+            }
+        }
+
+        private static IEnumerable<SourceAnimationRelation> LoadTargetedSharedAvatarControllerRelationsFromForwardConfig(SqliteConnection sourceConnection, SourceKey modelKey)
+        {
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+WITH model_configs AS (
+    SELECT DISTINCT modelRel.from_file, modelRel.from_path_id
+    FROM source_objects configObj INDEXED BY idx_source_objects_file_path
+    JOIN source_relations modelRel INDEXED BY idx_source_relations_from
+      ON modelRel.from_file = configObj.serialized_file
+     AND modelRel.from_path_id = configObj.path_id
+     AND modelRel.relation = 'monoBehaviour.pptr'
+     AND modelRel.to_file = $modelFile
+     AND modelRel.to_path_id = $modelPathId
+    WHERE configObj.type = 'MonoBehaviour'
+      AND configObj.serialized_file = $modelFile
+),
+config_avatars AS (
+    SELECT DISTINCT
+        cfg.from_file AS config_file,
+        cfg.from_path_id AS config_path_id,
+        COALESCE(configObj.name, '') AS config_name,
+        avatarRel.to_file AS avatar_file,
+        avatarRel.to_path_id AS avatar_path_id,
+        COALESCE(avatarObj.name, '') AS avatar_name
+    FROM model_configs cfg
+    JOIN source_relations avatarRel INDEXED BY idx_source_relations_from
+      ON avatarRel.from_file = cfg.from_file
+     AND avatarRel.from_path_id = cfg.from_path_id
+     AND avatarRel.relation = 'monoBehaviour.pptr'
+    JOIN source_objects avatarObj
+      ON avatarObj.serialized_file = avatarRel.to_file
+     AND avatarObj.path_id = avatarRel.to_path_id
+     AND avatarObj.type = 'Avatar'
+    LEFT JOIN source_objects configObj
+      ON configObj.serialized_file = cfg.from_file
+     AND configObj.path_id = cfg.from_path_id
+)
+SELECT DISTINCT
+       controllerClip.to_file,
+       controllerClip.to_path_id,
+       controllerClip.raw_json,
+       COALESCE(animator.name, '') AS animator_name,
+       animator.serialized_file AS animator_file,
+       animator.path_id AS animator_path_id,
+       COALESCE(controller.name, '') AS controller_name,
+       controller.serialized_file AS controller_file,
+       controller.path_id AS controller_path_id,
+       COALESCE(go.name, '') AS animator_go_name,
+       go.serialized_file AS animator_go_file,
+       go.path_id AS animator_go_path_id,
+       config_avatars.config_name,
+       config_avatars.config_file,
+       config_avatars.config_path_id,
+       config_avatars.avatar_name,
+       config_avatars.avatar_file,
+       config_avatars.avatar_path_id
+FROM config_avatars
+JOIN source_relations avatarUse INDEXED BY idx_source_relations_relation
+  ON avatarUse.relation = 'animator.avatar'
+ AND avatarUse.to_file = config_avatars.avatar_file
+ AND avatarUse.to_path_id = config_avatars.avatar_path_id
+JOIN source_objects animator
+  ON animator.serialized_file = avatarUse.from_file
+ AND animator.path_id = avatarUse.from_path_id
+ AND animator.type = 'Animator'
+JOIN source_relations controllerRel INDEXED BY idx_source_relations_from
+  ON controllerRel.from_file = animator.serialized_file
+ AND controllerRel.from_path_id = animator.path_id
+ AND controllerRel.relation = 'animator.controller'
+JOIN source_objects controller
+  ON controller.serialized_file = controllerRel.to_file
+ AND controller.path_id = controllerRel.to_path_id
+JOIN source_relations controllerClip INDEXED BY idx_source_relations_from
+  ON controllerClip.from_file = controller.serialized_file
+ AND controllerClip.from_path_id = controller.path_id
+ AND controllerClip.relation = 'animatorController.clip'
+LEFT JOIN source_relations goRel INDEXED BY idx_source_relations_from
+  ON goRel.from_file = animator.serialized_file
+ AND goRel.from_path_id = animator.path_id
+ AND goRel.relation = 'component.gameObject'
+LEFT JOIN source_objects go
+  ON go.serialized_file = goRel.to_file
+ AND go.path_id = goRel.to_path_id;";
+            command.Parameters.AddWithValue("$modelFile", modelKey.File);
+            command.Parameters.AddWithValue("$modelPathId", modelKey.PathId);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var evidence = new JObject
+                {
+                    ["bridge"] = "forwardConfigPrefabAvatarToAnimatorController",
+                    ["configName"] = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    ["configFile"] = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    ["configPathId"] = reader.IsDBNull(14) ? JValue.CreateNull() : new JValue(reader.GetInt64(14)),
+                    ["avatarName"] = reader.IsDBNull(15) ? null : reader.GetString(15),
+                    ["avatarFile"] = reader.IsDBNull(16) ? null : reader.GetString(16),
+                    ["avatarPathId"] = reader.IsDBNull(17) ? JValue.CreateNull() : new JValue(reader.GetInt64(17)),
+                    ["animatorName"] = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    ["animatorFile"] = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    ["animatorPathId"] = reader.IsDBNull(5) ? JValue.CreateNull() : new JValue(reader.GetInt64(5)),
+                    ["animatorModelName"] = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    ["animatorModelFile"] = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    ["animatorModelPathId"] = reader.IsDBNull(11) ? JValue.CreateNull() : new JValue(reader.GetInt64(11)),
+                    ["controllerName"] = reader.IsDBNull(6) ? null : reader.GetString(6),
+                    ["controllerFile"] = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    ["controllerPathId"] = reader.IsDBNull(8) ? JValue.CreateNull() : new JValue(reader.GetInt64(8)),
+                };
+                yield return new SourceAnimationRelation(
+                    KeyFromRelation(reader, 0, 1).Normalize(),
+                    "sharedAvatarController",
+                    "Model config explicitly points to this prefab and Avatar; animator.avatar was scanned by relation index because the source index has no reverse to_file index.",
+                    TryReadAnimatorControllerContextForCandidate(reader.IsDBNull(2) ? null : reader.GetString(2)),
+                    evidence);
+            }
+        }
+
+        private static IEnumerable<SourceAnimationRelation> LoadTargetedAnimatorRelations(SqliteConnection sourceConnection, SourceKey animatorKey, string relationKind, string reason)
+        {
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+SELECT controllerClip.to_file, controllerClip.to_path_id, controllerClip.raw_json
+FROM source_relations controllerRel INDEXED BY idx_source_relations_from
+JOIN source_objects controller
+  ON controller.serialized_file = controllerRel.to_file
+ AND controller.path_id = controllerRel.to_path_id
+ AND controller.type = 'AnimatorController'
+JOIN source_relations controllerClip INDEXED BY idx_source_relations_from
+  ON controllerClip.from_file = controller.serialized_file
+ AND controllerClip.from_path_id = controller.path_id
+ AND controllerClip.relation = 'animatorController.clip'
+WHERE controllerRel.from_file = $animatorFile
+  AND controllerRel.from_path_id = $animatorPathId
+  AND controllerRel.relation = 'animator.controller';";
+            command.Parameters.AddWithValue("$animatorFile", animatorKey.File);
+            command.Parameters.AddWithValue("$animatorPathId", animatorKey.PathId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                yield return new SourceAnimationRelation(
+                    KeyFromRelation(reader, 0, 1).Normalize(),
+                    relationKind,
+                    reason,
+                    TryReadAnimatorControllerContextForCandidate(reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+        }
+
+        private static bool TryResolveSourceIndexObject(SqliteConnection sourceConnection, JObject catalogItem, out SourceKey key)
+        {
+            key = default;
+            var pathId = I(catalogItem, "pathId") ?? 0;
+            var type = S(catalogItem, "sourceType");
+            var name = S(catalogItem, "name");
+            if (pathId == 0 || string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            var source = S(catalogItem, "source");
+            var serializedFile = ExtractCatalogSerializedFile(source);
+            var suffix = BuildSourceIndexPathSuffix(source);
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+SELECT serialized_file, path_id
+FROM source_objects
+WHERE path_id = $pathId
+  AND type = $type
+  AND name = $name
+  AND ($serializedFile = '' OR serialized_file = $serializedFile)
+  AND ($suffix = '' OR source_path = $suffix OR source_path LIKE $suffixLike)
+LIMIT 2;";
+            command.Parameters.AddWithValue("$pathId", pathId);
+            command.Parameters.AddWithValue("$type", type ?? string.Empty);
+            command.Parameters.AddWithValue("$name", name ?? string.Empty);
+            command.Parameters.AddWithValue("$serializedFile", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$suffix", suffix ?? string.Empty);
+            command.Parameters.AddWithValue("$suffixLike", "%/" + (suffix ?? string.Empty) + "%");
+
+            using var reader = command.ExecuteReader();
+            SourceKey? found = null;
+            while (reader.Read())
+            {
+                var candidate = KeyFromRelation(reader, 0, 1);
+                if (found.HasValue && !found.Value.Equals(candidate))
+                {
+                    return false;
+                }
+
+                found = candidate;
+            }
+
+            if (!found.HasValue)
+            {
+                return false;
+            }
+
+            key = found.Value;
+            return key.IsValid;
+        }
+
+        private static string BuildSourceIndexPathSuffix(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return string.Empty;
+            }
+
+            var normalized = GetCatalogOuterSourcePath(source).Replace('\\', '/').Trim('/');
+            var vfsIndex = normalized.LastIndexOf("/VFS/", StringComparison.OrdinalIgnoreCase);
+            if (vfsIndex >= 0)
+            {
+                return normalized[(vfsIndex + "/VFS/".Length)..];
+            }
+
+            var parts = normalized.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+            {
+                return parts[^2] + "/" + parts[^1];
+            }
+
+            return parts.Length == 1 ? parts[0] : string.Empty;
+        }
+
+        private static string GetCatalogOuterSourcePath(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return string.Empty;
+            }
+
+            // Catalog source 对 Endfield 这类 VFS 资源会写成：
+            // 外层 .blc|内层 .ab|CAB-xxx。source_objects.source_path 只保存外层文件。
+            var pipeIndex = source.IndexOf('|');
+            return pipeIndex >= 0 ? source[..pipeIndex] : source;
+        }
+
+        private static string ExtractCatalogSerializedFile(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return string.Empty;
+            }
+
+            var normalized = source.Replace('\\', '/').Trim();
+            var pipeIndex = normalized.LastIndexOf('|');
+            if (pipeIndex >= 0 && pipeIndex + 1 < normalized.Length)
+            {
+                return normalized[(pipeIndex + 1)..].Trim();
+            }
+
+            return Path.GetFileName(normalized);
+        }
+
+        private static JObject TryReadAnimatorControllerContextForCandidate(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return null;
+            }
+
+            try
+            {
+                var details = JObject.Parse(rawJson)["details"] as JObject;
+                if (details == null)
+                {
+                    return null;
+                }
+
+                return new JObject
+                {
+                    ["source"] = details["source"],
+                    ["controllerClipIndex"] = details["controllerClipIndex"],
+                    ["baseLayerClip"] = details["baseLayerClip"],
+                    ["layers"] = details["layers"],
+                    ["stateMachineIndex"] = details["stateMachineIndex"],
+                    ["stateIndex"] = details["stateIndex"],
+                    ["stateName"] = details["stateName"],
+                    ["statePath"] = details["statePath"],
+                    ["stateFullPath"] = details["stateFullPath"],
+                    ["stateSpeed"] = details["stateSpeed"],
+                    ["stateCycleOffset"] = details["stateCycleOffset"],
+                    ["stateLoop"] = details["stateLoop"],
+                    ["stateMirror"] = details["stateMirror"],
+                    ["blendTreeIndex"] = details["blendTreeIndex"],
+                    ["nodeIndex"] = details["nodeIndex"],
+                    ["nodeBlendType"] = details["nodeBlendType"],
+                    ["nodeBlendEvent"] = details["nodeBlendEvent"],
+                    ["nodeBlendEventY"] = details["nodeBlendEventY"],
+                    ["nodeClipId"] = details["nodeClipId"],
+                    ["nodeClipIndex"] = details["nodeClipIndex"],
+                    ["nodeDuration"] = details["nodeDuration"],
+                    ["nodeCycleOffset"] = details["nodeCycleOffset"],
+                    ["nodeMirror"] = details["nodeMirror"],
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private static bool IsPrefabLikeModel(JObject obj)
         {
             var role = S(obj, "libraryRole");
@@ -900,33 +1955,99 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
 
         private static JObject BuildExplicitSourceCandidateJson(JObject model, JObject animation, SourceAnimationRelation relation)
         {
-            var animationRequiresHumanoidSolve = RequiresHumanoidBake(animation);
+            var modelGate = BuildModelAnimationGate(model);
+            var animationGate = BuildAnimationSemanticGate(animation);
+            var directGltfAnimationStatus = S(animation, "directGltfAnimationStatus");
+            var directGltfAnimationReady = IsDirectGltfAnimationReady(animation);
+            var needsDirectTrsAnimation = IsTrue(animation, "needsDirectTrsAnimation");
+            var directProductionPath = GetDirectGltfProductionPath(animation);
+            var animationNeedsHumanoidSolve = RequiresDirectHumanoidTrsSolve(animation);
             var standaloneBodyBakeReady = IsStandaloneBodyBakeReady(animation);
+            var standaloneBodyBakeStatus = S(animation, "standaloneBodyBakeStatus");
+            var directGltfNeedsControllerContext = directGltfAnimationReady
+                && !standaloneBodyBakeReady
+                && string.Equals(standaloneBodyBakeStatus, "requires_animator_controller_context", StringComparison.OrdinalIgnoreCase);
+            var directGltfNeedsDirectTrsSolve = directGltfAnimationReady
+                && !standaloneBodyBakeReady
+                && string.Equals(standaloneBodyBakeStatus, "needs_direct_trs_animation", StringComparison.OrdinalIgnoreCase);
             var hasAnimatorControllerBodyClip = HasAnimatorControllerBodyClip(relation);
-            var requiresAnimatorControllerContext = animationRequiresHumanoidSolve && !standaloneBodyBakeReady && !hasAnimatorControllerBodyClip;
+            var requiresAnimatorControllerContext = !directGltfAnimationReady && animationNeedsHumanoidSolve && !needsDirectTrsAnimation && !standaloneBodyBakeReady && !hasAnimatorControllerBodyClip;
             var hasDirectTransformPreview = HasDirectTransformPreview(animation);
-            var modelHasInternalHumanoidSolver = HasCompleteInternalHumanoidSolver(model);
+            var internalSolverMissingReason = GetInternalHumanoidSolverMissingReason(model);
+            var experimentalInternalSolverMissingReason = GetExperimentalInternalHumanoidSolverMissingReason(model);
+            var modelHasInternalHumanoidSolver = internalSolverMissingReason is null;
+            var modelHasExperimentalInternalHumanoidSolver = experimentalInternalSolverMissingReason is null;
             var modelHasProductionUnityBakeAvatar = HasProductionUnityBakeAvatar(model);
-            var standaloneHumanoidBakeRequired = animationRequiresHumanoidSolve && (standaloneBodyBakeReady || hasAnimatorControllerBodyClip);
-            var requiresInternalHumanoidSolve = standaloneHumanoidBakeRequired && modelHasInternalHumanoidSolver;
-            var fullHumanoidBakeBlocked = standaloneHumanoidBakeRequired && !modelHasProductionUnityBakeAvatar;
-            var canRequestUnityBake = standaloneHumanoidBakeRequired && modelHasProductionUnityBakeAvatar;
-            var missingInternalHumanoidSolver = standaloneHumanoidBakeRequired && !modelHasInternalHumanoidSolver && !hasDirectTransformPreview;
-            var missingProductionAvatar = standaloneHumanoidBakeRequired && !modelHasProductionUnityBakeAvatar;
-            var productionBlockedReason = requiresAnimatorControllerContext
+            var modelAvatarDiagnostics = BuildModelAvatarDiagnostics(model);
+            var directHumanoidTrsRequired = directGltfNeedsDirectTrsSolve
+                || (!directGltfAnimationReady && animationNeedsHumanoidSolve && (needsDirectTrsAnimation || standaloneBodyBakeReady || hasAnimatorControllerBodyClip));
+            var requiresInternalHumanoidSolve = directHumanoidTrsRequired && (modelHasInternalHumanoidSolver || modelHasExperimentalInternalHumanoidSolver);
+            var fullHumanoidBakeBlocked = directHumanoidTrsRequired && !modelHasProductionUnityBakeAvatar;
+            var canRequestUnityBake = false;
+            var unityBakeAcceleratedReady = directHumanoidTrsRequired && modelHasProductionUnityBakeAvatar && !requiresAnimatorControllerContext;
+            var unityBakeAcceleratedBlockedReason = requiresAnimatorControllerContext
+                ? "requires_animator_controller_context"
+                : directHumanoidTrsRequired && !modelHasProductionUnityBakeAvatar
+                    ? GetProductionUnityBakeAvatarMissingReason(model)
+                    : null;
+            var useDirectTransformPreviewFirst = directHumanoidTrsRequired && hasDirectTransformPreview;
+            var missingInternalHumanoidSolver = directHumanoidTrsRequired && !modelHasInternalHumanoidSolver && !modelHasExperimentalInternalHumanoidSolver && !hasDirectTransformPreview;
+            var missingProductionAvatar = directHumanoidTrsRequired && !modelHasProductionUnityBakeAvatar;
+            var legacyUnityBakeBlockedReason = requiresAnimatorControllerContext
                 ? "requires_animator_controller_context"
                 : missingProductionAvatar
                     ? GetProductionUnityBakeAvatarMissingReason(model)
                     : null;
-            var nextAction = requiresAnimatorControllerContext
+            var directAnimationBlockedReason = directGltfAnimationReady
+                ? directGltfNeedsControllerContext
+                    ? "requires_animator_controller_context"
+                    : directGltfNeedsDirectTrsSolve
+                        ? "needs_direct_trs_animation"
+                        : null
+                : requiresAnimatorControllerContext
+                    ? "requires_animator_controller_context"
+                    : directHumanoidTrsRequired || needsDirectTrsAnimation
+                        ? "needs_direct_trs_animation"
+                        : null;
+            var productionAnimationReady = directGltfAnimationReady && directAnimationBlockedReason == null;
+            var nextAction = directGltfAnimationReady
+                ? directGltfNeedsControllerContext
+                    ? "inspect_animator_controller_context"
+                    : directGltfNeedsDirectTrsSolve
+                    ? "implement_direct_trs_animation"
+                    : "generate_preview_gltf"
+                : requiresInternalHumanoidSolve
+                ? "generate_preview_gltf"
+                : needsDirectTrsAnimation
+                ? "implement_direct_trs_animation"
+                : requiresAnimatorControllerContext
                 ? "inspect_animator_controller_context"
                 : missingInternalHumanoidSolver
                 ? "inspect_missing_humanoid_avatar"
-                : standaloneHumanoidBakeRequired
-                    ? modelHasProductionUnityBakeAvatar
-                        ? "generate_unity_baked_gltf"
-                        : "refresh_avatar_human_description"
+                : directHumanoidTrsRequired
+                    ? "implement_direct_trs_animation"
                 : "generate_preview_gltf";
+            if (!modelGate.Ready)
+            {
+                // 动画是第二阶段。模型材质/贴图/skin/来源域没过时，
+                // 只保留 Unity 显式关系作诊断，不允许进入默认预览或生产结论。
+                directAnimationBlockedReason = "model_not_animation_ready";
+                productionAnimationReady = false;
+                nextAction = "fix_model_first";
+                unityBakeAcceleratedReady = false;
+                unityBakeAcceleratedBlockedReason ??= "model_not_animation_ready";
+            }
+            else if (!animationGate.Ready)
+            {
+                // 显式引用只能证明 Unity 用过这个 clip；剧情/UI/pose 等上下文动画不能默认升级成可复用动作。
+                directAnimationBlockedReason ??= "animation_not_default_candidate";
+                productionAnimationReady = false;
+                nextAction = "review_animation_context";
+                unityBakeAcceleratedReady = false;
+                unityBakeAcceleratedBlockedReason ??= "animation_not_default_candidate";
+            }
+            var sharedAvatarBridge = IsSharedAvatarBridgeRelation(relation);
+
             return new JObject
             {
                 // 大库会产生数百万条候选。候选 raw 只保留后续筛选/预览必须字段，
@@ -935,24 +2056,69 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 ["relation"] = relation.Relation,
                 ["relationSource"] = "explicit",
                 ["confidence"] = "explicit_unity_source_index",
+                ["relationEvidence"] = relation.RelationEvidence,
+                ["explicitCandidateRequiresVisualValidation"] = sharedAvatarBridge,
+                ["relationReviewHint"] = sharedAvatarBridge ? "sharedAvatarBridgeNeedsVisualValidation" : null,
+                ["sharedAvatarBridgeRule"] = sharedAvatarBridge
+                    ? new JObject
+                    {
+                        ["rule"] = "模型经配置 PPtr 指向 Avatar，同一 Avatar 的 Animator 再显式指向 Controller/Clip。它是确定性候选，不是视觉验收结论。",
+                        ["modelGateRequired"] = true,
+                        ["visualValidationRequired"] = true,
+                    }
+                    : null,
                 ["legacyUnityBakeSupported"] = canRequestUnityBake,
                 ["requiresUnityBake"] = canRequestUnityBake,
-                ["fullHumanoidBakeRequired"] = standaloneHumanoidBakeRequired,
-                ["productionUnityBakeReady"] = canRequestUnityBake,
-                ["productionUnityBakeBlocked"] = requiresAnimatorControllerContext || missingProductionAvatar,
-                ["productionUnityBakeBlockedReason"] = productionBlockedReason,
-                ["productionAnimationPath"] = requiresAnimatorControllerContext
+                ["directGltfAnimationReady"] = directGltfAnimationReady,
+                ["directGltfAnimationStatus"] = directGltfAnimationStatus,
+                ["directGltfPreviewReady"] = directGltfAnimationReady && modelGate.Ready,
+                ["needsDirectTrsAnimation"] = needsDirectTrsAnimation,
+                ["deprecatedUnityBakeOnly"] = IsTrue(animation, "deprecatedUnityBakeOnly"),
+                ["directHumanoidTrsRequired"] = directHumanoidTrsRequired,
+                ["unityBakeAcceleratedReady"] = unityBakeAcceleratedReady,
+                ["unityBakeAcceleratedBlockedReason"] = unityBakeAcceleratedBlockedReason,
+                ["directAnimationBlocked"] = directAnimationBlockedReason != null,
+                ["directAnimationBlockedReason"] = directAnimationBlockedReason,
+                ["productionAnimationReady"] = productionAnimationReady,
+                ["productionAnimationBlockedReason"] = directAnimationBlockedReason,
+                ["fullHumanoidBakeRequired"] = directHumanoidTrsRequired,
+                ["productionUnityBakeReady"] = canRequestUnityBake && modelGate.Ready,
+                ["productionUnityBakeBlocked"] = !modelGate.Ready || requiresAnimatorControllerContext || missingProductionAvatar,
+                ["productionUnityBakeBlockedReason"] = !modelGate.Ready
+                    ? "model_not_animation_ready"
+                    : legacyUnityBakeBlockedReason,
+                ["productionAnimationPath"] = productionAnimationReady
+                    ? directProductionPath
+                    : !modelGate.Ready
+                    ? "ModelNotAnimationReady"
+                    : needsDirectTrsAnimation
+                    ? "NeedsDirectTrsAnimation"
+                    : directGltfNeedsControllerContext
                     ? "NeedsAnimatorControllerContext"
-                    : standaloneHumanoidBakeRequired
-                    ? modelHasProductionUnityBakeAvatar
-                        ? "UnityBakeToGltf"
-                        : "NeedsUnityAvatarMetadata"
+                    : directGltfNeedsDirectTrsSolve
+                    ? "NeedsDirectTrsAnimation"
+                    : requiresAnimatorControllerContext
+                    ? "NeedsAnimatorControllerContext"
+                    : directHumanoidTrsRequired
+                    ? "NeedsDirectTrsAnimation"
                     : "DirectGltf",
                 ["requiresInternalHumanoidSolve"] = requiresInternalHumanoidSolve,
+                ["internalHumanoidSolverReady"] = modelHasInternalHumanoidSolver,
+                ["experimentalInternalHumanoidSolverReady"] = modelHasExperimentalInternalHumanoidSolver,
+                ["experimentalInternalHumanoidSolver"] = directHumanoidTrsRequired && modelHasExperimentalInternalHumanoidSolver,
+                ["experimentalInternalHumanoidSolverStatus"] = modelHasExperimentalInternalHumanoidSolver
+                    ? (modelHasInternalHumanoidSolver ? "complete_avatar_mapping" : "structural_avatar_fallback")
+                    : "missing",
+                ["experimentalInternalHumanoidSolverMissingReason"] = experimentalInternalSolverMissingReason,
+                ["internalHumanoidSolverProductionReady"] = modelHasInternalHumanoidSolver,
+                ["internalHumanoidSolverNotProductionReadyReason"] = !modelHasInternalHumanoidSolver && modelHasExperimentalInternalHumanoidSolver
+                    ? internalSolverMissingReason
+                    : null,
                 ["missingInternalHumanoidSolver"] = missingInternalHumanoidSolver,
                 ["missingInternalHumanoidSolverReason"] = missingInternalHumanoidSolver
-                    ? GetInternalHumanoidSolverMissingReason(model)
+                    ? experimentalInternalSolverMissingReason ?? internalSolverMissingReason
                     : null,
+                ["modelAvatarDiagnostics"] = modelAvatarDiagnostics,
                 ["fullHumanoidBakeBlocked"] = requiresAnimatorControllerContext || fullHumanoidBakeBlocked,
                 ["fullHumanoidBakeBlockedReason"] = requiresAnimatorControllerContext
                     ? "requires_animator_controller_context"
@@ -960,25 +2126,360 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                         ? GetProductionUnityBakeAvatarMissingReason(model)
                         : null,
                 ["standaloneBodyBakeReady"] = standaloneBodyBakeReady,
-                ["standaloneBodyBakeStatus"] = S(animation, "standaloneBodyBakeStatus"),
+                ["standaloneBodyBakeStatus"] = standaloneBodyBakeStatus,
                 ["standaloneBodyBakeReason"] = S(animation, "standaloneBodyBakeReason"),
+                ["standaloneBodyRequiresAnimatorControllerContext"] = directGltfNeedsControllerContext,
+                ["standaloneBodyRequiresDirectTrsSolve"] = directGltfNeedsDirectTrsSolve,
+                ["directTrsSolveRequiresProductionAvatar"] = directHumanoidTrsRequired && !modelHasProductionUnityBakeAvatar,
+                ["directTrsSolveBlockedReason"] = directHumanoidTrsRequired && !modelHasProductionUnityBakeAvatar
+                    ? GetProductionUnityBakeAvatarMissingReason(model)
+                    : null,
                 ["animatorControllerContext"] = relation.AnimatorControllerContext,
                 ["animatorControllerBodyClipReady"] = hasAnimatorControllerBodyClip,
-                ["partialDirectGltf"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver,
-                ["partialDirectGltfReason"] = standaloneHumanoidBakeRequired && hasDirectTransformPreview && !modelHasInternalHumanoidSolver
-                    ? "Animation has deterministic Transform TRS curves, but full Humanoid/Muscle bake is blocked by missing Avatar HumanBone mapping or reference pose."
+                ["partialDirectGltf"] = useDirectTransformPreviewFirst,
+                ["partialDirectGltfReason"] = useDirectTransformPreviewFirst
+                    ? "Animation has deterministic Transform TRS curves. AnimeStudio writes those curves to glTF first; Humanoid/Muscle curves remain separate diagnostic data until their direct TRS solver passes visual validation."
                     : null,
                 ["nextAction"] = nextAction,
+                ["modelReadyForAnimation"] = modelGate.Ready,
+                ["modelAnimationBlockedReason"] = modelGate.Ready ? null : string.Join(",", modelGate.Reasons),
+                ["modelAnimationGate"] = BuildModelAnimationGateJson(modelGate),
+                ["defaultAnimationCandidateReady"] = animationGate.Ready,
+                ["animationCandidateBlockedReason"] = animationGate.Ready ? null : string.Join(",", animationGate.Reasons),
+                ["animationSemanticGate"] = BuildAnimationSemanticGateJson(animationGate),
                 ["matchReason"] = relation.Reason,
+            };
+        }
+
+        private static string GetExplicitCandidateStatus(JObject rawCandidate)
+        {
+            if (!IsTrue(rawCandidate, "modelReadyForAnimation"))
+            {
+                return "model_not_animation_ready";
+            }
+
+            if (!IsTrue(rawCandidate, "defaultAnimationCandidateReady"))
+            {
+                return "animation_not_default_candidate";
+            }
+
+            return "explicit";
+        }
+
+        private static bool NeedsExplicitCandidateValidation(JObject rawCandidate)
+        {
+            return !IsTrue(rawCandidate, "modelReadyForAnimation")
+                || !IsTrue(rawCandidate, "defaultAnimationCandidateReady")
+                || IsTrue(rawCandidate, "explicitCandidateRequiresVisualValidation");
+        }
+
+        private static bool IsSharedAvatarBridgeRelation(SourceAnimationRelation relation)
+        {
+            return string.Equals(relation.Relation, "sharedAvatarController", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Dictionary<string, JObject> ReadModelCatalogByOutput(string root)
+        {
+            var catalogPath = Path.Combine(root, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                return new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var catalog = ReadJsonLines(catalogPath).ToList();
+            AttachModelValidation(root, catalog);
+            return catalog
+                .Where(x => string.Equals(S(x, "kind"), "Model", StringComparison.OrdinalIgnoreCase))
+                .Where(x => !string.IsNullOrWhiteSpace(S(x, "output")))
+                .GroupBy(x => NormalizeLibraryOutputForJoin(root, S(x, "output")), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static void AttachModelValidation(string root, IReadOnlyList<JObject> catalog)
+        {
+            var validationByOutput = ReadModelValidationByOutput(root);
+            if (validationByOutput.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var model in catalog.Where(x => string.Equals(S(x, "kind"), "Model", StringComparison.OrdinalIgnoreCase)))
+            {
+                var output = NormalizeLibraryOutputForJoin(root, S(model, "output"));
+                if (validationByOutput.TryGetValue(output, out var validation))
+                {
+                    model["modelValidation"] = validation.DeepClone();
+                }
+            }
+        }
+
+        private static Dictionary<string, JObject> ReadModelValidationByOutput(string root)
+        {
+            var path = Path.Combine(root, "model_validation.json");
+            if (!File.Exists(path))
+            {
+                return new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            try
+            {
+                var report = JObject.Parse(File.ReadAllText(path).TrimStart('\uFEFF'));
+                return report["models"]?
+                    .OfType<JObject>()
+                    .Where(x => !string.IsNullOrWhiteSpace(S(x, "Path")))
+                    .GroupBy(x => NormalizeLibraryOutputForJoin(root, S(x, "Path")), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase)
+                    ?? new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException e)
+            {
+                Logger.Warning($"Skipping invalid model_validation.json for animation gate: {e.Message}");
+                return new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static void ApplyModelAnimationGate(JObject candidate, ModelAnimationGate gate)
+        {
+            candidate["modelReadyForAnimation"] = gate.Ready;
+            candidate["modelAnimationBlockedReason"] = gate.Ready ? null : string.Join(",", gate.Reasons);
+            candidate["modelAnimationGate"] = BuildModelAnimationGateJson(gate);
+            if (gate.Ready)
+            {
+                return;
+            }
+
+            candidate["directGltfPreviewReady"] = false;
+            candidate["productionAnimationReady"] = false;
+            candidate["directAnimationBlocked"] = true;
+            candidate["directAnimationBlockedReason"] = "model_not_animation_ready";
+            candidate["productionAnimationBlockedReason"] = "model_not_animation_ready";
+            candidate["productionAnimationPath"] = "ModelNotAnimationReady";
+            candidate["productionUnityBakeReady"] = false;
+            candidate["productionUnityBakeBlocked"] = true;
+            candidate["productionUnityBakeBlockedReason"] = "model_not_animation_ready";
+            candidate["unityBakeAcceleratedReady"] = false;
+            candidate["unityBakeAcceleratedBlockedReason"] = "model_not_animation_ready";
+            candidate["nextAction"] = "fix_model_first";
+        }
+
+        private static ModelAnimationGate BuildModelAnimationGate(JObject model)
+        {
+            var reasons = new List<string>();
+            var validation = model?["modelValidation"] as JObject;
+            var body = validation?["Body"] as JObject;
+
+            if (validation == null)
+            {
+                reasons.Add("model_validation_missing");
+            }
+
+            var status = S(validation, "Status");
+            if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("model_validation_not_ok");
+            }
+
+            var bodyStatus = S(body, "ModelBodyStatus");
+            if (!string.IsNullOrWhiteSpace(bodyStatus) && !string.Equals(bodyStatus, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("model_body_not_ok");
+            }
+
+            if ((I(model, "meshCount") ?? I(body, "PrimitiveCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_mesh");
+            }
+            if ((I(model, "vertexCount") ?? I(body, "PositionVertexCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_vertices");
+            }
+            if ((I(model, "materialCount") ?? I(body, "MaterialCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_materials");
+            }
+            if ((I(model, "textureCount") ?? I(body, "TextureCount") ?? 0) <= 0
+                && (I(model, "materialImageCount") ?? I(body, "ImageCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_textures");
+            }
+            if ((I(model, "materialImageCount") ?? I(body, "ImageCount") ?? 0) <= 0)
+            {
+                reasons.Add("no_material_images");
+            }
+            if (IsTrue(model, "materialMissingRendererBinding"))
+            {
+                reasons.Add("missing_renderer_material_binding");
+            }
+            if ((I(model, "unresolvedModelDependencyCount") ?? 0) > 0)
+            {
+                reasons.Add("unresolved_model_dependencies");
+            }
+            if ((I(body, "MissingImageCount") ?? 0) > 0)
+            {
+                reasons.Add("missing_images");
+            }
+            if ((I(body, "EmptyImageCount") ?? 0) > 0)
+            {
+                reasons.Add("empty_images");
+            }
+            if ((I(body, "SkinnedMeshNodeCount") ?? 0) > 0
+                && body?["HasCompleteSkinBinding"]?.Type == JTokenType.Boolean
+                && !body["HasCompleteSkinBinding"].Value<bool>())
+            {
+                reasons.Add("incomplete_skin_binding");
+            }
+            if (IsDiagnosticModelInstance(model))
+            {
+                reasons.Add("diagnostic_instance_not_default_animation_gate");
+            }
+
+            var evidence = new JObject
+            {
+                ["rule"] = "只有模型 Mesh/UV/材质/贴图/skin/bbox 和来源域先过关，才允许进入默认动画预览或生产结论。Unity 显式关系会保留作诊断。",
+                ["name"] = S(model, "name"),
+                ["output"] = S(model, "output"),
+                ["resourceKind"] = S(model, "resourceKind"),
+                ["container"] = S(model, "container"),
+                ["source"] = S(model, "source"),
+                ["modelValidationPresent"] = validation != null,
+                ["modelValidationStatus"] = status,
+                ["modelBodyStatus"] = bodyStatus,
+                ["meshCount"] = I(model, "meshCount") ?? I(body, "PrimitiveCount"),
+                ["vertexCount"] = I(model, "vertexCount") ?? I(body, "PositionVertexCount"),
+                ["materialCount"] = I(model, "materialCount") ?? I(body, "MaterialCount"),
+                ["textureCount"] = I(model, "textureCount") ?? I(body, "TextureCount"),
+                ["materialImageCount"] = I(model, "materialImageCount") ?? I(body, "ImageCount"),
+                ["skinCount"] = I(model, "skinCount") ?? I(body, "SkinCount"),
+                ["unresolvedModelDependencyCount"] = I(model, "unresolvedModelDependencyCount") ?? 0,
+                ["unresolvedModelDependencyTypes"] = model?["unresolvedModelDependencyTypes"]?.DeepClone(),
+                ["missingImageCount"] = I(body, "MissingImageCount") ?? 0,
+                ["emptyImageCount"] = I(body, "EmptyImageCount") ?? 0,
+                ["diagnosticModelInstance"] = IsDiagnosticModelInstance(model),
+            };
+
+            return new ModelAnimationGate(
+                reasons.Count == 0,
+                reasons.Count == 0 ? "ready" : "blocked",
+                reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                evidence);
+        }
+
+        private static JObject BuildModelAnimationGateJson(ModelAnimationGate gate)
+        {
+            var evidence = gate.Evidence != null ? (JObject)gate.Evidence.DeepClone() : new JObject();
+            return new JObject
+            {
+                ["status"] = gate.Status,
+                ["ready"] = gate.Ready,
+                ["reasons"] = new JArray(gate.Reasons),
+                ["evidence"] = evidence,
+            };
+        }
+
+        private static ModelAnimationGate BuildAnimationSemanticGate(JObject animation)
+        {
+            var reasons = new List<string>();
+            if (IsDiagnosticAnimationClip(animation))
+            {
+                reasons.Add("diagnostic_or_context_animation_not_default_candidate");
+            }
+
+            var evidence = new JObject
+            {
+                ["rule"] = "显式 AnimatorController 引用只说明 Unity 状态机使用了该 clip；剧情/UI/pose/deco 等上下文动画默认只做诊断，不进入生产动画 smoke。",
+                ["name"] = S(animation, "name"),
+                ["container"] = S(animation, "container"),
+                ["source"] = S(animation, "source"),
+                ["output"] = S(animation, "output"),
+                ["diagnosticAnimationClip"] = IsDiagnosticAnimationClip(animation),
+            };
+
+            return new ModelAnimationGate(
+                reasons.Count == 0,
+                reasons.Count == 0 ? "ready" : "blocked",
+                reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                evidence);
+        }
+
+        private static JObject BuildAnimationSemanticGateJson(ModelAnimationGate gate)
+        {
+            var evidence = gate.Evidence != null ? (JObject)gate.Evidence.DeepClone() : new JObject();
+            return new JObject
+            {
+                ["status"] = gate.Status,
+                ["ready"] = gate.Ready,
+                ["reasons"] = new JArray(gate.Reasons),
+                ["evidence"] = evidence,
+            };
+        }
+
+        private static bool IsDiagnosticModelInstance(JObject model)
+        {
+            var text = string.Join(
+                "/",
+                new[] { S(model, "container"), S(model, "source"), S(model, "name"), S(model, "output") }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+            return Regex.IsMatch(
+                text,
+                @"(^|[/_.\-\s])(?:dialog|timeline|levelseq|ui|uimodel|preview|deco|pose|camera|cutscene|postmodels?|abilityentity|tmpobject|tmp)(?:$|[/_.\-\s0-9])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        private static bool IsDiagnosticAnimationClip(JObject animation)
+        {
+            var text = string.Join(
+                "/",
+                new[] { S(animation, "container"), S(animation, "source"), S(animation, "name"), S(animation, "output") }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+            return Regex.IsMatch(
+                text,
+                @"(^|[/_.\-\s])(?:cs|cutscene|dialog|timeline|levelseq|ui|uimodel|preview|deco|pose|camera)(?:$|[/_.\-\s0-9])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
+        private static JObject BuildModelAvatarDiagnostics(JObject model)
+        {
+            var avatar = model?["avatar"] as JObject;
+            if (avatar == null)
+            {
+                return new JObject
+                {
+                    ["status"] = "missing_avatar_object",
+                };
+            }
+
+            var internalSolverMissingReason = GetInternalHumanoidSolverMissingReason(model);
+            var experimentalInternalSolverMissingReason = GetExperimentalInternalHumanoidSolverMissingReason(model);
+            var productionAvatarMissingReason = GetProductionUnityBakeAvatarMissingReason(model);
+            return new JObject
+            {
+                ["name"] = S(avatar, "name"),
+                ["source"] = S(avatar, "source"),
+                ["pathId"] = avatar["pathId"],
+                ["hasHumanDescription"] = B(avatar, "hasHumanDescription") == 1,
+                ["humanBoneCount"] = I(avatar, "humanBoneCount") ?? 0,
+                ["skeletonBoneCount"] = I(avatar, "skeletonBoneCount") ?? 0,
+                ["avatarSkeletonNodeCount"] = I(avatar, "avatarSkeletonNodeCount") ?? 0,
+                ["hasValidHumanBoneIndex"] = internalSolverMissingReason != "missing_human_bone_index",
+                ["internalSolverReady"] = internalSolverMissingReason == null,
+                ["internalSolverMissingReason"] = internalSolverMissingReason,
+                ["experimentalInternalSolverReady"] = experimentalInternalSolverMissingReason == null,
+                ["experimentalInternalSolverMissingReason"] = experimentalInternalSolverMissingReason,
+                ["experimentalInternalSolverRule"] = "允许使用 Unity AvatarConstant avatarSkeleton/defaultPose 和 glTF 目标骨架做结构 fallback 生成实验 glTF TRS；这不是生产 Avatar/HumanBoneIndex 完整验收。",
+                ["productionAvatarReady"] = productionAvatarMissingReason == null,
+                ["productionAvatarMissingReason"] = productionAvatarMissingReason,
             };
         }
 
         private static bool HasAnimatorControllerBodyClip(SourceAnimationRelation relation)
         {
             // 原神这类 controller 常把同一个状态拆成身体主动作层 + 角色附件/叠加层。
-            // 只有源索引明确记录同状态 baseLayerClip 时，才允许把辅助 clip 接到身体主 clip 去做 Unity bake。
+            // 只有源索引明确记录同状态 baseLayerClip 时，才允许把辅助 clip 接到身体主 clip 继续做直接 TRS 研究。
             // 这里不按名称、骨骼数量或目录猜测，避免把普通 root/accessory clip 误升级为可烘焙身体动画。
-            var clip = relation?.AnimatorControllerContext?["baseLayerClip"]?["clip"] as JObject;
+            var baseLayerClip = relation?.AnimatorControllerContext?["baseLayerClip"] as JObject;
+            var clip = baseLayerClip?["clip"] as JObject;
             return (long?)clip?["pathId"] != null;
         }
 
@@ -996,8 +2497,39 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 : bool.TryParse(token.ToString(), out var value) && value;
         }
 
+        private static bool IsDirectGltfAnimationReady(JObject animation)
+        {
+            if (IsTrue(animation, "directTrsAnimationReady") || IsTrue(animation, "directWeightsAnimationReady"))
+            {
+                return true;
+            }
+
+            var status = S(animation, "directGltfAnimationStatus") ?? string.Empty;
+            return status.Equals("direct_trs", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("direct_weights", StringComparison.OrdinalIgnoreCase)
+                || status.Equals("direct_trs_weights", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetDirectGltfProductionPath(JObject animation)
+        {
+            if (IsTrue(animation, "directTrsAnimationReady") && IsTrue(animation, "directWeightsAnimationReady"))
+            {
+                return "DirectGltfTrsWeights";
+            }
+            if (IsTrue(animation, "directWeightsAnimationReady"))
+            {
+                return "DirectGltfWeights";
+            }
+            return "DirectGltfTrs";
+        }
+
         private static bool HasDirectTransformPreview(JObject animation)
         {
+            if (!IsTrue(animation, "directTrsAnimationReady"))
+            {
+                return false;
+            }
+
             var transformBindingCount = I(animation, "transformBindingCount") ?? 0;
             var coreTransformBindingCount = I(animation, "coreTransformBindingCount") ?? 0;
             var type = S(animation, "animationType") ?? string.Empty;
@@ -1009,6 +2541,11 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
         private static bool HasCompleteInternalHumanoidSolver(JObject model)
         {
             return GetInternalHumanoidSolverMissingReason(model) is null;
+        }
+
+        private static bool HasExperimentalInternalHumanoidSolver(JObject model)
+        {
+            return GetExperimentalInternalHumanoidSolverMissingReason(model) is null;
         }
 
         private static bool HasProductionUnityBakeAvatar(JObject model)
@@ -1099,6 +2636,50 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
             return null;
         }
 
+        private static string GetExperimentalInternalHumanoidSolverMissingReason(JObject model)
+        {
+            var avatar = model?["avatar"] as JObject;
+            if (avatar == null)
+            {
+                return "missing_avatar_object";
+            }
+            if (avatar["internalSolver"] is not JObject solver || !solver.HasValues)
+            {
+                return "missing_internal_solver";
+            }
+
+            // Endfield 这类 Avatar 常没有有效 humanBoneIndex，但包含
+            // AvatarConstant 的 avatarSkeleton/defaultPose。内部求解器可以用
+            // glTF 目标骨架 + 结构 fallback 生成实验 TRS 预览；它仍然不能当作
+            // 生产级 Avatar 映射完成。
+            var skeleton = solver["skeleton"] as JObject;
+            var nodes = skeleton?["nodes"] as JArray;
+            var humanSkeletonPose = skeleton?["humanSkeletonPose"] as JArray;
+            var avatarSkeleton = solver["avatarSkeleton"] as JObject;
+            var avatarSkeletonNodes = avatarSkeleton?["nodes"] as JArray;
+            var avatarSkeletonDefaultPose = avatarSkeleton?["defaultPose"] as JArray;
+            if (nodes is not null && nodes.Count > 0)
+            {
+                if (humanSkeletonPose is null || humanSkeletonPose.Count < nodes.Count)
+                {
+                    return "missing_avatar_pose_metadata";
+                }
+
+                return null;
+            }
+
+            if (avatarSkeletonNodes is null || avatarSkeletonNodes.Count == 0)
+            {
+                return "missing_solver_skeleton_nodes";
+            }
+            if (avatarSkeletonDefaultPose is null || avatarSkeletonDefaultPose.Count < avatarSkeletonNodes.Count)
+            {
+                return "missing_avatar_pose_metadata";
+            }
+
+            return null;
+        }
+
         private static bool HasValidHumanBoneIndex(JArray humanBoneIndex)
         {
             if (humanBoneIndex is null || humanBoneIndex.Count == 0)
@@ -1149,7 +2730,7 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 && avatarSkeletonDefaultPose != null && avatarSkeletonDefaultPose.Count >= avatarSkeletonNodes.Count;
         }
 
-        private static bool RequiresHumanoidBake(JObject animation)
+        private static bool RequiresDirectHumanoidTrsSolve(JObject animation)
         {
             var type = S(animation, "animationType") ?? string.Empty;
             var transformBindingCount = I(animation, "transformBindingCount") ?? 0;
@@ -1494,6 +3075,24 @@ INSERT INTO model_animation_relations(
     animation_count,
     raw_json
 )
+WITH candidate_flags AS (
+    SELECT
+        c.*,
+        CASE
+            WHEN COALESCE(c.status, '') IN ('missing_model', 'missing_animation', 'invalid', 'error', 'model_not_animation_ready', 'animation_not_default_candidate') THEN 0
+            WHEN COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 1) = 0 THEN 0
+            WHEN COALESCE(json_extract(c.raw_json, '$.defaultAnimationCandidateReady'), 1) = 0 THEN 0
+            WHEN COALESCE(json_extract(c.raw_json, '$.explicitCandidateRequiresVisualValidation'), 0) = 1 THEN 0
+            ELSE 1
+        END AS usable_candidate,
+        CASE
+            WHEN COALESCE(c.status, '') = 'model_not_animation_ready'
+              OR COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 1) = 0
+            THEN 1 ELSE 0
+        END AS model_gate_blocked
+    FROM model_animation_candidates c
+    WHERE c.relation_source='explicit'
+)
 SELECT
     MIN(m.id) AS model_asset_id,
     COALESCE(MAX(m.name), json_extract(MIN(c.raw_json), '$.model.name'), c.model_output) AS model_name,
@@ -1504,15 +3103,20 @@ SELECT
     COALESCE(MAX(m.skeleton_hash), '') AS skeleton_hash,
     'deterministicUsage' AS relation_kind,
     'explicit' AS confidence,
-    COUNT(*) AS animation_count,
+    SUM(c.usable_candidate) AS animation_count,
     json_object(
         'source', 'model_animation_candidates',
         'relationSource', 'explicit',
-        'animationCount', COUNT(*)
+        'animationCount', SUM(c.usable_candidate),
+        'usableAnimationCount', SUM(c.usable_candidate),
+        'totalCandidateCount', COUNT(*),
+        'modelGateBlockedCount', SUM(c.model_gate_blocked),
+        'animationContextBlockedCount', SUM(CASE WHEN COALESCE(json_extract(c.raw_json, '$.defaultAnimationCandidateReady'), 1) = 0 THEN 1 ELSE 0 END),
+        'visualValidationBlockedCount', SUM(CASE WHEN COALESCE(json_extract(c.raw_json, '$.explicitCandidateRequiresVisualValidation'), 0) = 1 THEN 1 ELSE 0 END),
+        'rule', 'animation_count only counts candidates that passed the model-first, animation-context, and visual-validation gates; blocked explicit Unity relations stay in relation_animations as diagnostics'
     ) AS raw_json
-FROM model_animation_candidates c
+FROM candidate_flags c
 LEFT JOIN assets m ON m.kind='Model' AND m.output=c.model_output
-WHERE c.relation_source='explicit'
 GROUP BY c.model_output;", transaction);
 
             Execute(connection, @"
@@ -1562,13 +3166,36 @@ SELECT
     0 AS hierarchy_compatible,
     0 AS is_container_animation,
     CASE
-        WHEN COALESCE(c.status, '') IN ('missing_model', 'missing_animation', 'invalid', 'error') THEN 0
+        WHEN COALESCE(c.status, '') IN ('missing_model', 'missing_animation', 'invalid', 'error', 'model_not_animation_ready', 'animation_not_default_candidate') THEN 0
+        WHEN COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 1) = 0 THEN 0
+        WHEN COALESCE(json_extract(c.raw_json, '$.defaultAnimationCandidateReady'), 1) = 0 THEN 0
+        WHEN COALESCE(json_extract(c.raw_json, '$.explicitCandidateRequiresVisualValidation'), 0) = 1 THEN 0
         ELSE 1
     END AS is_usable_candidate,
     'ExplicitUnity' AS confidence_tier,
     'deterministicUsage' AS relationship_kind,
-    'defaultTrusted' AS recommended_use,
-    'model_animation_candidates.explicit' AS evidence_summary,
+    CASE
+        WHEN COALESCE(c.status, '') = 'model_not_animation_ready'
+          OR COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 1) = 0
+        THEN 'fixModelFirst'
+        WHEN COALESCE(c.status, '') = 'animation_not_default_candidate'
+          OR COALESCE(json_extract(c.raw_json, '$.defaultAnimationCandidateReady'), 1) = 0
+        THEN 'reviewAnimationContext'
+        WHEN COALESCE(json_extract(c.raw_json, '$.explicitCandidateRequiresVisualValidation'), 0) = 1
+        THEN 'visualValidationRequired'
+        ELSE 'defaultTrusted'
+    END AS recommended_use,
+    CASE
+        WHEN COALESCE(c.status, '') = 'model_not_animation_ready'
+          OR COALESCE(json_extract(c.raw_json, '$.modelReadyForAnimation'), 1) = 0
+        THEN 'explicit Unity relation, but model gate blocked animation stage'
+        WHEN COALESCE(c.status, '') = 'animation_not_default_candidate'
+          OR COALESCE(json_extract(c.raw_json, '$.defaultAnimationCandidateReady'), 1) = 0
+        THEN 'explicit Unity relation, but animation context/semantics are diagnostic-only'
+        WHEN COALESCE(json_extract(c.raw_json, '$.explicitCandidateRequiresVisualValidation'), 0) = 1
+        THEN 'explicit Unity bridge relation; preview/smoke requires clear visual validation before it becomes usable'
+        ELSE 'model_animation_candidates.explicit'
+    END AS evidence_summary,
     1 AS is_deterministic_usage,
     0 AS is_compatibility_candidate,
     c.raw_json AS raw_json
@@ -1580,7 +3207,9 @@ WHERE c.relation_source='explicit';", transaction);
             var report = new JObject
             {
                 ["modelsWithAnimations"] = ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_relations;", transaction),
+                ["modelsWithUsableAnimations"] = ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_relations WHERE animation_count > 0;", transaction),
                 ["relationAnimations"] = ScalarLong(connection, "SELECT COUNT(*) FROM relation_animations;", transaction),
+                ["usableRelationAnimations"] = ScalarLong(connection, "SELECT COUNT(*) FROM relation_animations WHERE is_usable_candidate=1;", transaction),
                 ["rule"] = "Unified AssetLibrary v1 projection imports only explicit Unity model-animation candidates; fallback/name/structural matches remain diagnostics."
             };
             using (var command = connection.CreateCommand())
@@ -1598,7 +3227,31 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
             return ScalarLong(connection, "SELECT COUNT(*) FROM model_animation_relations;");
         }
 
-        private static void WriteUnifiedAssetLibraryManifest(string root, Dictionary<string, long> counts)
+        private static JObject BuildAssetLibraryCapabilities(SqliteConnection connection)
+        {
+            var modelAssets = ScalarLong(connection, "SELECT COUNT(*) FROM assets WHERE kind='Model';");
+            var animationAssets = ScalarLong(connection, "SELECT COUNT(*) FROM assets WHERE kind='Animation';");
+            var usableRelationAnimations = ScalarLong(connection, "SELECT COUNT(*) FROM relation_animations WHERE is_usable_candidate=1;");
+            var capabilities = new JObject
+            {
+                ["models"] = modelAssets > 0,
+                ["animations"] = animationAssets > 0 && usableRelationAnimations > 0,
+            };
+            if (capabilities.Value<bool>("animations"))
+            {
+                capabilities["animationPreviewComposer"] = "AnimeStudio.CLI compose-preview";
+            }
+            return capabilities;
+        }
+
+        private static void WriteCapabilityMetadata(SqliteConnection connection, JObject capabilities)
+        {
+            using var transaction = connection.BeginTransaction();
+            InsertMetadata(connection, transaction, "capabilities", capabilities.ToString(Formatting.None));
+            transaction.Commit();
+        }
+
+        private static void WriteUnifiedAssetLibraryManifest(string root, string sourceGame, JObject capabilities)
         {
             var manifest = new JObject
             {
@@ -1606,15 +3259,10 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                 ["libraryKind"] = "AssetLibrary",
                 ["libraryName"] = new DirectoryInfo(root).Name,
                 ["sourceTool"] = "AnimeStudio",
-                ["sourceGame"] = "",
+                ["sourceGame"] = sourceGame ?? string.Empty,
                 ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
                 ["index"] = "library_index.db",
-                ["capabilities"] = new JObject
-                {
-                    ["models"] = true,
-                    ["animations"] = true,
-                    ["animationPreviewComposer"] = "AnimeStudio.CLI compose-preview"
-                }
+                ["capabilities"] = capabilities != null ? (JObject)capabilities.DeepClone() : new JObject()
             };
             File.WriteAllText(Path.Combine(root, "asset_library.json"), manifest.ToString(Formatting.Indented));
         }
@@ -1946,6 +3594,7 @@ ORDER BY explicit_count;");
                 ["missingInternalHumanoidSolverReasons"] = missingInternalHumanoidSolverReasons,
                 ["missingInternalHumanoidSolverModelReasons"] = missingInternalHumanoidSolverModelReasons,
                 ["candidateProcessingFlags"] = candidateProcessingFlags,
+                ["exportedAnimatorControllerDiagnostics"] = BuildExportedAnimatorControllerDiagnostics(connection, sourceIndexPath),
                 ["sourceIndexAnimationRelationHealth"] = BuildSourceIndexAnimationRelationHealth(root, sourceIndexPath),
                 ["avatarProductionGate"] = avatarProductionGate,
                 ["unityBakeProduction"] = unityBakeProduction,
@@ -1956,6 +3605,190 @@ ORDER BY explicit_count;");
                 ["explicitCandidatesPerLinkedModel"] = BuildDistribution(perModel)
             };
         }
+
+        private static JObject BuildExportedAnimatorControllerDiagnostics(SqliteConnection libraryConnection, string sourceIndexPath)
+        {
+            var result = new JObject
+            {
+                ["rule"] = "只诊断已导出 Animator 模型自身是否有 Unity 显式 animator.controller。controller 为空时不能用同名 AC_* 或动作名前缀补默认模型-动画关系；这些只能进入人工诊断或显式预览。",
+                ["note"] = "这个摘要不生成候选，只解释为什么 model_animation_candidates 可能为 0。"
+            };
+
+            var models = new List<ExportedAnimatorModel>();
+            using (var command = libraryConnection.CreateCommand())
+            {
+                command.CommandTimeout = SummaryQueryTimeoutSeconds;
+                command.CommandText = @"
+SELECT name, source, path_id, output, resource_kind, container
+FROM assets
+WHERE kind='Model'
+  AND source_type='Animator'
+ORDER BY name;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    models.Add(new ExportedAnimatorModel(
+                        reader.IsDBNull(0) ? "" : reader.GetString(0),
+                        reader.IsDBNull(1) ? "" : reader.GetString(1),
+                        reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                        reader.IsDBNull(3) ? "" : reader.GetString(3),
+                        reader.IsDBNull(4) ? "" : reader.GetString(4),
+                        reader.IsDBNull(5) ? "" : reader.GetString(5)));
+                }
+            }
+
+            result["exportedAnimatorModels"] = models.Count;
+            if (models.Count == 0)
+            {
+                result["status"] = "no_exported_animator_models";
+                return result;
+            }
+
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                result["status"] = "source_index_unavailable";
+                result["sourceIndex"] = sourceIndexPath;
+                return result;
+            }
+
+            long resolved = 0;
+            long nullController = 0;
+            long explicitController = 0;
+            long missingOrAmbiguous = 0;
+            var samples = new JArray();
+
+            using var sourceConnection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+            sourceConnection.Open();
+            foreach (var model in models)
+            {
+                var rows = QuerySourceAnimatorRows(sourceConnection, model).ToArray();
+                if (rows.Length == 0)
+                {
+                    missingOrAmbiguous++;
+                    AddAnimatorControllerDiagnosticSample(samples, model, "source_animator_not_found", null, null, null);
+                    continue;
+                }
+
+                resolved++;
+                var hasExplicitController = rows.Any(x => x.ControllerIsNull == false);
+                var allNullController = rows.All(x => x.ControllerIsNull == true);
+                if (hasExplicitController)
+                {
+                    explicitController++;
+                    AddAnimatorControllerDiagnosticSample(samples, model, "has_explicit_controller", rows[0], false, rows.Length);
+                }
+                else if (allNullController)
+                {
+                    nullController++;
+                    AddAnimatorControllerDiagnosticSample(samples, model, "animator_controller_null", rows[0], true, rows.Length);
+                }
+                else
+                {
+                    missingOrAmbiguous++;
+                    AddAnimatorControllerDiagnosticSample(samples, model, "animator_controller_unreadable", rows[0], null, rows.Length);
+                }
+            }
+
+            result["status"] = "ok";
+            result["sourceIndex"] = sourceIndexPath;
+            result["resolvedSourceAnimatorModels"] = resolved;
+            result["modelsWithNullAnimatorController"] = nullController;
+            result["modelsWithExplicitAnimatorController"] = explicitController;
+            result["missingOrAmbiguousSourceAnimatorModels"] = missingOrAmbiguous;
+            result["samples"] = samples;
+            return result;
+        }
+
+        private static IEnumerable<SourceAnimatorDiagnosticRow> QuerySourceAnimatorRows(SqliteConnection sourceConnection, ExportedAnimatorModel model)
+        {
+            using var command = sourceConnection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = @"
+SELECT source_path, serialized_file, path_id, name, raw_json
+FROM source_objects
+WHERE type='Animator'
+  AND path_id=$pathId
+  AND name=$name
+LIMIT 8;";
+            command.Parameters.AddWithValue("$pathId", model.PathId);
+            command.Parameters.AddWithValue("$name", model.Name ?? string.Empty);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var rawText = reader.IsDBNull(4) ? null : reader.GetString(4);
+                JObject raw = null;
+                try
+                {
+                    raw = string.IsNullOrWhiteSpace(rawText) ? null : JObject.Parse(rawText);
+                }
+                catch (JsonException)
+                {
+                    raw = null;
+                }
+
+                yield return new SourceAnimatorDiagnosticRow(
+                    reader.IsDBNull(0) ? "" : reader.GetString(0),
+                    reader.IsDBNull(1) ? "" : reader.GetString(1),
+                    reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                    reader.IsDBNull(3) ? "" : reader.GetString(3),
+                    ReadOptionalBool(raw?.SelectToken("animator.controller.isNull")),
+                    ReadOptionalBool(raw?.SelectToken("animator.avatar.isNull")));
+            }
+        }
+
+        private static void AddAnimatorControllerDiagnosticSample(
+            JArray samples,
+            ExportedAnimatorModel model,
+            string status,
+            SourceAnimatorDiagnosticRow row,
+            bool? controllerIsNull,
+            int? matchingSourceRows)
+        {
+            if (samples.Count >= 16)
+            {
+                return;
+            }
+
+            samples.Add(new JObject
+            {
+                ["name"] = model.Name,
+                ["resourceKind"] = model.ResourceKind,
+                ["container"] = model.Container,
+                ["output"] = model.Output,
+                ["source"] = model.Source,
+                ["pathId"] = model.PathId,
+                ["status"] = status,
+                ["matchingSourceRows"] = matchingSourceRows,
+                ["sourceIndexSourcePath"] = row?.SourcePath,
+                ["sourceIndexSerializedFile"] = row?.SerializedFile,
+                ["animatorControllerIsNull"] = controllerIsNull,
+                ["animatorAvatarIsNull"] = row?.AvatarIsNull
+            });
+        }
+
+        private static bool? ReadOptionalBool(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return null;
+            }
+
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>();
+            }
+
+            if (token.Type == JTokenType.Integer)
+            {
+                return token.Value<int>() != 0;
+            }
+
+            return bool.TryParse(token.ToString(), out var value) ? value : null;
+        }
+
+        private sealed record ExportedAnimatorModel(string Name, string Source, long PathId, string Output, string ResourceKind, string Container);
+
+        private sealed record SourceAnimatorDiagnosticRow(string SourcePath, string SerializedFile, long PathId, string Name, bool? ControllerIsNull, bool? AvatarIsNull);
 
         private static JObject BuildAvatarProductionGateSummary(SqliteConnection connection)
         {
@@ -2086,6 +3919,8 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                 sourceConnection.Open();
                 var overrideControllerObjects = SourceScalarLong(sourceConnection, "SELECT COUNT(*) FROM source_objects WHERE type='AnimatorOverrideController';");
                 var controllerClips = SourceRelationCount(sourceConnection, "animatorController.clip");
+                var controllerClipResolvedTargets = SourceRelationResolvedTargetCount(sourceConnection, "animatorController.clip", "AnimationClip");
+                var controllerClipMissingTargets = Math.Max(0, controllerClips - controllerClipResolvedTargets);
                 var animatorControllers = SourceRelationCount(sourceConnection, "animator.controller");
                 var animationClips = SourceRelationCount(sourceConnection, "animation.clip");
                 var overrideBase = SourceRelationCount(sourceConnection, "animatorOverrideController.baseController");
@@ -2097,10 +3932,11 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                 var features = SourceScalarString(sourceConnection, "SELECT value FROM metadata WHERE key='animationRelationFeatures' LIMIT 1;");
                 var staleOverridePairs = overrideControllerObjects > 0
                     && (overrideSet == 0 || (nonEmptyOverrideSet > 0 && overridePair == 0));
+                var missingControllerClipTargets = controllerClipMissingTargets > 0;
 
                 return new JObject
                 {
-                    ["status"] = staleOverridePairs ? "warning" : "ok",
+                    ["status"] = staleOverridePairs || missingControllerClipTargets ? "warning" : "ok",
                     ["sourceIndex"] = sourceIndex,
                     ["animationRelationFeatures"] = string.IsNullOrWhiteSpace(features) ? null : features,
                     ["relationCounts"] = new JObject
@@ -2114,16 +3950,27 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                         ["animatorOverrideController.overrideClip"] = overrideClip,
                         ["animatorOverrideController.clipPair"] = overridePair,
                     },
+                    ["resolvedTargetCounts"] = new JObject
+                    {
+                        ["animatorController.clip"] = controllerClipResolvedTargets,
+                    },
+                    ["missingTargetCounts"] = new JObject
+                    {
+                        ["animatorController.clip"] = controllerClipMissingTargets,
+                    },
                     ["objectCounts"] = new JObject
                     {
                         ["AnimatorOverrideController"] = overrideControllerObjects,
                     },
                     ["nonEmptyOverrideSetCount"] = nonEmptyOverrideSet,
                     ["staleOverridePairIndex"] = staleOverridePairs,
+                    ["missingControllerClipTargets"] = missingControllerClipTargets,
                     ["note"] = staleOverridePairs
                         ? "当前源索引存在 AnimatorOverrideController，但缺少当前工具写入的 animatorOverrideController.overrideSet/clipPair 精确标记。旧索引即使有分离的 originalClip/overrideClip，也不能可靠表达 original -> override 或空替换表；Library 重建会跳过这类不完整 OverrideController 的 base controller 粗扩散。请先用当前工具重建 unity_source_index.db，再重建 library_index.db，以恢复精确 override 动画候选。"
+                        : missingControllerClipTargets
+                            ? "源索引包含 AnimatorController -> AnimationClip 关系，但部分目标没有解析到真实 AnimationClip。全量候选仍会只使用已解析到的目标；请检查缺失 CAB 或重新构建更完整的源索引。"
                         : "源索引包含当前工具可识别的动画关系；候选质量仍需结合 resourceKind、sidecar decoded 和 glTF 预览验证。",
-                    ["recommendedAction"] = staleOverridePairs
+                    ["recommendedAction"] = staleOverridePairs || missingControllerClipTargets
                         ? "先用完整 Unity 源目录重建 unity_source_index.db，再对素材库运行 --build_sqlite_index。不要用骨骼数量或全量模型×动画匹配补这类缺口。"
                         : "可直接使用该源索引重建 library_index.db 或运行预览验证。",
                 };
@@ -2564,12 +4411,29 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
 
                 return (int?)report["frameVaryingTracks"] > 0
                     && !UsesFirstSampleHumanoidDelta(report)
-                    && IsTrustedAvatarBake(report);
+                    && HasReusableAnimationSolve(report)
+                    && IsTrustedAvatarBake(report)
+                    && HasTrustedAnimationClipBake(report);
             }
             catch
             {
                 return false;
             }
+        }
+
+        private static bool HasReusableAnimationSolve(JObject report)
+        {
+            var solve = report?["animationSolve"] as JObject;
+            if (solve == null)
+            {
+                return true;
+            }
+
+            // 新报告里的 animationSolve 是比旧 status/frameVaryingTracks 更严格的门禁。
+            // 只要求解器明确说还需要视觉验收或只是诊断，就不能计入 trusted bake。
+            return ((bool?)solve["writesReusableGltfTrsCandidate"] ?? false)
+                && ((bool?)solve["productionReady"] ?? false)
+                && !((bool?)solve["requiresVisualValidation"] ?? false);
         }
 
         private static bool IsStaticPoseBakedGltfPath(string bakedGltfPath, string libraryRoot)
@@ -2637,6 +4501,7 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
             }
 
             return message.IndexOf("isHumanMotion=false", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("AnimatorController context", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("AnimatorController auxiliary", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("non-body layer", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("baseLayerClip", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -2718,6 +4583,22 @@ WHERE {BuildBakeReadyCacheWhere("bc")};";
 
             return string.Equals((string)report?["unityBakeRigRestPoseSource"], "imported_unity_avatar_asset", StringComparison.OrdinalIgnoreCase)
                 && ((bool?)report?["unityBakeRigRestPoseApplied"] ?? false);
+        }
+
+        private static bool HasTrustedAnimationClipBake(JObject report)
+        {
+            if (!ReportRequestHasExplicitAvatarAsset(report))
+            {
+                return true;
+            }
+
+            // 走 ImportedAvatar oracle 的 Humanoid bake，clip 也必须是 Unity 工程内
+            // 明确恢复/导入的 AnimationClip asset。旧 Browser 已按这条规则拦截旧缓存；
+            // SQLite 摘要也要保持一致，避免把语义不可信的旧 bake 统计成 trusted。
+            var source = (string)report?["unityBakeAnimationClipSource"];
+            var importedClip = (string)report?["unityBakeImportedAnimationClip"];
+            return string.Equals(source, "unityAssetPaths.animationClip", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(importedClip);
         }
 
         private static bool UsesFirstSampleHumanoidDelta(JObject report)
@@ -2833,6 +4714,23 @@ EXISTS (
             command.CommandTimeout = SummaryQueryTimeoutSeconds;
             command.CommandText = "SELECT COUNT(*) FROM source_relations WHERE relation=$relation AND COALESCE(target_count, 0) > 0;";
             command.Parameters.AddWithValue("$relation", relation);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static long SourceRelationResolvedTargetCount(SqliteConnection connection, string relation, string targetType)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = @"
+SELECT COUNT(*)
+FROM source_relations r
+JOIN source_objects o
+  ON o.serialized_file = r.to_file
+ AND o.path_id = r.to_path_id
+ AND o.type = $targetType
+WHERE r.relation = $relation;";
+            command.Parameters.AddWithValue("$relation", relation);
+            command.Parameters.AddWithValue("$targetType", targetType);
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
         }
 
@@ -3348,6 +5246,26 @@ WHERE s.explicit_model_count > 0;";
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture) > 0;
         }
 
+        private static bool SourceIndexHasIndex(string sourceIndexPath, string indexName)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                return false;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
+            connection.Open();
+            return HasSqliteIndex(connection, indexName);
+        }
+
+        private static bool HasSqliteIndex(SqliteConnection connection, string indexName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=$name;";
+            command.Parameters.AddWithValue("$name", indexName);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture) > 0;
+        }
+
         private static double Ratio(long numerator, long denominator)
         {
             return denominator <= 0 ? 0 : Math.Round((double)numerator / denominator, 6);
@@ -3459,9 +5377,43 @@ WHERE s.explicit_model_count > 0;";
             return token.Value<bool>() ? 1 : 0;
         }
 
+        private static bool IsTrue(JObject obj, string name)
+        {
+            return B(obj, name) == 1;
+        }
+
         private static string MakeRelative(string root, string path)
         {
             return Path.GetRelativePath(root, path).Replace('\\', '/');
+        }
+
+        private static string NormalizeLibraryOutputForJoin(string root, string output)
+        {
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                if (Path.IsPathRooted(output))
+                {
+                    var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var fullOutput = Path.GetFullPath(output);
+                    if (fullOutput.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                        || fullOutput.StartsWith(fullRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    {
+                        output = Path.GetRelativePath(fullRoot, fullOutput);
+                    }
+                }
+            }
+            catch
+            {
+                // 路径可能来自旧 catalog 或外部工具。归一化失败时保留原文本做 key，
+                // 不因为诊断字段格式问题中断 SQLite 重建。
+            }
+
+            return output.Replace('\\', '/').TrimStart('/');
         }
 
         private static string NormalizeAssetOutputKey(string root, string output)
@@ -3493,10 +5445,28 @@ WHERE s.explicit_model_count > 0;";
         }
 
         private sealed record CatalogAsset(SourceKey Key, string Name, string Output, JObject Raw);
+        private sealed record ModelAnimationGate(bool Ready, string Status, string[] Reasons, JObject Evidence);
 
         private sealed record SourceObject(string Type, string Name);
 
-        private sealed record SourceAnimationRelation(SourceKey ClipKey, string Relation, string Reason, JObject AnimatorControllerContext = null);
+        private sealed record SourceAnimationRelation(SourceKey ClipKey, string Relation, string Reason, JObject AnimatorControllerContext = null, JObject RelationEvidence = null);
+
+        private readonly record struct CatalogLookupKey(string SourcePath, long PathId, string Type, string Name)
+        {
+            public bool IsValid => !string.IsNullOrWhiteSpace(SourcePath)
+                && PathId != 0
+                && !string.IsNullOrWhiteSpace(Type)
+                && !string.IsNullOrWhiteSpace(Name);
+
+            public CatalogLookupKey Normalize()
+            {
+                return new CatalogLookupKey(
+                    (SourcePath ?? string.Empty).Replace('\\', '/').Trim().ToLowerInvariant(),
+                    PathId,
+                    (Type ?? string.Empty).Trim().ToLowerInvariant(),
+                    (Name ?? string.Empty).Trim().ToLowerInvariant());
+            }
+        }
 
         private sealed class SourceAnimationGraph
         {
@@ -3509,6 +5479,9 @@ WHERE s.explicit_model_count > 0;";
             private readonly Dictionary<SourceKey, List<SourceKey>> _animationClips = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _controllerClips = new();
             private readonly Dictionary<SourceKey, List<SourceAnimationRelation>> _controllerClipRelations = new();
+            private readonly Dictionary<SourceKey, List<SourceKey>> _monoBehaviourPPtrTargets = new();
+            private readonly Dictionary<SourceKey, List<SourceKey>> _monoBehaviourPPtrSources = new();
+            private readonly Dictionary<SourceKey, List<SourceKey>> _avatarAnimators = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _overrideBaseControllers = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _overrideOriginalClips = new();
             private readonly Dictionary<SourceKey, List<SourceKey>> _overrideClips = new();
@@ -3516,6 +5489,8 @@ WHERE s.explicit_model_count > 0;";
             private readonly Dictionary<SourceKey, int> _overrideSetCounts = new();
             private readonly Dictionary<SourceKey, SourceKey> _sourceObjectAliases = new();
             private readonly HashSet<SourceKey> _ambiguousSourceObjectAliases = new();
+            private readonly Dictionary<CatalogLookupKey, SourceKey> _catalogObjectAliases = new();
+            private readonly HashSet<CatalogLookupKey> _ambiguousCatalogObjectAliases = new();
             private readonly Dictionary<SourceKey, List<SourceAnimationRelation>> _hierarchyClipCache = new();
             private long _skippedStaleOverrideControllers;
             private string _sourceRoot;
@@ -3541,6 +5516,13 @@ WHERE s.explicit_model_count > 0;";
             {
                 var source = S(obj, "source") ?? S(obj, "sourceFile") ?? string.Empty;
                 var pathId = I(obj, "pathId") ?? 0;
+                var type = S(obj, "sourceType") ?? string.Empty;
+                var name = S(obj, "name") ?? string.Empty;
+                if (TryResolveCatalogLookup(source, pathId, type, name, out var catalogKey))
+                {
+                    return catalogKey;
+                }
+
                 foreach (var file in BuildCatalogFileKeys(source))
                 {
                     var key = ResolveSourceObjectKey(new SourceKey(file, pathId).Normalize());
@@ -3590,6 +5572,74 @@ WHERE s.explicit_model_count > 0;";
                 {
                     yield return relation;
                 }
+
+                foreach (var relation in FindSharedAvatarControllerClips(modelKey, seen))
+                {
+                    yield return relation;
+                }
+            }
+
+            private IEnumerable<SourceAnimationRelation> FindSharedAvatarControllerClips(SourceKey modelKey, HashSet<SourceKey> seen)
+            {
+                foreach (var config in GetMany(_monoBehaviourPPtrSources, modelKey))
+                {
+                    Objects.TryGetValue(config, out var configObject);
+                    foreach (var avatar in GetMany(_monoBehaviourPPtrTargets, config))
+                    {
+                        if (!Objects.TryGetValue(avatar, out var avatarObject)
+                            || !string.Equals(avatarObject.Type, "Avatar", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        foreach (var animator in GetMany(_avatarAnimators, avatar))
+                        {
+                            Objects.TryGetValue(animator, out var animatorObject);
+                            foreach (var relation in FindAnimatorClips(animator))
+                            {
+                                if (!seen.Add(relation.ClipKey))
+                                {
+                                    continue;
+                                }
+
+                                yield return relation with
+                                {
+                                    Relation = "sharedAvatarController",
+                                    Reason = "Model config explicitly points to this prefab and Avatar; an Animator using the same Avatar explicitly references the Controller clip.",
+                                    RelationEvidence = BuildSharedAvatarEvidence(config, configObject, avatar, avatarObject, animator, animatorObject),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
+            private JObject BuildSharedAvatarEvidence(
+                SourceKey config,
+                SourceObject configObject,
+                SourceKey avatar,
+                SourceObject avatarObject,
+                SourceKey animator,
+                SourceObject animatorObject)
+            {
+                _componentGameObjects.TryGetValue(animator, out var animatorModel);
+                Objects.TryGetValue(animatorModel, out var animatorModelObject);
+                return new JObject
+                {
+                    ["bridge"] = "configPrefabAvatarToAnimatorController",
+                    ["configName"] = configObject?.Name,
+                    ["configFile"] = config.File,
+                    ["configPathId"] = config.PathId,
+                    ["avatarName"] = avatarObject?.Name,
+                    ["avatarFile"] = avatar.File,
+                    ["avatarPathId"] = avatar.PathId,
+                    ["animatorName"] = animatorObject?.Name,
+                    ["animatorFile"] = animator.File,
+                    ["animatorPathId"] = animator.PathId,
+                    ["animatorModelName"] = animatorModelObject?.Name,
+                    ["animatorModelFile"] = animatorModel.File,
+                    ["animatorModelPathId"] = animatorModel.PathId,
+                };
             }
 
             private IReadOnlyList<SourceAnimationRelation> FindHierarchyAnimationClips(SourceKey gameObject)
@@ -3733,6 +5783,26 @@ WHERE s.explicit_model_count > 0;";
                     : modelKey;
             }
 
+            private bool TryResolveCatalogLookup(string source, long pathId, string type, string name, out SourceKey key)
+            {
+                foreach (var file in BuildCatalogFileKeys(source))
+                {
+                    var lookup = new CatalogLookupKey(file, pathId, type, name).Normalize();
+                    if (!lookup.IsValid)
+                    {
+                        continue;
+                    }
+
+                    if (_catalogObjectAliases.TryGetValue(lookup, out key) && Objects.ContainsKey(key))
+                    {
+                        return true;
+                    }
+                }
+
+                key = default;
+                return false;
+            }
+
             private IEnumerable<string> BuildCatalogFileKeys(string source)
             {
                 if (string.IsNullOrWhiteSpace(source))
@@ -3740,7 +5810,13 @@ WHERE s.explicit_model_count > 0;";
                     yield break;
                 }
 
-                var normalized = source.Replace('\\', '/');
+                var serializedFile = ExtractCatalogSerializedFile(source);
+                if (!string.IsNullOrWhiteSpace(serializedFile))
+                {
+                    yield return serializedFile;
+                }
+
+                var normalized = GetCatalogOuterSourcePath(source).Replace('\\', '/');
                 if (!string.IsNullOrWhiteSpace(_sourceRoot))
                 {
                     var root = _sourceRoot.Replace('\\', '/').TrimEnd('/');
@@ -3832,11 +5908,166 @@ WHERE s.explicit_model_count > 0;";
             {
                 if (_controllerClipRelations.TryGetValue(controller, out var relations))
                 {
-                    return relations;
+                    return AddDefaultAdditiveLayerHints(relations);
                 }
 
                 return GetMany(_controllerClips, controller)
                     .Select(clip => new SourceAnimationRelation(clip, "animatorController.clip", "AnimatorController explicitly references this AnimationClip."));
+            }
+
+            private IEnumerable<SourceAnimationRelation> AddDefaultAdditiveLayerHints(IReadOnlyList<SourceAnimationRelation> relations)
+            {
+                foreach (var relation in relations)
+                {
+                    yield return relation with
+                    {
+                        AnimatorControllerContext = AddDefaultAdditiveLayerHints(relation, relations),
+                    };
+                }
+            }
+
+            private JObject AddDefaultAdditiveLayerHints(SourceAnimationRelation baseRelation, IReadOnlyList<SourceAnimationRelation> relations)
+            {
+                var context = baseRelation.AnimatorControllerContext;
+                if (context == null)
+                {
+                    return null;
+                }
+
+                var baseLayerIndex = ReadFirstLayerInt(context, "layerIndex");
+                if (baseLayerIndex != 0)
+                {
+                    return context;
+                }
+
+                var motionStem = ReadMotionStem(context);
+                if (string.IsNullOrWhiteSpace(motionStem))
+                {
+                    return context;
+                }
+
+                var additional = new JArray();
+                foreach (var relation in relations)
+                {
+                    if (relation.ClipKey.Equals(baseRelation.ClipKey)
+                        || relation.AnimatorControllerContext == null
+                        || !IsDefaultAdditiveLayer(relation.AnimatorControllerContext)
+                        || !ContextMentionsMotionStem(relation.AnimatorControllerContext, motionStem))
+                    {
+                        continue;
+                    }
+
+                    var layerClip = BuildAdditionalLayerClip(relation);
+                    if (layerClip != null)
+                    {
+                        additional.Add(layerClip);
+                    }
+                }
+
+                if (additional.Count == 0)
+                {
+                    return context;
+                }
+
+                var copy = (JObject)context.DeepClone();
+                copy["additionalLayerClips"] = additional;
+                return copy;
+            }
+
+            private JObject BuildAdditionalLayerClip(SourceAnimationRelation relation)
+            {
+                var context = relation.AnimatorControllerContext;
+                if (context == null)
+                {
+                    return null;
+                }
+
+                Objects.TryGetValue(relation.ClipKey, out var clipObject);
+                return new JObject
+                {
+                    ["name"] = clipObject?.Name,
+                    ["file"] = relation.ClipKey.File,
+                    ["pathId"] = relation.ClipKey.PathId,
+                    ["layerIndex"] = ReadFirstLayerInt(context, "layerIndex"),
+                    ["layerBlendingMode"] = ReadFirstLayerInt(context, "layerBlendingMode"),
+                    ["layerDefaultWeight"] = ReadFirstLayerFloat(context, "layerDefaultWeight"),
+                    ["layerBodyMask"] = ReadFirstLayerToken(context, "layerBodyMask")?.DeepClone(),
+                    ["layerSkeletonMask"] = ReadFirstLayerToken(context, "layerSkeletonMask")?.DeepClone(),
+                    ["stateName"] = context["stateName"],
+                    ["statePath"] = context["statePath"],
+                    ["stateFullPath"] = context["stateFullPath"],
+                    ["stateSpeed"] = context["stateSpeed"],
+                    ["stateCycleOffset"] = context["stateCycleOffset"],
+                    ["stateLoop"] = context["stateLoop"],
+                    ["stateMirror"] = context["stateMirror"],
+                    ["nodeCycleOffset"] = context["nodeCycleOffset"],
+                    ["nodeMirror"] = context["nodeMirror"],
+                    ["source"] = context["source"],
+                };
+            }
+
+            private static bool IsDefaultAdditiveLayer(JObject context)
+            {
+                return ReadFirstLayerInt(context, "layerIndex") > 0
+                    && ReadFirstLayerInt(context, "layerBlendingMode") == 1
+                    && ReadFirstLayerFloat(context, "layerDefaultWeight") > 0.0001f;
+            }
+
+            private static bool ContextMentionsMotionStem(JObject context, string motionStem)
+            {
+                if (string.IsNullOrWhiteSpace(motionStem))
+                {
+                    return false;
+                }
+
+                var stateText = string.Join(" ",
+                    (string)context?["stateName"],
+                    (string)context?["statePath"],
+                    (string)context?["stateFullPath"]);
+                return stateText.IndexOf(motionStem, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+
+            private static string ReadMotionStem(JObject context)
+            {
+                var stateText = string.Join(" ",
+                    (string)context?["stateName"],
+                    (string)context?["statePath"],
+                    (string)context?["stateFullPath"]);
+                if (string.IsNullOrWhiteSpace(stateText))
+                {
+                    return null;
+                }
+
+                // 只使用跨 Unity 项目常见的动作词元，且只作为同一 AnimatorController 内附加层采样提示。
+                // 它不会新增模型-动画绑定关系。
+                foreach (var stem in new[] { "Idle", "Walk", "Run", "Sprint", "Jump", "Turn", "Attack", "Skill", "Move", "Bump" })
+                {
+                    if (stateText.IndexOf(stem, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return stem;
+                    }
+                }
+
+                return null;
+            }
+
+            private static int ReadFirstLayerInt(JObject context, string name)
+            {
+                var value = ReadFirstLayerToken(context, name);
+                return value?.Type == JTokenType.Integer ? value.Value<int>() : 0;
+            }
+
+            private static float ReadFirstLayerFloat(JObject context, string name)
+            {
+                var value = ReadFirstLayerToken(context, name);
+                return value?.Type == JTokenType.Float || value?.Type == JTokenType.Integer
+                    ? value.Value<float>()
+                    : 0f;
+            }
+
+            private static JToken ReadFirstLayerToken(JObject context, string name)
+            {
+                return (context?["layers"] as JArray)?.OfType<JObject>().FirstOrDefault()?[name];
             }
 
             private void LoadObjects(SqliteConnection connection)
@@ -3847,7 +6078,7 @@ WHERE s.explicit_model_count > 0;";
                 command.CommandText = @"
 SELECT source_path, serialized_file, path_id, type, name
 FROM source_objects
-WHERE type IN ('GameObject','Animator','Animation','AnimatorController','AnimatorOverrideController','AnimationClip');";
+WHERE type IN ('GameObject','Animator','Animation','AnimatorController','AnimatorOverrideController','AnimationClip','Avatar','MonoBehaviour');";
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -3858,6 +6089,8 @@ WHERE type IN ('GameObject','Animator','Animation','AnimatorController','Animato
                     Objects[key] = new SourceObject(reader.GetString(3), reader.IsDBNull(4) ? "" : reader.GetString(4));
                     AddSourceObjectAlias(new SourceKey(sourcePath, pathId), key);
                     AddSourceObjectAlias(new SourceKey(Path.GetFileName(sourcePath), pathId), key);
+                    AddCatalogObjectAlias(new CatalogLookupKey(sourcePath, pathId, reader.GetString(3), reader.IsDBNull(4) ? "" : reader.GetString(4)), key);
+                    AddCatalogObjectAlias(new CatalogLookupKey(Path.GetFileName(sourcePath), pathId, reader.GetString(3), reader.IsDBNull(4) ? "" : reader.GetString(4)), key);
                     count++;
                 }
                 Logger.Info($"SQLite source animation graph loaded source_objects in {watch.Elapsed.TotalSeconds:F1}s; rows={count}");
@@ -3893,6 +6126,30 @@ WHERE type IN ('GameObject','Animator','Animation','AnimatorController','Animato
                 }
             }
 
+            private void AddCatalogObjectAlias(CatalogLookupKey alias, SourceKey target)
+            {
+                alias = alias.Normalize();
+                target = target.Normalize();
+                if (!alias.IsValid || !target.IsValid)
+                {
+                    return;
+                }
+
+                // Endfield 的一个外层 .blc 会拆出很多 CAB，单靠 .blc + PathID 会撞。
+                // 加上 Unity 类型和对象名后仍不唯一时，保持拒绝绑定，避免把动画关系接错。
+                if (_catalogObjectAliases.TryGetValue(alias, out var existing) && !existing.Equals(target))
+                {
+                    _catalogObjectAliases.Remove(alias);
+                    _ambiguousCatalogObjectAliases.Add(alias);
+                    return;
+                }
+
+                if (!_ambiguousCatalogObjectAliases.Contains(alias))
+                {
+                    _catalogObjectAliases[alias] = target;
+                }
+            }
+
             private void LoadRelations(SqliteConnection connection)
             {
                 var watch = Stopwatch.StartNew();
@@ -3905,6 +6162,8 @@ WHERE relation IN (
   'component.gameObject',
   'transform.parent',
   'transform.child',
+  'monoBehaviour.pptr',
+  'animator.avatar',
   'animator.controller',
   'animation.clip',
   'animatorController.clip',
@@ -3932,10 +6191,7 @@ WHERE relation IN (
                             {
                                 Objects[from] = new SourceObject(componentType, reader.IsDBNull(6) ? "" : reader.GetString(6));
                                 Add(_gameObjectComponents, to, from);
-                                if (string.Equals(componentType, "Transform", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    _componentGameObjects[from] = to;
-                                }
+                                _componentGameObjects[from] = to;
                             }
                             break;
                         case "transform.parent":
@@ -3943,6 +6199,13 @@ WHERE relation IN (
                             break;
                         case "transform.child":
                             Add(_transformChildren, from, to);
+                            break;
+                        case "monoBehaviour.pptr":
+                            Add(_monoBehaviourPPtrTargets, from, to);
+                            Add(_monoBehaviourPPtrSources, to, from);
+                            break;
+                        case "animator.avatar":
+                            Add(_avatarAnimators, to, from);
                             break;
                         case "animator.controller":
                             Add(_animatorControllers, from, to);
@@ -4185,6 +6448,17 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
             string Message,
             string BakeMode,
             string UpdatedUtc);
+
+        private sealed record TextureLinkRow(
+            string Source,
+            string Shared,
+            string Usage,
+            string Sha256,
+            long? SizeBytes,
+            string Extension,
+            int? HardLinked,
+            string LinkError,
+            JObject RawJson);
 
         private static string ClassifyFile(string root, string file)
         {

@@ -2,6 +2,7 @@
 using System.Linq;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using ACLLibs;
 using SevenZip;
 
 namespace AnimeStudio
@@ -65,6 +66,13 @@ namespace AnimeStudio
                 lastFrame = Math.Max(lastFrame, lastACLFrame);
                 animationClip.m_Compressed = false;
             }
+            var lastEndfieldAclFrame = ProcessEndfieldAclCompressedBuffer(bindings, tos);
+            lastFrame = Math.Max(lastFrame, lastEndfieldAclFrame);
+            var endfieldRootMotionAttributes = new HashSet<uint>();
+            var lastEndfieldRootMotionFrame = ProcessEndfieldAclRootMotionBuffer(bindings, tos, endfieldRootMotionAttributes);
+            lastFrame = Math.Max(lastFrame, lastEndfieldRootMotionFrame);
+            var lastEndfieldFloatFrame = ProcessEndfieldAclFloatBuffer(bindings, tos, endfieldRootMotionAttributes);
+            lastFrame = Math.Max(lastFrame, lastEndfieldFloatFrame);
             ProcessStreams(streamedFrames, bindings, tos, m_Clip.m_DenseClip.m_SampleRate);
             ProcessDenses(m_Clip, bindings, tos);
             if (m_Clip.m_ACLClip.IsSet && game.Type.IsSRGroup())
@@ -259,6 +267,218 @@ namespace AnimeStudio
 
             return times[frameCount - 1];
         }
+
+        private float ProcessEndfieldAclCompressedBuffer(AnimationClipBindingConstant bindings, Dictionary<uint, string> tos)
+        {
+            var buffer = animationClip.m_AclCompressedBuffer;
+            if (buffer == null || buffer.TransformBufferData.IsNullOrEmpty())
+            {
+                return 0.0f;
+            }
+
+            if (!EndfieldACL.TryGetInfo(buffer.TransformBufferData, out var info)
+                || info.NumTracks == 0
+                || info.NumSamples == 0
+                || info.OutputFloatCount == 0)
+            {
+                return 0.0f;
+            }
+
+            var transformBindings = bindings.genericBindings?
+                .Where(x => x.typeID == ClassIDType.Transform)
+                .ToList() ?? new List<GenericBinding>();
+            var positionBindings = transformBindings.Where(x => x.attribute == 1).ToList();
+            var rotationBindings = transformBindings.Where(x => x.attribute == 2).ToList();
+            var scaleBindingPaths = transformBindings
+                .Where(x => x.attribute == 3)
+                .Select(x => x.path)
+                .ToHashSet();
+
+            // Endfield 的 transform ACL 是一条 track 对应一个 Transform。
+            // 多数 clip 的 position/rotation 顺序一致；少数 clip 只有 rotation 覆盖完整 track。
+            // 因此用覆盖完整 track 的 binding 作为路径主键，避免被缺失或异序的 position 列表带偏。
+            var trackBindings = rotationBindings.Count == info.NumTracks
+                ? rotationBindings
+                : positionBindings.Count == info.NumTracks
+                    ? positionBindings
+                    : null;
+            if (trackBindings == null)
+            {
+                return 0.0f;
+            }
+
+            var values = new float[info.OutputFloatCount];
+            var slopeValues = new float[4];
+            var previousRotations = new float[info.NumTracks * 4];
+            var sampleRate = info.SampleRate > 0.0f ? info.SampleRate : animationClip.m_SampleRate;
+            var lastTime = 0.0f;
+
+            for (var frameIndex = 0; frameIndex < info.NumSamples; frameIndex++)
+            {
+                var time = sampleRate > 0.0f ? frameIndex / sampleRate : 0.0f;
+                if (!EndfieldACL.TryDecompressSample(buffer.TransformBufferData, time, values, out _))
+                {
+                    return lastTime;
+                }
+
+                lastTime = time;
+                for (var trackIndex = 0; trackIndex < info.NumTracks; trackIndex++)
+                {
+                    var baseOffset = trackIndex * 12;
+                    KeepQuaternionContinuous(values, baseOffset, previousRotations, trackIndex, frameIndex == 0);
+                    var trackPathHash = trackBindings[trackIndex].path;
+                    var trackPath = GetCurvePath(tos, trackPathHash);
+                    AddTransformCurve(time, 1, values, slopeValues, slopeValues, baseOffset + 4, trackPath);
+                    AddTransformCurve(time, 2, values, slopeValues, slopeValues, baseOffset + 0, trackPath);
+
+                    if (scaleBindingPaths.Contains(trackPathHash))
+                    {
+                        AddTransformCurve(time, 3, values, slopeValues, slopeValues, baseOffset + 8, trackPath);
+                    }
+                }
+            }
+
+            animationClip.m_Compressed = false;
+            return lastTime;
+        }
+
+        private float ProcessEndfieldAclRootMotionBuffer(
+            AnimationClipBindingConstant bindings,
+            Dictionary<uint, string> tos,
+            HashSet<uint> handledAnimatorAttributes)
+        {
+            var buffer = animationClip.m_AclCompressedBuffer;
+            if (buffer == null || buffer.RootMotionBufferData.IsNullOrEmpty())
+            {
+                return 0.0f;
+            }
+
+            if (!EndfieldACL.TryGetInfo(buffer.RootMotionBufferData, out var info)
+                || info.NumTracks == 0
+                || info.NumSamples == 0
+                || info.OutputFloatCount == 0)
+            {
+                return 0.0f;
+            }
+
+            // Endfield 的 RootMotionBufferData 目前在样本中是 Humanoid 前 28 条标量：
+            // MotionT/Q、RootT/Q、LeftFootT/Q、RightFootT/Q。这里按 attribute 顺序严格匹配，
+            // 只在轨道数和 binding 数完全一致时写入，避免把 root 载荷错套到手部或其它 muscle。
+            var rootBindings = bindings.genericBindings?
+                .Where(x => x.typeID == ClassIDType.Animator
+                    && (BindingCustomType)x.customType == BindingCustomType.AnimatorMuscle
+                    && x.attribute < info.NumTracks)
+                .OrderBy(x => x.attribute)
+                .ToList() ?? new List<GenericBinding>();
+            if (rootBindings.Count != info.NumTracks || info.OutputFloatCount < info.NumTracks)
+            {
+                return 0.0f;
+            }
+
+            var values = new float[info.OutputFloatCount];
+            var sampleRate = info.SampleRate > 0.0f ? info.SampleRate : animationClip.m_SampleRate;
+            var lastTime = 0.0f;
+            for (var frameIndex = 0; frameIndex < info.NumSamples; frameIndex++)
+            {
+                var time = sampleRate > 0.0f ? frameIndex / sampleRate : 0.0f;
+                if (!EndfieldACL.TryDecompressSample(buffer.RootMotionBufferData, time, values, out _))
+                {
+                    return lastTime;
+                }
+
+                lastTime = time;
+                for (var trackIndex = 0; trackIndex < info.NumTracks; trackIndex++)
+                {
+                    var binding = rootBindings[trackIndex];
+                    var path = GetCurvePath(tos, binding.path);
+                    AddCustomCurve(bindings, binding, path, time, values[trackIndex]);
+                    handledAnimatorAttributes?.Add(binding.attribute);
+                }
+            }
+
+            animationClip.m_Compressed = false;
+            return lastTime;
+        }
+
+        private float ProcessEndfieldAclFloatBuffer(
+            AnimationClipBindingConstant bindings,
+            Dictionary<uint, string> tos,
+            HashSet<uint> skippedAnimatorAttributes)
+        {
+            var buffer = animationClip.m_AclCompressedBuffer;
+            if (buffer == null || buffer.FloatBufferData.IsNullOrEmpty())
+            {
+                return 0.0f;
+            }
+
+            if (!EndfieldACL.TryGetInfo(buffer.FloatBufferData, out var info)
+                || info.NumTracks == 0
+                || info.NumSamples == 0
+                || info.OutputFloatCount == 0)
+            {
+                return 0.0f;
+            }
+
+            var animatorBindings = bindings.genericBindings?
+                .Where(x => x.typeID == ClassIDType.Animator)
+                .ToList() ?? new List<GenericBinding>();
+            if (animatorBindings.Count != info.NumTracks)
+            {
+                return 0.0f;
+            }
+
+            var values = new float[info.OutputFloatCount];
+            var sampleRate = info.SampleRate > 0.0f ? info.SampleRate : animationClip.m_SampleRate;
+            var lastTime = 0.0f;
+            for (var frameIndex = 0; frameIndex < info.NumSamples; frameIndex++)
+            {
+                var time = sampleRate > 0.0f ? frameIndex / sampleRate : 0.0f;
+                if (!EndfieldACL.TryDecompressSample(buffer.FloatBufferData, time, values, out _))
+                {
+                    return lastTime;
+                }
+
+                lastTime = time;
+                for (var trackIndex = 0; trackIndex < info.NumTracks; trackIndex++)
+                {
+                    var binding = animatorBindings[trackIndex];
+                    if (skippedAnimatorAttributes?.Contains(binding.attribute) == true)
+                    {
+                        continue;
+                    }
+
+                    var path = GetCurvePath(tos, binding.path);
+                    AddCustomCurve(bindings, binding, path, time, values[trackIndex]);
+                }
+            }
+
+            animationClip.m_Compressed = false;
+            return lastTime;
+        }
+
+        private static void KeepQuaternionContinuous(float[] values, int baseOffset, float[] previousRotations, int trackIndex, bool isFirstFrame)
+        {
+            var previousOffset = trackIndex * 4;
+            if (!isFirstFrame)
+            {
+                var dot = values[baseOffset + 0] * previousRotations[previousOffset + 0]
+                    + values[baseOffset + 1] * previousRotations[previousOffset + 1]
+                    + values[baseOffset + 2] * previousRotations[previousOffset + 2]
+                    + values[baseOffset + 3] * previousRotations[previousOffset + 3];
+                if (dot < 0.0f)
+                {
+                    values[baseOffset + 0] = -values[baseOffset + 0];
+                    values[baseOffset + 1] = -values[baseOffset + 1];
+                    values[baseOffset + 2] = -values[baseOffset + 2];
+                    values[baseOffset + 3] = -values[baseOffset + 3];
+                }
+            }
+
+            previousRotations[previousOffset + 0] = values[baseOffset + 0];
+            previousRotations[previousOffset + 1] = values[baseOffset + 1];
+            previousRotations[previousOffset + 2] = values[baseOffset + 2];
+            previousRotations[previousOffset + 3] = values[baseOffset + 3];
+        }
         private void ProcessConstant(Clip clip, AnimationClipBindingConstant bindings, Dictionary<uint, string> tos, float lastFrame)
         {
             var constant = clip.m_ConstantClip;
@@ -302,6 +522,11 @@ namespace AnimeStudio
             {
                 case BindingCustomType.AnimatorMuscle:
                     AddAnimatorMuscleCurve(binding, time, value);
+                    break;
+                case BindingCustomType.None:
+                    // Endfield 的 ACL FloatBufferData 里会混入普通 Animator 标量。
+                    // 这类曲线不是 Humanoid muscle，先按普通属性保留下来，避免阻断整条动画导出。
+                    AddDefaultCurve(binding, path, time, value);
                     break;
                 default:
                     string attribute = m_customCurveResolver.ToAttributeName((BindingCustomType)binding.customType, binding.attribute, path);
