@@ -112,6 +112,7 @@ namespace AnimeStudio.CLI
                 ["selectorQueryMode"] = selectorQuery.Mode,
                 ["selectorQueryToken"] = selectorQuery.LikeToken,
                 ["selectorExactName"] = selectorQuery.ExactName,
+                ["selectorExactNames"] = new JArray(selectorQuery.ExactNames ?? Array.Empty<string>()),
                 ["selectorExactPathId"] = selectorQuery.ExactPathId,
                 ["limit"] = limit,
                 ["includeStaticRendererCandidates"] = includeStaticRendererCandidates,
@@ -241,9 +242,29 @@ namespace AnimeStudio.CLI
             var prefix = string.IsNullOrWhiteSpace(alias) ? string.Empty : alias + ".";
             // 定向查询必须让 SQLite 看到单一索引条件。参数化 OR 在 Naraka 这类大库上
             // 容易退化成全表扫描，导致一个精确名字也要跑很久。
-            return selectorQuery.ExactPathId != 0
-                ? prefix + "path_id = $exactPathId"
-                : prefix + "name = $exactName";
+            if (selectorQuery.ExactPathId != 0)
+            {
+                return prefix + "path_id = $exactPathId";
+            }
+
+            var exactNames = selectorQuery.ExactNames ?? Array.Empty<string>();
+            if (exactNames.Length <= 1)
+            {
+                return prefix + "name = $exactName";
+            }
+
+            return prefix + "name IN (" + string.Join(", ", exactNames.Select((_, index) => "$exactName" + index.ToString(CultureInfo.InvariantCulture))) + ")";
+        }
+
+        private static void AddTargetObjectParameters(SqliteCommand command, SelectorQuery selectorQuery)
+        {
+            var exactNames = selectorQuery.ExactNames ?? Array.Empty<string>();
+            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
+            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            for (var i = 0; i < exactNames.Length; i++)
+            {
+                command.Parameters.AddWithValue("$exactName" + i.ToString(CultureInfo.InvariantCulture), exactNames[i] ?? string.Empty);
+            }
         }
 
         private static List<CandidateRow> LoadAnimatorCandidates(SqliteConnection connection, int limit, HashSet<string> availableIndexes)
@@ -347,8 +368,7 @@ ORDER BY controller_count DESC, avatar_count DESC, go.name COLLATE NOCASE
 LIMIT $limit;";
             command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            AddTargetObjectParameters(command, selectorQuery);
             command.Parameters.AddWithValue("$limit", limit);
             var result = new List<CandidateRow>();
             using var reader = command.ExecuteReader();
@@ -510,8 +530,7 @@ FROM source_objects obj
 WHERE __OBJ_FILTER__
 LIMIT 1;";
             command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            AddTargetObjectParameters(command, selectorQuery);
             return command.ExecuteScalar() != null;
         }
 
@@ -529,8 +548,7 @@ WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') <> ''
   AND __OBJ_FILTER__
 LIMIT 1;";
             command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            AddTargetObjectParameters(command, selectorQuery);
             return command.ExecuteScalar() != null;
         }
 
@@ -599,8 +617,7 @@ WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') <> ''
 LIMIT $limit;";
                 command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
                 command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
-                command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-                command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+                AddTargetObjectParameters(command, selectorQuery);
                 command.Parameters.AddWithValue("$limit", limit);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
@@ -897,8 +914,7 @@ LIMIT $limit;";
             command.CommandText = command.CommandText.Replace("__PATH_CONTAINER_CTE__", BuildPathContainerCte(includePathContainerScan), StringComparison.Ordinal);
             command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            AddTargetObjectParameters(command, selectorQuery);
             command.Parameters.AddWithValue("$includePathContainers", includePathContainerScan ? 1 : 0);
             command.Parameters.AddWithValue("$containerLimit", Math.Max(limit * 4, 20));
             command.Parameters.AddWithValue("$limit", limit);
@@ -1185,8 +1201,7 @@ ORDER BY material_count DESC, renderer_count DESC, go.name COLLATE NOCASE
 LIMIT $limit;";
             command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            AddTargetObjectParameters(command, selectorQuery);
             command.Parameters.AddWithValue("$limit", limit);
             var result = new List<CandidateRow>();
             using var reader = command.ExecuteReader();
@@ -1332,8 +1347,7 @@ ORDER BY material_count DESC, renderer_count DESC, child_go.root_name COLLATE NO
 LIMIT $limit;";
             command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            AddTargetObjectParameters(command, selectorQuery);
             command.Parameters.AddWithValue("$rootLimit", 1);
             command.Parameters.AddWithValue("$limit", limit);
             var result = new List<CandidateRow>();
@@ -1734,33 +1748,73 @@ WHERE to_file = $file
         {
             if (string.IsNullOrWhiteSpace(selector))
             {
-                return new SelectorQuery(false, "broad", string.Empty, string.Empty, 0);
+                return new SelectorQuery(false, "broad", string.Empty, string.Empty, Array.Empty<string>(), 0);
             }
 
             var trimmed = selector.Trim();
             if (long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var exactPathId) && exactPathId != 0)
             {
-                return new SelectorQuery(true, "targeted_exact_path_id", trimmed, string.Empty, exactPathId);
+                return new SelectorQuery(true, "targeted_exact_path_id", trimmed, string.Empty, Array.Empty<string>(), exactPathId);
+            }
+
+            var exactNames = TryGetExactLiteralNames(trimmed);
+            if (exactNames.Length > 1)
+            {
+                var exactName = string.Join("|", exactNames);
+                return new SelectorQuery(true, "targeted_exact_names", exactNames.OrderByDescending(x => x.Length).First(), exactName, exactNames, 0);
             }
 
             var anchoredLiteral = TryGetAnchoredLiteralName(trimmed);
             if (!string.IsNullOrWhiteSpace(anchoredLiteral))
             {
-                return new SelectorQuery(true, "targeted_anchored_exact_name", anchoredLiteral, anchoredLiteral, 0);
+                return new SelectorQuery(true, "targeted_anchored_exact_name", anchoredLiteral, anchoredLiteral, new[] { anchoredLiteral }, 0);
             }
 
             var likeToken = ExtractLongestLiteralToken(selector);
             if (likeToken.Length < 4)
             {
-                return new SelectorQuery(false, "broad", string.Empty, string.Empty, 0);
+                return new SelectorQuery(false, "broad", string.Empty, string.Empty, Array.Empty<string>(), 0);
             }
 
             // 只有简单对象名才下推到 SQL 精确查找。复杂正则/路径继续用旧流程，
             // 避免 alternation、分组或路径筛选被单个名字误缩窄。
             var simpleLiteral = Regex.IsMatch(trimmed, @"^[A-Za-z0-9_.-]+$");
             return simpleLiteral
-                ? new SelectorQuery(true, "targeted_exact_name", likeToken, trimmed, 0)
-                : new SelectorQuery(false, "broad_regex", string.Empty, string.Empty, 0);
+                ? new SelectorQuery(true, "targeted_exact_name", likeToken, trimmed, new[] { trimmed }, 0)
+                : new SelectorQuery(false, "broad_regex", string.Empty, string.Empty, Array.Empty<string>(), 0);
+        }
+
+        private static string[] TryGetExactLiteralNames(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return Array.Empty<string>();
+            }
+
+            var parts = selector.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(part =>
+                {
+                    var text = part;
+                    if (text.Length >= 2 && text[0] == '(' && text[^1] == ')')
+                    {
+                        text = text[1..^1];
+                    }
+                    var anchored = TryGetAnchoredLiteralName(text);
+                    if (!string.IsNullOrWhiteSpace(anchored))
+                    {
+                        return anchored;
+                    }
+
+                    return Regex.IsMatch(text, @"^[A-Za-z0-9_.-]+$")
+                        ? text
+                        : string.Empty;
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var expectedPartCount = selector.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length;
+            return parts.Length == expectedPartCount ? parts : Array.Empty<string>();
         }
 
         private static string TryGetAnchoredLiteralName(string selector)
@@ -1955,6 +2009,7 @@ WHERE to_file = $file
             string Mode,
             string LikeToken,
             string ExactName,
+            string[] ExactNames,
             long ExactPathId);
 
         private sealed record CandidateRow(
