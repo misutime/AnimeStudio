@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
@@ -935,6 +936,161 @@ namespace AnimeStudio.CLI
             RewriteJsonLineByOutput(catalogPath, relativeOutput, catalogEntry);
             WriteCustomMeshTextureCatalogEntries(catalogPath, outputFolder, relativeOutput, gltfImages);
             WriteOrUpdateCustomMeshValidation(outputFolder, gltfPath, relativeOutput, validationReasons);
+            WriteCustomMeshReadmes(outputFolder, relativeOutput, catalogEntry, report, gltfMaterials, validationReasons);
+        }
+
+        private static void WriteCustomMeshReadmes(
+            string outputFolder,
+            string relativeOutput,
+            JObject catalogEntry,
+            JObject report,
+            JArray gltfMaterials,
+            JArray validationReasons)
+        {
+            // Naraka 自定义网格仍是诊断资产；这里写人读入口，避免使用者只看到 glTF 就误判为生产可用。
+            WriteCustomMeshAssetReadme(outputFolder, relativeOutput, catalogEntry, report, validationReasons);
+            WriteCustomMeshMaterialReport(outputFolder, relativeOutput, catalogEntry, gltfMaterials);
+        }
+
+        private static void WriteCustomMeshAssetReadme(
+            string outputFolder,
+            string relativeOutput,
+            JObject catalogEntry,
+            JObject report,
+            JArray validationReasons)
+        {
+            var path = Path.Combine(outputFolder, "ASSET_README.md");
+            var sb = new StringBuilder();
+            sb.AppendLine("# Naraka 自定义网格诊断资产");
+            sb.AppendLine();
+            sb.AppendLine("这份文件是给人看的入口。当前资源来自 Naraka `ActorBodyVisualCell -> LXRendererAssistant -> AvatarMeshDataAsset` 确定性链路，但仍是诊断模型，不能直接作为动画生产验收样本。");
+            sb.AppendLine();
+            sb.AppendLine("## 输出");
+            sb.AppendLine();
+            AppendKeyValue(sb, "模型", relativeOutput);
+            AppendKeyValue(sb, "资源名", (string)catalogEntry["selectedVisualCellGameObjectName"] ?? (string)catalogEntry["name"]);
+            AppendKeyValue(sb, "资源类型", (string)catalogEntry["resourceKind"]);
+            AppendKeyValue(sb, "模型状态", (string)catalogEntry["modelValidationStatus"]);
+            AppendKeyValue(sb, "材质状态", (string)catalogEntry["materialStatus"]);
+            AppendKeyValue(sb, "诊断资产", ((bool?)catalogEntry["diagnosticOnly"] ?? true) ? "true" : "false");
+            sb.AppendLine();
+            sb.AppendLine("## 模型统计");
+            sb.AppendLine();
+            AppendKeyValue(sb, "mesh", ToText(catalogEntry["meshCount"]));
+            AppendKeyValue(sb, "vertex", ToText(catalogEntry["vertexCount"]));
+            AppendKeyValue(sb, "triangle", ToText(catalogEntry["triangleCount"]));
+            AppendKeyValue(sb, "material", ToText(catalogEntry["materialCount"]));
+            AppendKeyValue(sb, "texture", ToText(catalogEntry["textureCount"]));
+            AppendKeyValue(sb, "skin", ToText(catalogEntry["skinCount"]));
+            AppendKeyValue(sb, "bone", ToText(catalogEntry["boneCount"]));
+            sb.AppendLine();
+            sb.AppendLine("## Unity 证据");
+            sb.AppendLine();
+            AppendKeyValue(sb, "选中 VisualCell", $"{ToText(report["selectedVisualCellFile"])}#{ToText(report["selectedVisualCellPathId"])}");
+            AppendKeyValue(sb, "GameObject", $"{ToText(report["selectedVisualCellGameObjectName"])}#{ToText(report["selectedVisualCellGameObjectPathId"])}");
+            AppendKeyValue(sb, "Transform 路径", $"{ToText(report["selectedVisualCellTransformPath"])} ({ToText(report["selectedVisualCellTransformPathStatus"])})");
+            AppendKeyValue(sb, "Renderer 列表", ToText(report["visualCellRendererListStatus"]));
+            AppendKeyValue(sb, "Renderer 材质引用", ToText(report["rendererMaterialRefCount"]));
+            AppendKeyValue(sb, "材质贴图引用", ToText(report["materialTextureRefCount"]));
+            sb.AppendLine();
+            sb.AppendLine("## 动画门禁");
+            sb.AppendLine();
+            sb.AppendLine("当前禁止进入动画导出、合成或 production smoke。原因：");
+            foreach (var reason in validationReasons?.Values<string>() ?? Enumerable.Empty<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(reason))
+                {
+                    sb.AppendLine("- `" + reason + "`");
+                }
+            }
+            sb.AppendLine();
+            sb.AppendLine("## 相关报告");
+            sb.AppendLine();
+            sb.AppendLine("- `MATERIAL_REPORT.md`：材质、贴图槽和 tint 说明。");
+            sb.AppendLine("- `model_validation.json`：模型静态结构和动画门禁。");
+            sb.AppendLine("- `" + Path.GetFileNameWithoutExtension(relativeOutput) + ".avatar_mesh_data_report.json`：Naraka 自定义网格完整诊断证据。");
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        private static void WriteCustomMeshMaterialReport(
+            string outputFolder,
+            string relativeOutput,
+            JObject catalogEntry,
+            JArray gltfMaterials)
+        {
+            var path = Path.Combine(outputFolder, "MATERIAL_REPORT.md");
+            var sb = new StringBuilder();
+            sb.AppendLine("# Naraka 自定义网格材质报告");
+            sb.AppendLine();
+            sb.AppendLine("本报告只解释 glTF 预览材质和 Unity 材质槽证据，不复刻 Naraka 自定义 shader。找不到确定 tint 配置时保持 `needsCustomizationTint`，不硬猜颜色。");
+            sb.AppendLine();
+            AppendKeyValue(sb, "模型", relativeOutput);
+            AppendKeyValue(sb, "材质状态", (string)catalogEntry["materialStatus"]);
+            AppendKeyValue(sb, "需要 tint/customization", ToText(catalogEntry["materialNeedsCustomizationTint"]));
+            AppendKeyValue(sb, "有 baseColorTexture", ToText(catalogEntry["materialHasBaseColorTexture"]));
+            AppendKeyValue(sb, "有 normalTexture", ToText(catalogEntry["materialHasNormalTexture"]));
+            AppendKeyValue(sb, "glTF image 数", ToText(catalogEntry["materialImageCount"]));
+            sb.AppendLine();
+            sb.AppendLine("## glTF 材质");
+            sb.AppendLine();
+            foreach (var material in gltfMaterials?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var name = (string)material["name"] ?? "(unnamed)";
+                var anime = material["extras"]?["animeStudioMaterial"] as JObject;
+                var textureSlots = anime?["textureSlots"] as JArray;
+                sb.AppendLine("### " + name);
+                sb.AppendLine();
+                AppendKeyValue(sb, "baseColorTexture", material["pbrMetallicRoughness"]?["baseColorTexture"] != null ? "true" : "false");
+                AppendKeyValue(sb, "normalTexture", material["normalTexture"] != null ? "true" : "false");
+                AppendKeyValue(sb, "needsCustomizationTint", ToText(anime?["needsCustomizationTint"]));
+                AppendKeyValue(sb, "说明", ToText(anime?["note"]));
+                if (textureSlots != null && textureSlots.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("| Unity 槽 | 贴图 | 用途 | URI |");
+                    sb.AppendLine("| --- | --- | --- | --- |");
+                    foreach (var slot in textureSlots.OfType<JObject>())
+                    {
+                        sb.AppendLine("| " +
+                            MdCell(ToText(slot["slot"])) + " | " +
+                            MdCell(FirstNonEmpty(ToText(slot["resolvedTextureName"]), ToText(slot["textureName"]))) + " | " +
+                            MdCell(ToText(slot["previewUsage"])) + " | " +
+                            MdCell(ToText(slot["uri"])) + " |");
+                    }
+                }
+                sb.AppendLine();
+            }
+
+            sb.AppendLine("## 规则");
+            sb.AppendLine();
+            sb.AppendLine("- `baseColorTexture` 只来自安全的通用颜色槽。");
+            sb.AppendLine("- `_Color` 接近白色且没有安全 base color 贴图时，预览使用中性灰，同时保留 `needsCustomizationTint=true`。");
+            sb.AppendLine("- ID、mask、SH、dir、LUT 等自定义 shader 数据只保留引用，不猜最终颜色。");
+            File.WriteAllText(path, sb.ToString());
+        }
+
+        private static void AppendKeyValue(StringBuilder sb, string key, string value)
+        {
+            sb.AppendLine("- " + key + ": " + (string.IsNullOrWhiteSpace(value) ? "未知" : value));
+        }
+
+        private static string ToText(JToken token)
+        {
+            return token == null || token.Type == JTokenType.Null
+                ? string.Empty
+                : token.Type == JTokenType.String
+                    ? token.Value<string>() ?? string.Empty
+                    : token.ToString(Formatting.None);
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            return values?.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+        }
+
+        private static string MdCell(string value)
+        {
+            return (value ?? string.Empty).Replace("|", "\\|", StringComparison.Ordinal).Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal);
         }
 
         private static void WriteCustomMeshTextureCatalogEntries(string catalogPath, string outputFolder, string modelOutput, JArray gltfImages)
