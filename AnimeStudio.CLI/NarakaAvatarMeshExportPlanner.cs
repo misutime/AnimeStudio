@@ -895,7 +895,24 @@ LIMIT 1;";
 
         private static string CliExe()
         {
-            return ".\\AnimeStudio.CLI\\bin\\Debug\\net8.0-windows\\AnimeStudio.CLI.exe";
+            var processPath = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(processPath)
+                && File.Exists(processPath)
+                && string.Equals(Path.GetFileName(processPath), "AnimeStudio.CLI.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                // PowerShell 不能直接把带引号的 exe 路径当命令，显式用 & 调用当前 CLI。
+                return "& " + PsQuote(processPath);
+            }
+
+            var entryPath = Environment.GetCommandLineArgs().FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(entryPath)
+                && File.Exists(entryPath)
+                && string.Equals(Path.GetExtension(entryPath), ".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                return "dotnet " + PsQuote(entryPath);
+            }
+
+            return "AnimeStudio.CLI.exe";
         }
 
         private static string PsQuote(string value)
