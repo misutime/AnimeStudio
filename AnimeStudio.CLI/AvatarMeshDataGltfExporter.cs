@@ -393,6 +393,7 @@ namespace AnimeStudio.CLI
             }
 
             var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
+            var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var gltf = new JObject
             {
                 ["asset"] = new JObject
@@ -469,6 +470,10 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
                 ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
                 ["boneDriverHints"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
+                ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
+                ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
+                ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
+                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；同 SerializedFile 内存在多套节点表时不能作为 skin joint 映射。",
                 ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系；AvatarPartDataAsset.m_MeshData 只记录部件/LOD 顺序，不猜材质槽、骨骼或 skin。"
             };
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
@@ -521,6 +526,8 @@ namespace AnimeStudio.CLI
             var materialStatus = needsCustomizationTint
                 ? "needsCustomizationTint"
                 : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
+            var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var validationReasons = new JArray(
                 "diagnostic_custom_mesh",
                 "missing_skin_binding",
@@ -532,6 +539,11 @@ namespace AnimeStudio.CLI
                     ? "avatar_part_data_mesh_order_present"
                     : "avatar_part_data_mesh_order_missing",
                 boneDriverHints.Count > 0 ? "bone_driver_hints_present" : "bone_driver_hints_missing",
+                transformNodeTableCandidateStatus == "missing"
+                    ? "transform_node_table_candidates_missing"
+                    : transformNodeTableCandidateStatus == "indexOrderCandidatesAmbiguous"
+                        ? "transform_node_table_candidates_ambiguous"
+                        : "transform_node_table_candidate_present",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
             var sourceSkinStatuses = parts
                 .Select(x => x.Mesh.Skin.Status)
@@ -595,6 +607,9 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintCount"] = boneDriverHints.Count,
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
                 ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
+                ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
+                ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
+                ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -609,6 +624,7 @@ namespace AnimeStudio.CLI
                     ["rendererSkinBasis"] = "skinnedMeshRenderer.mesh / rootBone / bones from unity_source_index.db",
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
+                    ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver 目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
@@ -1242,6 +1258,50 @@ namespace AnimeStudio.CLI
         {
             return (hints ?? Array.Empty<BoneDriverHint>())
                 .Select(x => x.TransformPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<TransformNodeTableCandidate> GetDistinctTransformNodeTableCandidates(
+            IEnumerable<VisualCellPart> parts)
+        {
+            return (parts ?? Array.Empty<VisualCellPart>())
+                .SelectMany(x => x.Mesh?.Skin?.TransformNodeTableCandidates ?? Enumerable.Empty<TransformNodeTableCandidate>())
+                .GroupBy(
+                    x => $"{NormalizeSerializedFileName(x.SerializedFile)}:{x.VisualCellPathId}",
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(x => x
+                    .OrderByDescending(candidate => candidate.MatchedTopBoneIndexCount)
+                    .ThenByDescending(candidate => candidate.TransformNodeCount)
+                    .ThenBy(candidate => candidate.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
+                    .First())
+                .OrderByDescending(x => x.MatchedTopBoneIndexCount)
+                .ThenByDescending(x => x.TransformNodeCount)
+                .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string SummarizeTransformNodeTableCandidateStatus(
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            var count = candidates?.Count() ?? 0;
+            if (count == 0)
+            {
+                return "missing";
+            }
+
+            // Naraka 同一个 SerializedFile 里可能同时有身体、头发、披风等多套节点表。
+            // 只有一套时也只能当顺序候选，多套时必须明确标成歧义，避免误写 skin joint。
+            return count == 1
+                ? "indexOrderCandidateOnly"
+                : "indexOrderCandidatesAmbiguous";
+        }
+
+        private static IEnumerable<string> GetTransformNodeTableCandidateVisualCells(
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            return (candidates ?? Array.Empty<TransformNodeTableCandidate>())
+                .Select(x => x.VisualCellGameObjectName)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
