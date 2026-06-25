@@ -396,7 +396,8 @@ namespace AnimeStudio.CLI
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
             var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            var gltfMaterials = BuildVisualCellPreviewMaterials(outputFolder, materialBindings.Values, gltfImages, gltfTextures, materialIndexByKey, warnings);
+            var previewMaterialSource = ResolveVisualCellPreviewMaterialSource(jsonFolder, outputFolder);
+            var gltfMaterials = BuildVisualCellPreviewMaterials(previewMaterialSource, outputFolder, materialBindings.Values, gltfImages, gltfTextures, materialIndexByKey, warnings);
             using var stream = File.Create(binPath);
             for (var i = 0; i < parts.Count; i++)
             {
@@ -483,7 +484,7 @@ namespace AnimeStudio.CLI
                     ["selectedLodGroup"] = "lod0RendererAssistants",
                     ["diagnosticOnly"] = true,
                     ["materialBindingSourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
-                    ["previewMaterialSource"] = gltfMaterials.Count > 1 ? Path.GetFullPath(outputFolder) : null,
+                    ["previewMaterialSource"] = gltfMaterials.Count > 1 && !string.IsNullOrWhiteSpace(previewMaterialSource) ? Path.GetFullPath(previewMaterialSource) : null,
                     ["unityCoordinateSystemPreserved"] = false,
                     ["axisConversion"] = "Unity(x,y,z) -> glTF(x,z,-y)",
                     ["note"] = "Naraka ActorBodyVisualCell LOD0 自定义网格诊断导出；按 Unity PPtr 选择 avatarMeshAsset，可记录 Renderer 材质引用，但尚未烘焙材质或绑定骨骼 skin。"
@@ -558,6 +559,7 @@ namespace AnimeStudio.CLI
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
                 ["rendererSkinJsonStatus"] = SummarizeRendererSkinJsonStatus(rendererSkinBindings.Values),
                 ["rendererSkinJsonEmptyBoneRendererCount"] = rendererSkinBindings.Values.Count(x => string.Equals(x.RendererJsonStatus, "skinnedRendererJsonEmptyBones", StringComparison.OrdinalIgnoreCase)),
+                ["previewMaterialSource"] = gltfMaterials.Count > 1 && !string.IsNullOrWhiteSpace(previewMaterialSource) ? Path.GetFullPath(previewMaterialSource) : null,
                 ["avatarMeshExplicitReferenceStatus"] = SummarizeAvatarMeshRelationStatus(avatarMeshRelationEvidence.Values),
                 ["avatarMeshRelationCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.RelationCount),
                 ["avatarMeshNonScriptPPtrRefCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.NonScriptPPtrCount),
@@ -1565,8 +1567,47 @@ namespace AnimeStudio.CLI
             };
         }
 
+        private static string ResolveVisualCellPreviewMaterialSource(string jsonFolder, string outputFolder)
+        {
+            // Naraka 计划脚本通常把 TypeTree JSON 放在 TypeTreeDump/MonoBehaviour，
+            // 材质和贴图放在计划根目录。复测单独输出时要回到这个已导出的根目录取证据。
+            foreach (var candidate in EnumeratePreviewMaterialSourceCandidates(jsonFolder, outputFolder))
+            {
+                if (Directory.Exists(candidate)
+                    && File.Exists(Path.Combine(candidate, "export_manifest.jsonl"))
+                    && Directory.Exists(Path.Combine(candidate, "Material"))
+                    && Directory.Exists(Path.Combine(candidate, "Texture2D")))
+                {
+                    return Path.GetFullPath(candidate);
+                }
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<string> EnumeratePreviewMaterialSourceCandidates(string jsonFolder, string outputFolder)
+        {
+            if (!string.IsNullOrWhiteSpace(outputFolder))
+            {
+                yield return Path.GetFullPath(outputFolder);
+            }
+
+            if (string.IsNullOrWhiteSpace(jsonFolder))
+            {
+                yield break;
+            }
+
+            var current = new DirectoryInfo(Path.GetFullPath(jsonFolder));
+            while (current != null)
+            {
+                yield return current.FullName;
+                current = current.Parent;
+            }
+        }
+
         private static JArray BuildVisualCellPreviewMaterials(
-            string outputFolder,
+            string materialSourceFolder,
+            string gltfFolder,
             IEnumerable<VisualCellMaterialBinding> bindings,
             JArray images,
             JArray textures,
@@ -1576,7 +1617,9 @@ namespace AnimeStudio.CLI
             var bindingList = bindings.ToList();
             var materials = new JArray();
 
-            var exportedAssets = LoadExportedAssetManifest(outputFolder);
+            var exportedAssets = string.IsNullOrWhiteSpace(materialSourceFolder)
+                ? new Dictionary<long, ExportedAssetInfo>()
+                : LoadExportedAssetManifest(materialSourceFolder);
             if (exportedAssets.Count == 0)
             {
                 materials.Add(CreateDiagnosticMaterial());
@@ -1608,7 +1651,7 @@ namespace AnimeStudio.CLI
                     }
 
                     var gltfMaterial = BuildVisualCellPreviewMaterial(
-                        outputFolder,
+                        gltfFolder,
                         JObject.Parse(File.ReadAllText(materialJsonPath)),
                         materialJsonPath,
                         exportedAssets,
@@ -1687,6 +1730,7 @@ namespace AnimeStudio.CLI
                         var texturePath = FindExportedFile(textureAsset, ".png");
                         if (!string.IsNullOrWhiteSpace(texturePath))
                         {
+                            texturePath = EnsurePreviewTextureInGltfFolder(texturePath, gltfFolder, pathId, warnings);
                             var relativeTexturePath = Path.GetRelativePath(gltfFolder, texturePath).Replace('\\', '/');
                             var effectiveTextureName = GetPreviewTextureName(textureName, textureAsset.Name, texturePath);
                             slot["uri"] = relativeTexturePath;
@@ -1758,6 +1802,57 @@ namespace AnimeStudio.CLI
                 ((JObject)result["extras"]["animeStudioMaterial"])["previewAlpha"] = alphaDecision.Extras;
             }
             return result;
+        }
+
+        private static string EnsurePreviewTextureInGltfFolder(string texturePath, string gltfFolder, long pathId, List<string> warnings)
+        {
+            if (string.IsNullOrWhiteSpace(texturePath)
+                || string.IsNullOrWhiteSpace(gltfFolder)
+                || !File.Exists(texturePath))
+            {
+                return texturePath;
+            }
+
+            var fullTexturePath = Path.GetFullPath(texturePath);
+            var fullGltfFolder = Path.GetFullPath(gltfFolder);
+            if (IsPathInsideFolder(fullTexturePath, fullGltfFolder))
+            {
+                return fullTexturePath;
+            }
+
+            try
+            {
+                // 诊断 glTF 可以复用计划根目录的材质证据，但真正引用的贴图要复制到本次输出，
+                // 这样报告、SQLite 和手动预览都能跟着输出目录一起移动。
+                var textureFolder = Path.Combine(fullGltfFolder, "Texture2D");
+                Directory.CreateDirectory(textureFolder);
+
+                var fileName = Path.GetFileName(fullTexturePath);
+                var targetPath = Path.Combine(textureFolder, fileName);
+                if (File.Exists(targetPath) && new FileInfo(targetPath).Length != new FileInfo(fullTexturePath).Length)
+                {
+                    var stem = Path.GetFileNameWithoutExtension(fileName);
+                    var ext = Path.GetExtension(fileName);
+                    var safePathId = pathId.ToString(CultureInfo.InvariantCulture).Replace("-", "m", StringComparison.Ordinal);
+                    targetPath = Path.Combine(textureFolder, $"{stem}_{safePathId}{ext}");
+                }
+
+                File.Copy(fullTexturePath, targetPath, overwrite: true);
+                return targetPath;
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"copyPreviewTextureFailed:{pathId}:{ex.GetType().Name}");
+                return fullTexturePath;
+            }
+        }
+
+        private static bool IsPathInsideFolder(string filePath, string folderPath)
+        {
+            var relativePath = Path.GetRelativePath(folderPath, filePath);
+            return relativePath == "."
+                || (!relativePath.StartsWith("..", StringComparison.Ordinal)
+                    && !Path.IsPathRooted(relativePath));
         }
 
         private static void ProtectCustomizationTintPreviewBaseColor(JObject material, JToken unityColor, bool hasBaseColorTexture)
