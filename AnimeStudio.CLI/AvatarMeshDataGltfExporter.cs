@@ -188,6 +188,12 @@ namespace AnimeStudio.CLI
                 throw new FileNotFoundException("AvatarMeshDataAsset TypeTree JSON folder has no *.json files.", jsonFolder);
             }
 
+            var visualCell = TryLoadVisualCell(jsonFiles);
+            if (visualCell != null)
+            {
+                return ExportVisualCellDirectory(jsonFolder, outputFolder, visualCell);
+            }
+
             outputFolder = string.IsNullOrWhiteSpace(outputFolder)
                 ? Path.Combine(Path.GetFullPath(jsonFolder), "AvatarMeshDataGltf")
                 : outputFolder;
@@ -269,6 +275,151 @@ namespace AnimeStudio.CLI
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
             Logger.Info($"Exported AvatarMeshDataAsset diagnostic glTF set: {gltfPath}");
             Logger.Info($"Wrote AvatarMeshDataAsset diagnostic report: {reportPath}");
+            return gltfPath;
+        }
+
+        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, JObject visualCell)
+        {
+            var manifest = LoadManifest(jsonFolder);
+            if (manifest.Count == 0)
+            {
+                throw new InvalidDataException("ActorBodyVisualCell directory export requires export_manifest.jsonl for PathID to JSON mapping.");
+            }
+
+            var selectedAssistants = ReadPPtrPathIds(visualCell["lod0RendererAssistants"] as JArray).ToList();
+            if (selectedAssistants.Count == 0)
+            {
+                throw new InvalidDataException("ActorBodyVisualCell JSON has no lod0RendererAssistants.");
+            }
+
+            var parts = new List<VisualCellPart>();
+            var warnings = new List<string>();
+            foreach (var assistantPathId in selectedAssistants)
+            {
+                if (!manifest.TryGetValue(assistantPathId, out var assistantJsonPath) || !File.Exists(assistantJsonPath))
+                {
+                    warnings.Add($"missingAssistantJson:{assistantPathId}");
+                    continue;
+                }
+
+                var assistant = JObject.Parse(File.ReadAllText(assistantJsonPath));
+                var avatarMeshPathId = ReadPPtrPathId(assistant["avatarMeshAsset"]);
+                if (avatarMeshPathId == 0)
+                {
+                    warnings.Add($"assistantWithoutAvatarMesh:{assistantPathId}");
+                    continue;
+                }
+                if (!manifest.TryGetValue(avatarMeshPathId, out var meshJsonPath) || !File.Exists(meshJsonPath))
+                {
+                    warnings.Add($"missingAvatarMeshJson:{avatarMeshPathId}");
+                    continue;
+                }
+
+                var mesh = ReadMesh(JObject.Parse(File.ReadAllText(meshJsonPath)), meshJsonPath);
+                parts.Add(new VisualCellPart(
+                    assistantPathId,
+                    (string)assistant["gameObjectName"] ?? mesh.MeshName,
+                    ReadPPtrPathId(assistant["_renderer"]),
+                    avatarMeshPathId,
+                    assistantJsonPath,
+                    meshJsonPath,
+                    mesh));
+            }
+
+            if (parts.Count == 0)
+            {
+                throw new InvalidDataException("ActorBodyVisualCell LOD0 has no resolved AvatarMeshDataAsset JSON.");
+            }
+
+            outputFolder = string.IsNullOrWhiteSpace(outputFolder)
+                ? Path.Combine(Path.GetFullPath(jsonFolder), "AvatarMeshDataGltf")
+                : outputFolder;
+            Directory.CreateDirectory(outputFolder);
+
+            var safeName = FixFileName(Path.GetFileName(Path.GetFullPath(jsonFolder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) + "_lod0");
+            var binName = safeName + ".bin";
+            var gltfName = safeName + ".gltf";
+            var reportName = safeName + ".avatar_mesh_data_report.json";
+            var binPath = Path.Combine(outputFolder, binName);
+            var gltfPath = Path.Combine(outputFolder, gltfName);
+            var reportPath = Path.Combine(outputFolder, reportName);
+
+            var bufferViews = new JArray();
+            var accessors = new JArray();
+            var gltfMeshes = new JArray();
+            var nodes = new JArray();
+            using var stream = File.Create(binPath);
+            for (var i = 0; i < parts.Count; i++)
+            {
+                var part = parts[i];
+                gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath)));
+                nodes.Add(new JObject
+                {
+                    ["name"] = part.GameObjectName,
+                    ["mesh"] = i,
+                    ["extras"] = new JObject
+                    {
+                        ["assistantPathId"] = part.AssistantPathId,
+                        ["rendererPathId"] = part.RendererPathId,
+                        ["avatarMeshPathId"] = part.AvatarMeshPathId
+                    }
+                });
+            }
+
+            var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
+            var gltf = new JObject
+            {
+                ["asset"] = new JObject
+                {
+                    ["version"] = "2.0",
+                    ["generator"] = "AnimeStudio Naraka ActorBodyVisualCell diagnostic LOD exporter"
+                },
+                ["scene"] = 0,
+                ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(Enumerable.Range(0, nodes.Count)) }),
+                ["nodes"] = nodes,
+                ["meshes"] = gltfMeshes,
+                ["materials"] = new JArray(CreateDiagnosticMaterial()),
+                ["buffers"] = new JArray(new JObject
+                {
+                    ["uri"] = Uri.EscapeDataString(binName),
+                    ["byteLength"] = stream.Length
+                }),
+                ["bufferViews"] = bufferViews,
+                ["accessors"] = accessors,
+                ["extras"] = new JObject
+                {
+                    ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
+                    ["sourceType"] = "ActorBodyVisualCell",
+                    ["selectedLodGroup"] = "lod0RendererAssistants",
+                    ["diagnosticOnly"] = true,
+                    ["unityCoordinateSystemPreserved"] = true,
+                    ["note"] = "Naraka ActorBodyVisualCell LOD0 自定义网格诊断导出；按 Unity PPtr 选择 avatarMeshAsset，尚未绑定 Renderer 材质槽或骨骼 skin。"
+                }
+            };
+
+            File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
+            var report = new JObject
+            {
+                ["status"] = warnings.Count == 0 ? "ok" : "warning",
+                ["kind"] = "NarakaActorBodyVisualCellLodGltf",
+                ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
+                ["output"] = gltfPath,
+                ["selectedLodGroup"] = "lod0RendererAssistants",
+                ["assistantCount"] = selectedAssistants.Count,
+                ["resolvedPartCount"] = parts.Count,
+                ["meshCount"] = parts.Count,
+                ["vertexCount"] = parts.Sum(x => x.Mesh.Positions.Count),
+                ["indexCount"] = parts.Sum(x => x.Mesh.Indices.Count),
+                ["triangleCount"] = parts.Sum(x => x.Mesh.Indices.Count / 3),
+                ["bboxMin"] = new JArray(totalBounds.Min.X, totalBounds.Min.Y, totalBounds.Min.Z),
+                ["bboxMax"] = new JArray(totalBounds.Max.X, totalBounds.Max.Y, totalBounds.Max.Z),
+                ["warnings"] = new JArray(warnings),
+                ["parts"] = new JArray(parts.Select(ToReportJson)),
+                ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；不猜 LOD、材质槽、骨骼或 skin。"
+            };
+            File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
+            Logger.Info($"Exported Naraka ActorBodyVisualCell LOD0 diagnostic glTF: {gltfPath}");
+            Logger.Info($"Wrote Naraka ActorBodyVisualCell diagnostic report: {reportPath}");
             return gltfPath;
         }
 
@@ -388,6 +539,132 @@ namespace AnimeStudio.CLI
                 ["bboxMax"] = new JArray(mesh.Max.X, mesh.Max.Y, mesh.Max.Z),
                 ["warnings"] = new JArray(mesh.Warnings)
             };
+        }
+
+        private static JObject ToReportJson(VisualCellPart part)
+        {
+            var meshJson = ToReportJson(part.Mesh, part.MeshJsonPath);
+            meshJson["assistantPathId"] = part.AssistantPathId;
+            meshJson["gameObjectName"] = part.GameObjectName;
+            meshJson["rendererPathId"] = part.RendererPathId;
+            meshJson["avatarMeshPathId"] = part.AvatarMeshPathId;
+            meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
+            return meshJson;
+        }
+
+        private static JObject TryLoadVisualCell(IEnumerable<string> jsonFiles)
+        {
+            foreach (var jsonFile in jsonFiles)
+            {
+                try
+                {
+                    var json = JObject.Parse(File.ReadAllText(jsonFile));
+                    if (json["lod0RendererAssistants"] is JArray)
+                    {
+                        return json;
+                    }
+                }
+                catch (JsonException)
+                {
+                    // 目录里只应该有 TypeTree JSON；坏文件留给后续读取时报错。
+                }
+            }
+
+            return null;
+        }
+
+        private static Dictionary<long, string> LoadManifest(string jsonFolder)
+        {
+            var result = new Dictionary<long, string>();
+            var manifestPath = Path.Combine(jsonFolder, "export_manifest.jsonl");
+            if (!File.Exists(manifestPath))
+            {
+                var parent = Path.GetDirectoryName(Path.GetFullPath(jsonFolder));
+                if (!string.IsNullOrWhiteSpace(parent))
+                {
+                    manifestPath = Path.Combine(parent, "export_manifest.jsonl");
+                }
+            }
+            if (!File.Exists(manifestPath))
+            {
+                return result;
+            }
+
+            foreach (var line in File.ReadLines(manifestPath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                var item = JObject.Parse(line);
+                var pathId = item["pathId"]?.Value<long>() ?? 0;
+                if (pathId == 0)
+                {
+                    continue;
+                }
+
+                var name = (string)item["name"] ?? string.Empty;
+                var fileName = ToExportedJsonFileName(name);
+                var jsonPath = Path.Combine(jsonFolder, fileName);
+                if (!File.Exists(jsonPath))
+                {
+                    var output = (string)item["output"];
+                    if (!string.IsNullOrWhiteSpace(output))
+                    {
+                        jsonPath = Path.Combine(output, fileName);
+                    }
+                }
+
+                result[pathId] = jsonPath;
+            }
+
+            return result;
+        }
+
+        private static string ToExportedJsonFileName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return "MonoBehaviour.json";
+            }
+
+            var monoMatch = Regex.Match(name, @"^MonoBehaviour#(?<id>\d+)$", RegexOptions.IgnoreCase);
+            if (monoMatch.Success)
+            {
+                return "MonoBehaviour_" + monoMatch.Groups["id"].Value + ".json";
+            }
+
+            return FixFileName(name) + ".json";
+        }
+
+        private static IEnumerable<long> ReadPPtrPathIds(JArray array)
+        {
+            if (array == null)
+            {
+                yield break;
+            }
+
+            foreach (var item in array)
+            {
+                var pathId = ReadPPtrPathId(item);
+                if (pathId != 0)
+                {
+                    yield return pathId;
+                }
+            }
+        }
+
+        private static long ReadPPtrPathId(JToken token)
+        {
+            if (token == null)
+            {
+                return 0;
+            }
+
+            return token["m_PathID"]?.Value<long>()
+                ?? token["pathId"]?.Value<long>()
+                ?? 0;
         }
 
         private static (Vector3Value Min, Vector3Value Max) CalculateBounds(IEnumerable<AvatarMeshData> meshes)
@@ -599,6 +876,15 @@ namespace AnimeStudio.CLI
             value = Regex.Replace(value, @"\s+", "_");
             return value.Length == 0 ? "avatar_mesh_data" : value;
         }
+
+        private sealed record VisualCellPart(
+            long AssistantPathId,
+            string GameObjectName,
+            long RendererPathId,
+            long AvatarMeshPathId,
+            string AssistantJsonPath,
+            string MeshJsonPath,
+            AvatarMeshData Mesh);
 
         private sealed class AvatarMeshData
         {
