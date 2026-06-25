@@ -634,7 +634,9 @@ namespace AnimeStudio.CLI
                         o.PreviewOutput?.FullName ?? o.Output?.FullName,
                         ResolveSourceModelCandidateSelector(o),
                         o.SourceCandidateLimit,
-                        o.IncludeStaticMeshes);
+                        o.IncludeStaticMeshes,
+                        o.PreviewSourceRoot?.FullName,
+                        o.GameName);
                     return;
                 }
 

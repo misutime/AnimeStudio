@@ -550,6 +550,8 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 `--list_source_model_candidates` 的筛选优先使用 `--preview_model`，没有传时使用 `--names`，再没有传时才使用 `--containers`。简单字面量名字（例如 `P_actor_chen_01`）会写出 `selectorQueryMode=targeted_exact_name`，并通过 `source_objects.name -> component.gameObject` 的确定性关系在大源索引里快速定位候选；复杂正则仍走普通候选扫描，避免 SQL 预筛选误漏结果。输出目录优先使用 `--preview_output`，否则使用普通 `output_path`。
 
+如果同时传入 `--preview_source_root`，每个候选会额外写 `targetedLibraryExport`，包含机器可读 `arguments` 和 PowerShell 友好的 `powershellCommand`。这只是把候选行里的 `sourcePath + pathId` 组合成定向 Library 导出命令：输入仍必须是完整 Unity 源目录，依赖闭包仍来自完整 `unity_source_index.db`，本次加载只用 `--source_files + --path_ids` 收窄。这个命令只能作为模型第一阶段 smoke 起点，不能替代后续 `model_validation.json`、glTF validator 和清晰截图验收；候选本身带 `excludeHint` 时，报告会把 `readyForModelSmoke=false`。
+
 `--names` 也可以传纯数字 PathID 做精确查询，报告会写 `selectorQueryMode=targeted_exact_path_id` 和 `selectorExactPathId`。Endfield 这类游戏常有大量同名 `GameObject` 变体：有的是真实可见模型，有的只有 Animator/Avatar，有的只用于剧情或 UI。排查动画关系时应优先用 `source_model_candidates.json` 里通过模型门禁的具体 PathID，再用同一个 PathID 查询 `--list_source_model_animations`，避免同名变体把模型质量和动画关系混在一起。
 
 `selectorQueryMode=targeted_exact_name` / `targeted_exact_path_id` 默认不再沿 `Transform.child` 子树做深层递归。Endfield 大源索引里同名 actor 变体很多，某些根节点层级很深或只是配置/场景实例，默认递归会让交互式候选查询卡住。候选报告现在优先快速返回 Animator、Avatar、Controller 和直接 SkinnedRenderer 线索；是否真的有完整 Mesh/Material/Texture/skin，必须通过实际 Library 导出、`model_validation.json`、glTF validator 和清晰截图确认。

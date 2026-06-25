@@ -14,7 +14,14 @@ namespace AnimeStudio.CLI
 {
     internal static class SourceModelCandidateLister
     {
-        public static string List(string sourceIndexPath, string outputDirectory, string selector, int limit, bool includeStaticRendererCandidates)
+        public static string List(
+            string sourceIndexPath,
+            string outputDirectory,
+            string selector,
+            int limit,
+            bool includeStaticRendererCandidates,
+            string previewSourceRoot,
+            string gameName)
         {
             if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
             {
@@ -27,6 +34,10 @@ namespace AnimeStudio.CLI
                 ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sourceIndexPath)) ?? Environment.CurrentDirectory, "SourceModelCandidates")
                 : Path.GetFullPath(outputDirectory);
             Directory.CreateDirectory(outputRoot);
+            var exportSourceRoot = string.IsNullOrWhiteSpace(previewSourceRoot)
+                ? string.Empty
+                : Path.GetFullPath(previewSourceRoot);
+            var hasExportSourceRoot = !string.IsNullOrWhiteSpace(exportSourceRoot) && Directory.Exists(exportSourceRoot);
 
             var totalStopwatch = Stopwatch.StartNew();
             SQLitePCL.Batteries_V2.Init();
@@ -135,13 +146,17 @@ namespace AnimeStudio.CLI
                 ["texturedRendererContainerNote"] = "TexturedRendererContainer candidates are found by walking deterministic Material -> Texture links back to Renderer and AssetBundle containerPreload. They are model-first leads only; source-part, VFX, UI, cutscene, or config containers still need review before export.",
                 ["targetedHierarchyNote"] = "SkinnedRendererHierarchyModel deep Transform recursion is intentionally not part of the default targeted source-index report because large Endfield prefabs can make it too slow. Use the fast source report to pick leads, then rely on actual Library export, model_validation, glTF validator and screenshots for model-first acceptance.",
                 ["rawContainerModelNote"] = "RawContainerModel candidates are deterministic AssetBundle container groups such as imported .fbx files with Mesh/Avatar but no prefab Renderer/Material chain. They are source parts or diagnostics, not model-smoke passes until a prefab/renderer/material binding is found.",
-                ["candidates"] = new JArray(filtered.Select(ToJson)),
+                ["previewSourceRoot"] = exportSourceRoot,
+                ["targetedExportCommandNote"] = hasExportSourceRoot
+                    ? "Each candidate includes targetedLibraryExport for model-first smoke. The command keeps the full Unity source root and full source index, then narrows the load with --source_files and --path_ids. It still requires model_validation, glTF validation and screenshots before animation work."
+                    : "Pass --preview_source_root with the full Unity source root to make targetedLibraryExport commands directly runnable. Placeholder commands still show the required --source_files and --path_ids shape.",
+                ["candidates"] = new JArray(filtered.Select(row => ToJson(row, sourceIndexPath, outputRoot, exportSourceRoot, gameName))),
             };
 
             var jsonPath = Path.Combine(outputRoot, "source_model_candidates.json");
             var csvPath = Path.Combine(outputRoot, "source_model_candidates.csv");
             File.WriteAllText(jsonPath, payload.ToString(Formatting.Indented));
-            File.WriteAllText(csvPath, ToCsv(filtered), Encoding.UTF8);
+            File.WriteAllText(csvPath, ToCsv(filtered, sourceIndexPath, outputRoot, exportSourceRoot, gameName), Encoding.UTF8);
 
             Logger.Info($"Source model candidate report: {jsonPath}");
             Logger.Info($"Source model candidate CSV: {csvPath}");
@@ -2108,7 +2123,7 @@ WHERE to_file = $file
                 || Regex.IsMatch(row.Kind ?? string.Empty, selector, RegexOptions.IgnoreCase);
         }
 
-        private static JObject ToJson(CandidateRow row)
+        private static JObject ToJson(CandidateRow row, string sourceIndexPath, string outputRoot, string exportSourceRoot, string gameName)
         {
             return new JObject
             {
@@ -2133,15 +2148,17 @@ WHERE to_file = $file
                 ["controllerCount"] = row.ControllerCount,
                 ["rootBoneCount"] = row.RootBoneCount,
                 ["sampleNames"] = row.SampleNames,
+                ["targetedLibraryExport"] = BuildTargetedLibraryExport(row, sourceIndexPath, outputRoot, exportSourceRoot, gameName),
             };
         }
 
-        private static string ToCsv(List<CandidateRow> rows)
+        private static string ToCsv(List<CandidateRow> rows, string sourceIndexPath, string outputRoot, string exportSourceRoot, string gameName)
         {
             var builder = new StringBuilder();
-            builder.AppendLine("kind,name,sourcePath,serializedFile,containerPath,pathId,score,excludeHint,animatorCount,rendererCount,meshCount,customAvatarMeshCount,materialCount,resolvedMaterialCount,texturedMaterialCount,materialTextureRefCount,optimizedAnimatorWithoutAvatarCount,avatarCount,controllerCount,rootBoneCount,sampleNames");
+            builder.AppendLine("kind,name,sourcePath,serializedFile,containerPath,pathId,score,excludeHint,animatorCount,rendererCount,meshCount,customAvatarMeshCount,materialCount,resolvedMaterialCount,texturedMaterialCount,materialTextureRefCount,optimizedAnimatorWithoutAvatarCount,avatarCount,controllerCount,rootBoneCount,sampleNames,targetedExportCommand");
             foreach (var row in rows)
             {
+                var targetedExport = BuildTargetedLibraryExport(row, sourceIndexPath, outputRoot, exportSourceRoot, gameName);
                 builder.AppendLine(string.Join(",",
                     Csv(row.Kind),
                     Csv(row.Name),
@@ -2163,10 +2180,161 @@ WHERE to_file = $file
                     row.AvatarCount.ToString(CultureInfo.InvariantCulture),
                     row.ControllerCount.ToString(CultureInfo.InvariantCulture),
                     row.RootBoneCount.ToString(CultureInfo.InvariantCulture),
-                    Csv(row.SampleNames)));
+                    Csv(row.SampleNames),
+                    Csv((string)targetedExport["powershellCommand"] ?? string.Empty)));
             }
 
             return builder.ToString();
+        }
+
+        private static JObject BuildTargetedLibraryExport(CandidateRow row, string sourceIndexPath, string outputRoot, string exportSourceRoot, string gameName)
+        {
+            var sourceFile = BuildSourceFileArgument(row.SourcePath, exportSourceRoot);
+            var canBuildCommand = !string.IsNullOrWhiteSpace(sourceFile) && row.PathId != 0;
+            var hasRunnableRoot = !string.IsNullOrWhiteSpace(exportSourceRoot) && Directory.Exists(exportSourceRoot);
+            var candidateName = BuildSafeFileName(string.IsNullOrWhiteSpace(row.Name) ? row.Kind : row.Name);
+            var candidateOutput = Path.Combine(outputRoot, $"Smoke_{candidateName}_{row.PathId.ToString(CultureInfo.InvariantCulture)}");
+
+            var result = new JObject
+            {
+                ["isRunnable"] = canBuildCommand && hasRunnableRoot,
+                ["readyForModelSmoke"] = canBuildCommand && string.IsNullOrWhiteSpace(row.ExcludeHint),
+                ["sourceRoot"] = hasRunnableRoot ? exportSourceRoot : "<SOURCE_ROOT>",
+                ["outputRoot"] = candidateOutput,
+                ["sourceFile"] = sourceFile,
+                ["pathId"] = row.PathId,
+                ["rule"] = "模型第一阶段定向导出：输入仍指向完整 Unity 源目录，并使用完整 unity_source_index.db；--source_files 和 --path_ids 只缩小本次加载对象，不能替代导出后的验证。",
+            };
+
+            if (!string.IsNullOrWhiteSpace(row.ExcludeHint))
+            {
+                result["warning"] = $"candidate has excludeHint={row.ExcludeHint}; keep it as diagnostics unless actual export and visual validation prove it is a usable main model.";
+            }
+
+            if (!canBuildCommand)
+            {
+                result["warning"] = string.IsNullOrWhiteSpace((string)result["warning"])
+                    ? "missing sourcePath or pathId; no targeted export command can be generated from this candidate."
+                    : (string)result["warning"] + " Missing sourcePath or pathId; no targeted export command can be generated.";
+                result["arguments"] = new JArray();
+                result["powershellCommand"] = string.Empty;
+                return result;
+            }
+
+            var sourceRootArgument = hasRunnableRoot ? exportSourceRoot : "<SOURCE_ROOT>";
+            var arguments = new List<string>
+            {
+                sourceRootArgument,
+                candidateOutput,
+            };
+            if (!string.IsNullOrWhiteSpace(gameName))
+            {
+                arguments.Add("--game");
+                arguments.Add(gameName);
+            }
+            arguments.AddRange(new[]
+            {
+                "--mode",
+                "Library",
+                "--group_assets",
+                "ByLibrary",
+                "--model_format",
+                "Gltf",
+                "--model_source",
+                "PrefabPrimary",
+                "--texture_mode",
+                "Png",
+                "--source_index",
+                Path.GetFullPath(sourceIndexPath),
+                "--source_files",
+                sourceFile,
+                "--path_ids",
+                row.PathId.ToString(CultureInfo.InvariantCulture),
+            });
+
+            var executableCommand = BuildCliExecutableCommand();
+            result["executableCommand"] = executableCommand;
+            result["arguments"] = new JArray(arguments);
+            result["powershellCommand"] = executableCommand + " " + string.Join(" ", arguments.Select(QuotePowerShellArgument));
+            return result;
+        }
+
+        private static string BuildSourceFileArgument(string sourcePath, string exportSourceRoot)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = sourcePath.Trim();
+            var cabSuffixIndex = trimmed.IndexOf('|');
+            if (cabSuffixIndex >= 0)
+            {
+                // sourcePath 为了追溯 serialized file 会带 “物理文件|CAB”。
+                // --source_files 只接受磁盘上的物理文件，所以命令提示里要剥掉 CAB 后缀。
+                trimmed = trimmed.Substring(0, cabSuffixIndex);
+            }
+
+            if (!Path.IsPathRooted(trimmed))
+            {
+                return trimmed.Replace('\\', '/');
+            }
+
+            if (string.IsNullOrWhiteSpace(exportSourceRoot))
+            {
+                return trimmed.Replace('\\', '/');
+            }
+
+            var root = Path.GetFullPath(exportSourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var full = Path.GetFullPath(trimmed);
+            if (full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || full.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetRelativePath(root, full).Replace('\\', '/');
+            }
+
+            return trimmed.Replace('\\', '/');
+        }
+
+        private static string BuildSafeFileName(string value)
+        {
+            value = string.IsNullOrWhiteSpace(value) ? "candidate" : value.Trim();
+            var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+            var builder = new StringBuilder(value.Length);
+            foreach (var ch in value)
+            {
+                builder.Append(invalid.Contains(ch) || char.IsWhiteSpace(ch) ? '_' : ch);
+            }
+
+            var safe = builder.ToString().Trim('_');
+            return string.IsNullOrWhiteSpace(safe) ? "candidate" : safe;
+        }
+
+        private static string QuotePowerShellArgument(string value)
+        {
+            value ??= string.Empty;
+            return "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+        }
+
+        private static string BuildCliExecutableCommand()
+        {
+            var processPath = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(processPath)
+                && File.Exists(processPath)
+                && string.Equals(Path.GetFileName(processPath), "AnimeStudio.CLI.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                return QuotePowerShellArgument(processPath);
+            }
+
+            var entryPath = Environment.GetCommandLineArgs().FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(entryPath)
+                && File.Exists(entryPath)
+                && string.Equals(Path.GetExtension(entryPath), ".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                return "dotnet " + QuotePowerShellArgument(entryPath);
+            }
+
+            return "AnimeStudio.CLI.exe";
         }
 
         private static string Csv(string value)
