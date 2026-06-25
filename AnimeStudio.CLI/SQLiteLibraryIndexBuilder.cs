@@ -111,6 +111,7 @@ namespace AnimeStudio.CLI
             counts["assets"] = assetCatalogRows + counts["textureAssets"];
             counts["assetCatalog"] = assetCatalogRows;
             counts["textureLinks"] = RunCountStage("texture links", () => ImportTextureLinks(connection, transaction, root));
+            counts["materialSidecars"] = RunCountStage("material sidecars", () => ImportMaterialSidecars(connection, transaction, root));
             counts["modelValidation"] = RunCountStage("model validation", () => ImportModelValidation(connection, transaction, root));
             counts["modelBindingPaths"] = RunCountStage("model binding paths", () => ImportModelBindingPaths(connection, transaction, root));
             counts["unityAssets"] = 0;
@@ -449,6 +450,8 @@ CREATE TABLE library_reports (
                 "CREATE INDEX idx_texture_links_asset ON texture_links(asset_id);",
                 "CREATE INDEX idx_texture_links_shared ON texture_links(shared);",
                 "CREATE INDEX idx_texture_links_sha256 ON texture_links(sha256);",
+                "CREATE INDEX idx_material_sidecars_asset ON material_sidecars(asset_id);",
+                "CREATE INDEX idx_material_sidecars_output ON material_sidecars(material_output);",
                 "CREATE INDEX idx_export_manifest_output ON export_manifest(output);",
                 "CREATE INDEX idx_files_kind ON files(kind);",
             };
@@ -993,6 +996,137 @@ VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes,
 
                 Add(imageIndex.Value, string.IsNullOrWhiteSpace(materialName) ? slot : $"{materialName}:{slot}");
             }
+        }
+
+        private static long ImportMaterialSidecars(SqliteConnection connection, SqliteTransaction transaction, string root)
+        {
+            using var select = connection.CreateCommand();
+            select.Transaction = transaction;
+            select.CommandText = @"
+SELECT id, output
+FROM assets
+WHERE kind='Model'
+  AND output IS NOT NULL
+  AND output <> '';";
+
+            var models = new List<(long Id, string Output)>();
+            using (var reader = select.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    models.Add((reader.GetInt64(0), ReadNullableString(reader, 1)));
+                }
+            }
+
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = @"
+INSERT INTO material_sidecars(asset_id, material_output, material_name, raw_json)
+VALUES ($assetId, $materialOutput, $materialName, $rawJson);";
+            var p = AddParameters(insert, "$assetId", "$materialOutput", "$materialName", "$rawJson");
+
+            long count = 0;
+            foreach (var model in models)
+            {
+                var modelPath = ResolveLibraryPath(root, model.Output);
+                if (string.IsNullOrWhiteSpace(modelPath)
+                    || !File.Exists(modelPath)
+                    || !string.Equals(Path.GetExtension(modelPath), ".gltf", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var modelDir = Path.GetDirectoryName(modelPath);
+                if (string.IsNullOrWhiteSpace(modelDir) || !Directory.Exists(modelDir))
+                {
+                    continue;
+                }
+
+                foreach (var sidecar in ReadGltfMaterialSidecars(root, modelPath, modelDir))
+                {
+                    Set(p, "$assetId", model.Id);
+                    Set(p, "$materialOutput", sidecar.Output);
+                    Set(p, "$materialName", sidecar.Name);
+                    Set(p, "$rawJson", sidecar.RawJson.ToString(Formatting.None));
+                    insert.ExecuteNonQuery();
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static IEnumerable<MaterialSidecarRow> ReadGltfMaterialSidecars(string root, string gltfPath, string modelDir)
+        {
+            JObject gltf;
+            try
+            {
+                gltf = JObject.Parse(File.ReadAllText(gltfPath));
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Skipping material_sidecars for invalid glTF: {gltfPath}: {e.Message}");
+                yield break;
+            }
+
+            var materialNames = gltf["materials"]?
+                .OfType<JObject>()
+                .Select(x => S(x, "name"))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (materialNames.Count == 0)
+            {
+                yield break;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(modelDir, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                JObject sidecar;
+                try
+                {
+                    sidecar = JObject.Parse(File.ReadAllText(file));
+                }
+                catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+                {
+                    Logger.Warning($"Skipping unreadable material sidecar candidate: {file}: {e.Message}");
+                    continue;
+                }
+
+                var materialName = S(sidecar, "m_Name") ?? S(sidecar, "Name") ?? Path.GetFileNameWithoutExtension(file);
+                if (string.IsNullOrWhiteSpace(materialName) || !materialNames.Contains(materialName))
+                {
+                    continue;
+                }
+
+                if (!LooksLikeUnityMaterialSidecar(sidecar))
+                {
+                    continue;
+                }
+
+                var output = MakeRelative(root, file);
+                var raw = new JObject
+                {
+                    ["materialOutput"] = output,
+                    ["materialName"] = materialName,
+                    ["modelGltf"] = MakeRelative(root, gltfPath),
+                    ["unityMaterial"] = sidecar,
+                    ["rule"] = "只索引模型 glTF 同目录、名称命中 glTF material、且包含 Unity Material 结构的 JSON；不按任意文件名猜材质关系。"
+                };
+
+                yield return new MaterialSidecarRow(output, materialName, raw);
+            }
+        }
+
+        private static bool LooksLikeUnityMaterialSidecar(JObject sidecar)
+        {
+            if (sidecar == null)
+            {
+                return false;
+            }
+
+            return sidecar["m_SavedProperties"] is JObject
+                   || sidecar["m_Shader"] is JObject
+                   || sidecar["unityMaterial"] is JObject;
         }
 
         private static string ResolveGltfUriPath(string directory, string uri)
@@ -6459,6 +6593,11 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
             string Extension,
             int? HardLinked,
             string LinkError,
+            JObject RawJson);
+
+        private sealed record MaterialSidecarRow(
+            string Output,
+            string Name,
             JObject RawJson);
 
         private static string ClassifyFile(string root, string file)
