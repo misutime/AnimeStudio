@@ -162,6 +162,11 @@ WHERE go.type = 'GameObject'
   AND EXISTS (
       SELECT 1
       FROM source_relations assistantRel INDEXED BY idx_source_relations_from
+      JOIN source_relations avatarMesh INDEXED BY idx_source_relations_from
+        ON avatarMesh.from_file = assistantRel.to_file COLLATE NOCASE
+       AND avatarMesh.from_path_id = assistantRel.to_path_id
+       AND avatarMesh.relation = 'monoBehaviour.pptr'
+       AND json_extract(avatarMesh.raw_json, '$.details.path') = 'avatarMeshAsset'
       WHERE assistantRel.from_file = cell.serialized_file
         AND assistantRel.from_path_id = cell.path_id
         AND assistantRel.relation = 'monoBehaviour.pptr'
@@ -175,7 +180,7 @@ LIMIT 1;";
             using var reader = command.ExecuteReader();
             if (!reader.Read())
             {
-                throw new InvalidDataException($"No Naraka ActorBodyVisualCell GameObject found for selector: {selector}");
+                throw new InvalidDataException($"No Naraka ActorBodyVisualCell with lod0RendererAssistants -> avatarMeshAsset chain found for selector: {selector}");
             }
 
             return new TargetSelection
