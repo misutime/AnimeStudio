@@ -59,6 +59,7 @@ namespace AnimeStudio.CLI
             var transformNodeObjects = DistinctObjects(transformNodeEvidence
                 .SelectMany(x => LoadTransformNodeRefs(connection, x.VisualCellSourcePath, target.VisualCellFile, x.VisualCellPathId)))
                 .ToList();
+            var hairCustomizationTintObjects = LoadHairCustomizationTintObjects(connection).ToList();
             var monoObjects = new List<SourceObjectRef>
             {
                 new(target.VisualCellName, target.VisualCellSourcePath, target.VisualCellFile, target.VisualCellPathId, "ActorBodyVisualCell")
@@ -106,6 +107,12 @@ namespace AnimeStudio.CLI
                 ["skinnedMeshRendererExport"] = BuildExportBlock(rendererObjects, sourceRoot),
                 ["transformNodeExport"] = BuildExportBlock(transformNodeObjects, sourceRoot),
                 ["materialTextureExport"] = BuildExportBlock(materialObjects, sourceRoot),
+                ["hairCustomizationTintExport"] = new JObject
+                {
+                    ["status"] = hairCustomizationTintObjects.Count > 0 ? "globalTintConfigFound" : "missing",
+                    ["rule"] = "这些对象只导出 Naraka 全局发型 customization/tint 字段，方便后续材质研究；没有和选中 VisualCell/GameObject 的确定性引用前，不能把这些颜色应用到当前模型。",
+                    ["export"] = BuildExportBlock(hairCustomizationTintObjects, sourceRoot),
+                },
                 ["lod0Parts"] = new JArray(parts.Select(x => x.ToJson())),
                 ["boneDriverHints"] = new JObject
                 {
@@ -125,7 +132,7 @@ namespace AnimeStudio.CLI
                     ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；计划器会完整导出同包节点表，并把 PathID 分块写入命令，避免后续 TRS/节点诊断被采样截断。它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
                 },
             };
-            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, rendererObjects, transformNodeObjects, materialObjects);
+            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, rendererObjects, transformNodeObjects, materialObjects, hairCustomizationTintObjects);
 
             var planPath = Path.Combine(outputFolder, "naraka_avatar_mesh_export_plan.json");
             File.WriteAllText(planPath, plan.ToString(Formatting.Indented));
@@ -425,6 +432,44 @@ ORDER BY script.name, obj.path_id;";
             }
         }
 
+        private static IEnumerable<SourceObjectRef> LoadHairCustomizationTintObjects(SqliteConnection connection)
+        {
+            // 这些全局配置能解释 Naraka 发型 shader 的调色字段，但不能证明当前模型使用了哪一组颜色。
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT obj.name,
+       obj.source_path,
+       obj.serialized_file,
+       obj.path_id,
+       script.name
+FROM source_objects obj
+JOIN source_relations scriptRel INDEXED BY idx_source_relations_from
+  ON scriptRel.from_file = obj.serialized_file
+ AND scriptRel.from_path_id = obj.path_id
+ AND scriptRel.relation = 'monoBehaviour.script'
+JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE obj.type = 'MonoBehaviour'
+  AND script.name IN (
+      'HairCustomConfigAsset',
+      'SpecialHairCustomColorData',
+      'SpecialHairCustomPartDecorator',
+      'SpecialHairCustomPartDecoratorGroup'
+  )
+ORDER BY script.name, obj.name COLLATE NOCASE, obj.path_id;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                yield return new SourceObjectRef(
+                    reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetInt64(3),
+                    reader.IsDBNull(4) ? "HairCustomizationTint" : reader.GetString(4));
+            }
+        }
+
         private static IEnumerable<ActorBodyVisualCellTransformNodes> LoadActorBodyVisualCellTransformNodeEvidence(SqliteConnection connection, string serializedFile)
         {
             var file = NormalizeSerializedFileName(serializedFile);
@@ -676,7 +721,8 @@ LIMIT 1;";
             IReadOnlyList<SourceObjectRef> monoObjects,
             IReadOnlyList<SourceObjectRef> rendererObjects,
             IReadOnlyList<SourceObjectRef> transformNodeObjects,
-            IReadOnlyList<SourceObjectRef> materialObjects)
+            IReadOnlyList<SourceObjectRef> materialObjects,
+            IReadOnlyList<SourceObjectRef> hairCustomizationTintObjects)
         {
             var commands = new JObject();
             if (string.IsNullOrWhiteSpace(sourceRoot))
@@ -707,6 +753,13 @@ LIMIT 1;";
             if (materialObjects.Count > 0)
             {
                 foreach (var step in BuildExportSteps("exportMaterialsAndTextures", sourceRoot, outputFolder, sourceIndexPath, "Material Texture2D", materialObjects))
+                {
+                    steps.Add(step.ToJson());
+                }
+            }
+            if (hairCustomizationTintObjects.Count > 0)
+            {
+                foreach (var step in BuildExportSteps("dumpHairCustomizationTintConfigs", sourceRoot, dumpRoot, sourceIndexPath, "MonoBehaviour", hairCustomizationTintObjects))
                 {
                     steps.Add(step.ToJson());
                 }
@@ -742,6 +795,9 @@ LIMIT 1;";
                 .Select(x => (string)x["command"]));
             commands["exportMaterialsAndTextures"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
                 .Where(x => ((string)x["name"])?.StartsWith("exportMaterialsAndTextures", StringComparison.OrdinalIgnoreCase) == true)
+                .Select(x => (string)x["command"]));
+            commands["dumpHairCustomizationTintConfigs"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
+                .Where(x => ((string)x["name"])?.StartsWith("dumpHairCustomizationTintConfigs", StringComparison.OrdinalIgnoreCase) == true)
                 .Select(x => (string)x["command"]));
             commands["exportGltf"] = exportGltf;
             commands["buildSqliteIndex"] = buildSqliteIndex;

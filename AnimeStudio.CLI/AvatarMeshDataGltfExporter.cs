@@ -521,7 +521,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
             var materialRefCount = materialBindings.Values.Sum(x => x.Materials.Count);
             var materialTextureRefCount = materialBindings.Values.Sum(x => x.Materials.Sum(y => y.TextureRefCount));
-            var hairCustomizationTintEvidence = LoadHairCustomizationTintEvidence(sourceIndexPath, selectedVisualCell, warnings);
+            var hairCustomizationTintEvidence = LoadHairCustomizationTintEvidence(sourceIndexPath, selectedVisualCell, warnings, jsonFolder);
             var report = new JObject
             {
                 ["status"] = warnings.Count == 0 ? "ok" : "warning",
@@ -1057,6 +1057,8 @@ namespace AnimeStudio.CLI
             {
                 AppendKeyValue(sb, "tint 脚本实例数", ToText(tintEvidence["totalScriptInstanceCount"]));
                 AppendKeyValue(sb, "和选中模型直接 PPtr", ToText(tintEvidence["directLinkCount"]));
+                AppendKeyValue(sb, "完整颜色字段数", ToText(tintEvidence["typeTreeColorDataCount"]));
+                AppendKeyValue(sb, "特殊分区配置数", ToText(tintEvidence["typeTreePartDataCount"]));
             }
             sb.AppendLine();
             sb.AppendLine("## glTF 材质");
@@ -3548,7 +3550,8 @@ LIMIT 1;";
         private static HairCustomizationTintEvidence LoadHairCustomizationTintEvidence(
             string sourceIndexPath,
             SelectedVisualCellInfo selectedVisualCell,
-            List<string> warnings)
+            List<string> warnings,
+            string typeTreeJsonFolder)
         {
             // 这里先只做保守诊断：有脚本、无直连、字段不完整时继续保留 needsCustomizationTint。
             var evidence = new HairCustomizationTintEvidence
@@ -3558,8 +3561,13 @@ LIMIT 1;";
                 SelectedVisualCellPathId = selectedVisualCell?.PathId,
                 SelectedGameObjectPathId = selectedVisualCell?.GameObjectPathId,
             };
+            LoadHairCustomizationTypeTreeEvidence(typeTreeJsonFolder, evidence);
             if (string.IsNullOrWhiteSpace(sourceIndexPath))
             {
+                if (evidence.TypeTreeColorDataCount > 0 || evidence.TypeTreePartDataCount > 0)
+                {
+                    evidence.Status = "customizationTypeTreeFieldsExportedNoSourceIndex";
+                }
                 return evidence;
             }
             if (!File.Exists(sourceIndexPath))
@@ -3576,13 +3584,7 @@ LIMIT 1;";
                 connection.Open();
                 LoadHairCustomizationScriptCounts(connection, evidence);
                 CountHairCustomizationDirectLinks(connection, evidence);
-                evidence.Status = evidence.TotalScriptInstanceCount <= 0
-                    ? "noCustomizationScriptsFound"
-                    : evidence.DirectLinkCount > 0
-                        ? "directCustomizationPPtrFound"
-                        : evidence.LightweightRawJsonCount >= evidence.TotalScriptInstanceCount
-                            ? "customizationScriptsPresentButRawJsonLightweight"
-                            : "customizationScriptsPresentNoDirectVisualCellLink";
+                evidence.Status = ResolveHairCustomizationTintStatus(evidence);
             }
             catch (Exception ex)
             {
@@ -3591,6 +3593,84 @@ LIMIT 1;";
             }
 
             return evidence;
+        }
+
+        private static string ResolveHairCustomizationTintStatus(HairCustomizationTintEvidence evidence)
+        {
+            if (evidence.TotalScriptInstanceCount <= 0)
+            {
+                return "noCustomizationScriptsFound";
+            }
+            if (evidence.DirectLinkCount > 0)
+            {
+                return evidence.HasTypeTreeTintFields
+                    ? "directCustomizationPPtrFoundWithTypeTreeFields"
+                    : "directCustomizationPPtrFound";
+            }
+            if (evidence.HasTypeTreeTintFields)
+            {
+                return "customizationTypeTreeFieldsExportedNoDirectVisualCellLink";
+            }
+            return evidence.LightweightRawJsonCount >= evidence.TotalScriptInstanceCount
+                ? "customizationScriptsPresentButRawJsonLightweight"
+                : "customizationScriptsPresentNoDirectVisualCellLink";
+        }
+
+        private static void LoadHairCustomizationTypeTreeEvidence(string typeTreeJsonFolder, HairCustomizationTintEvidence evidence)
+        {
+            if (string.IsNullOrWhiteSpace(typeTreeJsonFolder) || !Directory.Exists(typeTreeJsonFolder))
+            {
+                return;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(typeTreeJsonFolder, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                JObject json;
+                try
+                {
+                    json = JObject.Parse(File.ReadAllText(path));
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+
+                var name = (string)json["m_Name"] ?? Path.GetFileNameWithoutExtension(path);
+                var colorData = json["MyData"] as JObject;
+                if (colorData?["HighLightingColor"] is JObject highLightingColor)
+                {
+                    evidence.TypeTreeColorDataCount++;
+                    if (evidence.TypeTreeColorSamples.Count < 8)
+                    {
+                        evidence.TypeTreeColorSamples.Add(new HairCustomizationColorSample
+                        {
+                            Name = name,
+                            Description = (string)colorData["Description"],
+                            HighLightingColor = highLightingColor,
+                            Ks = colorData["Ks"] as JObject,
+                            KsBoost = colorData["KsBoost"]?.Value<double?>(),
+                            KsWidth = colorData["KsWidth"]?.Value<double?>(),
+                        });
+                    }
+                }
+                if (json["HighLightingAreaOverride"] is JArray)
+                {
+                    evidence.TypeTreePartDataCount++;
+                }
+                if (json["CustomColorCandidates"] is JArray candidates)
+                {
+                    evidence.TypeTreeGroupCount++;
+                    evidence.TypeTreeGroupCandidateCount += candidates.Count;
+                }
+                if (string.Equals(name, "hair_custom_config_asset", StringComparison.OrdinalIgnoreCase))
+                {
+                    evidence.TypeTreeConfigCount++;
+                }
+            }
         }
 
         private static void LoadHairCustomizationScriptCounts(SqliteConnection connection, HairCustomizationTintEvidence evidence)
@@ -5951,9 +6031,16 @@ LIMIT 1;";
             public long? SelectedVisualCellPathId { get; set; }
             public long? SelectedGameObjectPathId { get; set; }
             public long DirectLinkCount { get; set; }
+            public int TypeTreeColorDataCount { get; set; }
+            public int TypeTreePartDataCount { get; set; }
+            public int TypeTreeGroupCount { get; set; }
+            public int TypeTreeConfigCount { get; set; }
+            public int TypeTreeGroupCandidateCount { get; set; }
+            public List<HairCustomizationColorSample> TypeTreeColorSamples { get; } = new();
             public List<HairCustomizationScriptCount> ScriptCounts { get; } = new();
             public long TotalScriptInstanceCount => ScriptCounts.Sum(x => x.InstanceCount);
             public long LightweightRawJsonCount => ScriptCounts.Where(x => x.RawJsonLooksLightweight).Sum(x => x.InstanceCount);
+            public bool HasTypeTreeTintFields => TypeTreeColorDataCount > 0 || TypeTreePartDataCount > 0 || TypeTreeGroupCount > 0;
 
             public JObject ToJson() => new()
             {
@@ -5965,7 +6052,33 @@ LIMIT 1;";
                 ["lightweightRawJsonCount"] = LightweightRawJsonCount,
                 ["directLinkCount"] = DirectLinkCount,
                 ["scriptCounts"] = new JArray(ScriptCounts.Select(x => x.ToJson())),
+                ["typeTreeColorDataCount"] = TypeTreeColorDataCount,
+                ["typeTreePartDataCount"] = TypeTreePartDataCount,
+                ["typeTreeGroupCount"] = TypeTreeGroupCount,
+                ["typeTreeConfigCount"] = TypeTreeConfigCount,
+                ["typeTreeGroupCandidateCount"] = TypeTreeGroupCandidateCount,
+                ["typeTreeColorSamples"] = new JArray(TypeTreeColorSamples.Select(x => x.ToJson())),
                 ["rule"] = "这些脚本名只证明 Naraka 存在发型 customization/tint 配置域；没有选中 VisualCell/GameObject 的直接 PPtr 和可解释颜色字段前，不能把它们应用到当前模型。"
+            };
+        }
+
+        private sealed class HairCustomizationColorSample
+        {
+            public string Name { get; set; }
+            public string Description { get; set; }
+            public JObject HighLightingColor { get; set; }
+            public JObject Ks { get; set; }
+            public double? KsBoost { get; set; }
+            public double? KsWidth { get; set; }
+
+            public JObject ToJson() => new()
+            {
+                ["name"] = Name,
+                ["description"] = Description,
+                ["highLightingColor"] = HighLightingColor?.DeepClone(),
+                ["ks"] = Ks?.DeepClone(),
+                ["ksBoost"] = KsBoost,
+                ["ksWidth"] = KsWidth,
             };
         }
 
