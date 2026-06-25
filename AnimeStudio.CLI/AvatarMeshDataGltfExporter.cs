@@ -365,6 +365,7 @@ namespace AnimeStudio.CLI
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, warnings);
             var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
             var rendererListEvidence = LoadVisualCellRendererListEvidence(visualCell, selectedVisualCell.SerializedFile, sourceIndexPath, warnings);
+            var childComponentEvidence = LoadSelectedVisualCellChildComponentEvidence(selectedVisualCell, sourceIndexPath, warnings);
             var boneDriverNodeNames = BuildBoneDriverNodeNameSet(boneDriverHints);
             foreach (var part in parts)
             {
@@ -467,6 +468,13 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellTransformPathStatus"] = selectedVisualCell.TransformPathStatus,
                 ["selectedVisualCellDirectChildCount"] = selectedVisualCell.DirectChildCount,
                 ["selectedVisualCellDirectChildNames"] = new JArray(selectedVisualCell.DirectChildNames.Select(x => new JValue(x))),
+                ["selectedVisualCellChildComponentStatus"] = childComponentEvidence.Status,
+                ["selectedVisualCellChildGameObjectCount"] = childComponentEvidence.ChildGameObjectCount,
+                ["selectedVisualCellChildComponentCount"] = childComponentEvidence.ComponentCount,
+                ["selectedVisualCellChildSkinnedMeshRendererCount"] = childComponentEvidence.SkinnedMeshRendererCount,
+                ["selectedVisualCellChildMonoBehaviourCount"] = childComponentEvidence.MonoBehaviourCount,
+                ["selectedVisualCellChildMonoBehaviourScriptNames"] = new JArray(childComponentEvidence.MonoBehaviourScriptNames.Select(x => new JValue(x))),
+                ["selectedVisualCellChildComponents"] = childComponentEvidence.ToJson(),
                 ["selectedVisualCellTransformNodeCount"] = selectedVisualCell.TransformNodeCount,
                 ["visualCellRendererAssistantCount"] = rendererListEvidence.RendererAssistantCount,
                 ["visualCellAvatarRendererCount"] = rendererListEvidence.AvatarRendererCount,
@@ -702,6 +710,12 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellTransformPathStatus"] = report["selectedVisualCellTransformPathStatus"]?.DeepClone(),
                 ["selectedVisualCellDirectChildCount"] = report["selectedVisualCellDirectChildCount"]?.DeepClone(),
                 ["selectedVisualCellDirectChildNames"] = report["selectedVisualCellDirectChildNames"]?.DeepClone(),
+                ["selectedVisualCellChildComponentStatus"] = report["selectedVisualCellChildComponentStatus"]?.DeepClone(),
+                ["selectedVisualCellChildGameObjectCount"] = report["selectedVisualCellChildGameObjectCount"]?.DeepClone(),
+                ["selectedVisualCellChildComponentCount"] = report["selectedVisualCellChildComponentCount"]?.DeepClone(),
+                ["selectedVisualCellChildSkinnedMeshRendererCount"] = report["selectedVisualCellChildSkinnedMeshRendererCount"]?.DeepClone(),
+                ["selectedVisualCellChildMonoBehaviourCount"] = report["selectedVisualCellChildMonoBehaviourCount"]?.DeepClone(),
+                ["selectedVisualCellChildMonoBehaviourScriptNames"] = report["selectedVisualCellChildMonoBehaviourScriptNames"]?.DeepClone(),
                 ["visualCellRendererAssistantCount"] = report["visualCellRendererAssistantCount"]?.DeepClone(),
                 ["visualCellAvatarRendererCount"] = report["visualCellAvatarRendererCount"]?.DeepClone(),
                 ["visualCellMeshRendererCount"] = report["visualCellMeshRendererCount"]?.DeepClone(),
@@ -806,6 +820,7 @@ namespace AnimeStudio.CLI
                     ["rendererListBasis"] = "ActorBodyVisualCell.rendererAssistants/avatarRenderers/meshRenderer/lod*RendererAssistants",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
                     ["selectedTransformHierarchyBasis"] = "GameObject.component -> Transform / Transform.child / Transform.parent from unity_source_index.db",
+                    ["selectedChildComponentBasis"] = "selected VisualCell Transform child -> GameObject.component -> Component/MonoBehaviour.script from unity_source_index.db",
                     ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                     ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；BoneDriver 会同时区分全目录线索和选中 VisualCell 作用域，Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
@@ -3153,6 +3168,218 @@ LIMIT $limit;";
                 .ToArray();
         }
 
+        private static SelectedVisualCellChildComponentEvidence LoadSelectedVisualCellChildComponentEvidence(
+            SelectedVisualCellInfo selectedVisualCell,
+            string sourceIndexPath,
+            List<string> warnings)
+        {
+            var evidence = new SelectedVisualCellChildComponentEvidence
+            {
+                Status = string.IsNullOrWhiteSpace(sourceIndexPath) ? "sourceIndexNotProvided" : "missingSelectedTransform",
+                SerializedFile = selectedVisualCell?.SerializedFile,
+                ParentTransformPathId = selectedVisualCell?.TransformPathId,
+            };
+
+            if (selectedVisualCell == null || !selectedVisualCell.TransformPathId.HasValue)
+            {
+                return evidence;
+            }
+            if (string.IsNullOrWhiteSpace(sourceIndexPath))
+            {
+                evidence.Status = "sourceIndexNotProvided";
+                return evidence;
+            }
+            if (!File.Exists(sourceIndexPath))
+            {
+                evidence.Status = "sourceIndexMissing";
+                warnings?.Add($"missingSourceIndexForSelectedChildComponents:{sourceIndexPath}");
+                return evidence;
+            }
+            if (string.IsNullOrWhiteSpace(selectedVisualCell.SerializedFile))
+            {
+                evidence.Status = "missingSelectedVisualCellFile";
+                return evidence;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                var file = NormalizeSerializedFileName(selectedVisualCell.SerializedFile);
+                evidence.SerializedFile = file;
+                evidence.Children = LoadSelectedVisualCellChildComponents(connection, file, selectedVisualCell.TransformPathId.Value, maxCount: 64);
+                evidence.Status = ResolveSelectedVisualCellChildComponentStatus(evidence);
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
+            {
+                warnings?.Add($"selectedVisualCellChildComponentQueryFailed:{ex.Message}");
+                evidence.Status = "sourceIndexQueryFailed";
+            }
+
+            return evidence;
+        }
+
+        private static IReadOnlyList<SelectedVisualCellChildGameObject> LoadSelectedVisualCellChildComponents(
+            SqliteConnection connection,
+            string serializedFile,
+            long parentTransformPathId,
+            int maxCount)
+        {
+            var childTransformIds = new List<long>();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.from_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_to
+WHERE rel.to_file = $file
+  AND rel.to_path_id = $pathId
+  AND rel.relation = 'transform.parent'
+ORDER BY rel.from_path_id
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile));
+            command.Parameters.AddWithValue("$pathId", parentTransformPathId);
+            command.Parameters.AddWithValue("$limit", Math.Max(1, maxCount));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                childTransformIds.Add(reader.GetInt64(0));
+            }
+
+            var children = new List<SelectedVisualCellChildGameObject>();
+            foreach (var transformPathId in childTransformIds)
+            {
+                var gameObjectPathId = ResolveGameObjectForComponent(connection, serializedFile, transformPathId);
+                var gameObjectName = ResolveObjectName(connection, serializedFile, gameObjectPathId);
+                children.Add(new SelectedVisualCellChildGameObject
+                {
+                    TransformPathId = transformPathId,
+                    GameObjectPathId = gameObjectPathId == 0 ? null : gameObjectPathId,
+                    GameObjectName = gameObjectName,
+                    Components = LoadGameObjectComponents(connection, serializedFile, gameObjectPathId),
+                });
+            }
+
+            return children
+                .OrderBy(x => x.GameObjectName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.TransformPathId)
+                .ToArray();
+        }
+
+        private static IReadOnlyList<SelectedVisualCellComponent> LoadGameObjectComponents(
+            SqliteConnection connection,
+            string serializedFile,
+            long gameObjectPathId)
+        {
+            var components = new List<SelectedVisualCellComponent>();
+            if (gameObjectPathId == 0)
+            {
+                return components;
+            }
+
+            var rows = new List<(long PathId, string Type, int? ClassId, string Name)>();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.to_path_id,
+       obj.type,
+       obj.class_id,
+       obj.name
+FROM source_relations rel INDEXED BY idx_source_relations_from
+LEFT JOIN source_objects obj INDEXED BY idx_source_objects_file_path
+  ON obj.serialized_file = rel.to_file
+ AND obj.path_id = rel.to_path_id
+WHERE rel.from_file = $file
+  AND rel.from_path_id = $pathId
+  AND rel.relation = 'gameObject.component'
+ORDER BY CASE obj.type
+    WHEN 'Transform' THEN 0
+    WHEN 'SkinnedMeshRenderer' THEN 1
+    WHEN 'MeshRenderer' THEN 2
+    WHEN 'MonoBehaviour' THEN 3
+    ELSE 4
+  END,
+  rel.to_path_id;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile));
+            command.Parameters.AddWithValue("$pathId", gameObjectPathId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var pathId = reader.GetInt64(0);
+                var type = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                var classId = reader.IsDBNull(2) ? (int?)null : Convert.ToInt32(reader.GetValue(2), CultureInfo.InvariantCulture);
+                var name = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                rows.Add((pathId, type, classId, name));
+            }
+
+            foreach (var row in rows)
+            {
+                components.Add(new SelectedVisualCellComponent
+                {
+                    PathId = row.PathId,
+                    Type = row.Type,
+                    ClassId = row.ClassId,
+                    Name = row.Name,
+                    ScriptName = string.Equals(row.Type, "MonoBehaviour", StringComparison.OrdinalIgnoreCase)
+                        ? ResolveMonoBehaviourScriptName(connection, serializedFile, row.PathId)
+                        : string.Empty,
+                });
+            }
+
+            return components;
+        }
+
+        private static string ResolveMonoBehaviourScriptName(SqliteConnection connection, string serializedFile, long monoBehaviourPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT script.name
+FROM source_relations rel INDEXED BY idx_source_relations_from
+LEFT JOIN source_objects script INDEXED BY idx_source_objects_file_path
+  ON script.serialized_file = rel.to_file
+ AND script.path_id = rel.to_path_id
+WHERE rel.from_file = $file
+  AND rel.from_path_id = $pathId
+  AND rel.relation = 'monoBehaviour.script'
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile));
+            command.Parameters.AddWithValue("$pathId", monoBehaviourPathId);
+            return command.ExecuteScalar() as string ?? string.Empty;
+        }
+
+        private static string ResolveSelectedVisualCellChildComponentStatus(SelectedVisualCellChildComponentEvidence evidence)
+        {
+            if (evidence == null)
+            {
+                return "missing";
+            }
+
+            var children = evidence.Children ?? Array.Empty<SelectedVisualCellChildGameObject>();
+            if (children.Count == 0)
+            {
+                return "selectedVisualCellHasNoChildObjects";
+            }
+
+            var hasSkinnedMeshRenderer = evidence.SkinnedMeshRendererCount > 0;
+            var scripts = new HashSet<string>(evidence.MonoBehaviourScriptNames, StringComparer.OrdinalIgnoreCase);
+            var hasOnlyKnownRendererScripts = scripts.All(x =>
+                string.Equals(x, "LXRendererAssistant", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x, "CustomTags", StringComparison.OrdinalIgnoreCase));
+            var hasOnlyKnownComponents = children
+                .SelectMany(x => x.Components ?? Array.Empty<SelectedVisualCellComponent>())
+                .All(x =>
+                    string.Equals(x.Type, "Transform", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(x.Type, "SkinnedMeshRenderer", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(x.Type, "MonoBehaviour", StringComparison.OrdinalIgnoreCase));
+
+            if (hasSkinnedMeshRenderer && hasOnlyKnownComponents && hasOnlyKnownRendererScripts)
+            {
+                return "childComponentsRendererAssistantAndTagsOnly";
+            }
+
+            return scripts.Count > 0
+                ? "childComponentsContainCustomScripts"
+                : "childComponentsCollected";
+        }
+
         private static VisualCellRendererListEvidence LoadVisualCellRendererListEvidence(
             JObject visualCell,
             string serializedFile,
@@ -3974,6 +4201,76 @@ LIMIT 1;";
             int DirectChildCount,
             IReadOnlyList<string> DirectChildNames,
             int? TransformNodeCount);
+
+        private sealed class SelectedVisualCellChildComponentEvidence
+        {
+            public string Status { get; set; }
+            public string SerializedFile { get; set; }
+            public long? ParentTransformPathId { get; set; }
+            public IReadOnlyList<SelectedVisualCellChildGameObject> Children { get; set; } = Array.Empty<SelectedVisualCellChildGameObject>();
+
+            public int ChildGameObjectCount => Children?.Count ?? 0;
+            public int ComponentCount => Children?.Sum(x => x.Components?.Count ?? 0) ?? 0;
+            public int SkinnedMeshRendererCount => Children?.Sum(x => x.Components?.Count(y => string.Equals(y.Type, "SkinnedMeshRenderer", StringComparison.OrdinalIgnoreCase)) ?? 0) ?? 0;
+            public int MonoBehaviourCount => Children?.Sum(x => x.Components?.Count(y => string.Equals(y.Type, "MonoBehaviour", StringComparison.OrdinalIgnoreCase)) ?? 0) ?? 0;
+            public IReadOnlyList<string> MonoBehaviourScriptNames => (Children ?? Array.Empty<SelectedVisualCellChildGameObject>())
+                .SelectMany(x => x.Components ?? Array.Empty<SelectedVisualCellComponent>())
+                .Where(x => string.Equals(x.Type, "MonoBehaviour", StringComparison.OrdinalIgnoreCase))
+                .Select(x => string.IsNullOrWhiteSpace(x.ScriptName) ? x.Name : x.ScriptName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["serializedFile"] = SerializedFile,
+                ["parentTransformPathId"] = ParentTransformPathId,
+                ["childGameObjectCount"] = ChildGameObjectCount,
+                ["componentCount"] = ComponentCount,
+                ["skinnedMeshRendererCount"] = SkinnedMeshRendererCount,
+                ["monoBehaviourCount"] = MonoBehaviourCount,
+                ["monoBehaviourScriptNames"] = new JArray(MonoBehaviourScriptNames.Select(x => new JValue(x))),
+                ["children"] = new JArray((Children ?? Array.Empty<SelectedVisualCellChildGameObject>()).Take(64).Select(x => x.ToJson())),
+                ["rule"] = "只记录选中 ActorBodyVisualCell Transform 直属子节点的组件清单；SkinnedMeshRenderer/LXRendererAssistant/CustomTags 只能证明层级和渲染组件存在，不能证明 AvatarBoneWeights boneIndex 到 joint 的映射。"
+            };
+        }
+
+        private sealed class SelectedVisualCellChildGameObject
+        {
+            public long TransformPathId { get; init; }
+            public long? GameObjectPathId { get; init; }
+            public string GameObjectName { get; init; }
+            public IReadOnlyList<SelectedVisualCellComponent> Components { get; init; } = Array.Empty<SelectedVisualCellComponent>();
+
+            public JObject ToJson() => new()
+            {
+                ["gameObjectName"] = GameObjectName,
+                ["gameObjectPathId"] = GameObjectPathId,
+                ["transformPathId"] = TransformPathId,
+                ["componentCount"] = Components?.Count ?? 0,
+                ["components"] = new JArray((Components ?? Array.Empty<SelectedVisualCellComponent>()).Select(x => x.ToJson())),
+            };
+        }
+
+        private sealed class SelectedVisualCellComponent
+        {
+            public long PathId { get; init; }
+            public string Type { get; init; }
+            public int? ClassId { get; init; }
+            public string Name { get; init; }
+            public string ScriptName { get; init; }
+
+            public JObject ToJson() => new()
+            {
+                ["pathId"] = PathId,
+                ["type"] = Type,
+                ["classId"] = ClassId,
+                ["name"] = Name,
+                ["scriptName"] = string.IsNullOrWhiteSpace(ScriptName) ? null : ScriptName,
+            };
+        }
 
         private sealed class VisualCellRendererListEvidence
         {
