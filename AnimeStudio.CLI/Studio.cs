@@ -4247,6 +4247,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 reasons.Add("missing_renderer_material_binding");
             }
+            if (ModelMaterialNeedsAnimationReview(model))
+            {
+                reasons.Add("material_customization_tint_not_ready");
+            }
             if ((JsonLong(model, "unresolvedModelDependencyCount") ?? 0) > 0)
             {
                 reasons.Add("unresolved_model_dependencies");
@@ -4291,6 +4295,11 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 ["materialCount"] = JsonLong(model, "materialCount") ?? JsonLong(body, "MaterialCount"),
                 ["textureCount"] = JsonLong(model, "textureCount") ?? JsonLong(body, "TextureCount"),
                 ["materialImageCount"] = JsonLong(model, "materialImageCount") ?? JsonLong(body, "ImageCount"),
+                ["materialStatus"] = JsonText(model, "materialStatus"),
+                ["materialNeedsCustomizationTint"] = JsonBool(model, "materialNeedsCustomizationTint"),
+                ["materialStatusCounts"] = model?["materialStatusCounts"]?.DeepClone(),
+                ["modelConversionIssueCount"] = JsonLong(model, "modelConversionIssueCount") ?? 0,
+                ["modelConversionIssueTypes"] = model?["modelConversionIssueTypes"]?.DeepClone(),
                 ["skinCount"] = JsonLong(model, "skinCount") ?? JsonLong(body, "SkinCount"),
                 ["unresolvedModelDependencyCount"] = JsonLong(model, "unresolvedModelDependencyCount") ?? 0,
                 ["unresolvedModelDependencyTypes"] = model?["unresolvedModelDependencyTypes"]?.DeepClone(),
@@ -4306,6 +4315,23 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 distinctReasons.Length == 0 ? "ready" : "blocked",
                 distinctReasons,
                 evidence);
+        }
+
+        private static bool ModelMaterialNeedsAnimationReview(JObject model)
+        {
+            if (model == null)
+            {
+                return false;
+            }
+
+            if (JsonBool(model, "materialNeedsCustomizationTint"))
+            {
+                return true;
+            }
+
+            var status = JsonText(model, "materialStatus");
+            return string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase);
         }
 
         private static JObject BuildModelAnimationGateJson(ModelAnimationGate gate)

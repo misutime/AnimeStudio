@@ -2483,6 +2483,10 @@ LIMIT 2;";
             {
                 reasons.Add("missing_renderer_material_binding");
             }
+            if (ModelMaterialNeedsAnimationReview(model))
+            {
+                reasons.Add("material_customization_tint_not_ready");
+            }
             if ((I(model, "unresolvedModelDependencyCount") ?? 0) > 0)
             {
                 reasons.Add("unresolved_model_dependencies");
@@ -2527,6 +2531,11 @@ LIMIT 2;";
                 ["materialCount"] = I(model, "materialCount") ?? I(body, "MaterialCount"),
                 ["textureCount"] = I(model, "textureCount") ?? I(body, "TextureCount"),
                 ["materialImageCount"] = I(model, "materialImageCount") ?? I(body, "ImageCount"),
+                ["materialStatus"] = S(model, "materialStatus"),
+                ["materialNeedsCustomizationTint"] = IsTrue(model, "materialNeedsCustomizationTint"),
+                ["materialStatusCounts"] = model?["materialStatusCounts"]?.DeepClone(),
+                ["modelConversionIssueCount"] = I(model, "modelConversionIssueCount") ?? 0,
+                ["modelConversionIssueTypes"] = model?["modelConversionIssueTypes"]?.DeepClone(),
                 ["skinCount"] = I(model, "skinCount") ?? I(body, "SkinCount"),
                 ["unresolvedModelDependencyCount"] = I(model, "unresolvedModelDependencyCount") ?? 0,
                 ["unresolvedModelDependencyTypes"] = model?["unresolvedModelDependencyTypes"]?.DeepClone(),
@@ -2542,6 +2551,23 @@ LIMIT 2;";
                 reasons.Count == 0 ? "ready" : "blocked",
                 reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                 evidence);
+        }
+
+        private static bool ModelMaterialNeedsAnimationReview(JObject model)
+        {
+            if (model == null)
+            {
+                return false;
+            }
+
+            if (IsTrue(model, "materialNeedsCustomizationTint"))
+            {
+                return true;
+            }
+
+            var status = S(model, "materialStatus");
+            return string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase);
         }
 
         private static JObject BuildModelAnimationGateJson(ModelAnimationGate gate)
