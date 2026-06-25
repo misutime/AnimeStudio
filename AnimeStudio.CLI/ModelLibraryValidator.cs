@@ -448,10 +448,16 @@ namespace AnimeStudio.CLI
             var positionVertexCount = 0L;
             var bounds = ModelBounds.Empty();
 
-            foreach (var mesh in meshes)
+            var meshLabels = BuildMeshLabels(nodes, meshes);
+            var missingMaterialPrimitives = new List<string>();
+
+            for (var meshIndex = 0; meshIndex < meshes.Length; meshIndex++)
             {
+                var mesh = meshes[meshIndex];
+                var primitiveIndex = -1;
                 foreach (var primitive in mesh["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
                 {
+                    primitiveIndex++;
                     primitiveCount++;
                     var attributes = primitive["attributes"] as JObject;
                     var position = GetAccessorIndex(attributes, "POSITION", accessors.Length);
@@ -477,6 +483,10 @@ namespace AnimeStudio.CLI
                     if ((int?)primitive["material"] != null)
                     {
                         withMaterial++;
+                    }
+                    else
+                    {
+                        missingMaterialPrimitives.Add(BuildPrimitiveLabel(meshLabels, meshIndex, primitiveIndex));
                     }
                     if (PrimitiveHasBaseColorTexture(primitive, materials, textures.Length))
                     {
@@ -518,6 +528,7 @@ namespace AnimeStudio.CLI
             if (primitiveCount > 0 && withMaterial != primitiveCount)
             {
                 evidence.Add($"材质槽覆盖 {withMaterial}/{primitiveCount} 个 primitive。");
+                evidence.Add($"缺材质 primitive: {string.Join(", ", missingMaterialPrimitives.Take(12))}{(missingMaterialPrimitives.Count > 12 ? " ..." : "")}");
             }
             if (primitiveCount > 0 && withBaseColorTexture * 2 < primitiveCount)
             {
@@ -584,8 +595,54 @@ namespace AnimeStudio.CLI
                 MissingBufferCount = missingBuffers,
                 EmptyBufferCount = emptyBuffers,
                 Bounds = bounds.ToReport(),
+                MissingMaterialPrimitives = missingMaterialPrimitives.ToArray(),
                 Evidence = evidence.ToArray(),
             };
+        }
+
+        private static string[] BuildMeshLabels(JObject[] nodes, JObject[] meshes)
+        {
+            var labels = new string[meshes.Length];
+            for (var nodeIndex = 0; nodeIndex < nodes.Length; nodeIndex++)
+            {
+                var meshIndex = (int?)nodes[nodeIndex]["mesh"];
+                if (!meshIndex.HasValue || meshIndex.Value < 0 || meshIndex.Value >= labels.Length)
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(labels[meshIndex.Value]))
+                {
+                    labels[meshIndex.Value] = (string)nodes[nodeIndex]["name"];
+                }
+            }
+
+            for (var meshIndex = 0; meshIndex < meshes.Length; meshIndex++)
+            {
+                if (!string.IsNullOrWhiteSpace(labels[meshIndex]))
+                {
+                    continue;
+                }
+
+                labels[meshIndex] = (string)meshes[meshIndex]["name"];
+            }
+
+            return labels;
+        }
+
+        private static string BuildPrimitiveLabel(string[] meshLabels, int meshIndex, int primitiveIndex)
+        {
+            var label = meshIndex >= 0 && meshIndex < meshLabels.Length
+                ? meshLabels[meshIndex]
+                : null;
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                label = $"mesh[{meshIndex}]";
+            }
+
+            return primitiveIndex > 0
+                ? $"{label}.primitive[{primitiveIndex}]"
+                : label;
         }
 
         private static int? GetAccessorIndex(JObject attributes, string name, int accessorCount)
@@ -674,6 +731,7 @@ namespace AnimeStudio.CLI
             public int MissingBufferCount { get; set; }
             public int EmptyBufferCount { get; set; }
             public BoundsReport Bounds { get; set; }
+            public string[] MissingMaterialPrimitives { get; set; }
             public string[] Evidence { get; set; }
         }
 
