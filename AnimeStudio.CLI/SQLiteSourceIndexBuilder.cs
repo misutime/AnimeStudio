@@ -2667,7 +2667,8 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
         private static JObject BuildMaterialRelationHealth(SqliteConnection connection)
         {
             var materialObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='Material';");
-            var textureObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type IN ('Texture2D', 'Texture2DArray');");
+            var texture2DOrArrayObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type IN ('Texture2D', 'Texture2DArray');");
+            var unityTextureObjects = ScalarLong(connection, $"SELECT COUNT(*) FROM source_objects WHERE {UnityTextureTypeSql("source_objects")};");
             var meshRendererObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='MeshRenderer';");
             var skinnedRendererObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='SkinnedMeshRenderer';");
             var rendererMaterialRelations = SourceRelationCount(connection, "renderer.material");
@@ -2696,7 +2697,7 @@ FROM source_relations r
 JOIN source_objects o
   ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
- AND o.type IN ('Texture2D', 'Texture2DArray')
+ AND " + UnityTextureTypeSql("o") + @"
 WHERE r.relation = 'material.texture';");
             var materialsWithTexture = ScalarLong(connection, @"
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id)
@@ -2711,7 +2712,7 @@ WHERE r.relation = 'material.texture';");
             var missingRendererMaterialTargets = rendererMaterialDistinctEdges > 0 && rendererMaterialMissingTargets > 0;
             var missingMaterialTextureTargets = materialTextureDistinctEdges > 0 && materialTextureMissingTargets > 0;
             var missingRendererMaterialTargetSamples = BuildMissingRelationTargetSamples(connection, "renderer.material", "Material", 16);
-            var missingMaterialTextureTargetSamples = BuildMissingRelationTargetSamples(connection, "material.texture", "Texture2D", 16);
+            var missingMaterialTextureTargetSamples = BuildMissingRelationTargetSamples(connection, "material.texture", "UnityTexture", 16);
             var issues = new JArray();
             if (missingRendererMaterialTargets)
             {
@@ -2728,7 +2729,8 @@ WHERE r.relation = 'material.texture';");
                 ["objectCounts"] = new JObject
                 {
                     ["Material"] = materialObjects,
-                    ["Texture2DOrArray"] = textureObjects,
+                    ["Texture2DOrArray"] = texture2DOrArrayObjects,
+                    ["UnityTexture"] = unityTextureObjects,
                     ["MeshRenderer"] = meshRendererObjects,
                     ["SkinnedMeshRenderer"] = skinnedRendererObjects,
                 },
@@ -2766,7 +2768,7 @@ WHERE r.relation = 'material.texture';");
                 ["note"] = missingRendererMaterialTargets
                     ? "源索引包含 Renderer -> Material PPtr，但部分非 Unity 内置目标没有解析到真实 Material。模型第一阶段不能把这类样本当作材质完整；应检查完整源目录、VFS/CAB 依赖闭包或源索引解析覆盖。"
                     : missingMaterialTextureTargets
-                        ? "源索引包含 Material -> Texture PPtr，但部分非 Unity 内置目标没有解析到真实 Texture。模型可先作为材质诊断样本，不能直接作为贴图完整验收。"
+                        ? "源索引包含 Material -> Texture PPtr，但部分非 Unity 内置目标没有解析到真实 Unity 纹理对象。模型可先作为材质诊断样本，不能直接作为贴图完整验收。"
                         : "源索引里的 Renderer/Material/Texture 关系目标已在当前数据库中解析。模型仍需导出 glTF 和视觉验收。"
             };
         }
@@ -2949,6 +2951,8 @@ LIMIT $limit;";
         {
             var targetTypeFilter = string.IsNullOrWhiteSpace(targetType)
                 ? "1 = 1"
+                : targetType == "UnityTexture"
+                    ? UnityTextureTypeSql("target")
                 : targetType == "Texture2D"
                     ? "target.type IN ('Texture2D', 'Texture2DArray')"
                     : "target.type = $targetType";
@@ -2984,7 +2988,9 @@ GROUP BY r.to_file, r.to_path_id, r.to_type_hint
 ORDER BY relation_count DESC, distinct_referrer_count DESC
 LIMIT $limit;";
             command.Parameters.AddWithValue("$relation", relation);
-            if (!string.IsNullOrWhiteSpace(targetType) && targetType != "Texture2D")
+            if (!string.IsNullOrWhiteSpace(targetType)
+                && targetType != "Texture2D"
+                && targetType != "UnityTexture")
             {
                 command.Parameters.AddWithValue("$targetType", targetType);
             }
@@ -3019,6 +3025,12 @@ LIMIT $limit;";
             }
 
             return samples;
+        }
+
+        private static string UnityTextureTypeSql(string alias)
+        {
+            // Unity 的 Material.m_TexEnvs 是 PPtr<Texture>，目标不只可能是 Texture2D。
+            return $"{alias}.type IN ('Texture2D', 'Texture2DArray', 'Texture3D', 'Cubemap')";
         }
 
         private static JArray BuildMonoBehaviourPPtrTargetTypeBreakdown(SqliteConnection connection)

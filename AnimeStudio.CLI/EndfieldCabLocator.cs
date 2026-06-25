@@ -775,7 +775,7 @@ namespace AnimeStudio.CLI
             rows.AddRange(LoadMissingSourceCabRows(connection, "skinnedMeshRenderer.mesh", "Mesh"));
             rows.AddRange(LoadMissingSourceCabRows(connection, "animator.avatar", "Avatar"));
             rows.AddRange(LoadMissingSourceCabRows(connection, "renderer.material", "Material"));
-            rows.AddRange(LoadMissingSourceCabRows(connection, "material.texture", "Texture2D"));
+            rows.AddRange(LoadMissingSourceCabRows(connection, "material.texture", "UnityTexture"));
             rows.AddRange(LoadMissingSourceCabRows(connection, "animatorController.clip", "AnimationClip"));
             rows.AddRange(LoadMissingSourceCabRows(connection, "animation.clip", "AnimationClip"));
             rows.AddRange(LoadMissingSourceCabRows(connection, "animatorOverrideController.originalClip", "AnimationClip"));
@@ -810,9 +810,11 @@ namespace AnimeStudio.CLI
 
         private static IReadOnlyList<MissingCabRow> LoadMissingSourceCabRows(SqliteConnection connection, string relation, string targetType)
         {
-            var targetTypeFilter = targetType == "Texture2D"
-                ? "target.type IN ('Texture2D', 'Texture2DArray')"
-                : "target.type = $targetType";
+            var targetTypeFilter = targetType == "UnityTexture"
+                ? UnityTextureTypeSql("target")
+                : targetType == "Texture2D"
+                    ? "target.type IN ('Texture2D', 'Texture2DArray')"
+                    : "target.type = $targetType";
             using var command = connection.CreateCommand();
             command.CommandText = $@"
 SELECT
@@ -831,11 +833,11 @@ SELECT
     MIN(e.guid) AS sample_external_guid
 FROM source_relations r
 LEFT JOIN source_objects target
-  ON target.serialized_file = r.to_file
+  ON target.serialized_file = r.to_file COLLATE NOCASE
  AND target.path_id = r.to_path_id
  AND {targetTypeFilter}
 LEFT JOIN source_externals e
-  ON e.serialized_file = r.from_file
+  ON e.serialized_file = r.from_file COLLATE NOCASE
  AND e.file_id = r.to_file_id
 WHERE r.relation = $relation
   AND target.id IS NULL
@@ -875,6 +877,12 @@ ORDER BY relation_count DESC, distinct_referrer_count DESC;";
             }
 
             return rows;
+        }
+
+        private static string UnityTextureTypeSql(string alias)
+        {
+            // 材质贴图槽引用 Unity Texture 基类，Cubemap/Texture3D 也属于已解析目标。
+            return $"{alias}.type IN ('Texture2D', 'Texture2DArray', 'Texture3D', 'Cubemap')";
         }
 
         private static IEnumerable<string> ReadClosureBundleFiles(JObject report, ISet<string> allowedCabs = null)
