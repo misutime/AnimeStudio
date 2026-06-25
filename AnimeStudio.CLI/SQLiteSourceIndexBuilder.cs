@@ -78,6 +78,9 @@ namespace AnimeStudio.CLI
             EnsureIndex(connection, "idx_serialized_files_name", "serialized_files", "file_name");
             EnsureIndex(connection, "idx_source_objects_source_path", "source_objects", "source_path, path_id");
             EnsureIndex(connection, "idx_source_objects_file_path", "source_objects", "serialized_file, path_id");
+            EnsureExpressionIndex(connection, "idx_source_objects_file_path_nocase", @"
+CREATE INDEX idx_source_objects_file_path_nocase
+ON source_objects(serialized_file COLLATE NOCASE, path_id);");
             EnsureIndex(connection, "idx_source_objects_type", "source_objects", "type");
             EnsureIndex(connection, "idx_source_objects_name", "source_objects", "name");
             EnsureIndex(connection, "idx_source_externals_file", "source_externals", "serialized_file, file_id");
@@ -644,6 +647,7 @@ CREATE TABLE source_animation_bindings (
 CREATE INDEX idx_serialized_files_name ON serialized_files(file_name);
 CREATE INDEX idx_source_objects_source_path ON source_objects(source_path, path_id);
 CREATE INDEX idx_source_objects_file_path ON source_objects(serialized_file, path_id);
+CREATE INDEX idx_source_objects_file_path_nocase ON source_objects(serialized_file COLLATE NOCASE, path_id);
 CREATE INDEX idx_source_objects_type ON source_objects(type);
 CREATE INDEX idx_source_objects_name ON source_objects(name);
 CREATE INDEX idx_source_externals_file ON source_externals(serialized_file, file_id);
@@ -2671,11 +2675,12 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
 FROM source_relations r
 WHERE r.relation = 'renderer.material';");
+            var rendererMaterialUnityBuiltinTargets = SourceRelationUnityBuiltinTargetCount(connection, "renderer.material");
             var rendererMaterialResolvedTargets = ScalarLong(connection, @"
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
 FROM source_relations r
 JOIN source_objects o
-  ON o.serialized_file = r.to_file
+  ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
  AND o.type = 'Material'
 WHERE r.relation = 'renderer.material';");
@@ -2684,11 +2689,12 @@ WHERE r.relation = 'renderer.material';");
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
 FROM source_relations r
 WHERE r.relation = 'material.texture';");
+            var materialTextureUnityBuiltinTargets = SourceRelationUnityBuiltinTargetCount(connection, "material.texture");
             var materialTextureResolvedTargets = ScalarLong(connection, @"
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
 FROM source_relations r
 JOIN source_objects o
-  ON o.serialized_file = r.to_file
+  ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
  AND o.type IN ('Texture2D', 'Texture2DArray')
 WHERE r.relation = 'material.texture';");
@@ -2696,12 +2702,12 @@ WHERE r.relation = 'material.texture';");
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id)
 FROM source_relations r
 JOIN source_objects material
-  ON material.serialized_file = r.from_file
+  ON material.serialized_file = r.from_file COLLATE NOCASE
  AND material.path_id = r.from_path_id
  AND material.type = 'Material'
 WHERE r.relation = 'material.texture';");
-            var rendererMaterialMissingTargets = Math.Max(0, rendererMaterialDistinctEdges - rendererMaterialResolvedTargets);
-            var materialTextureMissingTargets = Math.Max(0, materialTextureDistinctEdges - materialTextureResolvedTargets);
+            var rendererMaterialMissingTargets = Math.Max(0, rendererMaterialDistinctEdges - rendererMaterialResolvedTargets - rendererMaterialUnityBuiltinTargets);
+            var materialTextureMissingTargets = Math.Max(0, materialTextureDistinctEdges - materialTextureResolvedTargets - materialTextureUnityBuiltinTargets);
             var missingRendererMaterialTargets = rendererMaterialDistinctEdges > 0 && rendererMaterialMissingTargets > 0;
             var missingMaterialTextureTargets = materialTextureDistinctEdges > 0 && materialTextureMissingTargets > 0;
             var missingRendererMaterialTargetSamples = BuildMissingRelationTargetSamples(connection, "renderer.material", "Material", 16);
@@ -2741,6 +2747,11 @@ WHERE r.relation = 'material.texture';");
                     ["renderer.material"] = rendererMaterialResolvedTargets,
                     ["material.texture"] = materialTextureResolvedTargets,
                 },
+                ["unityBuiltinTargetCounts"] = new JObject
+                {
+                    ["renderer.material"] = rendererMaterialUnityBuiltinTargets,
+                    ["material.texture"] = materialTextureUnityBuiltinTargets,
+                },
                 ["missingTargetCounts"] = new JObject
                 {
                     ["renderer.material"] = rendererMaterialMissingTargets,
@@ -2753,9 +2764,9 @@ WHERE r.relation = 'material.texture';");
                 ["missingRendererMaterialTargetSamples"] = missingRendererMaterialTargetSamples,
                 ["missingMaterialTextureTargetSamples"] = missingMaterialTextureTargetSamples,
                 ["note"] = missingRendererMaterialTargets
-                    ? "源索引包含 Renderer -> Material PPtr，但大量目标没有解析到真实 Material。模型第一阶段不能把这类样本当作材质完整；应检查完整源目录、VFS/CAB 依赖闭包或源索引解析覆盖。"
+                    ? "源索引包含 Renderer -> Material PPtr，但部分非 Unity 内置目标没有解析到真实 Material。模型第一阶段不能把这类样本当作材质完整；应检查完整源目录、VFS/CAB 依赖闭包或源索引解析覆盖。"
                     : missingMaterialTextureTargets
-                        ? "源索引包含 Material -> Texture PPtr，但部分目标没有解析到真实 Texture。模型可先作为材质诊断样本，不能直接作为贴图完整验收。"
+                        ? "源索引包含 Material -> Texture PPtr，但部分非 Unity 内置目标没有解析到真实 Texture。模型可先作为材质诊断样本，不能直接作为贴图完整验收。"
                         : "源索引里的 Renderer/Material/Texture 关系目标已在当前数据库中解析。模型仍需导出 glTF 和视觉验收。"
             };
         }
@@ -2773,6 +2784,9 @@ WHERE r.relation = 'material.texture';");
             var meshFilterMeshDistinctEdges = DistinctRelationEdgeCount(connection, "meshFilter.mesh");
             var skinnedMeshDistinctEdges = DistinctRelationEdgeCount(connection, "skinnedMeshRenderer.mesh");
             var animatorAvatarDistinctEdges = DistinctRelationEdgeCount(connection, "animator.avatar");
+            var meshFilterMeshUnityBuiltinTargets = SourceRelationUnityBuiltinTargetCount(connection, "meshFilter.mesh");
+            var skinnedMeshUnityBuiltinTargets = SourceRelationUnityBuiltinTargetCount(connection, "skinnedMeshRenderer.mesh");
+            var animatorAvatarUnityBuiltinTargets = SourceRelationUnityBuiltinTargetCount(connection, "animator.avatar");
             var meshFilterMeshResolvedTargets = SourceRelationDistinctResolvedTargetCount(connection, "meshFilter.mesh", "Mesh");
             var skinnedMeshResolvedTargets = SourceRelationDistinctResolvedTargetCount(connection, "skinnedMeshRenderer.mesh", "Mesh");
             var animatorAvatarResolvedTargets = SourceRelationDistinctResolvedTargetCount(connection, "animator.avatar", "Avatar");
@@ -2781,7 +2795,7 @@ WITH visible_containers AS (
     SELECT DISTINCT json_extract(preload.raw_json, '$.details.container') AS container_path
     FROM source_relations preload
     JOIN source_objects renderer
-      ON renderer.serialized_file = preload.to_file
+      ON renderer.serialized_file = preload.to_file COLLATE NOCASE
      AND renderer.path_id = preload.to_path_id
      AND renderer.type IN ('SkinnedMeshRenderer', 'MeshRenderer')
     WHERE preload.relation = 'assetBundle.containerPreload'
@@ -2792,15 +2806,15 @@ FROM source_relations preload
 JOIN visible_containers vc
   ON vc.container_path = json_extract(preload.raw_json, '$.details.container')
 JOIN source_objects animator
-  ON animator.serialized_file = preload.to_file
+  ON animator.serialized_file = preload.to_file COLLATE NOCASE
  AND animator.path_id = preload.to_path_id
  AND animator.type = 'Animator'
 WHERE preload.relation = 'assetBundle.containerPreload'
   AND COALESCE(json_extract(animator.raw_json, '$.animator.hasTransformHierarchy'), 1) = 0
   AND COALESCE(json_extract(animator.raw_json, '$.animator.avatar.isNull'), 1) = 1;");
-            var meshFilterMeshMissingTargets = Math.Max(0, meshFilterMeshDistinctEdges - meshFilterMeshResolvedTargets);
-            var skinnedMeshMissingTargets = Math.Max(0, skinnedMeshDistinctEdges - skinnedMeshResolvedTargets);
-            var animatorAvatarMissingTargets = Math.Max(0, animatorAvatarDistinctEdges - animatorAvatarResolvedTargets);
+            var meshFilterMeshMissingTargets = Math.Max(0, meshFilterMeshDistinctEdges - meshFilterMeshResolvedTargets - meshFilterMeshUnityBuiltinTargets);
+            var skinnedMeshMissingTargets = Math.Max(0, skinnedMeshDistinctEdges - skinnedMeshResolvedTargets - skinnedMeshUnityBuiltinTargets);
+            var animatorAvatarMissingTargets = Math.Max(0, animatorAvatarDistinctEdges - animatorAvatarResolvedTargets - animatorAvatarUnityBuiltinTargets);
             var missingMeshTargets = (meshFilterMeshDistinctEdges > 0 && meshFilterMeshMissingTargets > 0)
                 || (skinnedMeshDistinctEdges > 0 && skinnedMeshMissingTargets > 0);
             var missingAvatarTargets = animatorAvatarDistinctEdges > 0 && animatorAvatarMissingTargets > 0;
@@ -2853,6 +2867,12 @@ WHERE preload.relation = 'assetBundle.containerPreload'
                     ["skinnedMeshRenderer.mesh"] = skinnedMeshResolvedTargets,
                     ["animator.avatar"] = animatorAvatarResolvedTargets,
                 },
+                ["unityBuiltinTargetCounts"] = new JObject
+                {
+                    ["meshFilter.mesh"] = meshFilterMeshUnityBuiltinTargets,
+                    ["skinnedMeshRenderer.mesh"] = skinnedMeshUnityBuiltinTargets,
+                    ["animator.avatar"] = animatorAvatarUnityBuiltinTargets,
+                },
                 ["missingTargetCounts"] = new JObject
                 {
                     ["meshFilter.mesh"] = meshFilterMeshMissingTargets,
@@ -2869,9 +2889,9 @@ WHERE preload.relation = 'assetBundle.containerPreload'
                 ["missingAnimatorAvatarTargetSamples"] = BuildMissingRelationTargetSamples(connection, "animator.avatar", "Avatar", 16),
                 ["optimizedAnimatorNullAvatarSamples"] = BuildOptimizedAnimatorNullAvatarSamples(connection, 16),
                 ["note"] = missingMeshTargets
-                    ? "源索引包含 Renderer/MeshFilter -> Mesh PPtr，但部分目标 Mesh 没有解析进当前数据库。模型第一阶段不能把这类样本当作完整模型；应继续补 VFS/CAB 依赖闭包或使用完整源索引。"
+                    ? "源索引包含 Renderer/MeshFilter -> Mesh PPtr，但部分非 Unity 内置目标 Mesh 没有解析进当前数据库。模型第一阶段不能把这类样本当作完整模型；应继续补 VFS/CAB 依赖闭包或使用完整源索引。"
                     : missingAvatarTargets
-                        ? "源索引包含 Animator -> Avatar PPtr，但部分目标 Avatar 没有解析进当前数据库。优化层级或 Humanoid/Skinned 模型可能无法恢复骨骼，模型第一阶段不能继续推进动画。"
+                        ? "源索引包含 Animator -> Avatar PPtr，但部分非 Unity 内置目标 Avatar 没有解析进当前数据库。优化层级或 Humanoid/Skinned 模型可能无法恢复骨骼，模型第一阶段不能继续推进动画。"
                         : optimizedAnimatorNullAvatar
                             ? "源索引里存在 hasTransformHierarchy=false 但 Animator.m_Avatar 为空的优化层级 Animator。这类根对象无法通过补 CAB 修复，模型第一阶段应换可用主模型或显式降级为诊断样本。"
                             : "源索引里的 MeshFilter/SkinnedMeshRenderer -> Mesh 和 Animator -> Avatar 目标已在当前数据库中解析，且没有发现空 Avatar 的优化层级 Animator。模型仍需导出 glTF 和视觉验收。"
@@ -2886,7 +2906,7 @@ WITH visible_containers AS (
     SELECT DISTINCT json_extract(preload.raw_json, '$.details.container') AS container_path
     FROM source_relations preload
     JOIN source_objects renderer
-      ON renderer.serialized_file = preload.to_file
+      ON renderer.serialized_file = preload.to_file COLLATE NOCASE
      AND renderer.path_id = preload.to_path_id
      AND renderer.type IN ('SkinnedMeshRenderer', 'MeshRenderer')
     WHERE preload.relation = 'assetBundle.containerPreload'
@@ -2898,7 +2918,7 @@ FROM source_relations preload
 JOIN visible_containers vc
   ON vc.container_path = json_extract(preload.raw_json, '$.details.container')
 JOIN source_objects animator
-  ON animator.serialized_file = preload.to_file
+  ON animator.serialized_file = preload.to_file COLLATE NOCASE
  AND animator.path_id = preload.to_path_id
  AND animator.type = 'Animator'
 WHERE preload.relation = 'assetBundle.containerPreload'
@@ -2951,14 +2971,15 @@ SELECT
     MIN(e.guid) AS sample_external_guid
 FROM source_relations r
 LEFT JOIN source_objects target
-  ON target.serialized_file = r.to_file
+  ON target.serialized_file = r.to_file COLLATE NOCASE
  AND target.path_id = r.to_path_id
  AND {targetTypeFilter}
 LEFT JOIN source_externals e
-  ON e.serialized_file = r.from_file
+  ON e.serialized_file = r.from_file COLLATE NOCASE
  AND e.file_id = r.to_file_id
 WHERE r.relation = $relation
   AND target.id IS NULL
+  AND NOT ({UnityBuiltinTargetSql("r.to_file")})
 GROUP BY r.to_file, r.to_path_id, r.to_type_hint
 ORDER BY relation_count DESC, distinct_referrer_count DESC
 LIMIT $limit;";
@@ -3011,7 +3032,7 @@ SELECT
     COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS referrer_count
 FROM source_relations r
 LEFT JOIN source_objects target
-  ON target.serialized_file = r.to_file
+  ON target.serialized_file = r.to_file COLLATE NOCASE
  AND target.path_id = r.to_path_id
 WHERE r.relation = 'monoBehaviour.pptr'
 GROUP BY COALESCE(target.type, '(missing)')
@@ -3049,11 +3070,11 @@ SELECT
     MIN(target.name) AS sample_target_name
 FROM source_relations r
 LEFT JOIN source_objects mono
-  ON mono.serialized_file = r.from_file
+  ON mono.serialized_file = r.from_file COLLATE NOCASE
  AND mono.path_id = r.from_path_id
  AND mono.type = 'MonoBehaviour'
 LEFT JOIN source_objects target
-  ON target.serialized_file = r.to_file
+  ON target.serialized_file = r.to_file COLLATE NOCASE
  AND target.path_id = r.to_path_id
 WHERE r.relation = 'monoBehaviour.pptr'
 GROUP BY COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '')
@@ -3153,7 +3174,7 @@ WHERE type='Avatar'
 SELECT COUNT(*)
 FROM source_relations r
 JOIN source_objects o
-  ON o.serialized_file = r.to_file
+  ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
  AND o.type = $targetType
 WHERE r.relation = $relation;";
@@ -3173,6 +3194,24 @@ WHERE r.relation = $relation;";
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
         }
 
+        private static long SourceRelationUnityBuiltinTargetCount(SqliteConnection connection, string relation)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $@"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+WHERE r.relation = $relation
+  AND {UnityBuiltinTargetSql("r.to_file")};";
+            command.Parameters.AddWithValue("$relation", relation);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static string UnityBuiltinTargetSql(string column)
+        {
+            // Unity 内置默认资源不会出现在游戏 CAB 的 source_objects 里，不能当作 Naraka 缺依赖。
+            return $"LOWER(COALESCE({column}, '')) IN ('unity default resources', 'resources/unity_builtin_extra')";
+        }
+
         private static long SourceRelationDistinctResolvedTargetCount(SqliteConnection connection, string relation, string targetType)
         {
             using var command = connection.CreateCommand();
@@ -3180,7 +3219,7 @@ WHERE r.relation = $relation;";
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
 FROM source_relations r
 JOIN source_objects o
-  ON o.serialized_file = r.to_file
+  ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
  AND o.type = $targetType
 WHERE r.relation = $relation;";
@@ -3196,7 +3235,7 @@ WHERE r.relation = $relation;";
 SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
 FROM source_relations r
 JOIN source_objects o
-  ON o.serialized_file = r.to_file
+  ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
 WHERE r.relation = $relation;";
             command.Parameters.AddWithValue("$relation", relation);
