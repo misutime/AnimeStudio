@@ -139,9 +139,12 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.Ordinal)
                 .ToArray();
             var hasSkinJoints = moduleJointNames.Count > 0;
-            var canAutoAssemble = hasSkinJoints && missing.Length == 0 && ((int?)module.Catalog["meshCount"] ?? 0) > 0;
+            var diagnosticOnly = IsDiagnosticModule(module.Catalog);
+            var canAutoAssemble = !diagnosticOnly && hasSkinJoints && missing.Length == 0 && ((int?)module.Catalog["meshCount"] ?? 0) > 0;
             var reason = canAutoAssemble
                 ? "All module skin/bone joints can be remapped to the base skeleton by exact Unity joint names."
+                : diagnosticOnly
+                    ? "Module is diagnosticOnly; keep it as a manual preview candidate even if joint names look compatible."
                 : !hasSkinJoints
                     ? "Module has no skin/bone joints in the catalog; it needs an explicit Unity attachment transform before auto assembly."
                     : "Module has independent or missing joints; keep it modular until attachment/simulation relations are parsed.";
@@ -154,6 +157,7 @@ namespace AnimeStudio.CLI
                 meshCount = (int?)module.Catalog["meshCount"] ?? 0,
                 textureCount = (int?)module.Catalog["textureCount"] ?? 0,
                 boneCount = (int?)module.Catalog["boneCount"] ?? 0,
+                diagnosticOnly,
                 canAutoAssemble,
                 score = ScoreModule(module, canAutoAssemble),
                 remap = new
@@ -165,6 +169,18 @@ namespace AnimeStudio.CLI
                 },
                 reason,
             });
+        }
+
+        private static bool IsDiagnosticModule(JObject model)
+        {
+            // 诊断模型可以帮助人工看坐标、贴图和骨骼线索，但不能进入默认自动装配推荐。
+            if ((bool?)model["diagnosticOnly"] == true)
+            {
+                return true;
+            }
+
+            var libraryRole = (string)model["libraryRole"] ?? string.Empty;
+            return libraryRole.Contains("Diagnostic", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsCharacterBase(JObject model)

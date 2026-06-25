@@ -1027,6 +1027,8 @@ CrossGame_VRising_AssembledPreview_V3\
 
 `assembly_report.json` 会记录每个模块的角色、来源 glTF、是否可组装、缺失 joint 数、实际新增 mesh node 数、最终 glTF 的 mesh/skin/animation/channel 检查结果。只有 `MissingJointCount = 0` 且 `invalidChannels = 0`、`invalidSkinJoints = 0` 的模块化预览，才适合作为可视验证结果。
 
+`character_assemblies.json` 会把 `diagnosticOnly=true` 或 `libraryRole` 含 `Diagnostic` 的模块挡在自动推荐之外。即使这类模块的 joint 名刚好能和 base skeleton 对上，也只能作为人工预览候选，`canAutoAssemble=false`；等它通过正式 skin、材质、装配和视觉验收后，才允许进入默认推荐。
+
 ### 按需生成动画预览
 
 `model_animations.json` 里的候选关系需要经过实际 glTF 写入验证。选中一个模型和一个候选动画后，用 `--generate_preview_gltf` 生成临时可播放 glTF：
