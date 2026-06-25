@@ -449,9 +449,243 @@ namespace AnimeStudio.CLI
                 ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系，不猜 LOD、材质槽、骨骼或 skin。"
             };
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
+            WriteVisualCellLibraryMetadata(
+                outputFolder,
+                gltfPath,
+                report,
+                jsonFolder,
+                sourceIndexPath,
+                parts,
+                materialBindings,
+                gltfMaterials,
+                gltfImages,
+                gltfTextures);
             Logger.Info($"Exported Naraka ActorBodyVisualCell LOD0 diagnostic glTF: {gltfPath}");
             Logger.Info($"Wrote Naraka ActorBodyVisualCell diagnostic report: {reportPath}");
             return gltfPath;
+        }
+
+        private static void WriteVisualCellLibraryMetadata(
+            string outputFolder,
+            string gltfPath,
+            JObject report,
+            string jsonFolder,
+            string sourceIndexPath,
+            IReadOnlyList<VisualCellPart> parts,
+            IReadOnlyDictionary<string, VisualCellMaterialBinding> materialBindings,
+            JArray gltfMaterials,
+            JArray gltfImages,
+            JArray gltfTextures)
+        {
+            // 这里先把 Naraka 自定义网格接进 AssetLibrary v1，
+            // 但仍按诊断模型处理，不能绕过模型优先门禁。
+            var relativeOutput = ToLibraryRelativePath(outputFolder, gltfPath);
+            var needsCustomizationTint = gltfMaterials
+                .OfType<JObject>()
+                .Any(x => x["extras"]?["animeStudioMaterial"]?["needsCustomizationTint"]?.Value<bool>() == true);
+            var hasBaseColorTexture = gltfMaterials
+                .OfType<JObject>()
+                .Any(x => x["pbrMetallicRoughness"]?["baseColorTexture"] != null);
+            var hasNormalTexture = gltfMaterials
+                .OfType<JObject>()
+                .Any(x => x["normalTexture"] != null);
+            var materialStatus = needsCustomizationTint
+                ? "needsCustomizationTint"
+                : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
+            var validationReasons = new JArray(
+                "diagnostic_custom_mesh",
+                "missing_skin_binding",
+                needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
+
+            var catalogEntry = new JObject
+            {
+                ["kind"] = "Model",
+                ["libraryRole"] = "CustomMeshDiagnostic",
+                ["resourceKind"] = "NarakaCustomMeshPart",
+                ["exportedAt"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["name"] = Path.GetFileNameWithoutExtension(gltfPath),
+                ["sourceType"] = "ActorBodyVisualCell",
+                ["source"] = Path.GetFullPath(jsonFolder),
+                ["pathId"] = 0,
+                ["output"] = relativeOutput,
+                ["format"] = "Gltf",
+                ["modelSource"] = "NarakaActorBodyVisualCellLod0",
+                ["textureMode"] = "Png",
+                ["animationPackage"] = "Separate",
+                ["diagnosticOnly"] = true,
+                ["modelValidationStatus"] = "warning",
+                ["modelValidationReasons"] = validationReasons,
+                ["meshCount"] = report["meshCount"],
+                ["vertexCount"] = report["vertexCount"],
+                ["indexCount"] = report["indexCount"],
+                ["triangleCount"] = report["triangleCount"],
+                ["nodeCount"] = parts.Count,
+                ["materialCount"] = gltfMaterials.Count,
+                ["textureCount"] = gltfTextures.Count,
+                ["materialStatus"] = materialStatus,
+                ["materialNeedsCustomizationTint"] = needsCustomizationTint,
+                ["materialMissingRendererBinding"] = materialBindings.Values.Any(x => x.Materials.Count == 0),
+                ["materialHasBaseColorTexture"] = hasBaseColorTexture,
+                ["materialHasNormalTexture"] = hasNormalTexture,
+                ["materialImageCount"] = gltfImages.Count,
+                ["rendererMaterialRefCount"] = report["rendererMaterialRefCount"],
+                ["materialTextureRefCount"] = report["materialTextureRefCount"],
+                ["animationCount"] = 0,
+                ["embeddedAnimationCount"] = 0,
+                ["importedAnimationListCount"] = 0,
+                ["morphCount"] = 0,
+                ["boneCount"] = 0,
+                ["skinCount"] = 0,
+                ["selectedLodGroup"] = "lod0RendererAssistants",
+                ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
+                ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
+                ["bboxMin"] = report["bboxMin"]?.DeepClone(),
+                ["bboxMax"] = report["bboxMax"]?.DeepClone(),
+                ["customMeshRelation"] = new JObject
+                {
+                    ["status"] = "deterministic",
+                    ["basis"] = "ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset",
+                    ["rendererMaterialBasis"] = "renderer.material / material.texture from unity_source_index.db",
+                    ["rule"] = "该记录只证明 Naraka 自定义网格和材质引用链路可追溯；没有 skin、shader tint 和完整角色装配前不进入动画验收。"
+                }
+            };
+
+            RewriteJsonLineByOutput(Path.Combine(outputFolder, "asset_catalog.jsonl"), relativeOutput, catalogEntry);
+            WriteOrUpdateCustomMeshValidation(outputFolder, gltfPath, relativeOutput, validationReasons);
+        }
+
+        private static void WriteOrUpdateCustomMeshValidation(
+            string outputFolder,
+            string gltfPath,
+            string relativeOutput,
+            JArray validationReasons)
+        {
+            // glTF 结构可以合法，但缺 skin / tint 时仍必须保持 warning。
+            var validation = ModelLibraryValidator.ValidateSingleModelForAnimationGate(gltfPath);
+            validation["Status"] = "warning";
+            validation["Path"] = relativeOutput;
+            validation["diagnosticOnly"] = true;
+            validation["customMeshValidationReasons"] = validationReasons.DeepClone();
+            validation["Notes"] = MergeStringArray(
+                validation["Notes"] as JArray,
+                "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型：缺少 skin 绑定，hair tint/customization shader 未完全复原，禁止进入动画生产验收。");
+
+            var body = validation["Body"] as JObject;
+            if (body != null)
+            {
+                body["ModelBodyStatus"] = "warning";
+                body["Evidence"] = MergeStringArray(
+                    body["Evidence"] as JArray,
+                    "自定义网格没有 glTF skin；材质只做保守预览，未烘焙 Naraka customization tint。");
+            }
+
+            var validationPath = Path.Combine(outputFolder, "model_validation.json");
+            var root = File.Exists(validationPath)
+                ? JObject.Parse(File.ReadAllText(validationPath).TrimStart('\uFEFF'))
+                : new JObject
+                {
+                    ["generatedAt"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                    ["rule"] = "模型 glTF 单独通过 Mesh/UV/材质/贴图/skin/bbox 静态验收后，才允许进入动画导出、合成或生产 smoke。",
+                    ["models"] = new JArray()
+                };
+
+            root["generatedAt"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            var models = root["models"] as JArray;
+            if (models == null)
+            {
+                models = new JArray();
+                root["models"] = models;
+            }
+
+            for (var i = models.Count - 1; i >= 0; i--)
+            {
+                var existingPath = (string)models[i]?["Path"];
+                if (string.Equals(NormalizeRelativePath(existingPath), NormalizeRelativePath(relativeOutput), StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(existingPath, gltfPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    models.RemoveAt(i);
+                }
+            }
+            models.Add(validation);
+            root["totals"] = BuildValidationTotals(models);
+            File.WriteAllText(validationPath, root.ToString(Formatting.Indented));
+        }
+
+        private static JObject BuildValidationTotals(JArray models)
+        {
+            var reports = models.OfType<JObject>().ToArray();
+            return new JObject
+            {
+                ["models"] = reports.Length,
+                ["ok"] = reports.Count(x => string.Equals((string)x["Status"], "ok", StringComparison.OrdinalIgnoreCase)),
+                ["warning"] = reports.Count(x => string.Equals((string)x["Status"], "warning", StringComparison.OrdinalIgnoreCase)),
+                ["error"] = reports.Count(x => string.Equals((string)x["Status"], "error", StringComparison.OrdinalIgnoreCase)),
+                ["modelBodyOk"] = reports.Count(x => string.Equals((string)x["Body"]?["ModelBodyStatus"], "ok", StringComparison.OrdinalIgnoreCase)),
+                ["modelBodyWarning"] = reports.Count(x => string.Equals((string)x["Body"]?["ModelBodyStatus"], "warning", StringComparison.OrdinalIgnoreCase)),
+                ["modelBodyError"] = reports.Count(x => string.Equals((string)x["Body"]?["ModelBodyStatus"], "error", StringComparison.OrdinalIgnoreCase)),
+                ["withSkin"] = reports.Count(x => (int?)x["Counts"]?["Skins"] > 0),
+                ["withTextures"] = reports.Count(x => (int?)x["Counts"]?["Images"] > 0),
+            };
+        }
+
+        private static JArray MergeStringArray(JArray existing, string value)
+        {
+            var result = existing != null
+                ? new JArray(existing.Values<string>().Where(x => !string.IsNullOrWhiteSpace(x)))
+                : new JArray();
+            if (!result.Values<string>().Any(x => string.Equals(x, value, StringComparison.Ordinal)))
+            {
+                result.Add(value);
+            }
+            return result;
+        }
+
+        private static void RewriteJsonLineByOutput(string path, string relativeOutput, JObject entry)
+        {
+            // 诊断命令常会反复跑，同一个输出只保留最新一行。
+            var lines = new List<string>();
+            if (File.Exists(path))
+            {
+                foreach (var line in File.ReadLines(path))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    var keep = true;
+                    try
+                    {
+                        var obj = JObject.Parse(line);
+                        keep = !string.Equals(
+                            NormalizeRelativePath((string)obj["output"] ?? (string)obj["outputPath"] ?? (string)obj["assetPath"]),
+                            NormalizeRelativePath(relativeOutput),
+                            StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch (JsonException)
+                    {
+                        keep = true;
+                    }
+
+                    if (keep)
+                    {
+                        lines.Add(line);
+                    }
+                }
+            }
+
+            lines.Add(entry.ToString(Formatting.None));
+            File.WriteAllLines(path, lines);
+        }
+
+        private static string ToLibraryRelativePath(string root, string path)
+        {
+            return Path.GetRelativePath(root, path).Replace('\\', '/');
+        }
+
+        private static string NormalizeRelativePath(string value)
+        {
+            return (value ?? string.Empty).Replace('\\', '/').TrimStart('/');
         }
 
         private static JObject WriteMeshObject(Stream stream, JArray bufferViews, JArray accessors, AvatarMeshData mesh, string source, int materialIndex = 0)
