@@ -522,6 +522,13 @@ namespace AnimeStudio.CLI
             var materialRefCount = materialBindings.Values.Sum(x => x.Materials.Count);
             var materialTextureRefCount = materialBindings.Values.Sum(x => x.Materials.Sum(y => y.TextureRefCount));
             var hairCustomizationTintEvidence = LoadHairCustomizationTintEvidence(sourceIndexPath, selectedVisualCell, warnings, jsonFolder);
+            var faceRuntimeEvidence = LoadFaceRuntimeEvidence(
+                jsonFolder,
+                manifest,
+                parts,
+                selectedVisualCell,
+                sourceSkinAvatarRequiredNodeCount,
+                warnings);
             var report = new JObject
             {
                 ["status"] = warnings.Count == 0 ? "ok" : "warning",
@@ -568,6 +575,9 @@ namespace AnimeStudio.CLI
                 ["hairCustomizationTintEvidenceStatus"] = hairCustomizationTintEvidence.Status,
                 ["hairCustomizationTintEvidence"] = hairCustomizationTintEvidence.ToJson(),
                 ["hairCustomizationTintRule"] = "这里只诊断 Naraka 发型 customization/tint 配置线索。只有找到和选中 VisualCell/GameObject 的确定性引用，并且字段里有可解释颜色参数时，才允许后续烘焙预览色；否则继续保持 needsCustomizationTint。",
+                ["faceRuntimeEvidenceStatus"] = faceRuntimeEvidence.Status,
+                ["faceRuntimeEvidence"] = faceRuntimeEvidence.ToJson(),
+                ["faceRuntimeEvidenceRule"] = "这里只记录 AvatarFaceRuntime -> AvatarFaceData 的确定性 PPtr 证据。骨骼数量、名称和 bind local TRS 可用于定位 Naraka 脸部 skin 映射，但在 boneIndex 到 glTF joint 层级和视觉验证完成前，不能据此写生产 skin。",
                 ["rendererSkinBindingStatus"] = SummarizeRendererSkinBindingStatus(rendererSkinBindings.Values),
                 ["rendererSkinRendererRefCount"] = rendererSkinBindings.Values.Count(x => x.RendererObjectFound),
                 ["rendererSkinRendererWithoutSkinRefCount"] = rendererSkinBindings.Values.Count(x => x.RendererObjectFound && !x.HasAnyRelation),
@@ -784,6 +794,16 @@ namespace AnimeStudio.CLI
                         ? "hair_deform_data_count_mismatch"
                         : "hair_deform_data_packed_half4_diagnostic",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
+            var faceRuntimeStatus = (string)report["faceRuntimeEvidenceStatus"];
+            if (string.Equals(faceRuntimeStatus, "avatarFaceDataMatchesSourceSkinBoneTable", StringComparison.OrdinalIgnoreCase))
+            {
+                validationReasons.Add("face_runtime_avatar_data_matches_source_skin_bone_table_diagnostic");
+            }
+            else if (!string.IsNullOrWhiteSpace(faceRuntimeStatus)
+                && !string.Equals(faceRuntimeStatus, "faceRuntimeEvidenceMissing", StringComparison.OrdinalIgnoreCase))
+            {
+                validationReasons.Add("face_runtime_avatar_data_unverified_diagnostic");
+            }
             var sourceSkinStatuses = parts
                 .Select(x => x.Mesh.Skin.Status)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -847,6 +867,10 @@ namespace AnimeStudio.CLI
                 ["materialTextureRefCount"] = report["materialTextureRefCount"],
                 ["hairCustomizationTintEvidenceStatus"] = report["hairCustomizationTintEvidenceStatus"]?.DeepClone(),
                 ["hairCustomizationTintEvidence"] = report["hairCustomizationTintEvidence"]?.DeepClone(),
+                ["faceRuntimeEvidenceStatus"] = report["faceRuntimeEvidenceStatus"]?.DeepClone(),
+                ["faceRuntimeAvatarBoneCount"] = report["faceRuntimeEvidence"]?["avatarFaceDataBoneCount"]?.DeepClone(),
+                ["faceRuntimeMappedUsedBoneIndexCount"] = report["faceRuntimeEvidence"]?["mappedUsedBoneIndexCount"]?.DeepClone(),
+                ["faceRuntimeEvidence"] = report["faceRuntimeEvidence"]?.DeepClone(),
                 ["animationCount"] = 0,
                 ["embeddedAnimationCount"] = 0,
                 ["importedAnimationListCount"] = 0,
@@ -937,6 +961,8 @@ namespace AnimeStudio.CLI
                     ["rendererSkinBasis"] = "SkinnedMeshRenderer object / component.gameObject / renderer.material / skinnedMeshRenderer.mesh/rootBone/bones from unity_source_index.db",
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["headCollisionDataBasis"] = "LXRendererAssistant.headCollisionData PPtr",
+                    ["faceRuntimeBasis"] = "AvatarFaceRuntime.m_AvatarFaceData / AvatarFaceData.m_AvatarBones",
+                    ["faceRuntimeEvidenceStatus"] = report["faceRuntimeEvidenceStatus"]?.DeepClone(),
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
                     ["selectedBoneDriverHintBasis"] = "BoneDriver TransformPath scoped to selected ActorBodyVisualCell root",
                     ["rendererListBasis"] = "ActorBodyVisualCell.rendererAssistants/avatarRenderers/meshRenderer/lod*RendererAssistants",
@@ -1013,6 +1039,7 @@ namespace AnimeStudio.CLI
             AppendKeyValue(sb, "Renderer 材质引用", ToText(report["rendererMaterialRefCount"]));
             AppendKeyValue(sb, "材质贴图引用", ToText(report["materialTextureRefCount"]));
             AppendKeyValue(sb, "发型 tint 证据", ToText(report["hairCustomizationTintEvidenceStatus"]));
+            AppendKeyValue(sb, "脸部运行时骨骼表", ToText(report["faceRuntimeEvidenceStatus"]));
             sb.AppendLine();
             sb.AppendLine("## 动画门禁");
             sb.AppendLine();
@@ -3595,6 +3622,238 @@ LIMIT 1;";
             return evidence;
         }
 
+        private static FaceRuntimeEvidence LoadFaceRuntimeEvidence(
+            string typeTreeJsonFolder,
+            IReadOnlyDictionary<long, ManifestEntry> manifest,
+            IReadOnlyList<VisualCellPart> parts,
+            SelectedVisualCellInfo selectedVisualCell,
+            int? sourceSkinRequiredNodeCount,
+            List<string> warnings)
+        {
+            // Naraka 脸部网格的 joint 线索来自挂在同一个 GameObject 上的 AvatarFaceRuntime。
+            // 这里只把它和 AvatarMeshData 的 boneIndex 表对上，先不写 glTF skin。
+            var evidence = new FaceRuntimeEvidence
+            {
+                Status = "faceRuntimeEvidenceMissing",
+                SelectedVisualCellFile = selectedVisualCell?.SerializedFile,
+                SelectedVisualCellPathId = selectedVisualCell?.PathId,
+                SelectedGameObjectPathId = selectedVisualCell?.GameObjectPathId,
+                SourceSkinRequiredNodeCount = sourceSkinRequiredNodeCount,
+            };
+            if (string.IsNullOrWhiteSpace(typeTreeJsonFolder) || !Directory.Exists(typeTreeJsonFolder))
+            {
+                evidence.Status = "typeTreeFolderMissing";
+                return evidence;
+            }
+            if (selectedVisualCell?.GameObjectPathId.HasValue != true)
+            {
+                evidence.Status = "selectedGameObjectMissing";
+                return evidence;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(typeTreeJsonFolder, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                if (!TryReadJsonObject(path, out var json))
+                {
+                    continue;
+                }
+                if (ReadPPtrPathId(json["m_GameObject"]) != selectedVisualCell.GameObjectPathId.Value)
+                {
+                    continue;
+                }
+                if (ReadPPtrPathId(json["m_AvatarFaceData"]) == 0)
+                {
+                    continue;
+                }
+
+                evidence.RuntimeJsonPath = path;
+                evidence.RuntimePathId = ResolveManifestPathId(manifest, path);
+                evidence.RuntimeRootAnchorPathId = ReadPPtrPathId(json["m_RootAnchor"]);
+                evidence.RuntimeNeckNodePathId = ReadPPtrPathId(json["m_NeckNode"]);
+                evidence.RuntimeHeadNodePathId = ReadPPtrPathId(json["m_HeadNode"]);
+                evidence.AvatarFaceDataPathId = ReadPPtrPathId(json["m_AvatarFaceData"]);
+                var runtimeBones = json["m_AvatarBones"] as JArray;
+                evidence.RuntimeAvatarBoneCount = runtimeBones?.Count ?? 0;
+                evidence.RuntimeBoneNames.AddRange(ReadFaceRuntimeBoneNames(runtimeBones).Take(96));
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(evidence.RuntimeJsonPath))
+            {
+                return evidence;
+            }
+
+            JObject avatarFaceDataJson = null;
+            if (evidence.AvatarFaceDataPathId.HasValue
+                && manifest != null
+                && manifest.TryGetValue(evidence.AvatarFaceDataPathId.Value, out var faceDataEntry)
+                && File.Exists(faceDataEntry.JsonPath)
+                && TryReadJsonObject(faceDataEntry.JsonPath, out avatarFaceDataJson))
+            {
+                evidence.AvatarFaceDataJsonPath = faceDataEntry.JsonPath;
+                evidence.AvatarFaceDataFile = faceDataEntry.SerializedFile;
+            }
+
+            if (avatarFaceDataJson == null)
+            {
+                evidence.Status = "avatarFaceDataJsonMissing";
+                warnings?.Add($"avatarFaceDataJsonMissing:{evidence.AvatarFaceDataPathId}");
+                return evidence;
+            }
+
+            evidence.AvatarFaceDataName = (string)avatarFaceDataJson["m_Name"];
+            evidence.FaceType = avatarFaceDataJson["m_FaceType"]?.Value<int?>();
+            var avatarBones = avatarFaceDataJson["m_AvatarBones"] as JArray;
+            evidence.AvatarFaceDataBoneCount = avatarBones?.Count ?? 0;
+            evidence.AvatarFaceDataBindPoseCount = avatarBones?
+                .OfType<JObject>()
+                .Count(x => x["m_BindLocalPosition"] != null
+                    || x["m_BindLocalRotation"] != null
+                    || x["m_BindLocalScale"] != null) ?? 0;
+            evidence.AvatarFaceDataBoneSamples.AddRange(ReadAvatarFaceDataBoneSamples(avatarBones).Take(32));
+
+            var faceBoneNames = ReadAvatarFaceDataBoneNames(avatarBones).ToArray();
+            evidence.RuntimeBoneNamesMatchAvatarFaceData = evidence.RuntimeBoneNames.Count == faceBoneNames.Length
+                && evidence.RuntimeBoneNames.SequenceEqual(faceBoneNames, StringComparer.Ordinal);
+            var usedRefs = parts
+                .SelectMany(x => x.Mesh?.Skin?.AvatarBoneRefs ?? Enumerable.Empty<BoneRefCount>())
+                .GroupBy(x => x.BoneIndex)
+                .Select(x => new BoneRefCount(x.Key, x.Sum(y => y.WeightedRefCount)))
+                .OrderBy(x => x.BoneIndex)
+                .ToArray();
+            evidence.UsedBoneIndexCount = usedRefs.Length;
+            evidence.UsedBoneIndexMax = usedRefs.Length == 0 ? null : usedRefs.Max(x => x.BoneIndex);
+            foreach (var boneRef in usedRefs)
+            {
+                if (boneRef.BoneIndex >= 0 && boneRef.BoneIndex < faceBoneNames.Length)
+                {
+                    evidence.MappedUsedBoneIndexCount++;
+                    if (evidence.MappedUsedBoneSamples.Count < 64)
+                    {
+                        evidence.MappedUsedBoneSamples.Add(new FaceRuntimeMappedBoneRef(
+                            boneRef.BoneIndex,
+                            boneRef.WeightedRefCount,
+                            faceBoneNames[boneRef.BoneIndex]));
+                    }
+                }
+                else
+                {
+                    evidence.MissingUsedBoneIndexCount++;
+                    if (evidence.MissingUsedBoneRefs.Count < 32)
+                    {
+                        evidence.MissingUsedBoneRefs.Add(boneRef);
+                    }
+                }
+            }
+
+            evidence.SourceSkinRequiredNodeCountMatchesAvatarFaceData =
+                sourceSkinRequiredNodeCount.HasValue
+                && sourceSkinRequiredNodeCount.Value == evidence.AvatarFaceDataBoneCount;
+            evidence.AllUsedBoneIndicesMapped = usedRefs.Length > 0 && evidence.MappedUsedBoneIndexCount == usedRefs.Length;
+            evidence.Status = ResolveFaceRuntimeEvidenceStatus(evidence);
+            return evidence;
+        }
+
+        private static string ResolveFaceRuntimeEvidenceStatus(FaceRuntimeEvidence evidence)
+        {
+            if (evidence.AvatarFaceDataBoneCount <= 0)
+            {
+                return "avatarFaceDataBonesMissing";
+            }
+            if (evidence.SourceSkinRequiredNodeCountMatchesAvatarFaceData
+                && evidence.AllUsedBoneIndicesMapped
+                && evidence.RuntimeBoneNamesMatchAvatarFaceData)
+            {
+                return "avatarFaceDataMatchesSourceSkinBoneTable";
+            }
+            if (evidence.SourceSkinRequiredNodeCountMatchesAvatarFaceData && evidence.AllUsedBoneIndicesMapped)
+            {
+                return "avatarFaceDataBoneCountMatchesRequired";
+            }
+            if (evidence.SourceSkinRequiredNodeCount.HasValue)
+            {
+                return "avatarFaceDataBoneCountMismatch";
+            }
+            return "avatarFaceDataPresentNoSourceSkinRange";
+        }
+
+        private static IEnumerable<string> ReadFaceRuntimeBoneNames(JArray bones)
+        {
+            if (bones == null)
+            {
+                yield break;
+            }
+            foreach (var bone in bones.OfType<JObject>())
+            {
+                yield return (string)bone["m_BoneName"] ?? string.Empty;
+            }
+        }
+
+        private static IEnumerable<string> ReadAvatarFaceDataBoneNames(JArray bones)
+        {
+            if (bones == null)
+            {
+                yield break;
+            }
+            foreach (var bone in bones.OfType<JObject>())
+            {
+                yield return (string)bone["m_Name"] ?? string.Empty;
+            }
+        }
+
+        private static IEnumerable<FaceRuntimeBoneSample> ReadAvatarFaceDataBoneSamples(JArray bones)
+        {
+            if (bones == null)
+            {
+                yield break;
+            }
+
+            var index = 0;
+            foreach (var bone in bones.OfType<JObject>())
+            {
+                yield return new FaceRuntimeBoneSample(
+                    index,
+                    (string)bone["m_Name"],
+                    bone["m_BoneSide"]?.Value<int?>(),
+                    (bone["m_Children"] as JArray)?.Count ?? 0,
+                    bone["m_BindLocalPosition"] as JObject,
+                    bone["m_BindLocalRotation"]?["value"] as JObject,
+                    bone["m_BindLocalScale"] as JObject);
+                index++;
+            }
+        }
+
+        private static bool TryReadJsonObject(string path, out JObject json)
+        {
+            json = null;
+            try
+            {
+                json = JObject.Parse(File.ReadAllText(path));
+                return true;
+            }
+            catch (Exception ex) when (ex is JsonException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private static long? ResolveManifestPathId(IReadOnlyDictionary<long, ManifestEntry> manifest, string jsonPath)
+        {
+            if (manifest == null || string.IsNullOrWhiteSpace(jsonPath))
+            {
+                return null;
+            }
+
+            foreach (var pair in manifest)
+            {
+                if (PathsEqual(pair.Value.JsonPath, jsonPath))
+                {
+                    return pair.Key;
+                }
+            }
+            return null;
+        }
+
         private static string ResolveHairCustomizationTintStatus(HairCustomizationTintEvidence evidence)
         {
             if (evidence.TotalScriptInstanceCount <= 0)
@@ -6023,6 +6282,107 @@ LIMIT 1;";
             int DirectChildCount,
             IReadOnlyList<string> DirectChildNames,
             int? TransformNodeCount);
+
+        private sealed class FaceRuntimeEvidence
+        {
+            public string Status { get; set; }
+            public string SelectedVisualCellFile { get; set; }
+            public long? SelectedVisualCellPathId { get; set; }
+            public long? SelectedGameObjectPathId { get; set; }
+            public string RuntimeJsonPath { get; set; }
+            public long? RuntimePathId { get; set; }
+            public long? RuntimeRootAnchorPathId { get; set; }
+            public long? RuntimeNeckNodePathId { get; set; }
+            public long? RuntimeHeadNodePathId { get; set; }
+            public long? AvatarFaceDataPathId { get; set; }
+            public string AvatarFaceDataJsonPath { get; set; }
+            public string AvatarFaceDataFile { get; set; }
+            public string AvatarFaceDataName { get; set; }
+            public int? FaceType { get; set; }
+            public int RuntimeAvatarBoneCount { get; set; }
+            public int AvatarFaceDataBoneCount { get; set; }
+            public int AvatarFaceDataBindPoseCount { get; set; }
+            public int? SourceSkinRequiredNodeCount { get; set; }
+            public bool SourceSkinRequiredNodeCountMatchesAvatarFaceData { get; set; }
+            public bool RuntimeBoneNamesMatchAvatarFaceData { get; set; }
+            public int UsedBoneIndexCount { get; set; }
+            public int? UsedBoneIndexMax { get; set; }
+            public int MappedUsedBoneIndexCount { get; set; }
+            public int MissingUsedBoneIndexCount { get; set; }
+            public bool AllUsedBoneIndicesMapped { get; set; }
+            public List<string> RuntimeBoneNames { get; } = new();
+            public List<FaceRuntimeBoneSample> AvatarFaceDataBoneSamples { get; } = new();
+            public List<FaceRuntimeMappedBoneRef> MappedUsedBoneSamples { get; } = new();
+            public List<BoneRefCount> MissingUsedBoneRefs { get; } = new();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["selectedVisualCellFile"] = SelectedVisualCellFile,
+                ["selectedVisualCellPathId"] = SelectedVisualCellPathId,
+                ["selectedGameObjectPathId"] = SelectedGameObjectPathId,
+                ["runtimeJson"] = string.IsNullOrWhiteSpace(RuntimeJsonPath) ? null : Path.GetFullPath(RuntimeJsonPath),
+                ["runtimePathId"] = RuntimePathId,
+                ["runtimeRootAnchorPathId"] = RuntimeRootAnchorPathId,
+                ["runtimeNeckNodePathId"] = RuntimeNeckNodePathId,
+                ["runtimeHeadNodePathId"] = RuntimeHeadNodePathId,
+                ["avatarFaceDataPathId"] = AvatarFaceDataPathId,
+                ["avatarFaceDataJson"] = string.IsNullOrWhiteSpace(AvatarFaceDataJsonPath) ? null : Path.GetFullPath(AvatarFaceDataJsonPath),
+                ["avatarFaceDataFile"] = AvatarFaceDataFile,
+                ["avatarFaceDataName"] = AvatarFaceDataName,
+                ["faceType"] = FaceType,
+                ["runtimeAvatarBoneCount"] = RuntimeAvatarBoneCount,
+                ["avatarFaceDataBoneCount"] = AvatarFaceDataBoneCount,
+                ["avatarFaceDataBindPoseCount"] = AvatarFaceDataBindPoseCount,
+                ["sourceSkinRequiredNodeCount"] = SourceSkinRequiredNodeCount,
+                ["sourceSkinRequiredNodeCountMatchesAvatarFaceData"] = SourceSkinRequiredNodeCountMatchesAvatarFaceData,
+                ["runtimeBoneNamesMatchAvatarFaceData"] = RuntimeBoneNamesMatchAvatarFaceData,
+                ["usedBoneIndexCount"] = UsedBoneIndexCount,
+                ["usedBoneIndexMax"] = UsedBoneIndexMax,
+                ["mappedUsedBoneIndexCount"] = MappedUsedBoneIndexCount,
+                ["missingUsedBoneIndexCount"] = MissingUsedBoneIndexCount,
+                ["allUsedBoneIndicesMapped"] = AllUsedBoneIndicesMapped,
+                ["runtimeBoneNameSamples"] = new JArray(RuntimeBoneNames.Take(32).Select(x => new JValue(x))),
+                ["avatarFaceDataBoneSamples"] = new JArray(AvatarFaceDataBoneSamples.Select(x => x.ToJson())),
+                ["mappedUsedBoneSamples"] = new JArray(MappedUsedBoneSamples.Select(x => x.ToJson())),
+                ["missingUsedBoneRefs"] = new JArray(MissingUsedBoneRefs.Select(x => x.ToJson())),
+                ["rule"] = "AvatarFaceRuntime 和 AvatarFaceData 只提供脸部 boneIndex 顺序、骨骼名和 bind local TRS 线索；缺少最终 joint 层级写入和视觉验证前，仍保持 diagnostic skin blocked。"
+            };
+        }
+
+        private sealed record FaceRuntimeBoneSample(
+            int BoneIndex,
+            string Name,
+            int? BoneSide,
+            int ChildCount,
+            JObject BindLocalPosition,
+            JObject BindLocalRotation,
+            JObject BindLocalScale)
+        {
+            public JObject ToJson() => new()
+            {
+                ["boneIndex"] = BoneIndex,
+                ["name"] = Name,
+                ["boneSide"] = BoneSide,
+                ["childCount"] = ChildCount,
+                ["bindLocalPosition"] = BindLocalPosition?.DeepClone(),
+                ["bindLocalRotation"] = BindLocalRotation?.DeepClone(),
+                ["bindLocalScale"] = BindLocalScale?.DeepClone(),
+            };
+        }
+
+        private sealed record FaceRuntimeMappedBoneRef(
+            int BoneIndex,
+            int WeightedRefCount,
+            string BoneName)
+        {
+            public JObject ToJson() => new()
+            {
+                ["boneIndex"] = BoneIndex,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["boneName"] = BoneName,
+            };
+        }
 
         private sealed class HairCustomizationTintEvidence
         {
