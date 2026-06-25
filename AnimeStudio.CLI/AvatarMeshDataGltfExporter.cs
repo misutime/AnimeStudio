@@ -499,6 +499,9 @@ namespace AnimeStudio.CLI
                 ["animSkinBindPoseSlotStatus"] = SummarizeAnimSkinBindPoseSlotStatus(parts.Select(x => x.Mesh.Skin)),
                 ["animSkinDirectBindPosePartCount"] = parts.Count(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots),
                 ["animSkinBindPoseRule"] = "m_AnimSkinData 的 boneIndex 先按 m_BindPoses 槽位做自洽检查；它和 m_AvatarBoneWeights 的大范围 avatar boneIndex 分开记录，不能混用。",
+                ["avatarBoneOffsetPairStatus"] = SummarizeAvatarBoneOffsetPairStatus(parts.Select(x => x.Mesh.Skin)),
+                ["avatarBoneOffsetPairExactPartCount"] = parts.Count(x => string.Equals(x.Mesh.Skin.AvatarBoneOffsetPairStatus, "continuousCoversWeights", StringComparison.OrdinalIgnoreCase)),
+                ["avatarBoneOffsetPairRule"] = "m_AvatarBoneOffsetCount 当前按每顶点 [weightOffset, influenceCount] 二元组诊断；只证明权重表布局，不证明 boneIndex 到 Transform/joint 的映射。",
                 ["bboxMin"] = new JArray(totalBounds.Min.X, totalBounds.Min.Y, totalBounds.Min.Z),
                 ["bboxMax"] = new JArray(totalBounds.Max.X, totalBounds.Max.Y, totalBounds.Max.Z),
                 ["warnings"] = new JArray(warnings),
@@ -616,6 +619,11 @@ namespace AnimeStudio.CLI
                 parts.Any(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots)
                     ? "anim_skin_bind_pose_slots_self_consistent"
                     : "anim_skin_bind_pose_slots_unverified",
+                parts.All(x => string.Equals(x.Mesh.Skin.AvatarBoneOffsetPairStatus, "continuousCoversWeights", StringComparison.OrdinalIgnoreCase))
+                    ? "avatar_bone_offset_pairs_continuous"
+                    : parts.Any(x => string.Equals(x.Mesh.Skin.AvatarBoneOffsetPairStatus, "continuousCoversWeights", StringComparison.OrdinalIgnoreCase))
+                        ? "avatar_bone_offset_pairs_partial"
+                        : "avatar_bone_offset_pairs_unverified",
                 rendererSkinBindings.Values.Any(x => string.Equals(x.RendererJsonStatus, "skinnedRendererJsonEmptyBones", StringComparison.OrdinalIgnoreCase))
                     ? "skinned_renderer_json_confirms_empty_bones"
                     : "skinned_renderer_json_missing_or_unverified",
@@ -729,6 +737,8 @@ namespace AnimeStudio.CLI
                 ["sourceSkinBindPoseCount"] = parts.Sum(x => x.Mesh.Skin.BindPoseCount),
                 ["animSkinBindPoseSlotStatus"] = SummarizeAnimSkinBindPoseSlotStatus(parts.Select(x => x.Mesh.Skin)),
                 ["animSkinDirectBindPosePartCount"] = parts.Count(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots),
+                ["avatarBoneOffsetPairStatus"] = report["avatarBoneOffsetPairStatus"]?.DeepClone(),
+                ["avatarBoneOffsetPairExactPartCount"] = report["avatarBoneOffsetPairExactPartCount"]?.DeepClone(),
                 ["sourceSkinMappedJointCount"] = 0,
                 ["sourceSkinUnmapped"] = parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped"),
                 ["rendererSkinBindingStatus"] = SummarizeRendererSkinBindingStatus(rendererSkinBindings.Values),
@@ -787,6 +797,7 @@ namespace AnimeStudio.CLI
                     ["basis"] = "ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset",
                     ["rendererMaterialBasis"] = "renderer.material / material.texture from unity_source_index.db",
                     ["skinDataBasis"] = "AvatarMeshDataAsset.m_AnimSkinData / m_AvatarBoneWeights / m_BindPoses",
+                    ["avatarBoneOffsetPairBasis"] = "AvatarMeshDataAsset.m_AvatarBoneOffsetCount as [weightOffset, influenceCount] pairs",
                     ["rendererSkinBasis"] = "SkinnedMeshRenderer object / component.gameObject / renderer.material / skinnedMeshRenderer.mesh/rootBone/bones from unity_source_index.db",
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["headCollisionDataBasis"] = "LXRendererAssistant.headCollisionData PPtr",
@@ -1754,6 +1765,25 @@ namespace AnimeStudio.CLI
         {
             var statuses = (skins ?? Enumerable.Empty<SkinSummary>())
                 .Select(x => x?.AnimSkinBindPoseSlotStatus)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (statuses.Length == 0)
+            {
+                return "missing";
+            }
+
+            return statuses.Length == 1
+                ? statuses[0]
+                : "mixed:" + string.Join(",", statuses);
+        }
+
+        private static string SummarizeAvatarBoneOffsetPairStatus(IEnumerable<SkinSummary> skins)
+        {
+            var statuses = (skins ?? Enumerable.Empty<SkinSummary>())
+                .Where(x => x != null && (x.AvatarBoneOffsetCount > 0 || x.AvatarBoneWeightsCount > 0))
+                .Select(x => x.AvatarBoneOffsetPairStatus)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
@@ -3541,15 +3571,19 @@ LIMIT 1;";
             var avatarWeights = json["m_AvatarBoneWeights"] as JArray;
             if (offsets != null || avatarWeights != null)
             {
+                summary.AvatarBoneOffsetPairCount = offsets?.Count / 2 ?? 0;
+                summary.AvatarBoneOffsetPairCountMatchesVertexCount = offsets != null && offsets.Count == vertexCount * 2;
                 if (offsets == null || avatarWeights == null)
                 {
                     warnings.Add("avatarBoneWeightLayoutIncomplete");
                     summary.LayoutWarnings.Add("avatarBoneWeightLayoutIncomplete");
+                    summary.AvatarBoneOffsetPairStatus = "incomplete";
                 }
                 else if (offsets.Count != vertexCount * 2)
                 {
                     warnings.Add("avatarBoneOffsetCountMismatch");
                     summary.LayoutWarnings.Add("avatarBoneOffsetCountMismatch");
+                    summary.AvatarBoneOffsetPairStatus = "offsetCountMismatch";
                 }
                 else
                 {
@@ -3560,11 +3594,23 @@ LIMIT 1;";
                     var maxInfluences = 0;
                     var invalidRanges = 0;
                     var weightedVertices = 0;
+                    var expectedOffset = 0;
+                    var continuousPairs = 0;
+                    var gapOrOverlapPairs = 0;
                     for (var vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++)
                     {
                         var offset = offsets[vertexIndex * 2].Value<int>();
                         var count = offsets[vertexIndex * 2 + 1].Value<int>();
                         maxInfluences = Math.Max(maxInfluences, count);
+                        if (offset == expectedOffset)
+                        {
+                            continuousPairs++;
+                        }
+                        else
+                        {
+                            gapOrOverlapPairs++;
+                        }
+                        expectedOffset = offset + count;
                         if (offset < 0 || count < 0 || offset + count > avatarWeights.Count)
                         {
                             invalidRanges++;
@@ -3627,6 +3673,16 @@ LIMIT 1;";
                     summary.AvatarVerticesWithNegativeBoneRefCount = verticesWithNegativeBoneRefs;
                     summary.AvatarMaxInfluenceCount = maxInfluences;
                     summary.AvatarInvalidRangeCount = invalidRanges;
+                    summary.AvatarBoneOffsetContinuousPairCount = continuousPairs;
+                    summary.AvatarBoneOffsetGapOrOverlapCount = gapOrOverlapPairs;
+                    summary.AvatarBoneOffsetLastRangeEnd = expectedOffset;
+                    summary.AvatarBoneOffsetPairStatus = invalidRanges > 0
+                        ? "invalidRanges"
+                        : gapOrOverlapPairs > 0
+                            ? "nonContinuousRanges"
+                            : expectedOffset == avatarWeights.Count
+                                ? "continuousCoversWeights"
+                                : "continuousDoesNotCoverAllWeights";
                     summary.AvatarTopBoneRefs.AddRange(avatarBoneRefCounts
                         .OrderByDescending(x => x.Value)
                         .ThenBy(x => x.Key)
@@ -4502,6 +4558,12 @@ LIMIT 1;";
             public int AvatarSkinDataCount { get; set; }
             public int AvatarBoneOffsetCount { get; set; }
             public int AvatarBoneWeightsCount { get; set; }
+            public string AvatarBoneOffsetPairStatus { get; set; } = "missing";
+            public int AvatarBoneOffsetPairCount { get; set; }
+            public bool AvatarBoneOffsetPairCountMatchesVertexCount { get; set; }
+            public int AvatarBoneOffsetContinuousPairCount { get; set; }
+            public int AvatarBoneOffsetGapOrOverlapCount { get; set; }
+            public int AvatarBoneOffsetLastRangeEnd { get; set; }
             public int AvatarWeightedVertexCount { get; set; }
             public int AvatarUniqueBoneCount { get; set; }
             public int? AvatarMinBoneIndex { get; set; }
@@ -4538,6 +4600,12 @@ LIMIT 1;";
                     ["avatarSkinDataCount"] = AvatarSkinDataCount,
                     ["avatarBoneOffsetCount"] = AvatarBoneOffsetCount,
                     ["avatarBoneWeightsCount"] = AvatarBoneWeightsCount,
+                    ["avatarBoneOffsetPairStatus"] = AvatarBoneOffsetPairStatus,
+                    ["avatarBoneOffsetPairCount"] = AvatarBoneOffsetPairCount,
+                    ["avatarBoneOffsetPairCountMatchesVertexCount"] = AvatarBoneOffsetPairCountMatchesVertexCount,
+                    ["avatarBoneOffsetContinuousPairCount"] = AvatarBoneOffsetContinuousPairCount,
+                    ["avatarBoneOffsetGapOrOverlapCount"] = AvatarBoneOffsetGapOrOverlapCount,
+                    ["avatarBoneOffsetLastRangeEnd"] = AvatarBoneOffsetLastRangeEnd,
                     ["avatarWeightedVertexCount"] = AvatarWeightedVertexCount,
                     ["avatarUniqueBoneCount"] = AvatarUniqueBoneCount,
                     ["avatarMinBoneIndex"] = AvatarMinBoneIndex,
