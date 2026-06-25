@@ -4,6 +4,7 @@ using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -34,32 +35,35 @@ namespace AnimeStudio.CLI
                 ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sourceIndexPath)) ?? Environment.CurrentDirectory, "SourceModelAnimations")
                 : Path.GetFullPath(outputDirectory);
             Directory.CreateDirectory(outputRoot);
+            // 这个入口常用于大源索引排查；阶段日志能在超时时留下最后完成的位置。
+            var timingPath = Path.Combine(outputRoot, "source_model_animation_profile.jsonl");
+            File.WriteAllText(timingPath, string.Empty);
 
             SQLitePCL.Batteries_V2.Init();
             using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
             connection.Open();
-            var availableIndexes = LoadAvailableIndexNames(connection);
+            var availableIndexes = MeasureStage(timingPath, "load_available_indexes", null, () => LoadAvailableIndexNames(connection));
             WarnMissingPerformanceIndexes(availableIndexes);
 
             var modelScanLimit = Math.Clamp(limit, 20, 500);
             var preFilterLimit = BuildPreFilterLimit(limit, animationSelector);
             var rows = new List<CandidateRow>();
-            var selectedModels = LoadModelsForAnimationQuery(connection, modelSelector, modelScanLimit);
+            var selectedModels = MeasureStage(timingPath, "load_selected_models", null, () => LoadModelsForAnimationQuery(connection, modelSelector, modelScanLimit));
             var hasReverseRelationIndex = availableIndexes.Contains("idx_source_relations_to");
             var canScanSharedAvatarForward =
                 availableIndexes.Contains("idx_source_relations_from") &&
                 availableIndexes.Contains("idx_source_relations_relation");
             foreach (var model in selectedModels)
             {
-                rows.AddRange(LoadAnimatorControllerClips(connection, model));
-                rows.AddRange(LoadLegacyAnimationClips(connection, model));
+                rows.AddRange(MeasureStage(timingPath, "load_animator_controller_clips", StageModelData(model), () => LoadAnimatorControllerClips(connection, model)));
+                rows.AddRange(MeasureStage(timingPath, "load_legacy_animation_clips", StageModelData(model), () => LoadLegacyAnimationClips(connection, model)));
                 if (hasReverseRelationIndex)
                 {
-                    rows.AddRange(LoadSharedAvatarControllerClips(connection, model, Math.Max(1, preFilterLimit - rows.Count)));
+                    rows.AddRange(MeasureStage(timingPath, "load_shared_avatar_controller_clips", StageModelData(model), () => LoadSharedAvatarControllerClips(connection, model, Math.Max(1, preFilterLimit - rows.Count))));
                 }
                 else if (canScanSharedAvatarForward)
                 {
-                    rows.AddRange(LoadSharedAvatarControllerClipsFromForwardConfig(connection, model, Math.Max(1, preFilterLimit - rows.Count)));
+                    rows.AddRange(MeasureStage(timingPath, "load_shared_avatar_controller_clips_forward", StageModelData(model), () => LoadSharedAvatarControllerClipsFromForwardConfig(connection, model, Math.Max(1, preFilterLimit - rows.Count))));
                 }
 
                 if (rows.Count >= preFilterLimit)
@@ -68,9 +72,9 @@ namespace AnimeStudio.CLI
                 }
             }
 
-            rows = FillModelContainerPaths(connection, rows);
+            rows = MeasureStage(timingPath, "fill_model_container_paths", null, () => FillModelContainerPaths(connection, rows));
 
-            var filtered = rows
+            var filtered = MeasureStage(timingPath, "filter_candidates", null, () => rows
                 .Where(x => MatchesModelSelector(modelSelector, x))
                 .Where(x => MatchesAnimationSelector(animationSelector, x))
                 .Select(x => x with { ReviewHint = BuildReviewHint(x) })
@@ -88,9 +92,9 @@ namespace AnimeStudio.CLI
                 .ThenBy(x => x.RelationKind, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.AnimationName, StringComparer.OrdinalIgnoreCase)
                 .Take(limit)
-                .ToList();
+                .ToList());
 
-            var models = filtered
+            var models = MeasureStage(timingPath, "build_candidate_models", null, () => filtered
                 .GroupBy(x => x.ModelSerializedFile + "\n" + x.ModelPathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
                 .Select(g => new ModelRow(
                     g.First().ModelName,
@@ -100,18 +104,18 @@ namespace AnimeStudio.CLI
                     g.First().ModelContainerPath))
                 .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.SerializedFile, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+                .ToList());
 
-            var animatorDiagnostics = LoadAnimatorDiagnosticsForSelector(connection, modelSelector, Math.Min(limit, 80));
+            var animatorDiagnostics = MeasureStage(timingPath, "load_animator_diagnostics", null, () => LoadAnimatorDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80)));
             var monoBehaviourPPtrDiagnostics = hasReverseRelationIndex
-                ? LoadMonoBehaviourPPtrDiagnosticsForSelector(connection, modelSelector, Math.Min(limit, 80))
+                ? MeasureStage(timingPath, "load_mono_behaviour_pptr_diagnostics", null, () => LoadMonoBehaviourPPtrDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80)))
                 : new List<MonoBehaviourPPtrDiagnosticRow>();
-            var avatarTosClipDiagnostics = LoadAvatarTosClipDiagnosticsForModels(
+            var avatarTosClipDiagnostics = MeasureStage(timingPath, "load_avatar_tos_clip_diagnostics", null, () => LoadAvatarTosClipDiagnosticsForModels(
                 connection,
                 selectedModels,
                 animationSelector,
-                Math.Min(limit, 80));
-            var modelVisibilityDiagnostics = LoadModelVisibilityDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80));
+                Math.Min(limit, 80)));
+            var modelVisibilityDiagnostics = MeasureStage(timingPath, "load_model_visibility_diagnostics", null, () => LoadModelVisibilityDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80)));
             if (!hasReverseRelationIndex)
             {
                 if (canScanSharedAvatarForward)
@@ -129,6 +133,7 @@ namespace AnimeStudio.CLI
                 ["schemaVersion"] = 1,
                 ["sourceIndex"] = Path.GetFullPath(sourceIndexPath),
                 ["outputRoot"] = outputRoot,
+                ["sourceModelAnimationProfile"] = timingPath,
                 ["modelSelector"] = modelSelector,
                 ["animationSelector"] = animationSelector ?? string.Empty,
                 ["limit"] = limit,
@@ -218,6 +223,61 @@ namespace AnimeStudio.CLI
             // animationSelector 是正则，不能安全下推成 SQL LIKE。先扩大预筛数量，
             // 再做严格正则筛选，避免 dialog/cutscene 候选在 ORDER BY+LIMIT 前段挤掉真实动作。
             return Math.Clamp(limit * 8, limit, 500);
+        }
+
+        private static T MeasureStage<T>(string timingPath, string stage, IDictionary<string, object> data, Func<T> action)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var result = action();
+                WriteStageTiming(timingPath, stage, stopwatch.Elapsed, true, data, null);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                WriteStageTiming(timingPath, stage, stopwatch.Elapsed, false, data, ex.Message);
+                throw;
+            }
+        }
+
+        private static Dictionary<string, object> StageModelData(ModelRow model)
+        {
+            return new Dictionary<string, object>
+            {
+                ["modelName"] = model.Name ?? string.Empty,
+                ["modelSerializedFile"] = model.SerializedFile ?? string.Empty,
+                ["modelPathId"] = model.PathId,
+            };
+        }
+
+        private static void WriteStageTiming(string timingPath, string stage, TimeSpan elapsed, bool success, IDictionary<string, object> data, string error)
+        {
+            if (string.IsNullOrWhiteSpace(timingPath))
+            {
+                return;
+            }
+
+            var payload = new Dictionary<string, object>
+            {
+                ["timestamp"] = DateTime.UtcNow.ToString("O"),
+                ["stage"] = stage,
+                ["elapsedMs"] = Math.Round(elapsed.TotalMilliseconds, 3),
+                ["success"] = success,
+            };
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                payload["error"] = error;
+            }
+            if (data != null)
+            {
+                foreach (var pair in data)
+                {
+                    payload[pair.Key] = pair.Value;
+                }
+            }
+
+            File.AppendAllText(timingPath, JsonConvert.SerializeObject(payload) + Environment.NewLine);
         }
 
         private static List<ModelRow> LoadMatchingModels(SqliteConnection connection, string selector, int limit)
@@ -391,10 +451,8 @@ LIMIT $limit;";
                 .ToList();
         }
 
-        private static List<AnimatorDiagnosticRow> LoadAnimatorDiagnosticsForSelector(SqliteConnection connection, string selector, int limit)
+        private static List<AnimatorDiagnosticRow> LoadAnimatorDiagnosticsForModels(SqliteConnection connection, IReadOnlyList<ModelRow> models, int limit)
         {
-            var models = LoadMatchingModels(connection, selector, Math.Min(limit, 80));
-
             var distinctModels = models
                 .GroupBy(x => (x.SerializedFile ?? string.Empty) + "\n" + x.PathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
                 .Select(x => x.First())
@@ -454,10 +512,8 @@ LIMIT $limit;";
             return rows;
         }
 
-        private static List<MonoBehaviourPPtrDiagnosticRow> LoadMonoBehaviourPPtrDiagnosticsForSelector(SqliteConnection connection, string selector, int limit)
+        private static List<MonoBehaviourPPtrDiagnosticRow> LoadMonoBehaviourPPtrDiagnosticsForModels(SqliteConnection connection, IReadOnlyList<ModelRow> models, int limit)
         {
-            var models = LoadMatchingModels(connection, selector, Math.Min(limit, 80));
-
             var distinctModels = models
                 .GroupBy(x => (x.SerializedFile ?? string.Empty) + "\n" + x.PathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
                 .Select(x => x.First())
@@ -611,100 +667,31 @@ LIMIT $limit;");
 
         private static ModelVisibilityDiagnosticRow LoadModelVisibilityDiagnostic(SqliteConnection connection, ModelRow model)
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = ApplyOptionalIndexHints(connection, @"
-WITH root_gameobject AS (
-    SELECT $modelFile AS go_file, $modelPathId AS go_path_id
-),
-root_transform AS (
-    SELECT tr.to_file AS tr_file, tr.to_path_id AS tr_path_id
-    FROM source_relations tr INDEXED BY idx_source_relations_from
-    JOIN source_objects trObj
-      ON trObj.serialized_file = tr.to_file
-     AND trObj.path_id = tr.to_path_id
-     AND trObj.type = 'Transform'
-    WHERE tr.from_file = $modelFile
-      AND tr.from_path_id = $modelPathId
-      AND tr.relation = 'gameObject.component'
-    LIMIT 1
-),
-child_gameobjects AS (
-    SELECT DISTINCT goRel.to_file AS go_file, goRel.to_path_id AS go_path_id
-    FROM root_transform
-    JOIN source_relations child INDEXED BY idx_source_relations_from
-      ON child.from_file = root_transform.tr_file
-     AND child.from_path_id = root_transform.tr_path_id
-     AND child.relation = 'transform.child'
-    JOIN source_relations goRel INDEXED BY idx_source_relations_from
-      ON goRel.from_file = child.to_file
-     AND goRel.from_path_id = child.to_path_id
-     AND goRel.relation = 'component.gameObject'
-),
-hierarchy_gameobjects AS (
-    SELECT go_file, go_path_id FROM root_gameobject
-    UNION
-    SELECT go_file, go_path_id FROM child_gameobjects
-),
-components AS (
-    SELECT comp.type, comp.serialized_file, comp.path_id
-    FROM hierarchy_gameobjects go
-    JOIN source_relations rel INDEXED BY idx_source_relations_from
-      ON rel.from_file = go.go_file
-     AND rel.from_path_id = go.go_path_id
-     AND rel.relation = 'gameObject.component'
-    JOIN source_objects comp
-      ON comp.serialized_file = rel.to_file
-     AND comp.path_id = rel.to_path_id
-)
-SELECT
-    (SELECT COUNT(*) FROM hierarchy_gameobjects) AS hierarchy_go_count,
-    (SELECT COUNT(*) FROM root_transform) AS transform_count,
-    COALESCE(SUM(CASE WHEN type = 'MeshRenderer' THEN 1 ELSE 0 END), 0) AS mesh_renderer_count,
-    COALESCE(SUM(CASE WHEN type = 'SkinnedMeshRenderer' THEN 1 ELSE 0 END), 0) AS skinned_renderer_count,
-    COALESCE(SUM(CASE WHEN type = 'MeshFilter' THEN 1 ELSE 0 END), 0) AS mesh_filter_count,
-    COALESCE(SUM(CASE WHEN type = 'Animator' THEN 1 ELSE 0 END), 0) AS animator_count,
-    COALESCE(SUM(CASE WHEN type = 'Animation' THEN 1 ELSE 0 END), 0) AS animation_count,
-    COALESCE((
-        SELECT COUNT(DISTINCT ar.to_file || ':' || ar.to_path_id)
-        FROM components anim
-        JOIN source_relations ar INDEXED BY idx_source_relations_from
-          ON ar.from_file = anim.serialized_file
-         AND ar.from_path_id = anim.path_id
-         AND ar.relation = 'animator.avatar'
-        WHERE anim.type = 'Animator'
-    ), 0) AS avatar_ref_count,
-    COALESCE((
-        SELECT COUNT(DISTINCT cr.to_file || ':' || cr.to_path_id)
-        FROM components anim
-        JOIN source_relations cr INDEXED BY idx_source_relations_from
-          ON cr.from_file = anim.serialized_file
-         AND cr.from_path_id = anim.path_id
-         AND cr.relation = 'animator.controller'
-        WHERE anim.type = 'Animator'
-    ), 0) AS controller_ref_count
-FROM components;");
-            command.Parameters.AddWithValue("$modelFile", model.SerializedFile ?? string.Empty);
-            command.Parameters.AddWithValue("$modelPathId", model.PathId);
-
-            using var reader = command.ExecuteReader();
-            if (!reader.Read())
+            // 大 CTE 在 Naraka 全量索引上容易被 SQLite 规划成慢查询；这里按 Unity 显式层级拆成几条小查询。
+            var hierarchyGameObjects = new List<SourceObjectKey>
             {
-                return new ModelVisibilityDiagnosticRow(
-                    model.Name,
-                    model.SourcePath,
-                    model.SerializedFile,
-                    model.PathId,
-                    model.ContainerPath,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0);
+                new SourceObjectKey(model.SerializedFile ?? string.Empty, model.PathId),
+            };
+            var rootTransform = LoadRootTransform(connection, model);
+            if (rootTransform != null)
+            {
+                hierarchyGameObjects.AddRange(LoadDirectChildGameObjects(connection, rootTransform));
             }
+
+            hierarchyGameObjects = hierarchyGameObjects
+                .GroupBy(x => (x.SerializedFile ?? string.Empty) + "\n" + x.PathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .Select(x => x.First())
+                .ToList();
+
+            var components = new List<ComponentRow>();
+            foreach (var gameObject in hierarchyGameObjects)
+            {
+                components.AddRange(LoadComponentsForGameObject(connection, gameObject));
+            }
+
+            var animatorComponents = components
+                .Where(x => string.Equals(x.Type, "Animator", StringComparison.Ordinal))
+                .ToList();
 
             return new ModelVisibilityDiagnosticRow(
                 model.Name,
@@ -712,15 +699,115 @@ FROM components;");
                 model.SerializedFile,
                 model.PathId,
                 model.ContainerPath,
-                ReadLong(reader, 0),
-                ReadLong(reader, 1),
-                ReadLong(reader, 2),
-                ReadLong(reader, 3),
-                ReadLong(reader, 4),
-                ReadLong(reader, 5),
-                ReadLong(reader, 6),
-                ReadLong(reader, 7),
-                ReadLong(reader, 8));
+                hierarchyGameObjects.Count,
+                rootTransform == null ? 0 : 1,
+                components.Count(x => string.Equals(x.Type, "MeshRenderer", StringComparison.Ordinal)),
+                components.Count(x => string.Equals(x.Type, "SkinnedMeshRenderer", StringComparison.Ordinal)),
+                components.Count(x => string.Equals(x.Type, "MeshFilter", StringComparison.Ordinal)),
+                animatorComponents.Count,
+                components.Count(x => string.Equals(x.Type, "Animation", StringComparison.Ordinal)),
+                CountDistinctComponentTargets(connection, animatorComponents, "animator.avatar"),
+                CountDistinctComponentTargets(connection, animatorComponents, "animator.controller"));
+        }
+
+        private static SourceObjectKey LoadRootTransform(SqliteConnection connection, ModelRow model)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT comp.serialized_file, comp.path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects comp
+  ON comp.serialized_file = rel.to_file
+ AND comp.path_id = rel.to_path_id
+ AND comp.type = 'Transform'
+WHERE rel.from_file = $modelFile
+  AND rel.from_path_id = $modelPathId
+  AND rel.relation = 'gameObject.component'
+LIMIT 1;");
+            command.Parameters.AddWithValue("$modelFile", model.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$modelPathId", model.PathId);
+
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1))
+                : null;
+        }
+
+        private static List<SourceObjectKey> LoadDirectChildGameObjects(SqliteConnection connection, SourceObjectKey rootTransform)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT DISTINCT goRel.to_file, goRel.to_path_id
+FROM source_relations child INDEXED BY idx_source_relations_from
+JOIN source_relations goRel INDEXED BY idx_source_relations_from
+  ON goRel.from_file = child.to_file
+ AND goRel.from_path_id = child.to_path_id
+ AND goRel.relation = 'component.gameObject'
+WHERE child.from_file = $transformFile
+  AND child.from_path_id = $transformPathId
+  AND child.relation = 'transform.child';");
+            command.Parameters.AddWithValue("$transformFile", rootTransform.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$transformPathId", rootTransform.PathId);
+
+            var rows = new List<SourceObjectKey>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add(new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1)));
+            }
+
+            return rows;
+        }
+
+        private static List<ComponentRow> LoadComponentsForGameObject(SqliteConnection connection, SourceObjectKey gameObject)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT comp.type, comp.serialized_file, comp.path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects comp
+  ON comp.serialized_file = rel.to_file
+ AND comp.path_id = rel.to_path_id
+WHERE rel.from_file = $gameObjectFile
+  AND rel.from_path_id = $gameObjectPathId
+  AND rel.relation = 'gameObject.component';");
+            command.Parameters.AddWithValue("$gameObjectFile", gameObject.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$gameObjectPathId", gameObject.PathId);
+
+            var rows = new List<ComponentRow>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add(new ComponentRow(ReadString(reader, 0), ReadString(reader, 1), ReadLong(reader, 2)));
+            }
+
+            return rows;
+        }
+
+        private static long CountDistinctComponentTargets(SqliteConnection connection, IReadOnlyList<ComponentRow> components, string relation)
+        {
+            var targets = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var component in components ?? Array.Empty<ComponentRow>())
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT DISTINCT rel.to_file, rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+WHERE rel.from_file = $componentFile
+  AND rel.from_path_id = $componentPathId
+  AND rel.relation = $relation;");
+                command.Parameters.AddWithValue("$componentFile", component.SerializedFile ?? string.Empty);
+                command.Parameters.AddWithValue("$componentPathId", component.PathId);
+                command.Parameters.AddWithValue("$relation", relation ?? string.Empty);
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    targets.Add(ReadString(reader, 0) + "\n" + ReadLong(reader, 1).ToString(CultureInfo.InvariantCulture));
+                }
+            }
+
+            return targets.Count;
         }
 
         private static List<AvatarTosClipDiagnosticRow> LoadAvatarTosClipDiagnosticsForModel(
@@ -1173,9 +1260,9 @@ SELECT animator.name, animator.serialized_file, animator.path_id,
        controllerClip.relation
 FROM source_objects animator
 JOIN source_relations goRel INDEXED BY idx_source_relations_from
-  ON goRel.from_file = animator.serialized_file
- AND goRel.from_path_id = animator.path_id
- AND goRel.relation = 'component.gameObject'
+  ON goRel.to_file = animator.serialized_file
+ AND goRel.to_path_id = animator.path_id
+ AND goRel.relation = 'gameObject.component'
 JOIN source_relations controllerRel INDEXED BY idx_source_relations_from
   ON controllerRel.from_file = animator.serialized_file
  AND controllerRel.from_path_id = animator.path_id
@@ -1191,8 +1278,8 @@ JOIN source_objects clip
   ON clip.serialized_file = controllerClip.to_file
  AND clip.path_id = controllerClip.to_path_id
 WHERE animator.type = 'Animator'
-  AND goRel.to_file = $modelFile
-  AND goRel.to_path_id = $modelPathId
+  AND goRel.from_file = $modelFile
+  AND goRel.from_path_id = $modelPathId
 ORDER BY clip.name COLLATE NOCASE;";
             command.Parameters.AddWithValue("$modelFile", model.SerializedFile);
             command.Parameters.AddWithValue("$modelPathId", model.PathId);
@@ -1558,9 +1645,9 @@ SELECT animation.name, animation.serialized_file, animation.path_id,
        clipRel.relation
 FROM source_objects animation
 JOIN source_relations goRel INDEXED BY idx_source_relations_from
-  ON goRel.from_file = animation.serialized_file
- AND goRel.from_path_id = animation.path_id
- AND goRel.relation = 'component.gameObject'
+  ON goRel.to_file = animation.serialized_file
+ AND goRel.to_path_id = animation.path_id
+ AND goRel.relation = 'gameObject.component'
 JOIN source_relations clipRel INDEXED BY idx_source_relations_from
   ON clipRel.from_file = animation.serialized_file
  AND clipRel.from_path_id = animation.path_id
@@ -1569,8 +1656,8 @@ JOIN source_objects clip
   ON clip.serialized_file = clipRel.to_file
  AND clip.path_id = clipRel.to_path_id
 WHERE animation.type = 'Animation'
-  AND goRel.to_file = $modelFile
-  AND goRel.to_path_id = $modelPathId
+  AND goRel.from_file = $modelFile
+  AND goRel.from_path_id = $modelPathId
 ORDER BY clip.name COLLATE NOCASE;";
             command.Parameters.AddWithValue("$modelFile", model.SerializedFile);
             command.Parameters.AddWithValue("$modelPathId", model.PathId);
@@ -2178,6 +2265,15 @@ LIMIT $limit;";
             long AnimationComponentCount,
             long AnimatorAvatarReferenceCount,
             long AnimatorControllerReferenceCount);
+
+        private sealed record SourceObjectKey(
+            string SerializedFile,
+            long PathId);
+
+        private sealed record ComponentRow(
+            string Type,
+            string SerializedFile,
+            long PathId);
 
         private sealed record AnimatorAvatarTosRow(
             string AnimatorName,
