@@ -352,6 +352,7 @@ namespace AnimeStudio.CLI
             var gltfMeshes = new JArray();
             var nodes = new JArray();
             var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
+            var rendererSkinBindings = LoadVisualCellRendererSkinBindings(sourceIndexPath, parts, warnings);
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
             var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -444,7 +445,8 @@ namespace AnimeStudio.CLI
                 ["parts"] = new JArray(parts.Select(part =>
                 {
                     materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
-                    return ToReportJson(part, materialBinding);
+                    rendererSkinBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var rendererSkinBinding);
+                    return ToReportJson(part, materialBinding, rendererSkinBinding);
                 })),
                 ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系，不猜 LOD、材质槽、骨骼或 skin。"
             };
@@ -457,6 +459,7 @@ namespace AnimeStudio.CLI
                 sourceIndexPath,
                 parts,
                 materialBindings,
+                rendererSkinBindings,
                 gltfMaterials,
                 gltfImages,
                 gltfTextures);
@@ -473,6 +476,7 @@ namespace AnimeStudio.CLI
             string sourceIndexPath,
             IReadOnlyList<VisualCellPart> parts,
             IReadOnlyDictionary<string, VisualCellMaterialBinding> materialBindings,
+            IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings,
             JArray gltfMaterials,
             JArray gltfImages,
             JArray gltfTextures)
@@ -496,6 +500,9 @@ namespace AnimeStudio.CLI
                 "diagnostic_custom_mesh",
                 "missing_skin_binding",
                 parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped") ? "skin_data_present_unmapped" : "skin_data_missing",
+                rendererSkinBindings.Values.Any(x => x.Status == "rendererSkinRelations")
+                    ? "renderer_skin_relations_present"
+                    : "renderer_skin_relations_missing",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
             var sourceSkinStatuses = parts
                 .Select(x => x.Mesh.Skin.Status)
@@ -547,6 +554,10 @@ namespace AnimeStudio.CLI
                 ["sourceSkinBindPoseCount"] = parts.Sum(x => x.Mesh.Skin.BindPoseCount),
                 ["sourceSkinMappedJointCount"] = 0,
                 ["sourceSkinUnmapped"] = parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped"),
+                ["rendererSkinBindingStatus"] = SummarizeRendererSkinBindingStatus(rendererSkinBindings.Values),
+                ["rendererSkinMeshRefCount"] = rendererSkinBindings.Values.Count(x => x.MeshPathId.HasValue),
+                ["rendererSkinRootBoneRefCount"] = rendererSkinBindings.Values.Count(x => x.RootBonePathId.HasValue),
+                ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -558,7 +569,8 @@ namespace AnimeStudio.CLI
                     ["basis"] = "ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset",
                     ["rendererMaterialBasis"] = "renderer.material / material.texture from unity_source_index.db",
                     ["skinDataBasis"] = "AvatarMeshDataAsset.m_AnimSkinData / m_AvatarBoneWeights / m_BindPoses",
-                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用和源 skin 字段可追溯；没有 joint 映射、shader tint 和完整角色装配前不进入动画验收。"
+                    ["rendererSkinBasis"] = "skinnedMeshRenderer.mesh / rootBone / bones from unity_source_index.db",
+                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用和源 skin 字段可追溯；Renderer 可能只是显示挂点，没有 joint 映射、shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
 
@@ -1121,7 +1133,29 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static JObject ToReportJson(VisualCellPart part, VisualCellMaterialBinding materialBinding)
+        private static string SummarizeRendererSkinBindingStatus(IEnumerable<VisualCellRendererSkinBinding> bindings)
+        {
+            var list = bindings?.ToList() ?? new List<VisualCellRendererSkinBinding>();
+            if (list.Count == 0)
+            {
+                return "unknown";
+            }
+            if (list.All(x => x.Status == "rendererSkinRelations"))
+            {
+                return "rendererSkinRelations";
+            }
+            if (list.Any(x => x.Status == "rendererSkinRelations"))
+            {
+                return "partialRendererSkinRelations";
+            }
+            if (list.Any(x => x.Status == "sourceIndexNotProvided" || x.Status == "sourceIndexMissing" || x.Status == "sourceIndexQueryFailed"))
+            {
+                return "sourceIndexUnavailable";
+            }
+            return "noRendererSkinRelations";
+        }
+
+        private static JObject ToReportJson(VisualCellPart part, VisualCellMaterialBinding materialBinding, VisualCellRendererSkinBinding rendererSkinBinding)
         {
             var meshJson = ToReportJson(part.Mesh, part.MeshJsonPath);
             meshJson["assistantPathId"] = part.AssistantPathId;
@@ -1131,6 +1165,7 @@ namespace AnimeStudio.CLI
             meshJson["avatarMeshPathId"] = part.AvatarMeshPathId;
             meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
             meshJson["materialBinding"] = materialBinding?.ToJson();
+            meshJson["rendererSkinBinding"] = rendererSkinBinding?.ToJson();
             return meshJson;
         }
 
@@ -1217,6 +1252,123 @@ ORDER BY mat.id;";
             }
 
             return result;
+        }
+
+        private static Dictionary<string, VisualCellRendererSkinBinding> LoadVisualCellRendererSkinBindings(
+            string sourceIndexPath,
+            IReadOnlyCollection<VisualCellPart> parts,
+            List<string> warnings)
+        {
+            var result = parts.ToDictionary(
+                x => GetRendererKey(x.RendererFile, x.RendererPathId),
+                x => new VisualCellRendererSkinBinding
+                {
+                    Status = string.IsNullOrWhiteSpace(sourceIndexPath) ? "sourceIndexNotProvided" : "noRendererSkinRelations",
+                    RendererFile = x.RendererFile,
+                    RendererPathId = x.RendererPathId,
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+            if (string.IsNullOrWhiteSpace(sourceIndexPath))
+            {
+                return result;
+            }
+            if (!File.Exists(sourceIndexPath))
+            {
+                warnings.Add($"missingSourceIndexForRendererSkin:{sourceIndexPath}");
+                foreach (var binding in result.Values)
+                {
+                    binding.Status = "sourceIndexMissing";
+                }
+                return result;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                foreach (var part in parts)
+                {
+                    var key = GetRendererKey(part.RendererFile, part.RendererPathId);
+                    if (!result.TryGetValue(key, out var binding))
+                    {
+                        continue;
+                    }
+
+                    using var command = connection.CreateCommand();
+                    command.CommandText = @"
+SELECT relation,
+       to_file,
+       to_path_id,
+       target_count,
+       raw_json
+FROM source_relations
+WHERE from_file = $rendererFile COLLATE NOCASE
+  AND from_path_id = $rendererPathId
+  AND relation IN ('skinnedMeshRenderer.mesh', 'skinnedMeshRenderer.rootBone', 'skinnedMeshRenderer.bones')
+ORDER BY relation;";
+                    command.Parameters.AddWithValue("$rendererFile", part.RendererFile ?? string.Empty);
+                    command.Parameters.AddWithValue("$rendererPathId", part.RendererPathId);
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var relation = reader.GetString(0);
+                        var targetFile = reader.IsDBNull(1) ? null : reader.GetString(1);
+                        var targetPathId = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+                        var targetCount = reader.IsDBNull(3) ? (int?)null : Convert.ToInt32(reader.GetValue(3), CultureInfo.InvariantCulture);
+                        var rawJson = reader.IsDBNull(4) ? null : reader.GetString(4);
+                        var details = TryReadRelationDetails(rawJson);
+                        if (string.Equals(relation, "skinnedMeshRenderer.mesh", StringComparison.OrdinalIgnoreCase) && targetPathId != 0)
+                        {
+                            binding.MeshFile = targetFile;
+                            binding.MeshPathId = targetPathId;
+                        }
+                        else if (string.Equals(relation, "skinnedMeshRenderer.rootBone", StringComparison.OrdinalIgnoreCase) && targetPathId != 0)
+                        {
+                            binding.RootBoneFile = targetFile;
+                            binding.RootBonePathId = targetPathId;
+                        }
+                        else if (string.Equals(relation, "skinnedMeshRenderer.bones", StringComparison.OrdinalIgnoreCase))
+                        {
+                            binding.BoneCount = (int?)details?["count"] ?? targetCount;
+                            binding.BonesTruncated = (bool?)details?["truncated"];
+                            binding.BoneTargets = details?["targets"] as JArray;
+                        }
+                    }
+
+                    binding.Status = binding.HasAnyRelation
+                        ? "rendererSkinRelations"
+                        : "noRendererSkinRelations";
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is JsonException || ex is InvalidDataException)
+            {
+                warnings.Add($"sourceIndexRendererSkinQueryFailed:{ex.Message}");
+                foreach (var binding in result.Values)
+                {
+                    binding.Status = "sourceIndexQueryFailed";
+                }
+            }
+
+            return result;
+        }
+
+        private static JObject TryReadRelationDetails(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return null;
+            }
+
+            try
+            {
+                return JObject.Parse(rawJson)["details"] as JObject;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
         }
 
         private static int CountMaterialTextureRefs(SqliteConnection connection, string materialFile, long materialPathId)
@@ -1793,6 +1945,40 @@ WHERE relation = 'material.texture'
                     ["materialType"] = MaterialType,
                     ["materialName"] = MaterialName,
                     ["textureRefCount"] = TextureRefCount
+                };
+            }
+        }
+
+        private sealed class VisualCellRendererSkinBinding
+        {
+            public string Status { get; set; }
+            public string RendererFile { get; set; }
+            public long RendererPathId { get; set; }
+            public string MeshFile { get; set; }
+            public long? MeshPathId { get; set; }
+            public string RootBoneFile { get; set; }
+            public long? RootBonePathId { get; set; }
+            public int? BoneCount { get; set; }
+            public bool? BonesTruncated { get; set; }
+            public JArray BoneTargets { get; set; }
+
+            public bool HasAnyRelation => MeshPathId.HasValue || RootBonePathId.HasValue || BoneCount.HasValue;
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["rendererFile"] = RendererFile,
+                    ["rendererPathId"] = RendererPathId,
+                    ["meshFile"] = MeshFile,
+                    ["meshPathId"] = MeshPathId,
+                    ["rootBoneFile"] = RootBoneFile,
+                    ["rootBonePathId"] = RootBonePathId,
+                    ["boneCount"] = BoneCount,
+                    ["bonesTruncated"] = BonesTruncated,
+                    ["boneTargetsPreview"] = BoneTargets != null ? new JArray(BoneTargets.Take(32).Select(x => x.DeepClone())) : null,
+                    ["rule"] = "Renderer 骨骼证据只来自 SQLite 源索引的 skinnedMeshRenderer.mesh/rootBone/bones；Naraka 自定义网格如果这里为空，说明 Renderer 不是当前 joint 映射来源。"
                 };
             }
         }
