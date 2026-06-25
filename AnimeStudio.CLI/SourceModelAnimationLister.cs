@@ -111,6 +111,7 @@ namespace AnimeStudio.CLI
                 selectedModels,
                 animationSelector,
                 Math.Min(limit, 80));
+            var modelVisibilityDiagnostics = LoadModelVisibilityDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80));
             if (!hasReverseRelationIndex)
             {
                 if (canScanSharedAvatarForward)
@@ -160,7 +161,9 @@ namespace AnimeStudio.CLI
                 ["animatorDiagnosticRule"] = "Diagnostics list matching GameObjects and their Animator/Controller/Clip state. They explain why explicit candidates may be zero, but they do not create or imply a model-animation binding.",
                 ["monoBehaviourPPtrDiagnosticRule"] = "Diagnostics list MonoBehaviour PPtr fields that point at the selected model, plus sibling PPtr fields from the same MonoBehaviour. These are deterministic config clues only; they do not become playable animation candidates unless a model-first gate and explicit animation relation are also proven.",
                 ["avatarTosClipDiagnosticRule"] = "Diagnostics list AnimationClip binding pathHash coverage against the selected model's explicit Animator.avatar -> Avatar.m_TOS table. This is structural evidence for Naraka hash-only path recovery only; it is not a default model-animation relation and must not bypass Animator/Controller context, model validation, TRS export, or visual review.",
+                ["modelVisibilityDiagnosticRule"] = "Diagnostics count Renderer/Animator components under the selected GameObject hierarchy. They only explain whether a selected source object looks like a visible model root; real model readiness still requires exported glTF, material/texture/skin/bbox validation, and visual review.",
                 ["selectedModels"] = new JArray(selectedModels.Select(ToJson)),
+                ["modelVisibilityDiagnostics"] = new JArray(modelVisibilityDiagnostics.Select(ToJson)),
                 ["models"] = new JArray(models.Select(ToJson)),
                 ["animatorDiagnostics"] = new JArray(animatorDiagnostics.Select(ToJson)),
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
@@ -589,6 +592,135 @@ LIMIT $limit;");
                 .ThenBy(x => x.AnimationName, StringComparer.OrdinalIgnoreCase)
                 .Take(limit)
                 .ToList();
+        }
+
+        private static List<ModelVisibilityDiagnosticRow> LoadModelVisibilityDiagnosticsForModels(SqliteConnection connection, IReadOnlyList<ModelRow> models, int limit)
+        {
+            var result = new List<ModelVisibilityDiagnosticRow>();
+            foreach (var model in models ?? Array.Empty<ModelRow>())
+            {
+                result.Add(LoadModelVisibilityDiagnostic(connection, model));
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+            }
+
+            return result;
+        }
+
+        private static ModelVisibilityDiagnosticRow LoadModelVisibilityDiagnostic(SqliteConnection connection, ModelRow model)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+WITH root_gameobject AS (
+    SELECT $modelFile AS go_file, $modelPathId AS go_path_id
+),
+root_transform AS (
+    SELECT tr.to_file AS tr_file, tr.to_path_id AS tr_path_id
+    FROM source_relations tr INDEXED BY idx_source_relations_from
+    JOIN source_objects trObj
+      ON trObj.serialized_file = tr.to_file
+     AND trObj.path_id = tr.to_path_id
+     AND trObj.type = 'Transform'
+    WHERE tr.from_file = $modelFile
+      AND tr.from_path_id = $modelPathId
+      AND tr.relation = 'gameObject.component'
+    LIMIT 1
+),
+child_gameobjects AS (
+    SELECT DISTINCT goRel.to_file AS go_file, goRel.to_path_id AS go_path_id
+    FROM root_transform
+    JOIN source_relations child INDEXED BY idx_source_relations_from
+      ON child.from_file = root_transform.tr_file
+     AND child.from_path_id = root_transform.tr_path_id
+     AND child.relation = 'transform.child'
+    JOIN source_relations goRel INDEXED BY idx_source_relations_from
+      ON goRel.from_file = child.to_file
+     AND goRel.from_path_id = child.to_path_id
+     AND goRel.relation = 'component.gameObject'
+),
+hierarchy_gameobjects AS (
+    SELECT go_file, go_path_id FROM root_gameobject
+    UNION
+    SELECT go_file, go_path_id FROM child_gameobjects
+),
+components AS (
+    SELECT comp.type, comp.serialized_file, comp.path_id
+    FROM hierarchy_gameobjects go
+    JOIN source_relations rel INDEXED BY idx_source_relations_from
+      ON rel.from_file = go.go_file
+     AND rel.from_path_id = go.go_path_id
+     AND rel.relation = 'gameObject.component'
+    JOIN source_objects comp
+      ON comp.serialized_file = rel.to_file
+     AND comp.path_id = rel.to_path_id
+)
+SELECT
+    (SELECT COUNT(*) FROM hierarchy_gameobjects) AS hierarchy_go_count,
+    (SELECT COUNT(*) FROM root_transform) AS transform_count,
+    COALESCE(SUM(CASE WHEN type = 'MeshRenderer' THEN 1 ELSE 0 END), 0) AS mesh_renderer_count,
+    COALESCE(SUM(CASE WHEN type = 'SkinnedMeshRenderer' THEN 1 ELSE 0 END), 0) AS skinned_renderer_count,
+    COALESCE(SUM(CASE WHEN type = 'MeshFilter' THEN 1 ELSE 0 END), 0) AS mesh_filter_count,
+    COALESCE(SUM(CASE WHEN type = 'Animator' THEN 1 ELSE 0 END), 0) AS animator_count,
+    COALESCE(SUM(CASE WHEN type = 'Animation' THEN 1 ELSE 0 END), 0) AS animation_count,
+    COALESCE((
+        SELECT COUNT(DISTINCT ar.to_file || ':' || ar.to_path_id)
+        FROM components anim
+        JOIN source_relations ar INDEXED BY idx_source_relations_from
+          ON ar.from_file = anim.serialized_file
+         AND ar.from_path_id = anim.path_id
+         AND ar.relation = 'animator.avatar'
+        WHERE anim.type = 'Animator'
+    ), 0) AS avatar_ref_count,
+    COALESCE((
+        SELECT COUNT(DISTINCT cr.to_file || ':' || cr.to_path_id)
+        FROM components anim
+        JOIN source_relations cr INDEXED BY idx_source_relations_from
+          ON cr.from_file = anim.serialized_file
+         AND cr.from_path_id = anim.path_id
+         AND cr.relation = 'animator.controller'
+        WHERE anim.type = 'Animator'
+    ), 0) AS controller_ref_count
+FROM components;");
+            command.Parameters.AddWithValue("$modelFile", model.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$modelPathId", model.PathId);
+
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return new ModelVisibilityDiagnosticRow(
+                    model.Name,
+                    model.SourcePath,
+                    model.SerializedFile,
+                    model.PathId,
+                    model.ContainerPath,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0);
+            }
+
+            return new ModelVisibilityDiagnosticRow(
+                model.Name,
+                model.SourcePath,
+                model.SerializedFile,
+                model.PathId,
+                model.ContainerPath,
+                ReadLong(reader, 0),
+                ReadLong(reader, 1),
+                ReadLong(reader, 2),
+                ReadLong(reader, 3),
+                ReadLong(reader, 4),
+                ReadLong(reader, 5),
+                ReadLong(reader, 6),
+                ReadLong(reader, 7),
+                ReadLong(reader, 8));
         }
 
         private static List<AvatarTosClipDiagnosticRow> LoadAvatarTosClipDiagnosticsForModel(
@@ -1868,6 +2000,43 @@ LIMIT $limit;";
             };
         }
 
+        private static JObject ToJson(ModelVisibilityDiagnosticRow row)
+        {
+            var visibleRendererCount = row.MeshRendererCount + row.SkinnedMeshRendererCount;
+            return new JObject
+            {
+                ["deterministic"] = true,
+                ["diagnosticOnly"] = true,
+                ["visibleModelLike"] = visibleRendererCount > 0,
+                ["visibleRendererCount"] = visibleRendererCount,
+                ["model"] = new JObject
+                {
+                    ["name"] = row.ModelName,
+                    ["sourcePath"] = row.ModelSourcePath,
+                    ["serializedFile"] = row.ModelSerializedFile,
+                    ["pathId"] = row.ModelPathId,
+                    ["containerPath"] = row.ModelContainerPath,
+                },
+                ["hierarchy"] = new JObject
+                {
+                    ["gameObjectCount"] = row.HierarchyGameObjectCount,
+                    ["transformCount"] = row.TransformCount,
+                    ["meshRendererCount"] = row.MeshRendererCount,
+                    ["skinnedMeshRendererCount"] = row.SkinnedMeshRendererCount,
+                    ["meshFilterCount"] = row.MeshFilterCount,
+                    ["animatorCount"] = row.AnimatorCount,
+                    ["animationComponentCount"] = row.AnimationComponentCount,
+                    ["animatorAvatarReferenceCount"] = row.AnimatorAvatarReferenceCount,
+                    ["animatorControllerReferenceCount"] = row.AnimatorControllerReferenceCount,
+                },
+                ["modelReadyForAnimation"] = false,
+                ["modelReadyForAnimationReason"] = visibleRendererCount <= 0
+                    ? "Selected GameObject hierarchy has no MeshRenderer/SkinnedMeshRenderer in the source index; treat it as skeleton/config diagnostic until a visible model export passes validation."
+                    : "Visible renderer components exist, but this source-index diagnostic still cannot prove glTF mesh/material/texture/skin/bbox quality.",
+                ["rule"] = "This diagnostic only checks source-index hierarchy components. It cannot replace model_validation.json, glTF validator, material/texture checks, or visual screenshots.",
+            };
+        }
+
         private static string ToCsv(List<CandidateRow> rows)
         {
             var builder = new StringBuilder();
@@ -1993,6 +2162,22 @@ LIMIT $limit;";
             string TargetName,
             string TargetSourcePath,
             bool IsSelectedModel);
+
+        private sealed record ModelVisibilityDiagnosticRow(
+            string ModelName,
+            string ModelSourcePath,
+            string ModelSerializedFile,
+            long ModelPathId,
+            string ModelContainerPath,
+            long HierarchyGameObjectCount,
+            long TransformCount,
+            long MeshRendererCount,
+            long SkinnedMeshRendererCount,
+            long MeshFilterCount,
+            long AnimatorCount,
+            long AnimationComponentCount,
+            long AnimatorAvatarReferenceCount,
+            long AnimatorControllerReferenceCount);
 
         private sealed record AnimatorAvatarTosRow(
             string AnimatorName,
