@@ -1763,7 +1763,7 @@ GROUP BY material.from_file, material.from_path_id;";
             AddIfContains(text, hits, "widget");
             AddIfContains(text, hits, "cine");
             AddIfContains(text, hits, "_lod");
-            AddIfContains(text, hits, "ui");
+            AddIfToken(text, hits, "ui");
             AddIfContains(text, hits, "preview");
             AddIfContains(text, hits, "deco");
             AddIfContains(text, hits, "levelseq");
@@ -1971,6 +1971,18 @@ WHERE to_file = $file
         private static void AddIfContains(string text, List<string> hits, string token)
         {
             if (text.Contains(token, StringComparison.OrdinalIgnoreCase))
+            {
+                hits.Add(token);
+            }
+        }
+
+        private static void AddIfToken(string text, List<string> hits, string token)
+        {
+            // 短词必须按路径/命名词元匹配，避免 building 里的 ui 误伤建筑候选。
+            if (Regex.IsMatch(
+                text,
+                $@"(^|[/_.\-\s]){Regex.Escape(token)}($|[/_.\-\s0-9])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             {
                 hits.Add(token);
             }

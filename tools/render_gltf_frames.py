@@ -40,7 +40,18 @@ def clear_scene():
 def gltf_dependency_paths(input_path):
     gltf_path = Path(input_path)
     try:
-        gltf = json.loads(gltf_path.read_text(encoding="utf-8"))
+        read_path = str(gltf_path)
+        if os.name == "nt":
+            text = str(gltf_path.resolve())
+            if text.startswith("\\\\?\\"):
+                read_path = text
+            elif text.startswith("\\\\"):
+                read_path = "\\\\?\\UNC\\" + text[2:]
+            else:
+                read_path = "\\\\?\\" + text
+        # 依赖收集也要支持长路径，否则 staging 只会复制 glTF 本体，Blender 再报 Missing resource。
+        with open(read_path, encoding="utf-8") as handle:
+            gltf = json.load(handle)
     except Exception:
         return [gltf_path]
 
@@ -84,7 +95,23 @@ def copy_gltf_dependencies_to_stage(original, staged_dir, dependency_paths):
         if not path_exists(source):
             missing.append(str(source))
             continue
-        shutil.copy2(windows_long_path(source), windows_long_path(destination))
+
+        copy_error = None
+        for source_arg, destination_arg in (
+            (windows_long_path(source), windows_long_path(destination)),
+            (str(source), str(destination)),
+        ):
+            try:
+                shutil.copy2(source_arg, destination_arg)
+                if path_exists(destination):
+                    break
+            except Exception as exc:
+                copy_error = exc
+        else:
+            # 这里必须提前暴露 staging 缺依赖，避免 Blender 只报一个难追的 Missing resource。
+            suffix = f" ({copy_error})" if copy_error else ""
+            missing.append(f"{source} -> {destination}{suffix}")
+            continue
         copied += 1
     return copied, missing
 
@@ -118,6 +145,10 @@ def staged_input_if_needed(input_path, max_path_length=240):
     staged_dir = temp_root / "model"
     try:
         copied_count, missing = copy_gltf_dependencies_to_stage(original, staged_dir, dependency_paths)
+        if missing:
+            raise FileNotFoundError(
+                "Staged glTF dependency copy failed: " + "; ".join(missing[:16])
+            )
     except Exception:
         shutil.rmtree(temp_root, ignore_errors=True)
         raise
