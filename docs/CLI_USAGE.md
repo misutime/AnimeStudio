@@ -927,6 +927,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --assembly_modules "Face,Hair,Accessory"
 ```
 
+`--assembly_modules` 也可以显式传入一个 `.gltf` / `.glb` 文件路径，例如 Naraka `--export_avatar_mesh_data_gltf` 生成的 face 诊断 glTF。显式路径允许追加“有 mesh、无 skin”的诊断模块，用来检查坐标、材质和可见装配效果；报告会标记 `DiagnosticUnskinned=true`，不能把它当作正式 prefab 绑定、skin 绑定或动画验收证据。默认按角色自动选择的模块仍必须通过同名 joint 映射。
+
 输出仍然是临时预览，不改变默认素材库：
 
 ```text

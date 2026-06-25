@@ -19,39 +19,47 @@ namespace AnimeStudio.CLI
             string sourceRootOverride,
             string moduleSelector)
         {
-            var gltfPath = PreviewGltfGenerator.Generate(
-                indexPath,
-                gameName,
-                modelSelector,
-                animationSelector,
-                outputDirectory,
-                sourceRootOverride
-            );
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                Logger.Error($"model_animations.json not found: {indexPath}");
+                return;
+            }
+
+            var index = JObject.Parse(File.ReadAllText(indexPath));
+            var baseModel = SelectModel(index, modelSelector);
+            var baseInfo = baseModel?["model"] as JObject;
+            var gltfPath = string.IsNullOrWhiteSpace(animationSelector)
+                ? CopyStaticModelPreview(indexPath, baseInfo, outputDirectory)
+                : PreviewGltfGenerator.Generate(
+                    indexPath,
+                    gameName,
+                    modelSelector,
+                    animationSelector,
+                    outputDirectory,
+                    sourceRootOverride
+                );
             if (string.IsNullOrWhiteSpace(gltfPath) || !File.Exists(gltfPath))
             {
                 return;
             }
 
-            var index = JObject.Parse(File.ReadAllText(indexPath));
-            var catalogPath = (string)index["catalog"]
-                ?? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? Directory.GetCurrentDirectory(), "asset_catalog.jsonl");
-            if (!File.Exists(catalogPath))
-            {
-                Logger.Warning($"asset_catalog.jsonl not found; assembled preview keeps base model only: {catalogPath}");
-                return;
-            }
-
-            var baseModel = SelectModel(index, modelSelector);
             if (baseModel == null)
             {
                 Logger.Warning("Unable to resolve selected model from model_animations.json; assembled preview keeps base model only.");
                 return;
             }
 
-            var baseInfo = baseModel["model"] as JObject;
-            var requestedRoles = ParseRequestedRoles(moduleSelector);
-            var catalog = ReadCatalog(catalogPath);
-            var modules = SelectCompatibleModules(gltfPath, baseInfo, catalog, requestedRoles);
+            var requestedModules = ParseRequestedModules(moduleSelector);
+            var catalogPath = ResolveIndexRelativePath(indexPath, (string)index["catalog"] ?? "asset_catalog.jsonl");
+            var catalog = File.Exists(catalogPath)
+                ? ReadCatalog(catalogPath)
+                : new List<JObject>();
+            if (catalog.Count == 0 && requestedModules.All(x => string.IsNullOrWhiteSpace(x.ExplicitPath)))
+            {
+                Logger.Warning($"asset_catalog.jsonl not found; assembled preview keeps base model only: {catalogPath}");
+                return;
+            }
+            var modules = SelectCompatibleModules(gltfPath, baseInfo, catalog, requestedModules);
             var report = Assemble(gltfPath, baseInfo, modules);
             var reportPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(gltfPath)) ?? Directory.GetCurrentDirectory(), "assembly_report.json");
             File.WriteAllText(reportPath, JsonConvert.SerializeObject(report, Formatting.Indented));
@@ -70,19 +78,76 @@ namespace AnimeStudio.CLI
                 });
         }
 
-        private static string[] ParseRequestedRoles(string moduleSelector)
+        private static string ResolveIndexRelativePath(string indexPath, string path)
         {
-            var defaults = new[] { "Face", "Hair", "Accessory" };
-            if (string.IsNullOrWhiteSpace(moduleSelector))
+            if (string.IsNullOrWhiteSpace(path))
             {
-                return defaults;
+                return string.Empty;
+            }
+            if (Path.IsPathRooted(path))
+            {
+                return path;
             }
 
-            return moduleSelector
+            var indexDirectory = Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? Directory.GetCurrentDirectory();
+            return Path.Combine(indexDirectory, path.Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        private static string CopyStaticModelPreview(string indexPath, JObject baseInfo, string outputDirectory)
+        {
+            if (baseInfo == null)
+            {
+                Logger.Error("No model matched the assembled preview selector.");
+                return null;
+            }
+
+            var libraryRoot = Path.GetDirectoryName(Path.GetFullPath(indexPath)) ?? Directory.GetCurrentDirectory();
+            var modelOutput = (string)baseInfo["output"];
+            if (string.IsNullOrWhiteSpace(modelOutput))
+            {
+                Logger.Error("Selected model has no output path in model_animations.json.");
+                return null;
+            }
+
+            var sourceGltf = Path.IsPathRooted(modelOutput)
+                ? modelOutput
+                : Path.Combine(libraryRoot, modelOutput.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(sourceGltf))
+            {
+                Logger.Error($"Selected model glTF not found: {sourceGltf}");
+                return null;
+            }
+
+            var sourceDirectory = Path.GetDirectoryName(Path.GetFullPath(sourceGltf)) ?? Directory.GetCurrentDirectory();
+            var targetDirectory = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(libraryRoot, "AssembledPreview", SafeName((string)baseInfo["name"] ?? Path.GetFileNameWithoutExtension(sourceGltf)))
+                : outputDirectory;
+            Directory.CreateDirectory(targetDirectory);
+
+            // 组装预览只复制选中模型目录，不改正式 Library 文件。
+            // Naraka 这类样本的 glTF 贴图 URI 位于模型目录下，复制目录可保持相对引用。
+            CopyDirectory(sourceDirectory, targetDirectory);
+            var targetGltf = Path.Combine(targetDirectory, Path.GetFileName(sourceGltf));
+            Logger.Info($"Static assembled preview base copied: {targetGltf}");
+            return targetGltf;
+        }
+
+        private static List<ModuleRequest> ParseRequestedModules(string moduleSelector)
+        {
+            var defaults = new[] { "Face", "Hair", "Accessory" };
+            var values = string.IsNullOrWhiteSpace(moduleSelector)
+                ? defaults
+                : moduleSelector
                 .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(x => x.Trim())
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToArray();
+
+            return values.Select(value =>
+            {
+                var normalizedPath = TryNormalizeExplicitModulePath(value);
+                return new ModuleRequest(value, normalizedPath);
+            }).ToList();
         }
 
         private static List<JObject> ReadCatalog(string catalogPath)
@@ -108,7 +173,7 @@ namespace AnimeStudio.CLI
             string baseGltfPath,
             JObject baseInfo,
             List<JObject> catalog,
-            string[] requestedRoles)
+            List<ModuleRequest> requestedModules)
         {
             var baseName = (string)baseInfo?["name"] ?? string.Empty;
             var family = GetCharacterFamily(baseName);
@@ -116,16 +181,26 @@ namespace AnimeStudio.CLI
             var baseNodeNames = LoadNodeNames(baseGltfPath);
             var selected = new List<ModuleCandidate>();
 
-            foreach (var roleOrSelector in requestedRoles)
+            foreach (var request in requestedModules)
             {
-                var role = NormalizeRole(roleOrSelector);
+                if (!string.IsNullOrWhiteSpace(request.ExplicitPath))
+                {
+                    var explicitCandidate = BuildExplicitModuleCandidate(baseNodeNames, request);
+                    if (explicitCandidate != null)
+                    {
+                        selected.Add(explicitCandidate);
+                    }
+                    continue;
+                }
+
+                var role = NormalizeRole(request.Selector);
                 var candidates = catalog
                     .Where(x => !string.Equals(Path.GetFullPath((string)x["output"] ?? string.Empty), baseOutput, StringComparison.OrdinalIgnoreCase))
                     .Where(x => File.Exists((string)x["output"]))
                     .Select(x => new ModuleCandidate(x, InferModuleRole((string)x["name"], x), GetCharacterFamily((string)x["name"] ?? string.Empty)))
-                    .Where(x => ModuleMatchesRequest(x, roleOrSelector, role))
+                    .Where(x => ModuleMatchesRequest(x, request.Selector, role))
                     .Where(x => string.IsNullOrWhiteSpace(family) || string.Equals(x.Family, family, StringComparison.OrdinalIgnoreCase))
-                    .Select(x => x with { Compatibility = AnalyzeCompatibility(baseNodeNames, (string)x.Catalog["output"]) })
+                    .Select(x => x with { Compatibility = AnalyzeCompatibility(baseNodeNames, (string)x.Catalog["output"], allowUnskinnedDiagnostic: false) })
                     .Where(x => x.Compatibility.CanAssemble)
                     .OrderByDescending(x => ModulePriority(x))
                     .ThenBy(x => (string)x.Catalog["name"], StringComparer.OrdinalIgnoreCase)
@@ -142,6 +217,38 @@ namespace AnimeStudio.CLI
                 .GroupBy(x => (string)x.Catalog["output"], StringComparer.OrdinalIgnoreCase)
                 .Select(x => x.First())
                 .ToList();
+        }
+
+        private static ModuleCandidate BuildExplicitModuleCandidate(HashSet<string> baseNodeNames, ModuleRequest request)
+        {
+            var path = request.ExplicitPath;
+            if (!File.Exists(path))
+            {
+                Logger.Warning($"Explicit assembly module not found: {path}");
+                return null;
+            }
+
+            var role = NormalizeRole(Path.GetFileNameWithoutExtension(path));
+            var compatibility = AnalyzeCompatibility(baseNodeNames, path, allowUnskinnedDiagnostic: true);
+            if (!compatibility.CanAssemble)
+            {
+                Logger.Warning($"Explicit assembly module is not compatible and will be skipped: {path}");
+                return null;
+            }
+
+            var catalog = new JObject
+            {
+                ["kind"] = "Model",
+                ["name"] = Path.GetFileNameWithoutExtension(path),
+                ["output"] = path,
+                ["assemblySource"] = "explicitPath",
+                ["diagnosticOnly"] = compatibility.DiagnosticUnskinned,
+            };
+            return new ModuleCandidate(catalog, role, string.Empty)
+            {
+                Compatibility = compatibility,
+                Explicit = true,
+            };
         }
 
         private static object Assemble(string baseGltfPath, JObject baseInfo, List<ModuleCandidate> modules)
@@ -164,6 +271,7 @@ namespace AnimeStudio.CLI
                     name = (string)module.Catalog["name"],
                     output = modulePath,
                     compatibility = module.Compatibility,
+                    explicitModule = module.Explicit,
                     assembly = result,
                 });
             }
@@ -173,7 +281,7 @@ namespace AnimeStudio.CLI
             baseGltf["asset"]["extras"]["animeStudioAssembly"] = JObject.FromObject(new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
-                rule = "Default Library stays modular. This preview non-destructively adds modules only when module skin joints remap to the base glTF skeleton by exact Unity node names.",
+                rule = "Default Library stays modular. Auto-selected modules require exact skin joint remap. Explicit .gltf/.glb modules may be appended as diagnostic unskinned meshes and must not be treated as production binding evidence.",
                 baseModel = new
                 {
                     name = (string)baseInfo?["name"],
@@ -186,7 +294,7 @@ namespace AnimeStudio.CLI
             return new
             {
                 generatedAt = DateTime.UtcNow.ToString("O"),
-                rule = "Default Library output remains modular. This file is a generated viewing/validation preview assembled from compatible module assets.",
+                rule = "Default Library output remains modular. This file is a generated viewing/validation preview assembled from compatible module assets; explicit unskinned modules are diagnostic only.",
                 gltf = baseGltfPath,
                 baseModel = new
                 {
@@ -319,7 +427,7 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static Compatibility AnalyzeCompatibility(HashSet<string> baseNodeNames, string modulePath)
+        private static Compatibility AnalyzeCompatibility(HashSet<string> baseNodeNames, string modulePath, bool allowUnskinnedDiagnostic)
         {
             try
             {
@@ -339,17 +447,19 @@ namespace AnimeStudio.CLI
                     .Take(32)
                     .ToArray();
 
+                var diagnosticUnskinned = meshNodes > 0 && requiredJointNames.Length == 0;
                 return new Compatibility(
-                    meshNodes > 0 && requiredJointNames.Length > 0 && missing.Length == 0,
+                    meshNodes > 0 && missing.Length == 0 && (requiredJointNames.Length > 0 || (allowUnskinnedDiagnostic && diagnosticUnskinned)),
                     meshNodes,
                     requiredJointNames.Length,
                     missing.Length,
-                    missing
+                    missing,
+                    diagnosticUnskinned && allowUnskinnedDiagnostic
                 );
             }
             catch (Exception ex)
             {
-                return new Compatibility(false, 0, 0, 1, new[] { ex.Message });
+                return new Compatibility(false, 0, 0, 1, new[] { ex.Message }, false);
             }
         }
 
@@ -471,14 +581,14 @@ namespace AnimeStudio.CLI
 
         private static int AppendArray(JObject baseGltf, JObject moduleGltf, string name, Action<JObject> mutate = null)
         {
-            var baseArray = EnsureArray(baseGltf, name);
             var moduleArray = moduleGltf[name] as JArray;
-            var offset = baseArray.Count;
-            if (moduleArray == null)
+            var offset = baseGltf[name]?.Count() ?? 0;
+            if (moduleArray == null || moduleArray.Count == 0)
             {
                 return offset;
             }
 
+            var baseArray = EnsureArray(baseGltf, name);
             foreach (var item in moduleArray.OfType<JObject>())
             {
                 var clone = (JObject)item.DeepClone();
@@ -625,6 +735,21 @@ namespace AnimeStudio.CLI
             }
         }
 
+        private static void CopyDirectory(string sourceDirectory, string targetDirectory)
+        {
+            Directory.CreateDirectory(targetDirectory);
+            foreach (var sourceFile in Directory.GetFiles(sourceDirectory))
+            {
+                var targetFile = Path.Combine(targetDirectory, Path.GetFileName(sourceFile));
+                File.Copy(sourceFile, targetFile, overwrite: true);
+            }
+            foreach (var sourceChild in Directory.GetDirectories(sourceDirectory))
+            {
+                var targetChild = Path.Combine(targetDirectory, Path.GetFileName(sourceChild));
+                CopyDirectory(sourceChild, targetChild);
+            }
+        }
+
         private static bool Matches(string selector, params string[] values)
         {
             if (string.IsNullOrWhiteSpace(selector))
@@ -656,9 +781,29 @@ namespace AnimeStudio.CLI
             return name;
         }
 
+        private static string TryNormalizeExplicitModulePath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = value.Trim().Trim('"');
+            if (!trimmed.EndsWith(".gltf", StringComparison.OrdinalIgnoreCase)
+                && !trimmed.EndsWith(".glb", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            return Path.GetFullPath(trimmed);
+        }
+
+        private sealed record ModuleRequest(string Selector, string ExplicitPath);
+
         private sealed record ModuleCandidate(JObject Catalog, string Role, string Family)
         {
-            public Compatibility Compatibility { get; init; } = new(false, 0, 0, 0, Array.Empty<string>());
+            public Compatibility Compatibility { get; init; } = new(false, 0, 0, 0, Array.Empty<string>(), false);
+            public bool Explicit { get; init; }
         }
 
         private sealed record Compatibility(
@@ -666,6 +811,7 @@ namespace AnimeStudio.CLI
             int MeshNodeCount,
             int RequiredJointCount,
             int MissingJointCount,
-            string[] MissingJointNames);
+            string[] MissingJointNames,
+            bool DiagnosticUnskinned);
     }
 }
