@@ -362,6 +362,7 @@ namespace AnimeStudio.CLI
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, warnings);
             var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
+            var rendererListEvidence = LoadVisualCellRendererListEvidence(visualCell, selectedVisualCell.SerializedFile, sourceIndexPath, warnings);
             var boneDriverNodeNames = BuildBoneDriverNodeNameSet(boneDriverHints);
             foreach (var part in parts)
             {
@@ -465,6 +466,12 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellDirectChildCount"] = selectedVisualCell.DirectChildCount,
                 ["selectedVisualCellDirectChildNames"] = new JArray(selectedVisualCell.DirectChildNames.Select(x => new JValue(x))),
                 ["selectedVisualCellTransformNodeCount"] = selectedVisualCell.TransformNodeCount,
+                ["visualCellRendererAssistantCount"] = rendererListEvidence.RendererAssistantCount,
+                ["visualCellAvatarRendererCount"] = rendererListEvidence.AvatarRendererCount,
+                ["visualCellMeshRendererCount"] = rendererListEvidence.MeshRendererCount,
+                ["visualCellLodRendererAssistantCounts"] = rendererListEvidence.LodRendererAssistantCounts.ToJson(),
+                ["visualCellRendererListStatus"] = rendererListEvidence.Status,
+                ["visualCellRendererListEvidence"] = rendererListEvidence.ToJson(),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
                 ["assistantCount"] = selectedAssistants.Count,
                 ["resolvedPartCount"] = parts.Count,
@@ -539,6 +546,7 @@ namespace AnimeStudio.CLI
                 rendererSkinBindings,
                 avatarPartDataEvidence,
                 boneDriverHints,
+                rendererListEvidence,
                 gltfMaterials,
                 gltfImages,
                 gltfTextures);
@@ -558,6 +566,7 @@ namespace AnimeStudio.CLI
             IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings,
             IReadOnlyDictionary<long, List<AvatarPartDataEvidence>> avatarPartDataEvidence,
             IReadOnlyList<BoneDriverHint> boneDriverHints,
+            VisualCellRendererListEvidence rendererListEvidence,
             JArray gltfMaterials,
             JArray gltfImages,
             JArray gltfTextures)
@@ -605,6 +614,9 @@ namespace AnimeStudio.CLI
                     ? "avatar_part_data_mesh_order_present"
                     : "avatar_part_data_mesh_order_missing",
                 boneDriverHints.Count > 0 ? "bone_driver_hints_present" : "bone_driver_hints_missing",
+                string.Equals(rendererListEvidence?.Status, "assistantMeshRendererGameObjectsAligned", StringComparison.OrdinalIgnoreCase)
+                    ? "visual_cell_renderer_lists_aligned"
+                    : "visual_cell_renderer_lists_unverified",
                 string.Equals((string)report["selectedVisualCellTransformPathStatus"], "resolved", StringComparison.OrdinalIgnoreCase)
                     ? "selected_visual_cell_transform_hierarchy_present"
                     : "selected_visual_cell_transform_hierarchy_missing",
@@ -659,6 +671,11 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellTransformPathStatus"] = report["selectedVisualCellTransformPathStatus"]?.DeepClone(),
                 ["selectedVisualCellDirectChildCount"] = report["selectedVisualCellDirectChildCount"]?.DeepClone(),
                 ["selectedVisualCellDirectChildNames"] = report["selectedVisualCellDirectChildNames"]?.DeepClone(),
+                ["visualCellRendererAssistantCount"] = report["visualCellRendererAssistantCount"]?.DeepClone(),
+                ["visualCellAvatarRendererCount"] = report["visualCellAvatarRendererCount"]?.DeepClone(),
+                ["visualCellMeshRendererCount"] = report["visualCellMeshRendererCount"]?.DeepClone(),
+                ["visualCellLodRendererAssistantCounts"] = report["visualCellLodRendererAssistantCounts"]?.DeepClone(),
+                ["visualCellRendererListStatus"] = report["visualCellRendererListStatus"]?.DeepClone(),
                 ["textureMode"] = "Png",
                 ["animationPackage"] = "Separate",
                 ["diagnosticOnly"] = true,
@@ -741,6 +758,7 @@ namespace AnimeStudio.CLI
                     ["rendererSkinBasis"] = "SkinnedMeshRenderer object / component.gameObject / renderer.material / skinnedMeshRenderer.mesh/rootBone/bones from unity_source_index.db",
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
+                    ["rendererListBasis"] = "ActorBodyVisualCell.rendererAssistants/avatarRenderers/meshRenderer/lod*RendererAssistants",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
                     ["selectedTransformHierarchyBasis"] = "GameObject.component -> Transform / Transform.child / Transform.parent from unity_source_index.db",
                     ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
@@ -2872,6 +2890,140 @@ LIMIT $limit;";
                 .ToArray();
         }
 
+        private static VisualCellRendererListEvidence LoadVisualCellRendererListEvidence(
+            JObject visualCell,
+            string serializedFile,
+            string sourceIndexPath,
+            List<string> warnings)
+        {
+            var rendererAssistantIds = ReadPPtrPathIds(visualCell?["rendererAssistants"] as JArray).ToArray();
+            var avatarRendererIds = ReadPPtrPathIds(visualCell?["avatarRenderers"] as JArray).ToArray();
+            var meshRendererIds = ReadPPtrPathIds(visualCell?["meshRenderer"] as JArray).ToArray();
+            var lodCounts = new LodRendererAssistantCounts
+            {
+                Lod0 = ReadPPtrPathIds(visualCell?["lod0RendererAssistants"] as JArray).Count(),
+                Lod1 = ReadPPtrPathIds(visualCell?["lod1RendererAssistants"] as JArray).Count(),
+                Lod2 = ReadPPtrPathIds(visualCell?["lod2RendererAssistants"] as JArray).Count(),
+                Lod3 = ReadPPtrPathIds(visualCell?["lod3RendererAssistants"] as JArray).Count(),
+                Other = ReadPPtrPathIds(visualCell?["nLodRendererAssistants"] as JArray).Count(),
+            };
+
+            var evidence = new VisualCellRendererListEvidence
+            {
+                RendererAssistantCount = rendererAssistantIds.Length,
+                AvatarRendererCount = avatarRendererIds.Length,
+                MeshRendererCount = meshRendererIds.Length,
+                LodRendererAssistantCounts = lodCounts,
+                AvatarRendererMatchesRendererAssistants = rendererAssistantIds.SequenceEqual(avatarRendererIds),
+                Status = "countsOnly",
+            };
+
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath) || string.IsNullOrWhiteSpace(serializedFile))
+            {
+                evidence.Status = string.IsNullOrWhiteSpace(sourceIndexPath) ? "sourceIndexNotProvided" : "sourceIndexUnavailable";
+                return evidence;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                var file = NormalizeSerializedFileName(serializedFile);
+                evidence.RendererAssistantGameObjectNames = LoadComponentGameObjectNames(connection, file, rendererAssistantIds);
+                evidence.AvatarRendererGameObjectNames = LoadComponentGameObjectNames(connection, file, avatarRendererIds);
+                evidence.MeshRendererGameObjectNames = LoadComponentGameObjectNames(connection, file, meshRendererIds);
+                evidence.SkinnedMeshRendererRefCount = CountObjectsOfType(connection, file, meshRendererIds, "SkinnedMeshRenderer");
+                evidence.Status = ResolveVisualCellRendererListStatus(evidence);
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
+            {
+                warnings?.Add($"visualCellRendererListQueryFailed:{ex.Message}");
+                evidence.Status = "sourceIndexQueryFailed";
+            }
+
+            return evidence;
+        }
+
+        private static string ResolveVisualCellRendererListStatus(VisualCellRendererListEvidence evidence)
+        {
+            if (evidence == null)
+            {
+                return "missing";
+            }
+
+            if (evidence.RendererAssistantCount == 0 && evidence.MeshRendererCount == 0)
+            {
+                return "missingRendererLists";
+            }
+
+            if (evidence.RendererAssistantCount != evidence.MeshRendererCount)
+            {
+                return "assistantMeshRendererCountMismatch";
+            }
+
+            if (evidence.SkinnedMeshRendererRefCount != evidence.MeshRendererCount)
+            {
+                return "meshRendererTypeMismatch";
+            }
+
+            var assistantNames = evidence.RendererAssistantGameObjectNames ?? Array.Empty<string>();
+            var meshNames = evidence.MeshRendererGameObjectNames ?? Array.Empty<string>();
+            if (assistantNames.Count == 0 || meshNames.Count == 0)
+            {
+                return "missingRendererGameObjectNames";
+            }
+
+            if (assistantNames.SequenceEqual(meshNames, StringComparer.OrdinalIgnoreCase))
+            {
+                return evidence.AvatarRendererMatchesRendererAssistants
+                    ? "assistantMeshRendererGameObjectsAligned"
+                    : "avatarRendererListDiffers";
+            }
+
+            var assistantSet = new HashSet<string>(assistantNames, StringComparer.OrdinalIgnoreCase);
+            var meshSet = new HashSet<string>(meshNames, StringComparer.OrdinalIgnoreCase);
+            return assistantSet.SetEquals(meshSet)
+                ? "assistantMeshRendererGameObjectsSameSetDifferentOrder"
+                : "assistantMeshRendererGameObjectMismatch";
+        }
+
+        private static string[] LoadComponentGameObjectNames(SqliteConnection connection, string serializedFile, IEnumerable<long> componentPathIds)
+        {
+            var result = new List<string>();
+            foreach (var componentPathId in componentPathIds ?? Array.Empty<long>())
+            {
+                var gameObjectPathId = ResolveGameObjectForComponent(connection, serializedFile, componentPathId);
+                result.Add(ResolveObjectName(connection, serializedFile, gameObjectPathId));
+            }
+
+            return result.ToArray();
+        }
+
+        private static int CountObjectsOfType(SqliteConnection connection, string serializedFile, IEnumerable<long> pathIds, string objectType)
+        {
+            var count = 0;
+            foreach (var pathId in pathIds ?? Array.Empty<long>())
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT type
+FROM source_objects INDEXED BY idx_source_objects_file_path
+WHERE serialized_file = $file
+  AND path_id = $pathId
+LIMIT 1;";
+                command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile));
+                command.Parameters.AddWithValue("$pathId", pathId);
+                var type = command.ExecuteScalar() as string;
+                if (string.Equals(type, objectType, StringComparison.OrdinalIgnoreCase))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
         private static bool PathsEqual(string left, string right)
         {
             if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
@@ -3521,6 +3673,53 @@ LIMIT $limit;";
             int DirectChildCount,
             IReadOnlyList<string> DirectChildNames,
             int? TransformNodeCount);
+
+        private sealed class VisualCellRendererListEvidence
+        {
+            public string Status { get; set; }
+            public int RendererAssistantCount { get; init; }
+            public int AvatarRendererCount { get; init; }
+            public int MeshRendererCount { get; init; }
+            public int SkinnedMeshRendererRefCount { get; set; }
+            public LodRendererAssistantCounts LodRendererAssistantCounts { get; init; } = new();
+            public bool AvatarRendererMatchesRendererAssistants { get; init; }
+            public IReadOnlyList<string> RendererAssistantGameObjectNames { get; set; } = Array.Empty<string>();
+            public IReadOnlyList<string> AvatarRendererGameObjectNames { get; set; } = Array.Empty<string>();
+            public IReadOnlyList<string> MeshRendererGameObjectNames { get; set; } = Array.Empty<string>();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["rendererAssistantCount"] = RendererAssistantCount,
+                ["avatarRendererCount"] = AvatarRendererCount,
+                ["meshRendererCount"] = MeshRendererCount,
+                ["skinnedMeshRendererRefCount"] = SkinnedMeshRendererRefCount,
+                ["lodRendererAssistantCounts"] = LodRendererAssistantCounts.ToJson(),
+                ["avatarRendererMatchesRendererAssistants"] = AvatarRendererMatchesRendererAssistants,
+                ["rendererAssistantGameObjectNames"] = new JArray((RendererAssistantGameObjectNames ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
+                ["avatarRendererGameObjectNames"] = new JArray((AvatarRendererGameObjectNames ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
+                ["meshRendererGameObjectNames"] = new JArray((MeshRendererGameObjectNames ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
+                ["rule"] = "只记录 ActorBodyVisualCell 顶层 rendererAssistants/avatarRenderers/meshRenderer/lod* 列表的数量和 GameObject 对齐情况；它能证明自定义 Renderer 链路完整，但不能替代 SkinnedMeshRenderer.bones/rootBone/mesh 的 skin 绑定证据。"
+            };
+        }
+
+        private sealed class LodRendererAssistantCounts
+        {
+            public int Lod0 { get; init; }
+            public int Lod1 { get; init; }
+            public int Lod2 { get; init; }
+            public int Lod3 { get; init; }
+            public int Other { get; init; }
+
+            public JObject ToJson() => new()
+            {
+                ["lod0"] = Lod0,
+                ["lod1"] = Lod1,
+                ["lod2"] = Lod2,
+                ["lod3"] = Lod3,
+                ["other"] = Other,
+            };
+        }
 
         private sealed record ManifestEntry(
             string JsonPath,
