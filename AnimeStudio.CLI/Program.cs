@@ -677,7 +677,8 @@ namespace AnimeStudio.CLI
                         o.ExportAvatarMeshDataGltf.FullName,
                         o.PreviewOutput?.FullName,
                         o.SourceIndex?.FullName,
-                        o.NarakaAvatarMeshExternalSkeletonSkinDiagnostic);
+                        o.NarakaAvatarMeshExternalSkeletonSkinDiagnostic,
+                        o.NarakaAvatarMeshFaceRuntimeSkinDiagnostic);
                     return;
                 }
 
