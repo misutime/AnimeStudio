@@ -1316,7 +1316,14 @@ namespace AnimeStudio.CLI
         {
             var slotText = (slot ?? string.Empty).ToLowerInvariant();
             var textureText = (textureName ?? string.Empty).ToLowerInvariant();
-            return slotText.Contains("bump") || slotText.Contains("normal") || LooksLikeNormalTextureName(textureText);
+            return IsStandardPreviewNormalSlot(slotText) && LooksLikeNormalTextureName(textureText);
+        }
+
+        private static bool IsStandardPreviewNormalSlot(string slotText)
+        {
+            // 只把“整材质”的通用法线槽写进 glTF normalTexture。
+            // 眉毛/皱纹/贴花/bent normal 这类局部 shader 输入会保留在 extras，不能套到整张脸上。
+            return slotText is "_bumpmap" or "_normalmap" or "_normaltex";
         }
 
         private static bool LooksLikeNormalTextureName(string textureText)
