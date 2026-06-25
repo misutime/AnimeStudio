@@ -1,16 +1,22 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace AnimeStudio
 {
     public class ObjectReader : EndianBinaryReader
     {
+        private const int UnknownClassIdWarningLimit = 5;
+        private static readonly object unknownClassIdWarningLock = new();
+        private static readonly Dictionary<string, int> unknownClassIdWarningCounts = new(StringComparer.OrdinalIgnoreCase);
+
         public SerializedFile assetsFile;
         public Game Game;
         public long m_PathID;
         public long byteStart;
         public uint byteSize;
         public ClassIDType type;
+        public int rawClassID;
         public SerializedType serializedType;
         public BuildTarget platform;
         public SerializedFileFormatVersion m_Version;
@@ -25,6 +31,7 @@ namespace AnimeStudio
             m_PathID = objectInfo.m_PathID;
             byteStart = objectInfo.byteStart;
             byteSize = objectInfo.byteSize;
+            rawClassID = objectInfo.classID;
             if (Enum.IsDefined(typeof(ClassIDType), objectInfo.classID))
             {
                 type = (ClassIDType)objectInfo.classID;
@@ -32,13 +39,42 @@ namespace AnimeStudio
             else
             {
                 type = ClassIDType.UnknownType;
-                Logger.Warning($"Unknown ClassIDType {objectInfo.classID} for object with PathID {m_PathID} in file {assetsFile.fileName}");
+                LogUnknownClassID(objectInfo.classID, m_PathID, assetsFile.fileName);
             }
             serializedType = objectInfo.serializedType;
             platform = assetsFile.m_TargetPlatform;
             m_Version = assetsFile.header.m_Version;
 
             Logger.Verbose($"Initialized reader for {type} object with {m_PathID} in file {assetsFile.fileName} !!");
+        }
+
+        private static void LogUnknownClassID(int classID, long pathID, string fileName)
+        {
+            var key = $"{fileName}|{classID}";
+            int count;
+            lock (unknownClassIdWarningLock)
+            {
+                unknownClassIdWarningCounts.TryGetValue(key, out count);
+                count++;
+                unknownClassIdWarningCounts[key] = count;
+            }
+
+            var message = $"Unknown ClassIDType {classID} for object with PathID {pathID} in file {fileName}. The object is kept as UnknownType placeholder.";
+            if (count <= UnknownClassIdWarningLimit)
+            {
+                Logger.Warning(message);
+                return;
+            }
+
+            if (count == UnknownClassIdWarningLimit + 1)
+            {
+                // Naraka 这类游戏会在同一个 CAB 里放大量自定义脚本对象。
+                // 保留前几条明细，再汇总限流，避免真正的模型/材质错误被日志刷屏淹没。
+                Logger.Info($"Further Unknown ClassIDType {classID} warnings in file {fileName} are suppressed after {UnknownClassIdWarningLimit} sample object(s); affected objects are kept as UnknownType placeholders.");
+                return;
+            }
+
+            Logger.Debug(message);
         }
 
         public override int Read(byte[] buffer, int index, int count)
