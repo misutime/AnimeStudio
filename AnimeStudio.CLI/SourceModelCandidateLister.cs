@@ -1751,6 +1751,7 @@ GROUP BY material.from_file, material.from_path_id;";
             AddIfContains(text, hits, "dialog");
             AddIfContains(text, hits, "timeline");
             AddIfContains(text, hits, "cutscene");
+            AddIfContains(text, hits, "custscene");
             AddIfContains(text, hits, "postmodel");
             AddIfContains(text, hits, "uimodel");
             AddIfContains(text, hits, "skeletalmorph");
@@ -1769,6 +1770,10 @@ GROUP BY material.from_file, material.from_path_id;";
             AddIfContains(text, hits, "levelseq");
             AddIfContains(text, hits, "pose");
             AddIfContains(text, hits, "camera");
+            if (IsSceneLightingHelperCandidate(text))
+            {
+                hits.Add("sceneLightingHelper");
+            }
             if (text.Contains("initialassets/intro", StringComparison.OrdinalIgnoreCase)
                 || text.Contains("/intro/", StringComparison.OrdinalIgnoreCase))
             {
@@ -1819,6 +1824,28 @@ GROUP BY material.from_file, material.from_path_id;";
                 hits.Add("optimizedAnimatorMissingAvatar");
             }
             return string.Join(",", hits.Distinct(StringComparer.OrdinalIgnoreCase));
+        }
+
+        private static bool IsSceneLightingHelperCandidate(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            // 这类对象通常服务场景光照评估或天空/太阳配置，不是可复用模型 smoke 的好样本。
+            // 规则必须保守：只有光照评估、scene_profile、celestial_body 与 sun/artificial_sun 强信号组合时才降级。
+            var hasLightingScope = text.Contains("lighting_evaluate", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("scene_profile", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("/celestial_body/", StringComparison.OrdinalIgnoreCase);
+            if (!hasLightingScope)
+            {
+                return false;
+            }
+
+            return text.Contains("artificial_sun", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("_sun", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("/sun", StringComparison.OrdinalIgnoreCase);
         }
 
         private static List<CandidateRow> FillContainerPaths(SqliteConnection connection, List<CandidateRow> rows, HashSet<string> availableIndexes)

@@ -556,6 +556,8 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 `--list_source_model_candidates` 的筛选优先使用 `--preview_model`，没有传时使用 `--names`，再没有传时才使用 `--containers`。简单字面量名字（例如 `P_actor_chen_01`）会写出 `selectorQueryMode=targeted_exact_name`，并通过 `source_objects.name -> component.gameObject` 的确定性关系在大源索引里快速定位候选；复杂正则仍走普通候选扫描，避免 SQL 预筛选误漏结果。若命中对象只是 prefab 里的子 Renderer，报告会保留同一个 Unity container 的 `ContainerPrimaryModel` 主根，并把命中的子对象名写入 `sampleNames`，避免把完整组合模型误筛掉。输出目录优先使用 `--preview_output`，否则使用普通 `output_path`。
 
+场景/环境定向候选可能会扫到 `lighting_evaluate`、`scene_profile`、`celestial_body/artificial_sun` 这类光照或天空配置对象。报告会用 `sceneLightingHelper` 降级它们，表示它们最多适合来源诊断，不应作为模型 smoke、生产样本或动画入口。
+
 如果同时传入 `--preview_source_root`，每个候选会额外写 `targetedLibraryExport`，包含机器可读 `arguments` 和 PowerShell 友好的 `powershellCommand`。命令会用 `&` 调用生成报告时正在运行的 CLI，避免带空格或带引号的 exe 路径在 PowerShell 里不能直接执行。这只是把候选行里的 `sourcePath + pathId` 组合成定向 Library 导出命令：输入仍必须是完整 Unity 源目录，依赖闭包仍来自完整 `unity_source_index.db`，本次加载只用 `--source_files + --path_ids` 收窄。这个命令只能作为模型第一阶段 smoke 起点，不能替代后续 `model_validation.json`、glTF validator 和清晰截图验收；候选本身带 `excludeHint` 时，报告会把 `readyForModelSmoke=false`。
 
 Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `source_model_candidates.json` 里的 `targetedLibraryExport`，或手动传 `--source_files + --path_ids` 锁定本次加载闭包。只传 `--names` / `--containers` 虽然会过滤导出候选，但仍可能在永劫大源目录上加载过宽依赖，导致诊断样本耗时和内存失真。下面的 Hadi body smoke 示例使用完整源目录和完整源索引，但只加载源索引闭包选出的 5 个物理文件：
