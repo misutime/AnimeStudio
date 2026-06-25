@@ -855,6 +855,9 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var avatarPartEvidenceItems = avatarPartDataEvidence.Values.SelectMany(x => x).ToArray();
+            var selectedVisualCellGameObjectName = (string)report["selectedVisualCellGameObjectName"];
+            var characterAssemblyRole = InferNarakaCharacterAssemblyRole(selectedVisualCellGameObjectName);
+            var characterAssemblyFamily = InferNarakaCharacterAssemblyFamily(selectedVisualCellGameObjectName);
 
             var catalogEntry = new JObject
             {
@@ -1025,6 +1028,14 @@ namespace AnimeStudio.CLI
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；BoneDriver 会同时区分全目录线索和选中 VisualCell 作用域，Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
+            if (!string.Equals(characterAssemblyRole, "Unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                catalogEntry["characterAssemblyRole"] = characterAssemblyRole;
+                catalogEntry["characterAssemblyFamily"] = characterAssemblyFamily;
+                catalogEntry["characterAssemblyCandidateOnly"] = true;
+                catalogEntry["characterAssemblyBasis"] = "selectedVisualCellGameObjectName";
+                catalogEntry["characterAssemblyRule"] = "该角色模块标注只服务索引、浏览和人工装配预览；当前资源仍是 CustomMeshDiagnostic/diagnosticOnly，不能进入默认自动推荐、正式装配或动画 smoke。";
+            }
 
             var catalogPath = Path.Combine(outputFolder, "asset_catalog.jsonl");
             RewriteJsonLineByOutput(catalogPath, relativeOutput, catalogEntry);
@@ -1067,6 +1078,8 @@ namespace AnimeStudio.CLI
             AppendKeyValue(sb, "模型状态", (string)catalogEntry["modelValidationStatus"]);
             AppendKeyValue(sb, "材质状态", (string)catalogEntry["materialStatus"]);
             AppendKeyValue(sb, "诊断资产", ((bool?)catalogEntry["diagnosticOnly"] ?? true) ? "true" : "false");
+            AppendKeyValue(sb, "装配角色", ToText(catalogEntry["characterAssemblyRole"]));
+            AppendKeyValue(sb, "装配 family", ToText(catalogEntry["characterAssemblyFamily"]));
             sb.AppendLine();
             sb.AppendLine("## 模型统计");
             sb.AppendLine();
@@ -1191,6 +1204,48 @@ namespace AnimeStudio.CLI
         private static string FirstNonEmpty(params string[] values)
         {
             return values?.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+        }
+
+        private static string InferNarakaCharacterAssemblyRole(string name)
+        {
+            name ??= string.Empty;
+            if (Regex.IsMatch(name, "(^|[_-])(face|head)([_-]|$)", RegexOptions.IgnoreCase))
+            {
+                return "Face";
+            }
+            if (Regex.IsMatch(name, "(^|[_-])hair([_-]|$)", RegexOptions.IgnoreCase))
+            {
+                return "Hair";
+            }
+            if (Regex.IsMatch(name, "accessori|accessory|mask|choker|cape|cloth", RegexOptions.IgnoreCase))
+            {
+                return "Accessory";
+            }
+            if (Regex.IsMatch(name, "(^|[_-])(body|skin)([_-]|$)", RegexOptions.IgnoreCase))
+            {
+                return "Body";
+            }
+            return "Unknown";
+        }
+
+        private static string InferNarakaCharacterAssemblyFamily(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return string.Empty;
+            }
+
+            var parts = name.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 3
+                && string.Equals(parts[0], "ch", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(parts[1], "m", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(parts[1], "f", StringComparison.OrdinalIgnoreCase)))
+            {
+                // Naraka 角色模块常用 ch_性别_角色 的稳定前缀；这只是索引 family，不是装配关系。
+                return string.Join("_", parts.Take(3));
+            }
+
+            return parts.Length == 0 ? string.Empty : parts[0];
         }
 
         private static string MdCell(string value)
