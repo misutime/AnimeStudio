@@ -295,6 +295,25 @@ namespace AnimeStudio
             if (mesh == null)
                 return;
             meshR.m_GameObject.TryGet(out var m_GameObject2);
+            if (ShouldSkipNonVisualSimulationMesh(meshR, mesh, m_GameObject2))
+            {
+                using (Measure("model_mesh_skipped", new Dictionary<string, object>
+                {
+                    ["reason"] = "non_visual_simulation_mesh_without_material",
+                    ["mesh"] = mesh.m_Name,
+                    ["renderer"] = m_GameObject2?.m_Name,
+                    ["source"] = mesh.assetsFile?.fullName,
+                    ["meshPathId"] = mesh.m_PathID,
+                    ["rendererPathId"] = meshR.m_PathID,
+                    ["vertexCount"] = mesh.m_VertexCount,
+                    ["bindPoseCount"] = mesh.m_BindPose?.Length ?? 0,
+                    ["skinWeightCount"] = mesh.m_Skin?.Count ?? 0,
+                }))
+                {
+                }
+                return;
+            }
+
             using var meshProfile = Measure("model_mesh", new Dictionary<string, object>
             {
                 ["mesh"] = mesh.m_Name,
@@ -677,6 +696,44 @@ namespace AnimeStudio
             }
 
             MeshList.Add(iMesh);
+        }
+
+        private static bool ShouldSkipNonVisualSimulationMesh(Renderer renderer, Mesh mesh, GameObject gameObject)
+        {
+            if (renderer == null || mesh == null || gameObject == null)
+            {
+                return false;
+            }
+
+            // 只处理明确像布料/物理模拟辅助网格的对象，避免影响普通缺材质模型。
+            if (!LooksLikeSimulationMeshName(gameObject.m_Name) && !LooksLikeSimulationMeshName(mesh.m_Name))
+            {
+                return false;
+            }
+
+            if (RendererDeclaresAnyMaterial(renderer))
+            {
+                return false;
+            }
+
+            return mesh.m_Skin?.Count > 0 && mesh.m_BindPose?.Length > 0;
+        }
+
+        private static bool LooksLikeSimulationMeshName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            return name.EndsWith("_sim", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("_sim_", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool RendererDeclaresAnyMaterial(Renderer renderer)
+        {
+            return renderer.m_Materials != null
+                && renderer.m_Materials.Any(material => material != null && !material.IsNull);
         }
 
         private Mesh GetMesh(Renderer meshR)
