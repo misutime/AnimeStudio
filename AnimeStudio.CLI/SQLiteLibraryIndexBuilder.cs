@@ -2467,6 +2467,11 @@ LIMIT 2;";
             {
                 reasons.Add("diagnostic_instance_not_default_animation_gate");
             }
+            var completenessStatus = S(model, "modelCompletenessStatus");
+            if (string.Equals(completenessStatus, "modular_incomplete", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("modular_character_incomplete");
+            }
 
             var evidence = new JObject
             {
@@ -2490,6 +2495,8 @@ LIMIT 2;";
                 ["missingImageCount"] = I(body, "MissingImageCount") ?? 0,
                 ["emptyImageCount"] = I(body, "EmptyImageCount") ?? 0,
                 ["diagnosticModelInstance"] = IsDiagnosticModelInstance(model),
+                ["modelCompletenessStatus"] = completenessStatus,
+                ["modelCompletenessMissingRoles"] = model?["modelCompletenessMissingRoles"]?.DeepClone(),
             };
 
             return new ModelAnimationGate(

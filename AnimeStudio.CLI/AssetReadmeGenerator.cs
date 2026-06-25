@@ -146,6 +146,21 @@ namespace AnimeStudio.CLI
             sb.AppendLine();
             sb.AppendLine($"- 模型文件: `{Path.GetFileName(output)}`");
             sb.AppendLine($"- Library 角色: `{(string)model["libraryRole"] ?? "Unknown"}`");
+            if (!string.IsNullOrWhiteSpace((string)model["resourceKind"]))
+            {
+                sb.AppendLine($"- 资源类型: `{(string)model["resourceKind"]}`");
+            }
+            if (!string.IsNullOrWhiteSpace((string)model["modelCompletenessStatus"]))
+            {
+                sb.AppendLine($"- 完整度: `{(string)model["modelCompletenessStatus"]}`");
+                var missingRoles = model["modelCompletenessMissingRoles"]?.Values<string>()
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToArray() ?? Array.Empty<string>();
+                if (missingRoles.Length > 0)
+                {
+                    sb.AppendLine($"- 缺少模块: `{string.Join(", ", missingRoles)}`");
+                }
+            }
             sb.AppendLine($"- 格式: `{(string)model["format"] ?? Path.GetExtension(output).TrimStart('.')}`");
             sb.AppendLine($"- Mesh: `{(int?)model["meshCount"] ?? 0}`");
             sb.AppendLine($"- 材质: `{(int?)model["materialCount"] ?? 0}`");
@@ -290,6 +305,10 @@ namespace AnimeStudio.CLI
             sb.AppendLine("## 使用建议");
             sb.AppendLine();
             sb.AppendLine("- 默认优先打开 glTF/GLB 查看模型、材质、骨骼和预览动画。");
+            if (string.Equals((string)model["modelCompletenessStatus"], "modular_incomplete", StringComparison.OrdinalIgnoreCase))
+            {
+                sb.AppendLine("- 这个模型是模块化角色基底，缺少 face/hair 等模块时只能作为身体/服装部件使用，不能当完整角色或动画验收样本。");
+            }
             sb.AppendLine("- 如果材质显示灰色或中性色，先看 `MATERIAL_REPORT.md`，不要直接判断为贴图丢失。");
             sb.AppendLine("- 如果需要换头、头发、附件，先看“模块和组装”部分；没有明确可自动组装关系时，不建议硬合并。");
             sb.AppendLine("- 如果需要动画，优先用“动画候选”里的建议动作生成或查看预览 glTF。");

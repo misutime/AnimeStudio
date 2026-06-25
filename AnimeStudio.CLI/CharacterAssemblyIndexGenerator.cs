@@ -10,6 +10,60 @@ namespace AnimeStudio.CLI
 {
     internal static class CharacterAssemblyIndexGenerator
     {
+        public static bool AnnotateModelCompleteness(IReadOnlyList<JObject> models)
+        {
+            if (models == null || models.Count == 0)
+            {
+                return false;
+            }
+
+            var modelRows = models
+                .Where(x => (string)x["kind"] == "Model" || x["kind"] == null)
+                .Where(x => !string.IsNullOrWhiteSpace((string)x["output"]))
+                .ToArray();
+            var modules = modelRows
+                .Select(x => new ModuleInfo(x, InferModuleRole((string)x["name"], x), GetFamily((string)x["name"])))
+                .Where(x => !string.Equals(x.Role, "Body", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(x.Role, "Unknown", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            var changed = false;
+            foreach (var model in modelRows.Where(IsCharacterBase))
+            {
+                if (!LooksLikeModularCharacterPart(model))
+                {
+                    continue;
+                }
+
+                var family = GetFamily((string)model["name"]);
+                var sameFamilyModules = modules
+                    .Where(x => string.Equals(x.Family, family, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                var missingRoles = new List<string>();
+                if (!sameFamilyModules.Any(x => string.Equals(x.Role, "Face", StringComparison.OrdinalIgnoreCase)))
+                {
+                    missingRoles.Add("Face");
+                }
+                if (!sameFamilyModules.Any(x => string.Equals(x.Role, "Hair", StringComparison.OrdinalIgnoreCase)))
+                {
+                    missingRoles.Add("Hair");
+                }
+
+                var status = missingRoles.Count > 0 ? "modular_incomplete" : "modular_base";
+                changed |= SetCatalogValue(model, "libraryRole", "ModularCharacterBase");
+                changed |= SetCatalogValue(model, "resourceKind", "CharacterPart");
+                changed |= SetCatalogValue(model, "characterAssemblyRole", "Body");
+                changed |= SetCatalogValue(model, "characterAssemblyFamily", family);
+                changed |= SetCatalogValue(model, "modelCompletenessStatus", status);
+                changed |= SetCatalogValue(model, "modelCompletenessMissingRoles", new JArray(missingRoles));
+                changed |= SetCatalogValue(model, "modelCompletenessRule", missingRoles.Count > 0
+                    ? "该模型是模块化角色 body/base，可作为素材部件使用；缺少 face/hair 等模块时不能当完整角色或动画验收样本。"
+                    : "该模型是模块化角色 body/base；仍应通过 character_assemblies.json 组装预览后再作为完整角色验收。");
+            }
+
+            return changed;
+        }
+
         public static void Generate(string savePath, List<JObject> models)
         {
             var modelRows = models
@@ -124,6 +178,15 @@ namespace AnimeStudio.CLI
                 && ((int?)model["meshCount"] ?? 0) > 0;
         }
 
+        private static bool LooksLikeModularCharacterPart(JObject model)
+        {
+            var output = ((string)model["output"] ?? string.Empty).Replace('\\', '/');
+            var source = ((string)model["source"] ?? string.Empty).Replace('\\', '/');
+            var container = ((string)model["container"] ?? string.Empty).Replace('\\', '/');
+            var text = $"{output}\n{source}\n{container}";
+            return Regex.IsMatch(text, @"(^|/)actor_visual_parts?(/|$)", RegexOptions.IgnoreCase);
+        }
+
         private static string InferModuleRole(string name, JObject model)
         {
             name ??= string.Empty;
@@ -182,6 +245,8 @@ namespace AnimeStudio.CLI
                 meshCount = (int?)model["meshCount"] ?? 0,
                 textureCount = (int?)model["textureCount"] ?? 0,
                 boneCount = (int?)model["boneCount"] ?? 0,
+                completenessStatus = (string)model["modelCompletenessStatus"],
+                missingRoles = model["modelCompletenessMissingRoles"]?.Values<string>().ToArray() ?? Array.Empty<string>(),
             };
         }
 
@@ -226,6 +291,17 @@ namespace AnimeStudio.CLI
             }
             var parts = name.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
             return parts.Length == 0 ? string.Empty : parts[0];
+        }
+
+        private static bool SetCatalogValue(JObject model, string key, JToken value)
+        {
+            var current = model[key];
+            if (JToken.DeepEquals(current, value))
+            {
+                return false;
+            }
+            model[key] = value;
+            return true;
         }
 
         private sealed record ModuleInfo(JObject Catalog, string Role, string Family);

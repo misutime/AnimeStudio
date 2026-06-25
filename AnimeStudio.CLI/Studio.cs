@@ -3518,6 +3518,13 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     entries = LoadCatalogEntries(catalogPath);
                     models = entries.Where(x => (string)x["kind"] == "Model").ToList();
                 }
+                if (CharacterAssemblyIndexGenerator.AnnotateModelCompleteness(models))
+                {
+                    RewriteCatalogEntries(catalogPath, entries);
+                    entries = LoadCatalogEntries(catalogPath);
+                    models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+                    Logger.Info("Updated asset_catalog.jsonl with modular character completeness markers.");
+                }
                 var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
                 ExplicitAnimationLinks structuralLinks;
                 using (ProfileLogger.Measure("library_index_build_animation_links", new Dictionary<string, object>
@@ -3581,6 +3588,13 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 entries = LoadCatalogEntries(catalogPath);
                 models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            }
+            if (CharacterAssemblyIndexGenerator.AnnotateModelCompleteness(models))
+            {
+                RewriteCatalogEntries(catalogPath, entries);
+                entries = LoadCatalogEntries(catalogPath);
+                models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+                Logger.Info("Updated asset_catalog.jsonl with modular character completeness markers.");
             }
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
             var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
@@ -4255,6 +4269,11 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 reasons.Add("diagnostic_instance_not_default_animation_gate");
             }
+            var completenessStatus = JsonText(model, "modelCompletenessStatus");
+            if (string.Equals(completenessStatus, "modular_incomplete", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("modular_character_incomplete");
+            }
 
             var evidence = new JObject
             {
@@ -4277,6 +4296,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 ["unresolvedModelDependencyTypes"] = model?["unresolvedModelDependencyTypes"]?.DeepClone(),
                 ["missingImageCount"] = JsonLong(body, "MissingImageCount") ?? 0,
                 ["emptyImageCount"] = JsonLong(body, "EmptyImageCount") ?? 0,
+                ["modelCompletenessStatus"] = completenessStatus,
+                ["modelCompletenessMissingRoles"] = model?["modelCompletenessMissingRoles"]?.DeepClone(),
             };
 
             var distinctReasons = reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
