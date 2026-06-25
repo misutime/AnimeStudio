@@ -361,6 +361,7 @@ namespace AnimeStudio.CLI
             var avatarMeshRelationEvidence = LoadAvatarMeshDataRelationEvidence(sourceIndexPath, parts, warnings);
             var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
+            var selectedBoneDriverHints = GetSelectedVisualCellBoneDriverHints(boneDriverHints, selectedVisualCell).ToArray();
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, warnings);
             var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
             var rendererListEvidence = LoadVisualCellRendererListEvidence(visualCell, selectedVisualCell.SerializedFile, sourceIndexPath, warnings);
@@ -523,6 +524,11 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
                 ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
                 ["boneDriverHints"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
+                ["selectedVisualCellBoneDriverHintStatus"] = SummarizeSelectedVisualCellBoneDriverHintStatus(selectedBoneDriverHints, selectedVisualCell),
+                ["selectedVisualCellBoneDriverHintCount"] = selectedBoneDriverHints.Length,
+                ["selectedVisualCellBoneDriverHintNames"] = new JArray(GetBoneDriverNames(selectedBoneDriverHints)),
+                ["selectedVisualCellBoneDriverHintPaths"] = new JArray(GetBoneDriverPaths(selectedBoneDriverHints)),
+                ["selectedVisualCellBoneDriverHints"] = new JArray(selectedBoneDriverHints.Select(x => x.ToJson())),
                 ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
@@ -599,6 +605,7 @@ namespace AnimeStudio.CLI
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = (string)report["selectedVisualCellTransformNodeTableStatus"];
+            var selectedBoneDriverHintCount = report["selectedVisualCellBoneDriverHintCount"]?.Value<int?>() ?? 0;
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, new List<string>());
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var hairDeformDataStatus = SummarizeHairDeformDataStatus(hairDeformSummaries);
@@ -627,6 +634,9 @@ namespace AnimeStudio.CLI
                     ? "head_collision_data_refs_present"
                     : "head_collision_data_refs_missing",
                 boneDriverHints.Count > 0 ? "bone_driver_hints_present" : "bone_driver_hints_missing",
+                selectedBoneDriverHintCount > 0
+                    ? "selected_visual_cell_bone_driver_hints_present"
+                    : "selected_visual_cell_bone_driver_hints_missing",
                 string.Equals(rendererListEvidence?.Status, "assistantMeshRendererGameObjectsAligned", StringComparison.OrdinalIgnoreCase)
                     ? "visual_cell_renderer_lists_aligned"
                     : "visual_cell_renderer_lists_unverified",
@@ -646,8 +656,8 @@ namespace AnimeStudio.CLI
                             ? "selected_visual_cell_transform_nodes_present"
                             : "selected_visual_cell_transform_nodes_unverified",
                 transformNodeTableCandidates.Any(x => x.BoneDriverNodeNameMatchCount > 0)
-                    ? "bone_driver_transform_node_overlap_present"
-                    : "bone_driver_transform_node_overlap_missing",
+                    ? "global_bone_driver_transform_node_overlap_present"
+                    : "global_bone_driver_transform_node_overlap_missing",
                 hairDeformDataStatus == "missing"
                     ? "hair_deform_data_missing"
                     : hairDeformDataStatus == "countMismatch"
@@ -746,6 +756,10 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintCount"] = boneDriverHints.Count,
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
                 ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
+                ["selectedVisualCellBoneDriverHintStatus"] = report["selectedVisualCellBoneDriverHintStatus"]?.DeepClone(),
+                ["selectedVisualCellBoneDriverHintCount"] = report["selectedVisualCellBoneDriverHintCount"]?.DeepClone(),
+                ["selectedVisualCellBoneDriverHintNames"] = report["selectedVisualCellBoneDriverHintNames"]?.DeepClone(),
+                ["selectedVisualCellBoneDriverHintPaths"] = report["selectedVisualCellBoneDriverHintPaths"]?.DeepClone(),
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
@@ -777,12 +791,13 @@ namespace AnimeStudio.CLI
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["headCollisionDataBasis"] = "LXRendererAssistant.headCollisionData PPtr",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
+                    ["selectedBoneDriverHintBasis"] = "BoneDriver TransformPath scoped to selected ActorBodyVisualCell root",
                     ["rendererListBasis"] = "ActorBodyVisualCell.rendererAssistants/avatarRenderers/meshRenderer/lod*RendererAssistants",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
                     ["selectedTransformHierarchyBasis"] = "GameObject.component -> Transform / Transform.child / Transform.parent from unity_source_index.db",
                     ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                     ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
-                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
+                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；BoneDriver 会同时区分全目录线索和选中 VisualCell 作用域，Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
 
@@ -1556,6 +1571,56 @@ namespace AnimeStudio.CLI
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<BoneDriverHint> GetSelectedVisualCellBoneDriverHints(
+            IEnumerable<BoneDriverHint> hints,
+            SelectedVisualCellInfo selectedVisualCell)
+        {
+            var rootPath = NormalizeTransformPath(selectedVisualCell?.TransformPath);
+            if (string.IsNullOrWhiteSpace(rootPath))
+            {
+                rootPath = NormalizeTransformPath(selectedVisualCell?.GameObjectName);
+            }
+
+            if (string.IsNullOrWhiteSpace(rootPath))
+            {
+                return Array.Empty<BoneDriverHint>();
+            }
+
+            // BoneDriver 扫描来自同一诊断目录，必须按选中的 VisualCell 根路径再收窄一次。
+            return (hints ?? Array.Empty<BoneDriverHint>())
+                .Where(x =>
+                {
+                    var path = NormalizeTransformPath(x.TransformPath);
+                    return string.Equals(path, rootPath, StringComparison.OrdinalIgnoreCase)
+                        || path.StartsWith(rootPath + "/", StringComparison.OrdinalIgnoreCase);
+                });
+        }
+
+        private static string SummarizeSelectedVisualCellBoneDriverHintStatus(
+            IEnumerable<BoneDriverHint> hints,
+            SelectedVisualCellInfo selectedVisualCell)
+        {
+            var rootPath = NormalizeTransformPath(selectedVisualCell?.TransformPath);
+            if (string.IsNullOrWhiteSpace(rootPath))
+            {
+                rootPath = NormalizeTransformPath(selectedVisualCell?.GameObjectName);
+            }
+
+            if (string.IsNullOrWhiteSpace(rootPath))
+            {
+                return "unknownSelectedVisualCellPath";
+            }
+
+            return hints != null && hints.Any()
+                ? "selectedVisualCellBoneNameHintsOnly"
+                : "selectedVisualCellHasNoBoneDriverHints";
+        }
+
+        private static string NormalizeTransformPath(string path)
+        {
+            return (path ?? string.Empty).Replace('\\', '/').Trim('/');
         }
 
         private static HashSet<string> BuildBoneDriverNodeNameSet(IEnumerable<BoneDriverHint> hints)
