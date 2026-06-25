@@ -784,7 +784,7 @@ namespace AnimeStudio.CLI
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --ensure_source_index_query_indexes, --list_source_model_candidates, --list_source_model_animations, --locate_endfield_cabs, --locate_endfield_missing_source_cabs, --build_endfield_cab_location_index, --locate_endfield_strings, --inspect_endfield_manifest_deps, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --ensure_source_index_query_indexes, --list_source_model_candidates, --list_source_model_animations, --locate_source_cabs, --locate_endfield_cabs, --locate_endfield_missing_source_cabs, --build_endfield_cab_location_index, --locate_endfield_strings, --inspect_endfield_manifest_deps, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
@@ -840,6 +840,15 @@ namespace AnimeStudio.CLI
                 if (o.DumpUnityBlockChunks)
                 {
                     UnityBlockChunkDumper.Dump(o.Input.FullName, o.Output.FullName, game);
+                    return;
+                }
+                if (o.LocateSourceCabs != null && o.LocateSourceCabs.Length > 0)
+                {
+                    SourceCabLocator.Locate(
+                        o.Input.FullName,
+                        o.Output.FullName,
+                        game,
+                        o.LocateSourceCabs);
                     return;
                 }
                 if (o.LocateEndfieldStrings != null && o.LocateEndfieldStrings.Length > 0)
@@ -1267,6 +1276,17 @@ namespace AnimeStudio.CLI
                         using (ProfileLogger.Measure("build_cab_map", new Dictionary<string, object> { ["fileCount"] = cabMapSourceFiles.Length, ["mapName"] = mapName }))
                         {
                             AssetsHelper.BuildCABMap(cabMapSourceFiles, mapName, inputBaseFolder, game);
+                        }
+                        bool cabMapLoaded;
+                        using (ProfileLogger.Measure("load_cab_map", new Dictionary<string, object> { ["mapName"] = mapName }))
+                        {
+                            cabMapLoaded = AssetsHelper.LoadCABMapInternal(mapName);
+                        }
+                        if (cabMapLoaded)
+                        {
+                            // 显式兼容路径：刚建好的 CABMap 也要立刻加载，
+                            // 后续 LoadFiles 才能按 Unity external CAB 关系补齐依赖闭包。
+                            assetsManager.ResolveDependencies = true;
                         }
                     }
                     else

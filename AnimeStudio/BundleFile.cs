@@ -122,7 +122,7 @@ namespace AnimeStudio
         private bool HasUncompressedDataHash = true;
         private bool HasBlockInfoNeedPaddingAtStart = true;
 
-        public BundleFile(FileReader reader, Game game)
+        public BundleFile(FileReader reader, Game game, bool readBlocks = true)
         {
             Game = game;
             m_Header = ReadBundleHeader(reader);
@@ -155,6 +155,11 @@ namespace AnimeStudio
                         ReadUnityCN(reader);
                     }
                     ReadBlocksInfoAndDirectory(reader);
+                    if (!readBlocks)
+                    {
+                        ReadFilesWithoutStreams();
+                        break;
+                    }
                     var unityFsBlocksStream = CreateBlocksStream(reader.FullPath);
                     blocksStreams.Add(unityFsBlocksStream);
                     ReadBlocks(reader, unityFsBlocksStream);
@@ -320,6 +325,21 @@ namespace AnimeStudio
                 file.path = node.path;
                 file.fileName = Path.GetFileName(node.path);
                 file.stream = new OffsetStream(blocksStream, node.offset, node.size);
+            }
+        }
+
+        private void ReadFilesWithoutStreams()
+        {
+            // 诊断定位 CAB 时只要内部文件名，不需要也不应该解压对象数据。
+            fileList = new List<StreamFile>();
+            foreach (var node in m_DirectoryInfo)
+            {
+                fileList.Add(new StreamFile
+                {
+                    path = node.path,
+                    fileName = Path.GetFileName(node.path),
+                    stream = null,
+                });
             }
         }
 

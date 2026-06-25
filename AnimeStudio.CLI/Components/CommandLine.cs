@@ -190,6 +190,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.EnsureSourceIndexQueryIndexes,
                 optionsBinder.ListSourceModelCandidates,
                 optionsBinder.ListSourceModelAnimations,
+                optionsBinder.LocateSourceCabs,
                 optionsBinder.LocateEndfieldStrings,
                 optionsBinder.LocateEndfieldCabs,
                 optionsBinder.LocateEndfieldMissingSourceCabs,
@@ -347,6 +348,7 @@ namespace AnimeStudio.CLI
         public FileInfo EnsureSourceIndexQueryIndexes { get; set; }
         public FileInfo ListSourceModelCandidates { get; set; }
         public FileInfo ListSourceModelAnimations { get; set; }
+        public string[] LocateSourceCabs { get; set; }
         public string[] LocateEndfieldStrings { get; set; }
         public string[] LocateEndfieldCabs { get; set; }
         public FileInfo LocateEndfieldMissingSourceCabs { get; set; }
@@ -499,6 +501,7 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> EnsureSourceIndexQueryIndexes;
         public readonly Option<FileInfo> ListSourceModelCandidates;
         public readonly Option<FileInfo> ListSourceModelAnimations;
+        public readonly Option<string[]> LocateSourceCabs;
         public readonly Option<string[]> LocateEndfieldStrings;
         public readonly Option<string[]> LocateEndfieldCabs;
         public readonly Option<FileInfo> LocateEndfieldMissingSourceCabs;
@@ -649,6 +652,7 @@ namespace AnimeStudio.CLI
             EnsureSourceIndexQueryIndexes = new Option<FileInfo>("--ensure_source_index_query_indexes", "Create or rebuild query indexes on an existing unity_source_index.db. Useful for old large indexes before candidate or animation relation scans.").LegalFilePathsOnly();
             ListSourceModelCandidates = new Option<FileInfo>("--list_source_model_candidates", "List model-first smoke candidates from unity_source_index.db using deterministic Animator/Renderer/Mesh/Material relations. Does not export assets or create animation bindings.").LegalFilePathsOnly();
             ListSourceModelAnimations = new Option<FileInfo>("--list_source_model_animations", "List deterministic source-index animation references for one selected model. Requires --preview_model; does not prove model quality or animation playability.").LegalFilePathsOnly();
+            LocateSourceCabs = new Option<string[]>("--locate_source_cabs", "Diagnostic: locate Unity CAB serialized files inside a normal Unity source folder by reading bundle directory metadata only. Pass one or more CAB names; writes source_cab_locations.json.") { AllowMultipleArgumentsPerToken = true };
             LocateEndfieldStrings = new Option<string[]>("--locate_endfield_strings", "Diagnostic: locate ASCII strings inside Arknights Endfield VFS chunk files and map hits back to inner VFS files. Pass one or more strings; writes endfield_string_locations.json.") { AllowMultipleArgumentsPerToken = true };
             LocateEndfieldCabs = new Option<string[]>("--locate_endfield_cabs", "Diagnostic: locate CAB files inside Arknights Endfield VFS inner UnityFS bundles. Pass one or more CAB names; writes endfield_cab_locations.json to output_path.") { AllowMultipleArgumentsPerToken = true };
             LocateEndfieldMissingSourceCabs = new Option<FileInfo>("--locate_endfield_missing_source_cabs", "Diagnostic: read missing Mesh/Material/Texture/AnimationClip target CABs from a unity_source_index.db, locate them in Arknights Endfield VFS inner bundles, and write a source-index closure report. Use --source_candidate_limit to cap CAB targets.").LegalFilePathsOnly();
@@ -893,6 +897,7 @@ namespace AnimeStudio.CLI
                 EnsureSourceIndexQueryIndexes = bindingContext.ParseResult.GetValueForOption(EnsureSourceIndexQueryIndexes),
                 ListSourceModelCandidates = bindingContext.ParseResult.GetValueForOption(ListSourceModelCandidates),
                 ListSourceModelAnimations = bindingContext.ParseResult.GetValueForOption(ListSourceModelAnimations),
+                LocateSourceCabs = bindingContext.ParseResult.GetValueForOption(LocateSourceCabs),
                 LocateEndfieldStrings = bindingContext.ParseResult.GetValueForOption(LocateEndfieldStrings),
                 LocateEndfieldCabs = bindingContext.ParseResult.GetValueForOption(LocateEndfieldCabs),
                 LocateEndfieldMissingSourceCabs = bindingContext.ParseResult.GetValueForOption(LocateEndfieldMissingSourceCabs),
