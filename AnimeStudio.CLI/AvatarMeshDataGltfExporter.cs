@@ -7,6 +7,8 @@ using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace AnimeStudio.CLI
 {
@@ -1178,6 +1180,7 @@ namespace AnimeStudio.CLI
             var textureSlots = new JArray();
             var usedBaseColor = false;
             JObject normalTexture = null;
+            PreviewAlphaDecision alphaDecision = null;
 
             if (texEnvs != null)
             {
@@ -1215,6 +1218,10 @@ namespace AnimeStudio.CLI
                                 slot["gltfTextureIndex"] = textureIndex;
                                 slot["previewUsage"] = "baseColorTexture";
                                 usedBaseColor = true;
+                                if (TryBuildPreviewAlphaDecision(texturePath, materialJson, warnings, out var decision))
+                                {
+                                    alphaDecision = decision;
+                                }
                             }
                             else if (normalTexture == null && IsNormalSlot(property.Name, textureName))
                             {
@@ -1255,6 +1262,16 @@ namespace AnimeStudio.CLI
             {
                 result["normalTexture"] = normalTexture;
             }
+            if (alphaDecision != null)
+            {
+                result["alphaMode"] = alphaDecision.AlphaMode;
+                if (alphaDecision.AlphaCutoff.HasValue)
+                {
+                    result["alphaCutoff"] = alphaDecision.AlphaCutoff.Value;
+                }
+
+                ((JObject)result["extras"]["animeStudioMaterial"])["previewAlpha"] = alphaDecision.Extras;
+            }
             return result;
         }
 
@@ -1287,6 +1304,180 @@ namespace AnimeStudio.CLI
                 color["g"]?.Value<float>() ?? 0.8f,
                 color["b"]?.Value<float>() ?? 0.8f,
                 color["a"]?.Value<float>() ?? 1.0f);
+        }
+
+        private static bool TryBuildPreviewAlphaDecision(
+            string texturePath,
+            JObject materialJson,
+            List<string> warnings,
+            out PreviewAlphaDecision decision)
+        {
+            decision = null;
+            if (!TryReadMeaningfulTextureAlpha(texturePath, warnings, out var alphaStats))
+            {
+                return false;
+            }
+
+            var cutoff = ReadMaterialFloat(materialJson, "_Cutoff", 0f);
+            var alphaClip = ReadMaterialFloat(materialJson, "_AlphaClip", 0f);
+            var alphaTest = ReadMaterialFloat(materialJson, "_AlphaTest", 0f);
+            if (cutoff > 0.001f || alphaClip > 0.5f || alphaTest > 0.5f)
+            {
+                var alphaCutoff = cutoff > 0.001f ? Math.Clamp(cutoff, 0.01f, 0.99f) : 0.5f;
+                decision = new PreviewAlphaDecision(
+                    "MASK",
+                    alphaCutoff,
+                    BuildPreviewAlphaExtras(texturePath, alphaStats, "baseColorTextureAlphaAndUnityCutoff", alphaCutoff));
+                return true;
+            }
+
+            var colorAlpha = ReadMaterialColorAlpha(materialJson, "_Color", 1f);
+            var surface = ReadMaterialFloat(materialJson, "_Surface", 0f);
+            if (colorAlpha < 0.999f || surface > 0.5f)
+            {
+                decision = new PreviewAlphaDecision(
+                    "BLEND",
+                    null,
+                    BuildPreviewAlphaExtras(texturePath, alphaStats, "baseColorTextureAlphaAndUnityTransparentState", null));
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryReadMeaningfulTextureAlpha(
+            string texturePath,
+            List<string> warnings,
+            out TextureAlphaStats stats)
+        {
+            stats = null;
+            if (string.IsNullOrWhiteSpace(texturePath) || !File.Exists(texturePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var image = Image.Load<Rgba32>(texturePath);
+                long transparentPixels = 0;
+                long partialPixels = 0;
+                long opaquePixels = 0;
+                byte minAlpha = byte.MaxValue;
+                byte maxAlpha = byte.MinValue;
+
+                image.ProcessPixelRows(accessor =>
+                {
+                    for (var y = 0; y < accessor.Height; y++)
+                    {
+                        var row = accessor.GetRowSpan(y);
+                        for (var x = 0; x < row.Length; x++)
+                        {
+                            var alpha = row[x].A;
+                            minAlpha = Math.Min(minAlpha, alpha);
+                            maxAlpha = Math.Max(maxAlpha, alpha);
+                            if (alpha <= 5)
+                            {
+                                transparentPixels++;
+                            }
+                            else if (alpha >= 254)
+                            {
+                                opaquePixels++;
+                            }
+                            else
+                            {
+                                partialPixels++;
+                            }
+                        }
+                    }
+                });
+
+                var totalPixels = (long)image.Width * image.Height;
+                stats = new TextureAlphaStats(
+                    image.Width,
+                    image.Height,
+                    totalPixels,
+                    transparentPixels,
+                    partialPixels,
+                    opaquePixels,
+                    minAlpha,
+                    maxAlpha);
+
+                // 很多 Unity 贴图导成 PNG 后会出现 254/255 这种“近似不透明”alpha。
+                // 只有存在成片透明区时，才把它当成可影响预览材质的 alpha。
+                return totalPixels > 0
+                    && minAlpha <= 5
+                    && transparentPixels >= Math.Max(16, totalPixels / 100);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is NotSupportedException || ex is InvalidImageContentException)
+            {
+                warnings?.Add($"previewAlphaReadFailed:{Path.GetFileName(texturePath)}:{ex.GetType().Name}");
+                return false;
+            }
+        }
+
+        private static JObject BuildPreviewAlphaExtras(
+            string texturePath,
+            TextureAlphaStats stats,
+            string basis,
+            float? alphaCutoff)
+        {
+            var result = new JObject
+            {
+                ["basis"] = basis,
+                ["texture"] = Path.GetFileName(texturePath),
+                ["width"] = stats.Width,
+                ["height"] = stats.Height,
+                ["minAlpha"] = stats.MinAlpha,
+                ["maxAlpha"] = stats.MaxAlpha,
+                ["transparentPixels"] = stats.TransparentPixels,
+                ["partialPixels"] = stats.PartialPixels,
+                ["opaquePixels"] = stats.OpaquePixels,
+                ["transparentRatio"] = stats.TotalPixels > 0 ? (double)stats.TransparentPixels / stats.TotalPixels : 0.0,
+                ["note"] = "只在 baseColor 贴图有真实透明区，并且 Unity 材质有裁剪/透明信号时，才写 glTF alphaMode。"
+            };
+            if (alphaCutoff.HasValue)
+            {
+                result["alphaCutoff"] = alphaCutoff.Value;
+            }
+            return result;
+        }
+
+        private static float ReadMaterialFloat(JObject materialJson, string name, float fallback)
+        {
+            var floats = materialJson?["m_SavedProperties"]?["m_Floats"] as JObject;
+            if (floats == null)
+            {
+                return fallback;
+            }
+
+            foreach (var property in floats.Properties())
+            {
+                if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return property.Value.Value<float>();
+                }
+            }
+
+            return fallback;
+        }
+
+        private static float ReadMaterialColorAlpha(JObject materialJson, string name, float fallback)
+        {
+            var colors = materialJson?["m_SavedProperties"]?["m_Colors"] as JObject;
+            if (colors == null)
+            {
+                return fallback;
+            }
+
+            foreach (var property in colors.Properties())
+            {
+                if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return property.Value?["a"]?.Value<float>() ?? fallback;
+                }
+            }
+
+            return fallback;
         }
 
         private static bool IsSafePreviewBaseColorSlot(string slot, string textureName)
@@ -4345,6 +4536,21 @@ LIMIT 1;";
         private sealed record VisualCellJson(
             JObject Json,
             string JsonPath);
+
+        private sealed record PreviewAlphaDecision(
+            string AlphaMode,
+            float? AlphaCutoff,
+            JObject Extras);
+
+        private sealed record TextureAlphaStats(
+            int Width,
+            int Height,
+            long TotalPixels,
+            long TransparentPixels,
+            long PartialPixels,
+            long OpaquePixels,
+            byte MinAlpha,
+            byte MaxAlpha);
 
         private sealed record SelectedVisualCellInfo(
             long? PathId,
