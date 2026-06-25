@@ -354,6 +354,7 @@ namespace AnimeStudio.CLI
             var nodes = new JArray();
             var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
             var rendererSkinBindings = LoadVisualCellRendererSkinBindings(sourceIndexPath, parts, warnings);
+            var avatarMeshRelationEvidence = LoadAvatarMeshDataRelationEvidence(sourceIndexPath, parts, warnings);
             var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
             var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
@@ -462,6 +463,9 @@ namespace AnimeStudio.CLI
                 ["rendererSkinMeshRefCount"] = rendererSkinBindings.Values.Count(x => x.MeshPathId.HasValue),
                 ["rendererSkinRootBoneRefCount"] = rendererSkinBindings.Values.Count(x => x.RootBonePathId.HasValue),
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
+                ["avatarMeshExplicitReferenceStatus"] = SummarizeAvatarMeshRelationStatus(avatarMeshRelationEvidence.Values),
+                ["avatarMeshRelationCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.RelationCount),
+                ["avatarMeshNonScriptPPtrRefCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.NonScriptPPtrCount),
                 ["bboxMin"] = new JArray(totalBounds.Min.X, totalBounds.Min.Y, totalBounds.Min.Z),
                 ["bboxMax"] = new JArray(totalBounds.Max.X, totalBounds.Max.Y, totalBounds.Max.Z),
                 ["warnings"] = new JArray(warnings),
@@ -469,8 +473,9 @@ namespace AnimeStudio.CLI
                 {
                     materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
                     rendererSkinBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var rendererSkinBinding);
+                    avatarMeshRelationEvidence.TryGetValue(part.AvatarMeshPathId, out var avatarMeshRelations);
                     avatarPartDataEvidence.TryGetValue(part.AvatarMeshPathId, out var partData);
-                    return ToReportJson(part, materialBinding, rendererSkinBinding, partData);
+                    return ToReportJson(part, materialBinding, rendererSkinBinding, avatarMeshRelations, partData);
                 })),
                 ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence.Values.SelectMany(x => x)),
                 ["avatarPartDataEvidenceCount"] = avatarPartDataEvidence.Values.Sum(x => x.Count),
@@ -554,6 +559,9 @@ namespace AnimeStudio.CLI
                     : rendererSkinBindings.Values.Any(x => x.Status == "rendererPresentWithoutSkinRelations")
                         ? "renderer_present_without_skin_relations"
                         : "renderer_skin_relations_missing",
+                string.Equals((string)report["avatarMeshExplicitReferenceStatus"], "scriptOnlyNoExplicitPPtr", StringComparison.OrdinalIgnoreCase)
+                    ? "avatar_mesh_script_only_no_explicit_pptr"
+                    : "avatar_mesh_explicit_reference_check",
                 avatarPartDataEvidence.Values.Any(x => x.Count > 0)
                     ? "avatar_part_data_mesh_order_present"
                     : "avatar_part_data_mesh_order_missing",
@@ -628,6 +636,9 @@ namespace AnimeStudio.CLI
                 ["rendererSkinMeshRefCount"] = rendererSkinBindings.Values.Count(x => x.MeshPathId.HasValue),
                 ["rendererSkinRootBoneRefCount"] = rendererSkinBindings.Values.Count(x => x.RootBonePathId.HasValue),
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
+                ["avatarMeshExplicitReferenceStatus"] = report["avatarMeshExplicitReferenceStatus"]?.DeepClone(),
+                ["avatarMeshRelationCount"] = report["avatarMeshRelationCount"]?.DeepClone(),
+                ["avatarMeshNonScriptPPtrRefCount"] = report["avatarMeshNonScriptPPtrRefCount"]?.DeepClone(),
                 ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartEvidenceItems),
                 ["avatarPartDataEvidenceCount"] = avatarPartEvidenceItems.Length,
                 ["avatarPartDataMeshDataIndexes"] = new JArray(avatarPartEvidenceItems.Select(x => x.MeshDataIndex).OrderBy(x => x)),
@@ -1253,6 +1264,32 @@ namespace AnimeStudio.CLI
             return "noRendererSkinRelations";
         }
 
+        private static string SummarizeAvatarMeshRelationStatus(IEnumerable<AvatarMeshDataRelationEvidence> evidences)
+        {
+            var list = evidences?.ToList() ?? new List<AvatarMeshDataRelationEvidence>();
+            if (list.Count == 0)
+            {
+                return "unknown";
+            }
+            if (list.All(x => x.Status == "scriptOnlyNoExplicitPPtr"))
+            {
+                return "scriptOnlyNoExplicitPPtr";
+            }
+            if (list.Any(x => x.NonScriptPPtrCount > 0))
+            {
+                return "hasExplicitPPtrRelations";
+            }
+            if (list.Any(x => x.Status == "sourceIndexNotProvided" || x.Status == "sourceIndexMissing" || x.Status == "sourceIndexQueryFailed"))
+            {
+                return "sourceIndexUnavailable";
+            }
+            if (list.Any(x => x.RelationCount > 0))
+            {
+                return "nonPPtrRelationsOnly";
+            }
+            return "noSourceRelations";
+        }
+
         private static string SummarizeAvatarPartDataEvidenceStatus(IEnumerable<AvatarPartDataEvidence> evidences)
         {
             var list = evidences?.ToList() ?? new List<AvatarPartDataEvidence>();
@@ -1583,6 +1620,7 @@ LIMIT 1;";
             VisualCellPart part,
             VisualCellMaterialBinding materialBinding,
             VisualCellRendererSkinBinding rendererSkinBinding,
+            AvatarMeshDataRelationEvidence avatarMeshRelations,
             IReadOnlyCollection<AvatarPartDataEvidence> avatarPartDataEvidence)
         {
             var meshJson = ToReportJson(part.Mesh, part.MeshJsonPath);
@@ -1595,6 +1633,7 @@ LIMIT 1;";
             meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
             meshJson["materialBinding"] = materialBinding?.ToJson();
             meshJson["rendererSkinBinding"] = rendererSkinBinding?.ToJson();
+            meshJson["avatarMeshDataRelations"] = avatarMeshRelations?.ToJson();
             meshJson["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence);
             meshJson["avatarPartDataEvidence"] = new JArray((avatarPartDataEvidence ?? Array.Empty<AvatarPartDataEvidence>()).Select(x => x.ToJson()));
             return meshJson;
@@ -1838,6 +1877,122 @@ LIMIT 1;";
             {
                 return null;
             }
+        }
+
+        private static Dictionary<long, AvatarMeshDataRelationEvidence> LoadAvatarMeshDataRelationEvidence(
+            string sourceIndexPath,
+            IReadOnlyCollection<VisualCellPart> parts,
+            List<string> warnings)
+        {
+            var result = parts
+                .GroupBy(x => x.AvatarMeshPathId)
+                .ToDictionary(
+                x => x.Key,
+                x =>
+                {
+                    var part = x.First();
+                    return new AvatarMeshDataRelationEvidence
+                    {
+                        Status = string.IsNullOrWhiteSpace(sourceIndexPath) ? "sourceIndexNotProvided" : "noSourceRelations",
+                        AvatarMeshFile = part.AvatarMeshFile,
+                        AvatarMeshPathId = part.AvatarMeshPathId,
+                    };
+                });
+
+            if (string.IsNullOrWhiteSpace(sourceIndexPath))
+            {
+                return result;
+            }
+            if (!File.Exists(sourceIndexPath))
+            {
+                warnings.Add($"missingSourceIndexForAvatarMeshRelations:{sourceIndexPath}");
+                foreach (var item in result.Values)
+                {
+                    item.Status = "sourceIndexMissing";
+                }
+                return result;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                foreach (var part in parts)
+                {
+                    if (!result.TryGetValue(part.AvatarMeshPathId, out var evidence))
+                    {
+                        continue;
+                    }
+
+                    using var command = connection.CreateCommand();
+                    command.CommandText = @"
+SELECT relation,
+       to_file,
+       to_path_id,
+       target_count,
+       raw_json
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_file = $avatarMeshFile COLLATE NOCASE
+  AND from_path_id = $avatarMeshPathId
+ORDER BY id;";
+                    command.Parameters.AddWithValue("$avatarMeshFile", part.AvatarMeshFile ?? string.Empty);
+                    command.Parameters.AddWithValue("$avatarMeshPathId", part.AvatarMeshPathId);
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var relation = reader.GetString(0);
+                        var targetFile = reader.IsDBNull(1) ? null : reader.GetString(1);
+                        var targetPathId = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+                        var targetCount = reader.IsDBNull(3) ? (int?)null : Convert.ToInt32(reader.GetValue(3), CultureInfo.InvariantCulture);
+                        var rawJson = reader.IsDBNull(4) ? null : reader.GetString(4);
+                        var details = TryReadRelationDetails(rawJson);
+                        var path = (string)details?["path"] ?? string.Empty;
+
+                        evidence.RelationCount++;
+                        if (string.Equals(relation, "monoBehaviour.script", StringComparison.OrdinalIgnoreCase))
+                        {
+                            evidence.ScriptRefCount++;
+                        }
+                        if (string.Equals(relation, "monoBehaviour.pptr", StringComparison.OrdinalIgnoreCase))
+                        {
+                            evidence.PPtrRefCount++;
+                            if (!string.Equals(path, "m_Script", StringComparison.OrdinalIgnoreCase))
+                            {
+                                evidence.NonScriptPPtrCount++;
+                            }
+                        }
+
+                        if (evidence.Relations.Count < 12)
+                        {
+                            evidence.Relations.Add(new AvatarMeshDataRelationRef(
+                                relation,
+                                path,
+                                targetFile,
+                                targetPathId,
+                                targetCount));
+                        }
+                    }
+
+                    evidence.Status = evidence.NonScriptPPtrCount > 0
+                        ? "hasExplicitPPtrRelations"
+                        : evidence.RelationCount == evidence.ScriptRefCount && evidence.ScriptRefCount > 0
+                            ? "scriptOnlyNoExplicitPPtr"
+                            : evidence.RelationCount > 0
+                                ? "nonPPtrRelationsOnly"
+                                : "noSourceRelations";
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is JsonException || ex is InvalidDataException)
+            {
+                warnings.Add($"sourceIndexAvatarMeshRelationQueryFailed:{ex.Message}");
+                foreach (var item in result.Values)
+                {
+                    item.Status = "sourceIndexQueryFailed";
+                }
+            }
+
+            return result;
         }
 
         private static Dictionary<long, List<AvatarPartDataEvidence>> LoadAvatarPartDataEvidence(
@@ -2924,6 +3079,51 @@ WHERE relation = 'material.texture'
                     ["rule"] = "Renderer 对象、GameObject 和材质引用只说明 LXRendererAssistant 链路有效；骨骼证据仍只来自 SQLite 源索引的 skinnedMeshRenderer.mesh/rootBone/bones，缺这些关系时不能写 glTF skin。"
                 };
             }
+        }
+
+        private sealed class AvatarMeshDataRelationEvidence
+        {
+            public string Status { get; set; }
+            public string AvatarMeshFile { get; set; }
+            public long AvatarMeshPathId { get; set; }
+            public int RelationCount { get; set; }
+            public int ScriptRefCount { get; set; }
+            public int PPtrRefCount { get; set; }
+            public int NonScriptPPtrCount { get; set; }
+            public List<AvatarMeshDataRelationRef> Relations { get; } = new();
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["avatarMeshFile"] = AvatarMeshFile,
+                    ["avatarMeshPathId"] = AvatarMeshPathId,
+                    ["relationCount"] = RelationCount,
+                    ["scriptRefCount"] = ScriptRefCount,
+                    ["pptrRefCount"] = PPtrRefCount,
+                    ["nonScriptPPtrCount"] = NonScriptPPtrCount,
+                    ["relationsPreview"] = new JArray(Relations.Select(x => x.ToJson())),
+                    ["rule"] = "只记录 AvatarMeshDataAsset 在源索引里的显式关系；如果只有 monoBehaviour.script，说明当前 joint 映射没有通过 PPtr 暴露，不能凭同包对象猜 skin。"
+                };
+            }
+        }
+
+        private sealed record AvatarMeshDataRelationRef(
+            string Relation,
+            string Path,
+            string TargetFile,
+            long TargetPathId,
+            int? TargetCount)
+        {
+            public JObject ToJson() => new()
+            {
+                ["relation"] = Relation,
+                ["path"] = Path,
+                ["targetFile"] = TargetFile,
+                ["targetPathId"] = TargetPathId,
+                ["targetCount"] = TargetCount,
+            };
         }
 
         private sealed class AvatarPartDataEvidence
