@@ -467,6 +467,9 @@ namespace AnimeStudio.CLI
                 ["avatarMeshExplicitReferenceStatus"] = SummarizeAvatarMeshRelationStatus(avatarMeshRelationEvidence.Values),
                 ["avatarMeshRelationCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.RelationCount),
                 ["avatarMeshNonScriptPPtrRefCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.NonScriptPPtrCount),
+                ["animSkinBindPoseSlotStatus"] = SummarizeAnimSkinBindPoseSlotStatus(parts.Select(x => x.Mesh.Skin)),
+                ["animSkinDirectBindPosePartCount"] = parts.Count(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots),
+                ["animSkinBindPoseRule"] = "m_AnimSkinData 的 boneIndex 先按 m_BindPoses 槽位做自洽检查；它和 m_AvatarBoneWeights 的大范围 avatar boneIndex 分开记录，不能混用。",
                 ["bboxMin"] = new JArray(totalBounds.Min.X, totalBounds.Min.Y, totalBounds.Min.Z),
                 ["bboxMax"] = new JArray(totalBounds.Max.X, totalBounds.Max.Y, totalBounds.Max.Z),
                 ["warnings"] = new JArray(warnings),
@@ -559,6 +562,9 @@ namespace AnimeStudio.CLI
                 "diagnostic_custom_mesh",
                 "missing_skin_binding",
                 parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped") ? "skin_data_present_unmapped" : "skin_data_missing",
+                parts.Any(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots)
+                    ? "anim_skin_bind_pose_slots_self_consistent"
+                    : "anim_skin_bind_pose_slots_unverified",
                 rendererSkinBindings.Values.Any(x => x.Status == "rendererSkinRelations")
                     ? "renderer_skin_relations_present"
                     : rendererSkinBindings.Values.Any(x => x.Status == "rendererPresentWithoutSkinRelations")
@@ -631,6 +637,8 @@ namespace AnimeStudio.CLI
                 ["skinCount"] = 0,
                 ["sourceSkinDataStatus"] = sourceSkinStatuses.Length == 1 ? sourceSkinStatuses[0] : string.Join(",", sourceSkinStatuses),
                 ["sourceSkinBindPoseCount"] = parts.Sum(x => x.Mesh.Skin.BindPoseCount),
+                ["animSkinBindPoseSlotStatus"] = SummarizeAnimSkinBindPoseSlotStatus(parts.Select(x => x.Mesh.Skin)),
+                ["animSkinDirectBindPosePartCount"] = parts.Count(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots),
                 ["sourceSkinMappedJointCount"] = 0,
                 ["sourceSkinUnmapped"] = parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped"),
                 ["rendererSkinBindingStatus"] = SummarizeRendererSkinBindingStatus(rendererSkinBindings.Values),
@@ -1441,6 +1449,51 @@ namespace AnimeStudio.CLI
             return count == 1
                 ? "indexOrderCandidateOnly"
                 : "indexOrderCandidatesAmbiguous";
+        }
+
+        private static string ResolveAnimSkinBindPoseSlotStatus(SkinSummary summary)
+        {
+            if (summary == null || summary.AnimSkinDataCount <= 0)
+            {
+                return "missingAnimSkinData";
+            }
+
+            if (summary.BindPoseCount <= 0)
+            {
+                return "missingBindPoses";
+            }
+
+            if (!summary.AnimSkinMinBoneIndex.HasValue || !summary.AnimSkinMaxBoneIndex.HasValue)
+            {
+                return "animSkinNoWeightedVertices";
+            }
+
+            if (summary.AnimSkinMinBoneIndex.Value < 0)
+            {
+                return "animSkinNegativeBoneIndex";
+            }
+
+            return summary.AnimSkinMaxBoneIndex.Value < summary.BindPoseCount
+                ? "animSkinBoneIndicesWithinBindPoseRange"
+                : "animSkinBoneIndicesExceedBindPoseRange";
+        }
+
+        private static string SummarizeAnimSkinBindPoseSlotStatus(IEnumerable<SkinSummary> skins)
+        {
+            var statuses = (skins ?? Enumerable.Empty<SkinSummary>())
+                .Select(x => x?.AnimSkinBindPoseSlotStatus)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (statuses.Length == 0)
+            {
+                return "missing";
+            }
+
+            return statuses.Length == 1
+                ? statuses[0]
+                : "mixed:" + string.Join(",", statuses);
         }
 
         private static IEnumerable<string> GetTransformNodeTableCandidateVisualCells(
@@ -2827,6 +2880,11 @@ WHERE relation = 'material.texture'
             summary.BindingStatus = summary.HasAnySkinField
                 ? "missingJointMapping"
                 : "noSourceSkinData";
+            summary.AnimSkinBindPoseSlotStatus = ResolveAnimSkinBindPoseSlotStatus(summary);
+            summary.AnimSkinIndicesFitBindPoseSlots = string.Equals(
+                summary.AnimSkinBindPoseSlotStatus,
+                "animSkinBoneIndicesWithinBindPoseRange",
+                StringComparison.OrdinalIgnoreCase);
             return summary;
         }
 
@@ -3553,6 +3611,8 @@ WHERE relation = 'material.texture'
             public int AnimSkinUniqueBoneCount { get; set; }
             public int? AnimSkinMinBoneIndex { get; set; }
             public int? AnimSkinMaxBoneIndex { get; set; }
+            public string AnimSkinBindPoseSlotStatus { get; set; } = "missingAnimSkinData";
+            public bool AnimSkinIndicesFitBindPoseSlots { get; set; }
             public int AvatarSkinDataCount { get; set; }
             public int AvatarBoneOffsetCount { get; set; }
             public int AvatarBoneWeightsCount { get; set; }
@@ -3587,6 +3647,8 @@ WHERE relation = 'material.texture'
                     ["animSkinUniqueBoneCount"] = AnimSkinUniqueBoneCount,
                     ["animSkinMinBoneIndex"] = AnimSkinMinBoneIndex,
                     ["animSkinMaxBoneIndex"] = AnimSkinMaxBoneIndex,
+                    ["animSkinBindPoseSlotStatus"] = AnimSkinBindPoseSlotStatus,
+                    ["animSkinIndicesFitBindPoseSlots"] = AnimSkinIndicesFitBindPoseSlots,
                     ["avatarSkinDataCount"] = AvatarSkinDataCount,
                     ["avatarBoneOffsetCount"] = AvatarBoneOffsetCount,
                     ["avatarBoneWeightsCount"] = AvatarBoneWeightsCount,
@@ -3609,7 +3671,7 @@ WHERE relation = 'material.texture'
                     ["bindPoseCount"] = BindPoseCount,
                     ["mappedJointCount"] = 0,
                     ["layoutWarnings"] = new JArray(LayoutWarnings),
-                    ["rule"] = "只记录 AvatarMeshDataAsset 里的 skin 字段证据；缺少确定性 joint 名称/路径映射前不写 glTF skin。"
+                    ["rule"] = "m_AnimSkinData 的 boneIndex 只先按 m_BindPoses 槽位做自洽检查；m_AvatarBoneWeights 是另一套 avatar boneIndex 证据，缺少确定性 joint 名称/路径映射前不写 glTF skin。"
                 };
             }
         }
