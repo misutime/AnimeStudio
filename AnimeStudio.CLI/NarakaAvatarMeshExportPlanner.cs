@@ -48,6 +48,7 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            var boneDriverHints = LoadBoneDriverHints(connection, target.VisualCellFile).ToList();
             var monoObjects = new List<SourceObjectRef>
             {
                 new(target.VisualCellName, target.VisualCellSourcePath, target.VisualCellFile, target.VisualCellPathId, "ActorBodyVisualCell")
@@ -55,6 +56,7 @@ namespace AnimeStudio.CLI
             monoObjects.AddRange(parts.Select(x => new SourceObjectRef(x.AssistantName, x.AssistantSourcePath, x.AssistantFile, x.AssistantPathId, "LXRendererAssistant")));
             monoObjects.AddRange(parts.Select(x => new SourceObjectRef(x.AvatarMeshName, x.AvatarMeshSourcePath, x.AvatarMeshFile, x.AvatarMeshPathId, "AvatarMeshDataAsset")));
             monoObjects.AddRange(parts.SelectMany(x => x.AvatarPartDataEvidence.Select(y => new SourceObjectRef(y.AssetName, y.AssetSourcePath, y.AssetFile, y.AssetPathId, "AvatarPartDataAsset"))));
+            monoObjects.AddRange(boneDriverHints.Select(x => new SourceObjectRef(x.Name, x.SourcePath, x.SerializedFile, x.PathId, x.ScriptName)));
             monoObjects = DistinctObjects(monoObjects).ToList();
 
             var materialObjects = parts
@@ -79,6 +81,13 @@ namespace AnimeStudio.CLI
                 ["monoBehaviourExport"] = BuildExportBlock(monoObjects, sourceRoot),
                 ["materialTextureExport"] = BuildExportBlock(materialObjects, sourceRoot),
                 ["lod0Parts"] = new JArray(parts.Select(x => x.ToJson())),
+                ["boneDriverHints"] = new JObject
+                {
+                    ["status"] = boneDriverHints.Count > 0 ? "sameSerializedFileBoneDriverHints" : "missing",
+                    ["count"] = boneDriverHints.Count,
+                    ["objects"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
+                    ["rule"] = "BoneFollowDriver/BoneHairFollowDriver 只作为同一视觉包内的骨骼名称线索导出；不能作为 mesh joint 或 skin 绑定。"
+                },
             };
             plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, materialObjects);
 
@@ -333,6 +342,45 @@ ORDER BY id;";
                     reader.GetInt64(0),
                     reader.GetString(1),
                     reader.GetInt64(2));
+            }
+        }
+
+        private static IEnumerable<BoneDriverHintRef> LoadBoneDriverHints(SqliteConnection connection, string serializedFile)
+        {
+            if (string.IsNullOrWhiteSpace(serializedFile))
+            {
+                yield break;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT obj.name,
+       obj.source_path,
+       obj.serialized_file,
+       obj.path_id,
+       script.name
+FROM source_objects obj
+JOIN source_relations scriptRel INDEXED BY idx_source_relations_from
+  ON scriptRel.from_file = obj.serialized_file
+ AND scriptRel.from_path_id = obj.path_id
+ AND scriptRel.relation = 'monoBehaviour.script'
+JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE obj.serialized_file = $file COLLATE NOCASE
+  AND obj.type = 'MonoBehaviour'
+  AND script.name IN ('BoneFollowDriver', 'BoneHairFollowDriver')
+ORDER BY script.name, obj.path_id;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                yield return new BoneDriverHintRef(
+                    reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetInt64(3),
+                    reader.IsDBNull(4) ? string.Empty : reader.GetString(4));
             }
         }
 
@@ -770,6 +818,18 @@ LIMIT 1;";
         private sealed record SourceObjectLite(string Name, string SourcePath);
 
         private sealed record AvatarPartMeshRef(long RelationId, string MeshFile, long MeshPathId);
+
+        private sealed record BoneDriverHintRef(string Name, string SourcePath, string SerializedFile, long PathId, string ScriptName)
+        {
+            public JObject ToJson() => new()
+            {
+                ["name"] = Name,
+                ["sourcePath"] = SourcePath,
+                ["serializedFile"] = SerializedFile,
+                ["pathId"] = PathId,
+                ["scriptName"] = ScriptName,
+            };
+        }
 
         private sealed record PlanStep(string Name, string Command, string SourceFile, IReadOnlyCollection<long> PathIds)
         {

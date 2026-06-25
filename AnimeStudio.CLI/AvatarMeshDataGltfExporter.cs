@@ -354,6 +354,7 @@ namespace AnimeStudio.CLI
             var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
             var rendererSkinBindings = LoadVisualCellRendererSkinBindings(sourceIndexPath, parts, warnings);
             var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
+            var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
             var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -457,6 +458,10 @@ namespace AnimeStudio.CLI
                 })),
                 ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence.Values.SelectMany(x => x)),
                 ["avatarPartDataEvidenceCount"] = avatarPartDataEvidence.Values.Sum(x => x.Count),
+                ["boneDriverHintStatus"] = SummarizeBoneDriverHintStatus(boneDriverHints),
+                ["boneDriverHintCount"] = boneDriverHints.Count,
+                ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
+                ["boneDriverHints"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
                 ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系；AvatarPartDataAsset.m_MeshData 只记录部件/LOD 顺序，不猜材质槽、骨骼或 skin。"
             };
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
@@ -470,6 +475,7 @@ namespace AnimeStudio.CLI
                 materialBindings,
                 rendererSkinBindings,
                 avatarPartDataEvidence,
+                boneDriverHints,
                 gltfMaterials,
                 gltfImages,
                 gltfTextures);
@@ -488,6 +494,7 @@ namespace AnimeStudio.CLI
             IReadOnlyDictionary<string, VisualCellMaterialBinding> materialBindings,
             IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings,
             IReadOnlyDictionary<long, List<AvatarPartDataEvidence>> avatarPartDataEvidence,
+            IReadOnlyList<BoneDriverHint> boneDriverHints,
             JArray gltfMaterials,
             JArray gltfImages,
             JArray gltfTextures)
@@ -517,6 +524,7 @@ namespace AnimeStudio.CLI
                 avatarPartDataEvidence.Values.Any(x => x.Count > 0)
                     ? "avatar_part_data_mesh_order_present"
                     : "avatar_part_data_mesh_order_missing",
+                boneDriverHints.Count > 0 ? "bone_driver_hints_present" : "bone_driver_hints_missing",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
             var sourceSkinStatuses = parts
                 .Select(x => x.Mesh.Skin.Status)
@@ -576,6 +584,9 @@ namespace AnimeStudio.CLI
                 ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartEvidenceItems),
                 ["avatarPartDataEvidenceCount"] = avatarPartEvidenceItems.Length,
                 ["avatarPartDataMeshDataIndexes"] = new JArray(avatarPartEvidenceItems.Select(x => x.MeshDataIndex).OrderBy(x => x)),
+                ["boneDriverHintStatus"] = SummarizeBoneDriverHintStatus(boneDriverHints),
+                ["boneDriverHintCount"] = boneDriverHints.Count,
+                ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -589,7 +600,8 @@ namespace AnimeStudio.CLI
                     ["skinDataBasis"] = "AvatarMeshDataAsset.m_AnimSkinData / m_AvatarBoneWeights / m_BindPoses",
                     ["rendererSkinBasis"] = "skinnedMeshRenderer.mesh / rootBone / bones from unity_source_index.db",
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
-                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序和源 skin 字段可追溯；Renderer/AvatarPartDataAsset 目前都没有提供 joint 映射，shader tint 和完整角色装配前不进入动画验收。"
+                    ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
+                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver 目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
 
@@ -1196,6 +1208,28 @@ namespace AnimeStudio.CLI
             return "unknown";
         }
 
+        private static string SummarizeBoneDriverHintStatus(IEnumerable<BoneDriverHint> hints)
+        {
+            return hints != null && hints.Any()
+                ? "boneNameHintsOnly"
+                : "missing";
+        }
+
+        private static IEnumerable<string> GetBoneDriverNames(IEnumerable<BoneDriverHint> hints)
+        {
+            return (hints ?? Array.Empty<BoneDriverHint>())
+                .SelectMany(x => new[]
+                {
+                    x.DriverSerializeName,
+                    x.AimSerializeName,
+                    x.Aim1SerializeName,
+                    x.Aim2SerializeName,
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
         private static JObject ToReportJson(
             VisualCellPart part,
             VisualCellMaterialBinding materialBinding,
@@ -1542,6 +1576,99 @@ LIMIT 1;";
             }
 
             return string.Empty;
+        }
+
+        private static IReadOnlyList<BoneDriverHint> LoadBoneDriverHints(
+            string jsonFolder,
+            IReadOnlyDictionary<long, ManifestEntry> manifest,
+            string sourceIndexPath,
+            List<string> warnings)
+        {
+            var result = new List<BoneDriverHint>();
+            if (string.IsNullOrWhiteSpace(jsonFolder) || !Directory.Exists(jsonFolder))
+            {
+                return result;
+            }
+
+            var manifestByJsonPath = manifest.Values
+                .Where(x => !string.IsNullOrWhiteSpace(x.JsonPath))
+                .GroupBy(x => Path.GetFullPath(x.JsonPath), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+
+            SqliteConnection connection = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(sourceIndexPath) && File.Exists(sourceIndexPath))
+                {
+                    SQLitePCL.Batteries_V2.Init();
+                    connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                    connection.Open();
+                }
+
+                foreach (var jsonPath in Directory.GetFiles(jsonFolder, "*.json", SearchOption.TopDirectoryOnly))
+                {
+                    JObject json;
+                    try
+                    {
+                        json = JObject.Parse(File.ReadAllText(jsonPath));
+                    }
+                    catch (JsonException)
+                    {
+                        continue;
+                    }
+
+                    var driverName = (string)json["driverSerializeName"];
+                    var aimName = (string)json["aimSerializeName"];
+                    var aim1Name = (string)json["aim1SerializeName"];
+                    var aim2Name = (string)json["aim2SerializeName"];
+                    if (string.IsNullOrWhiteSpace(driverName)
+                        && string.IsNullOrWhiteSpace(aimName)
+                        && string.IsNullOrWhiteSpace(aim1Name)
+                        && string.IsNullOrWhiteSpace(aim2Name))
+                    {
+                        continue;
+                    }
+
+                    manifestByJsonPath.TryGetValue(Path.GetFullPath(jsonPath), out var entry);
+                    var pathId = manifest.FirstOrDefault(x => string.Equals(Path.GetFullPath(x.Value.JsonPath), Path.GetFullPath(jsonPath), StringComparison.OrdinalIgnoreCase)).Key;
+                    var scriptName = string.Empty;
+                    if (connection != null && entry != null && pathId != 0)
+                    {
+                        scriptName = ResolveMonoScriptName(connection, entry.SerializedFile, pathId);
+                    }
+                    if (string.IsNullOrWhiteSpace(scriptName))
+                    {
+                        scriptName = !string.IsNullOrWhiteSpace(driverName) ? "BoneFollowDriver" : "BoneHairFollowDriver";
+                    }
+
+                    result.Add(new BoneDriverHint
+                    {
+                        Status = "boneNameHintOnly",
+                        ScriptName = scriptName,
+                        SourceJson = jsonPath,
+                        SerializedFile = entry?.SerializedFile ?? string.Empty,
+                        PathId = pathId,
+                        GameObjectPathId = ReadPPtrPathId(json["m_GameObject"]),
+                        DriverSerializeName = driverName ?? string.Empty,
+                        AimSerializeName = aimName ?? string.Empty,
+                        Aim1SerializeName = aim1Name ?? string.Empty,
+                        Aim2SerializeName = aim2Name ?? string.Empty,
+                    });
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is JsonException || ex is InvalidDataException)
+            {
+                warnings.Add($"boneDriverHintLoadFailed:{ex.Message}");
+            }
+            finally
+            {
+                connection?.Dispose();
+            }
+
+            return result
+                .OrderBy(x => x.ScriptName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.PathId)
+                .ToArray();
         }
 
         private static int CountMaterialTextureRefs(SqliteConnection connection, string materialFile, long materialPathId)
@@ -2194,6 +2321,38 @@ WHERE relation = 'material.texture'
                     ["meshDataCount"] = MeshDataCount,
                     ["meshDataPathId"] = MeshDataPathId,
                     ["rule"] = "只表示 AvatarPartDataAsset.m_MeshData 的显式 PPtr 顺序；不能证明骨骼、joint 或 skin 绑定。"
+                };
+            }
+        }
+
+        private sealed class BoneDriverHint
+        {
+            public string Status { get; init; }
+            public string ScriptName { get; init; }
+            public string SourceJson { get; init; }
+            public string SerializedFile { get; init; }
+            public long PathId { get; init; }
+            public long GameObjectPathId { get; init; }
+            public string DriverSerializeName { get; init; }
+            public string AimSerializeName { get; init; }
+            public string Aim1SerializeName { get; init; }
+            public string Aim2SerializeName { get; init; }
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["scriptName"] = ScriptName,
+                    ["sourceJson"] = string.IsNullOrWhiteSpace(SourceJson) ? null : Path.GetFullPath(SourceJson),
+                    ["serializedFile"] = SerializedFile,
+                    ["pathId"] = PathId,
+                    ["gameObjectPathId"] = GameObjectPathId,
+                    ["driverSerializeName"] = DriverSerializeName,
+                    ["aimSerializeName"] = AimSerializeName,
+                    ["aim1SerializeName"] = Aim1SerializeName,
+                    ["aim2SerializeName"] = Aim2SerializeName,
+                    ["rule"] = "只记录 BoneFollowDriver/BoneHairFollowDriver 暴露的骨骼名称线索；这些字段不能单独作为 AvatarMeshDataAsset 的 joint 映射。"
                 };
             }
         }
