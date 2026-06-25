@@ -1211,6 +1211,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         ["skeletonBoneCount"] = avatar.m_HumanDescription?.m_Skeleton?.Count ?? 0,
                         ["avatarSize"] = avatar.m_AvatarSize,
                         ["tosCount"] = avatar.m_TOS?.Count ?? 0,
+                        ["tos"] = BuildAvatarTosJson(avatar.m_TOS),
                         ["avatarSkeletonNodeCount"] = avatar.m_Avatar?.m_AvatarSkeleton?.m_Node?.Count ?? 0,
                         ["avatarSkeletonPoseCount"] = avatar.m_Avatar?.m_AvatarSkeletonPose?.m_X?.Length ?? 0,
                         ["avatarDefaultPoseCount"] = avatar.m_Avatar?.m_DefaultPose?.m_X?.Length ?? 0,
@@ -1223,6 +1224,26 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
 
             return raw;
+        }
+
+        private static JArray BuildAvatarTosJson(IReadOnlyDictionary<uint, string> tos)
+        {
+            if (tos == null || tos.Count == 0)
+            {
+                return new JArray();
+            }
+
+            // Avatar.m_TOS 是 Unity 自带的 hash -> path 证据。Naraka 很多 AnimationClip
+            // binding 只有 pathHash，先把原始查表保进源索引，后续才能做确定性解析。
+            return new JArray(tos
+                .OrderBy(x => x.Value, StringComparer.Ordinal)
+                .ThenBy(x => x.Key)
+                .Select(x => new JObject
+                {
+                    ["pathHash"] = x.Key,
+                    ["pathHashHex"] = $"0x{x.Key:X8}",
+                    ["path"] = x.Value,
+                }));
         }
 
         private static JObject BuildAvatarOracleJson(Avatar avatar)
@@ -2715,6 +2736,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 ["sourceRelationHealth"] = BuildSourceRelationHealth(connection),
                 ["modelDependencyHealth"] = BuildModelDependencyHealth(connection),
                 ["materialRelationHealth"] = BuildMaterialRelationHealth(connection),
+                ["avatarOracleHealth"] = BuildAvatarOracleHealth(connection),
                 ["rule"] = "索引要全，导出要精。Source SQLite v1 stores Unity source files, SerializedFiles, Objects, externals, PPtr relations, and animation bindings.",
                 ["inputFileCount"] = fileCount,
                 ["counts"] = JObject.FromObject(counts),
@@ -2735,6 +2757,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 "Renderer/Skin 关系采用 SourceIndex 专用轻量读取：优先按 Unity TypeTree 捕获 `component.gameObject`、`renderer.material`、`skinnedMeshRenderer.mesh/rootBone/bones`；TypeTree 不可用时仅对当前 Renderer 小对象做受控 fallback 解析。失败会记录为 partial/failure，不会阻塞整个索引。\n\n" +
                 "主要表：`source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。\n\n" +
                 "容器关系：当前源索引会记录 `assetBundle.preload`、`assetBundle.containerAsset`、`assetBundle.containerPreload` 和 `resourceManager.container`。它们用于追来源、依赖闭包、静态 Mesh 主资源识别和缺件排查；container/path 仍是 fallback/诊断信号，不能单独升级成默认模型-动画绑定。\n\n" +
+                "Avatar 诊断：`avatarOracleHealth` 会统计 AvatarConstant oracle 与 `Avatar.m_TOS` 覆盖情况。`m_TOS` 是 Unity 自带的 hash -> path 查表，可用于追 Naraka 这类 hash-only AnimationClip binding，但不能单独升级成默认模型-动画关系。\n\n" +
                 "性能日志：启用 `--profile_log` 后，重点比较 `source_index_load_batch`、`source_index_write_batch`、`source_index_load_batch_heartbeat`、`source_index_write_batch_heartbeat`、`source_index_create_sql_indexes` 和 `source_index_total`。长时间大文件处理时，heartbeat 会持续记录当前文件、对象序号、关系计数和内存。\n\n" +
                 "统计项：`lightweightRendererObjects` 是索引阶段尝试补关系的 Renderer 数；`lightweightRendererRelations` 是成功补到的 mesh/material/bone/gameObject 关系数；`lightweightMonoBehaviourRelations` 是通过 TypeTree 捕获到的脚本 PPtr 关系数。MonoBehaviour PPtr 只作为确定性线索保留，不能直接升级成模型动画绑定。\n\n" +
                 "第二阶段当前重点是建好可查询底座；后续导出器可以逐步改为读取这个数据库来减少重复扫描。\n");
@@ -3427,6 +3450,15 @@ WHERE type='Avatar'
       >= COALESCE(json_extract(raw_json, '$.avatar.oracle.humanSkeleton.nodeCount'), 1)
   AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.oracle.avatarSkeleton.defaultPose')), 0)
       >= COALESCE(json_extract(raw_json, '$.avatar.oracle.avatarSkeleton.nodeCount'), 1);");
+            var avatarTosAvatars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM source_objects
+WHERE type='Avatar'
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.tos')), 0) > 0;");
+            var avatarTosEntryCount = ScalarLong(connection, @"
+SELECT COALESCE(SUM(json_array_length(json_extract(raw_json, '$.avatar.tos'))), 0)
+FROM source_objects
+WHERE type='Avatar';");
 
             return new JObject
             {
@@ -3437,11 +3469,14 @@ WHERE type='Avatar'
                 ["humanDescriptionAvatars"] = humanDescriptionAvatars,
                 ["avatarConstantOracleAvatars"] = avatarConstantOracleAvatars,
                 ["completeAvatarConstantOracleAvatars"] = completeOracleAvatars,
+                ["avatarTosAvatars"] = avatarTosAvatars,
+                ["avatarTosEntryCount"] = avatarTosEntryCount,
                 ["humanDescriptionCoverage"] = Ratio(humanDescriptionAvatars, avatarObjects),
                 ["avatarConstantOracleCoverage"] = Ratio(avatarConstantOracleAvatars, avatarObjects),
                 ["completeAvatarConstantOracleCoverage"] = Ratio(completeOracleAvatars, avatarObjects),
+                ["avatarTosCoverage"] = Ratio(avatarTosAvatars, avatarObjects),
                 ["note"] = completeOracleAvatars > 0
-                    ? "源索引包含 AvatarConstant oracle 元数据。它可用于后续恢复 Unity bake prefab/avatar，但不能单独标记为生产 bake ready。"
+                    ? "源索引包含 AvatarConstant oracle 元数据。Avatar.m_TOS 可作为 AnimationClip pathHash 解析证据，但结构兼容仍不能单独升级成生产动画关系。"
                     : "源索引缺少完整 AvatarConstant oracle 元数据；Humanoid/Muscle bake 只能依赖完整 HumanDescription 或 Unity 工程内真实 prefab。"
             };
         }
