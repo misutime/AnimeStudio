@@ -4323,7 +4323,7 @@ LIMIT 1;";
                     inverseBindMatrices,
                     nodeIndexByPath.Count,
                     BuildRendererBonesDiagnosticRestCheck(part, restMatrices, inverseBindMatrices, restMatrixInvertFailureCount),
-                    BuildRendererBonesTransformMatrixCheck(part, boneTargets, rawBindMatrices, inverseBindMatrices, exported));
+                    BuildRendererBonesTransformMatrixCheck(part, binding, boneTargets, rawBindMatrices, inverseBindMatrices, exported));
             }
 
             if (result.Count == 0)
@@ -4385,6 +4385,7 @@ LIMIT 1;";
 
         private static RendererBonesTransformMatrixCheck BuildRendererBonesTransformMatrixCheck(
             VisualCellPart part,
+            VisualCellRendererSkinBinding binding,
             IReadOnlyList<RendererBoneTarget> boneTargets,
             IReadOnlyList<IReadOnlyList<float>> rawBindMatrices,
             IReadOnlyList<float[]> transposedBindMatrices,
@@ -4395,6 +4396,7 @@ LIMIT 1;";
                 Part = part?.GameObjectName,
                 MeshName = part?.Mesh?.MeshName,
                 JointCount = boneTargets?.Count ?? 0,
+                RootBonePathId = binding?.RootBonePathId ?? binding?.RendererJsonRootBonePathId,
                 MatrixSource = "Renderer.m_Bones explicit PPtr transforms compared with AvatarMeshDataAsset.m_BindPoses"
             };
             if (boneTargets == null || rawBindMatrices == null || transposedBindMatrices == null
@@ -4418,6 +4420,15 @@ LIMIT 1;";
             var jointPathIds = boneTargets.Select(x => x.PathId).ToArray();
             var unityInverseByPath = BuildUnityInverseBindMatrices(jointPathIds, includedPathIds, exported);
             var gltfInverseByPath = BuildInverseBindMatrices(jointPathIds, includedPathIds, exported);
+            var rootBonePathId = check.RootBonePathId.GetValueOrDefault();
+            var hasReadableRootBoneChain = rootBonePathId != 0 && HasReadableTransformChain(rootBonePathId, exported);
+            check.RootBoneTransformReadable = hasReadableRootBoneChain;
+            var worldPathIds = rootBonePathId == 0
+                ? jointPathIds
+                : jointPathIds.Concat(new[] { rootBonePathId }).Distinct().ToArray();
+            var unityWorldByPath = BuildWorldMatrixMap(worldPathIds, includedPathIds, exported, preserveUnityCoordinates: true);
+            var gltfWorldByPath = BuildWorldMatrixMap(worldPathIds, includedPathIds, exported, preserveUnityCoordinates: false);
+            var spaceSummaries = new Dictionary<string, RendererBonesTransformMatrixSpaceSummary>(StringComparer.Ordinal);
 
             for (var slot = 0; slot < boneTargets.Count; slot++)
             {
@@ -4429,11 +4440,17 @@ LIMIT 1;";
 
                 var unityInverse = unityInverseByPath.Count > slot ? unityInverseByPath[slot] : Array.Empty<float>();
                 var gltfInverse = gltfInverseByPath.Count > slot ? gltfInverseByPath[slot] : Array.Empty<float>();
+                var unityRootRelative = BuildRootRelativeInverseMatrix(target.PathId, rootBonePathId, unityWorldByPath);
+                var gltfRootRelative = BuildRootRelativeInverseMatrix(target.PathId, rootBonePathId, gltfWorldByPath);
                 RendererBonesTransformMatrixMatch best = null;
                 Consider("rawBindPose", "unityInverseWorld", rawBindMatrices[slot], unityInverse);
                 Consider("transposedBindPose", "unityInverseWorld", transposedBindMatrices[slot], unityInverse);
                 Consider("rawBindPose", "gltfInverseWorld", rawBindMatrices[slot], gltfInverse);
                 Consider("transposedBindPose", "gltfInverseWorld", transposedBindMatrices[slot], gltfInverse);
+                Consider("rawBindPose", "unityRootBoneRelativeInverse", rawBindMatrices[slot], unityRootRelative);
+                Consider("transposedBindPose", "unityRootBoneRelativeInverse", transposedBindMatrices[slot], unityRootRelative);
+                Consider("rawBindPose", "gltfRootBoneRelativeInverse", rawBindMatrices[slot], gltfRootRelative);
+                Consider("transposedBindPose", "gltfRootBoneRelativeInverse", transposedBindMatrices[slot], gltfRootRelative);
 
                 if (best != null)
                 {
@@ -4452,6 +4469,17 @@ LIMIT 1;";
                     }
 
                     var error = CalculateMatrixRmsError(left, right);
+                    var summaryKey = bindPoseInterpretation + "|" + transformMatrixSpace;
+                    if (!spaceSummaries.TryGetValue(summaryKey, out var summary))
+                    {
+                        summary = new RendererBonesTransformMatrixSpaceSummary
+                        {
+                            BindPoseInterpretation = bindPoseInterpretation,
+                            TransformMatrixSpace = transformMatrixSpace,
+                        };
+                        spaceSummaries[summaryKey] = summary;
+                    }
+                    summary.Add(error);
                     if (best == null || error < best.RmsError)
                     {
                         best = new RendererBonesTransformMatrixMatch
@@ -4470,6 +4498,9 @@ LIMIT 1;";
                     }
                 }
             }
+            check.SpaceSummaries.AddRange(spaceSummaries.Values
+                .OrderBy(x => x.BindPoseInterpretation, StringComparer.Ordinal)
+                .ThenBy(x => x.TransformMatrixSpace, StringComparer.Ordinal));
 
             check.Status = check.CheckedJointCount == 0
                 ? "missingComparableRendererBoneMatrices"
@@ -4499,6 +4530,67 @@ LIMIT 1;";
             }
 
             return true;
+        }
+
+        private static Dictionary<long, System.Numerics.Matrix4x4> BuildWorldMatrixMap(
+            IEnumerable<long> pathIds,
+            IReadOnlyCollection<long> includedPathIds,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes,
+            bool preserveUnityCoordinates)
+        {
+            var included = new HashSet<long>(includedPathIds ?? Array.Empty<long>());
+            var requested = (pathIds ?? Array.Empty<long>()).Where(x => x != 0).Distinct().ToArray();
+            var worldCache = new Dictionary<long, System.Numerics.Matrix4x4>();
+
+            System.Numerics.Matrix4x4 GetWorld(long pathId)
+            {
+                if (worldCache.TryGetValue(pathId, out var cached))
+                {
+                    return cached;
+                }
+
+                if (exportedTransformNodes == null
+                    || !exportedTransformNodes.TryGetValue(pathId, out var transform)
+                    || !transform.HasLocalTrs)
+                {
+                    return System.Numerics.Matrix4x4.Identity;
+                }
+
+                var local = preserveUnityCoordinates ? ToUnityMatrix4x4(transform) : ToMatrix4x4(transform);
+                var world = transform.FatherPathId != 0 && included.Contains(transform.FatherPathId)
+                    ? local * GetWorld(transform.FatherPathId)
+                    : local;
+                worldCache[pathId] = world;
+                return world;
+            }
+
+            foreach (var pathId in requested)
+            {
+                GetWorld(pathId);
+            }
+
+            return worldCache
+                .Where(x => requested.Contains(x.Key))
+                .ToDictionary(x => x.Key, x => x.Value);
+        }
+
+        private static float[] BuildRootRelativeInverseMatrix(
+            long bonePathId,
+            long rootBonePathId,
+            IReadOnlyDictionary<long, System.Numerics.Matrix4x4> worldByPath)
+        {
+            if (bonePathId == 0
+                || rootBonePathId == 0
+                || worldByPath == null
+                || !worldByPath.TryGetValue(bonePathId, out var boneWorld)
+                || !worldByPath.TryGetValue(rootBonePathId, out var rootWorld)
+                || !System.Numerics.Matrix4x4.Invert(boneWorld, out var boneInverseWorld))
+            {
+                return Array.Empty<float>();
+            }
+
+            // Unity bindpose 通常是 bone.worldToLocalMatrix * root.localToWorldMatrix。
+            return ToFloatArray(boneInverseWorld * rootWorld).ToArray();
         }
 
         private static HairCustomizationTintEvidence LoadHairCustomizationTintEvidence(
@@ -8142,6 +8234,8 @@ LIMIT 1;";
             public string Part { get; init; }
             public string MeshName { get; init; }
             public int JointCount { get; init; }
+            public long? RootBonePathId { get; init; }
+            public bool RootBoneTransformReadable { get; set; }
             public int ReadableTransformCount { get; set; }
             public int ReadableFullChainCount { get; set; }
             public int MissingTransformCount { get; set; }
@@ -8151,6 +8245,7 @@ LIMIT 1;";
             public float BestRmsErrorMax { get; set; }
             public string MatrixSource { get; init; }
             public List<RendererBonesTransformMatrixMatch> Matches { get; } = new();
+            public List<RendererBonesTransformMatrixSpaceSummary> SpaceSummaries { get; } = new();
 
             public JObject ToJson() => new()
             {
@@ -8158,6 +8253,8 @@ LIMIT 1;";
                 ["part"] = Part,
                 ["meshName"] = MeshName,
                 ["jointCount"] = JointCount,
+                ["rootBonePathId"] = RootBonePathId,
+                ["rootBoneTransformReadable"] = RootBoneTransformReadable,
                 ["readableTransformCount"] = ReadableTransformCount,
                 ["readableFullChainCount"] = ReadableFullChainCount,
                 ["missingTransformCount"] = MissingTransformCount,
@@ -8171,7 +8268,36 @@ LIMIT 1;";
                     .ThenBy(x => x.RmsError)
                     .Take(32)
                     .Select(x => x.ToJson())),
-                ["rule"] = "该检查只比较 Renderer.m_Bones 显式 Transform 层级逆世界矩阵和 m_BindPoses 槽位矩阵是否接近；不接近时说明不能直接拿 Unity Transform 层级当诊断 skin 的 rest，接近也仍需 joint 层级、装配和视觉验收。"
+                ["spaceSummaries"] = new JArray(SpaceSummaries.Select(x => x.ToJson())),
+                ["rule"] = "该检查比较 Renderer.m_Bones 显式 Transform 层级的世界逆矩阵、rootBone 相对逆矩阵和 m_BindPoses 槽位矩阵是否接近；rootBone 相对矩阵接近只说明 bindpose 空间更明确，仍需 joint 层级、装配和视觉验收。"
+            };
+        }
+
+        private sealed class RendererBonesTransformMatrixSpaceSummary
+        {
+            public string BindPoseInterpretation { get; init; }
+            public string TransformMatrixSpace { get; init; }
+            public int ComparedCount { get; private set; }
+            public int CloseMatchCount { get; private set; }
+            public float RmsErrorMin { get; private set; }
+            public float RmsErrorMax { get; private set; }
+
+            public void Add(float rmsError)
+            {
+                ComparedCount++;
+                CloseMatchCount += rmsError <= 0.001f ? 1 : 0;
+                RmsErrorMin = ComparedCount == 1 ? rmsError : Math.Min(RmsErrorMin, rmsError);
+                RmsErrorMax = ComparedCount == 1 ? rmsError : Math.Max(RmsErrorMax, rmsError);
+            }
+
+            public JObject ToJson() => new()
+            {
+                ["bindPoseInterpretation"] = BindPoseInterpretation,
+                ["transformMatrixSpace"] = TransformMatrixSpace,
+                ["comparedCount"] = ComparedCount,
+                ["closeMatchCount"] = CloseMatchCount,
+                ["rmsErrorMin"] = ComparedCount == 0 ? JValue.CreateNull() : RoundFloat(RmsErrorMin),
+                ["rmsErrorMax"] = ComparedCount == 0 ? JValue.CreateNull() : RoundFloat(RmsErrorMax),
             };
         }
 
