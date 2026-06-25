@@ -83,7 +83,7 @@ namespace AnimeStudio.CLI
             var planPath = Path.Combine(outputFolder, "naraka_avatar_mesh_export_plan.json");
             File.WriteAllText(planPath, plan.ToString(Formatting.Indented));
             var scriptPath = Path.Combine(outputFolder, "naraka_avatar_mesh_export_commands.ps1");
-            File.WriteAllText(scriptPath, BuildPowerShellScript(plan["commands"] as JObject));
+            File.WriteAllText(scriptPath, BuildPowerShellScript(outputFolder, plan["commands"] as JObject));
 
             Logger.Info($"Wrote Naraka AvatarMeshData export plan: {planPath}");
             Logger.Info($"Wrote Naraka AvatarMeshData export commands: {scriptPath}");
@@ -334,12 +334,19 @@ LIMIT 1;";
                 return commands;
             }
 
-            commands["dumpMonoBehaviours"] = BuildExportCommand(sourceRoot, dumpRoot, sourceIndexPath, "MonoBehaviour", monoObjects);
+            var steps = new JArray();
+            foreach (var step in BuildExportSteps("dumpMonoBehaviours", sourceRoot, dumpRoot, sourceIndexPath, "MonoBehaviour", monoObjects))
+            {
+                steps.Add(step.ToJson());
+            }
             if (materialObjects.Count > 0)
             {
-                commands["exportMaterialsAndTextures"] = BuildExportCommand(sourceRoot, outputFolder, sourceIndexPath, "Material Texture2D", materialObjects);
+                foreach (var step in BuildExportSteps("exportMaterialsAndTextures", sourceRoot, outputFolder, sourceIndexPath, "Material Texture2D", materialObjects))
+                {
+                    steps.Add(step.ToJson());
+                }
             }
-            commands["exportGltf"] = string.Join(" ",
+            var exportGltf = string.Join(" ",
                 CliExe(),
                 "--export_avatar_mesh_data_gltf",
                 PsQuote(Path.Combine(dumpRoot, "MonoBehaviour")),
@@ -347,7 +354,8 @@ LIMIT 1;";
                 PsQuote(outputFolder),
                 "--source_index",
                 PsQuote(sourceIndexPath));
-            commands["buildSqliteIndex"] = string.Join(" ",
+            steps.Add(new PlanStep("exportGltf", exportGltf, null, Array.Empty<long>()).ToJson());
+            var buildSqliteIndex = string.Join(" ",
                 CliExe(),
                 "--build_sqlite_index",
                 PsQuote(outputFolder),
@@ -355,65 +363,109 @@ LIMIT 1;";
                 PsQuote(sourceIndexPath),
                 "--game Naraka",
                 "--skip_sqlite_json_documents");
+            steps.Add(new PlanStep("buildSqliteIndex", buildSqliteIndex, null, Array.Empty<long>()).ToJson());
+
+            commands["steps"] = steps;
+            commands["dumpMonoBehaviours"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
+                .Where(x => ((string)x["name"])?.StartsWith("dumpMonoBehaviours", StringComparison.OrdinalIgnoreCase) == true)
+                .Select(x => (string)x["command"]));
+            commands["exportMaterialsAndTextures"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
+                .Where(x => ((string)x["name"])?.StartsWith("exportMaterialsAndTextures", StringComparison.OrdinalIgnoreCase) == true)
+                .Select(x => (string)x["command"]));
+            commands["exportGltf"] = exportGltf;
+            commands["buildSqliteIndex"] = buildSqliteIndex;
             return commands;
         }
 
-        private static string BuildExportCommand(
+        private static IEnumerable<PlanStep> BuildExportSteps(
+            string stepPrefix,
             string sourceRoot,
             string outputFolder,
             string sourceIndexPath,
             string types,
             IReadOnlyList<SourceObjectRef> objects)
         {
-            var sourceFiles = objects
-                .Select(x => ToSourceFilterPath(sourceRoot, x.SourcePath))
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                .Select(PsQuote);
-            var pathIds = objects
-                .Select(x => x.PathId)
-                .Where(x => x != 0)
-                .Distinct()
-                .OrderBy(x => x)
-                .Select(x => x.ToString(CultureInfo.InvariantCulture));
+            var groups = objects
+                .Where(x => x.PathId != 0)
+                .GroupBy(x => ToSourceFilterPath(sourceRoot, x.SourcePath), StringComparer.OrdinalIgnoreCase)
+                .Where(x => !string.IsNullOrWhiteSpace(x.Key))
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
-            return string.Join(" ",
-                CliExe(),
-                PsQuote(sourceRoot),
-                PsQuote(outputFolder),
-                "--game Naraka",
-                "--mode Export",
-                "--source_files",
-                string.Join(" ", sourceFiles),
-                "--types",
-                types,
-                "--path_ids",
-                string.Join(" ", pathIds),
-                "--export_type Convert",
-                "--group_assets ByType",
-                "--source_index",
-                PsQuote(sourceIndexPath));
+            var index = 0;
+            foreach (var group in groups)
+            {
+                index++;
+                var pathIds = group
+                    .Select(x => x.PathId)
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .ToArray();
+                var command = string.Join(" ",
+                    CliExe(),
+                    PsQuote(sourceRoot),
+                    PsQuote(outputFolder),
+                    "--game Naraka",
+                    "--mode Export",
+                    "--source_files",
+                    PsQuote(group.Key),
+                    "--types",
+                    types,
+                    "--path_ids",
+                    string.Join(" ", pathIds.Select(x => x.ToString(CultureInfo.InvariantCulture))),
+                    "--export_type Convert",
+                    "--group_assets ByType",
+                    "--source_index",
+                    PsQuote(sourceIndexPath));
+
+                yield return new PlanStep(
+                    $"{stepPrefix}_{index:D2}_{FixStepName(group.Key)}",
+                    command,
+                    group.Key,
+                    pathIds);
+            }
         }
 
-        private static string BuildPowerShellScript(JObject commands)
+        private static string BuildPowerShellScript(string outputFolder, JObject commands)
         {
             var lines = new List<string>
             {
                 "$ErrorActionPreference = 'Stop'",
                 "# 这些命令只服务 Naraka 自定义网格诊断；产物仍是 warning，不能直接进入动画验收。",
+                "$StateDir = " + PsQuote(Path.Combine(outputFolder, ".naraka_plan_state")),
+                "New-Item -ItemType Directory -Force -Path $StateDir | Out-Null",
+                "function Invoke-PlanStep([string]$Name, [string]$Command) {",
+                "  $Marker = Join-Path $StateDir ($Name + '.done')",
+                "  if (Test-Path -LiteralPath $Marker) { Write-Host \"[skip] $Name\"; return }",
+                "  Write-Host \"[run] $Name\"",
+                "  Invoke-Expression $Command",
+                "  if ($LASTEXITCODE -ne 0) { throw \"Step failed: $Name exit=$LASTEXITCODE\" }",
+                "  Set-Content -LiteralPath $Marker -Value (Get-Date).ToUniversalTime().ToString('O')",
+                "}",
             };
-            foreach (var name in new[] { "dumpMonoBehaviours", "exportMaterialsAndTextures", "exportGltf", "buildSqliteIndex" })
+            var steps = commands?["steps"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            foreach (var step in steps)
             {
-                var command = (string)commands?[name];
+                var name = (string)step["name"];
+                var command = (string)step["command"];
                 if (!string.IsNullOrWhiteSpace(command))
                 {
                     lines.Add("");
                     lines.Add("# " + name);
-                    lines.Add(command);
+                    lines.Add("Invoke-PlanStep " + PsQuote(name) + " " + PsQuote(command));
                 }
             }
             return string.Join(Environment.NewLine, lines) + Environment.NewLine;
+        }
+
+        private static string FixStepName(string value)
+        {
+            value = (value ?? string.Empty).Replace('\\', '/').Trim('/');
+            foreach (var c in Path.GetInvalidFileNameChars().Concat(new[] { '/', '\\', ':', '|', ' ' }).Distinct())
+            {
+                value = value.Replace(c, '_');
+            }
+            return string.IsNullOrWhiteSpace(value) ? "source" : value;
         }
 
         private static IEnumerable<SourceObjectRef> DistinctObjects(IEnumerable<SourceObjectRef> objects)
@@ -597,5 +649,16 @@ LIMIT 1;";
         }
 
         private sealed record SourceObjectLite(string Name, string SourcePath);
+
+        private sealed record PlanStep(string Name, string Command, string SourceFile, IReadOnlyCollection<long> PathIds)
+        {
+            public JObject ToJson() => new()
+            {
+                ["name"] = Name,
+                ["sourceFile"] = SourceFile,
+                ["pathIds"] = new JArray(PathIds ?? Array.Empty<long>()),
+                ["command"] = Command,
+            };
+        }
     }
 }
