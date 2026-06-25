@@ -414,8 +414,10 @@ namespace AnimeStudio.CLI
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
-            var selectedTransformNodeRequiredCount = GetSelectedVisualCellTransformNodeRequiredCount(transformNodeTableCandidates);
-            var selectedTransformNodeMissingCount = GetSelectedVisualCellTransformNodeMissingCount(transformNodeTableCandidates, selectedVisualCell);
+            var sourceSkinAvatarMaxBoneIndex = GetAvatarBoneMaxIndex(parts);
+            var sourceSkinAvatarRequiredNodeCount = GetAvatarBoneRequiredNodeCount(parts);
+            var selectedTransformNodeRequiredCount = GetSelectedVisualCellTransformNodeRequiredCount(parts, transformNodeTableCandidates);
+            var selectedTransformNodeMissingCount = GetSelectedVisualCellTransformNodeMissingCount(parts, transformNodeTableCandidates, selectedVisualCell);
             var selectedTransformNodeCoverageStatus = SummarizeSelectedVisualCellTransformNodeCoverageStatus(
                 selectedTransformNodeTableStatus,
                 selectedTransformNodeRequiredCount,
@@ -566,6 +568,8 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
                 ["selectedVisualCellTransformNodeTableStatus"] = selectedTransformNodeTableStatus,
                 ["selectedVisualCellTransformNodeTableCandidateCount"] = transformNodeTableCandidates.Count(x => x.IsSelectedVisualCell),
+                ["sourceSkinAvatarMaxBoneIndex"] = sourceSkinAvatarMaxBoneIndex,
+                ["sourceSkinAvatarRequiredNodeCount"] = sourceSkinAvatarRequiredNodeCount,
                 ["selectedVisualCellTransformNodeRequiredCount"] = selectedTransformNodeRequiredCount,
                 ["selectedVisualCellTransformNodeMissingCount"] = selectedTransformNodeMissingCount,
                 ["selectedVisualCellTransformNodeCoverageStatus"] = selectedTransformNodeCoverageStatus,
@@ -780,6 +784,8 @@ namespace AnimeStudio.CLI
                 ["sourceSkinBindPoseCount"] = parts.Sum(x => x.Mesh.Skin.BindPoseCount),
                 ["animSkinBindPoseSlotStatus"] = SummarizeAnimSkinBindPoseSlotStatus(parts.Select(x => x.Mesh.Skin)),
                 ["animSkinDirectBindPosePartCount"] = parts.Count(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots),
+                ["sourceSkinAvatarMaxBoneIndex"] = report["sourceSkinAvatarMaxBoneIndex"]?.DeepClone(),
+                ["sourceSkinAvatarRequiredNodeCount"] = report["sourceSkinAvatarRequiredNodeCount"]?.DeepClone(),
                 ["avatarBoneOffsetPairStatus"] = report["avatarBoneOffsetPairStatus"]?.DeepClone(),
                 ["avatarBoneOffsetPairExactPartCount"] = report["avatarBoneOffsetPairExactPartCount"]?.DeepClone(),
                 ["sourceSkinMappedJointCount"] = 0,
@@ -2070,20 +2076,30 @@ namespace AnimeStudio.CLI
         }
 
         private static int? GetSelectedVisualCellTransformNodeRequiredCount(
+            IEnumerable<VisualCellPart> parts,
             IEnumerable<TransformNodeTableCandidate> candidates)
         {
             var selected = (candidates ?? Array.Empty<TransformNodeTableCandidate>())
                 .Where(x => x.IsSelectedVisualCell && x.RequiredNodeCount.HasValue)
                 .Select(x => x.RequiredNodeCount.Value)
                 .ToArray();
-            return selected.Length == 0 ? null : selected.Max();
+            var sourceRequired = GetAvatarBoneRequiredNodeCount(parts);
+            if (selected.Length == 0)
+            {
+                return sourceRequired;
+            }
+
+            return sourceRequired.HasValue
+                ? Math.Max(sourceRequired.Value, selected.Max())
+                : selected.Max();
         }
 
         private static int? GetSelectedVisualCellTransformNodeMissingCount(
+            IEnumerable<VisualCellPart> parts,
             IEnumerable<TransformNodeTableCandidate> candidates,
             SelectedVisualCellInfo selectedVisualCell)
         {
-            var required = GetSelectedVisualCellTransformNodeRequiredCount(candidates);
+            var required = GetSelectedVisualCellTransformNodeRequiredCount(parts, candidates);
             if (!required.HasValue)
             {
                 return null;
@@ -2097,6 +2113,29 @@ namespace AnimeStudio.CLI
                 ? selectedVisualCell?.TransformNodeCount ?? 0
                 : selectedCounts.Max();
             return Math.Max(0, required.Value - actual);
+        }
+
+        private static int? GetAvatarBoneMaxIndex(IEnumerable<VisualCellPart> parts)
+        {
+            var values = (parts ?? Array.Empty<VisualCellPart>())
+                .Select(x => x?.Mesh?.Skin?.AvatarMaxBoneIndex)
+                .Where(x => x.HasValue)
+                .Select(x => x.Value)
+                .ToArray();
+            return values.Length == 0 ? null : values.Max();
+        }
+
+        private static int? GetAvatarBoneRequiredNodeCount(IEnumerable<VisualCellPart> parts)
+        {
+            var maxIndex = GetAvatarBoneMaxIndex(parts);
+            if (!maxIndex.HasValue)
+            {
+                return null;
+            }
+
+            // AvatarBoneWeights 的非负 boneIndex 是节点表的下标，因此需要 maxIndex + 1 个节点。
+            // 这只用于解释为什么阻断 skin 映射，不代表已经证明 joint 名称或路径。
+            return maxIndex.Value + 1;
         }
 
         private static string SummarizeSelectedVisualCellTransformNodeCoverageStatus(
