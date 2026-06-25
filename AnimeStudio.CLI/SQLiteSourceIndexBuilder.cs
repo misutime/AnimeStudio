@@ -195,6 +195,7 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                     Logger.Info($"Endfield VFS source index keeps default auto root/context selection ({endfieldVfsSelection.SelectedFiles.Length} source file(s)) and adds explicit inner-file closure matches from all loadable VFS files.");
                 }
             }
+            var narakaInputProbe = AnalyzeNarakaInputFiles(sourceFiles, loadableFiles, game);
 
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
             {
@@ -237,6 +238,14 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                 InsertMetadata(connection, transaction, "animationRelationFeatures", "animatorController.clip,animatorController.blendTreeParameter,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip,monoBehaviour.script,monoBehaviour.pptr");
                 InsertMetadata(connection, transaction, "sourceRelationFeatures", SourceRelationFeatures);
                 InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。This database indexes Unity source files, SerializedFiles, objects, PPtr relations, and animation bindings without exporting assets.");
+                if (narakaInputProbe != null)
+                {
+                    InsertMetadata(connection, transaction, "narakaInputProbe", narakaInputProbe.ToJson().ToString(Formatting.None));
+                    InsertMetadata(connection, transaction, "narakaBundleHeaderCount", narakaInputProbe.NarakaHeaderFileCount.ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "narakaPakFileCount", narakaInputProbe.PakFileCount.ToString(CultureInfo.InvariantCulture));
+                    InsertMetadata(connection, transaction, "narakaBundleHeaderOffsetCounts", JObject.FromObject(narakaInputProbe.HeaderSizeOffsetCounts).ToString(Formatting.None));
+                    InsertMetadata(connection, transaction, "narakaInputRule", "本字段只记录永劫输入形态：当前主线读取 StreamingAssets 下的 Naraka/Unity bundle，.pak 若存在也只作为独立诊断线索，不进入默认 Library 解包路径。");
+                }
                 if (hasExplicitSourceFileFilter)
                 {
                     InsertMetadata(connection, transaction, "sourceFilesPartialDiagnostic", "true");
@@ -403,7 +412,7 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                 ["sourceRelations"] = counts["sourceRelations"],
             }))
             {
-                WriteSummary(connection, outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts);
+                WriteSummary(connection, outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts, narakaInputProbe);
             }
 
             using (ProfileLogger.Measure("source_index_checkpoint", new Dictionary<string, object>
@@ -416,6 +425,183 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
 
             Logger.Info($"SQLite Unity source index written: {dbPath}");
             return dbPath;
+        }
+
+        private static NarakaInputProbe AnalyzeNarakaInputFiles(string[] sourceFiles, string[] loadableFiles, Game game)
+        {
+            if (game == null || !game.Type.IsNaraka())
+            {
+                return null;
+            }
+
+            var probe = new NarakaInputProbe
+            {
+                SourceFileCount = sourceFiles?.Length ?? 0,
+                LoadableFileCount = loadableFiles?.Length ?? 0,
+            };
+            var loadableSet = (loadableFiles ?? Array.Empty<string>())
+                .Select(Path.GetFullPath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var path in sourceFiles ?? Array.Empty<string>())
+            {
+                if (string.Equals(Path.GetExtension(path), ".pak", StringComparison.OrdinalIgnoreCase))
+                {
+                    probe.PakFileCount++;
+                    AddSample(probe.PakSamples, path);
+                }
+
+                if (!TryReadNarakaBundleHeader(path, out var header))
+                {
+                    continue;
+                }
+
+                if (header.IsUnityFs)
+                {
+                    probe.UnityFsHeaderFileCount++;
+                    continue;
+                }
+
+                if (!header.IsNarakaHeader)
+                {
+                    continue;
+                }
+
+                probe.NarakaHeaderFileCount++;
+                if (loadableSet.Contains(Path.GetFullPath(path)))
+                {
+                    probe.LoadableNarakaHeaderFileCount++;
+                }
+
+                var offsetKey = FormatHex(header.SizeOffset);
+                probe.HeaderSizeOffsetCounts.TryGetValue(offsetKey, out var count);
+                probe.HeaderSizeOffsetCounts[offsetKey] = count + 1;
+                if (header.SizeOffset < 0)
+                {
+                    probe.TrailingDataHeaderFileCount++;
+                }
+
+                AddSample(probe.NarakaHeaderSamples, path, offsetKey);
+            }
+
+            if (probe.NarakaHeaderFileCount > 0 || probe.PakFileCount > 0)
+            {
+                Logger.Info(
+                    "Naraka input probe: " +
+                    $"narakaBundleHeaders={probe.NarakaHeaderFileCount}, " +
+                    $"loadableNarakaBundleHeaders={probe.LoadableNarakaHeaderFileCount}, " +
+                    $"unityFsHeaders={probe.UnityFsHeaderFileCount}, " +
+                    $"pakFiles={probe.PakFileCount}, " +
+                    $"offsets={string.Join(", ", probe.HeaderSizeOffsetCounts.OrderByDescending(x => x.Value).Select(x => $"{x.Key}:{x.Value}").Take(8))}");
+            }
+
+            return probe;
+        }
+
+        private static bool TryReadNarakaBundleHeader(string path, out NarakaBundleHeaderProbe header)
+        {
+            header = default;
+            try
+            {
+                using var stream = File.OpenRead(path);
+                if (stream.Length < 32)
+                {
+                    return false;
+                }
+
+                using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
+                var signature = reader.ReadBytes(8);
+                var isUnityFs = Encoding.UTF8.GetString(signature, 0, 7) == "UnityFS";
+                var isNarakaHeader = signature[0] == 0x15
+                    && signature[1] == 0x1E
+                    && signature[2] == 0x1C
+                    && signature[3] == 0x0D
+                    && signature[4] == 0x0D
+                    && signature[5] == 0x23
+                    && signature[6] == 0x21;
+                if (!isUnityFs && !isNarakaHeader)
+                {
+                    return false;
+                }
+
+                ReadUInt32BigEndian(reader);
+                SkipNullTerminatedString(reader, stream.Length);
+                SkipNullTerminatedString(reader, stream.Length);
+                if (stream.Position + 20 > stream.Length)
+                {
+                    return false;
+                }
+
+                var size = ReadInt64BigEndian(reader);
+                header = new NarakaBundleHeaderProbe
+                {
+                    IsUnityFs = isUnityFs,
+                    IsNarakaHeader = isNarakaHeader,
+                    SizeOffset = size - stream.Length,
+                };
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static uint ReadUInt32BigEndian(BinaryReader reader)
+        {
+            var bytes = reader.ReadBytes(4);
+            if (bytes.Length != 4)
+            {
+                return 0;
+            }
+
+            return ((uint)bytes[0] << 24)
+                | ((uint)bytes[1] << 16)
+                | ((uint)bytes[2] << 8)
+                | bytes[3];
+        }
+
+        private static long ReadInt64BigEndian(BinaryReader reader)
+        {
+            var bytes = reader.ReadBytes(8);
+            if (bytes.Length != 8)
+            {
+                return 0;
+            }
+
+            ulong value = ((ulong)bytes[0] << 56)
+                | ((ulong)bytes[1] << 48)
+                | ((ulong)bytes[2] << 40)
+                | ((ulong)bytes[3] << 32)
+                | ((ulong)bytes[4] << 24)
+                | ((ulong)bytes[5] << 16)
+                | ((ulong)bytes[6] << 8)
+                | bytes[7];
+            return unchecked((long)value);
+        }
+
+        private static void SkipNullTerminatedString(BinaryReader reader, long streamLength)
+        {
+            while (reader.BaseStream.Position < streamLength && reader.ReadByte() != 0)
+            {
+            }
+        }
+
+        private static string FormatHex(long value)
+        {
+            return value < 0
+                ? "-0x" + (-value).ToString("X", CultureInfo.InvariantCulture)
+                : "0x" + value.ToString("X", CultureInfo.InvariantCulture);
+        }
+
+        private static void AddSample(List<string> samples, string path, string note = null)
+        {
+            if (samples.Count >= 12)
+            {
+                return;
+            }
+
+            samples.Add(string.IsNullOrWhiteSpace(note) ? path : $"{path}|{note}");
         }
 
         private static string[] ExpandEndfieldVfsLayerSourceFiles(
@@ -2448,7 +2634,14 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             };
         }
 
-        private static void WriteSummary(SqliteConnection connection, string outputRoot, string dbPath, string sourceRoot, int fileCount, Dictionary<string, long> counts)
+        private static void WriteSummary(
+            SqliteConnection connection,
+            string outputRoot,
+            string dbPath,
+            string sourceRoot,
+            int fileCount,
+            Dictionary<string, long> counts,
+            NarakaInputProbe narakaInputProbe)
         {
             var summaryPath = GetSourceIndexSummaryPath(outputRoot, dbPath);
             var summary = new JObject
@@ -2467,6 +2660,10 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 ["inputFileCount"] = fileCount,
                 ["counts"] = JObject.FromObject(counts),
             };
+            if (narakaInputProbe != null)
+            {
+                summary["narakaInputProbe"] = narakaInputProbe.ToJson();
+            }
             File.WriteAllText(summaryPath, summary.ToString(Formatting.Indented));
             var readmePath = UsesDefaultSourceIndexPath(outputRoot, dbPath)
                 ? Path.Combine(outputRoot, "UNITY_SOURCE_INDEX_README.md")
@@ -2475,6 +2672,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 "# Unity Source SQLite Index\n\n" +
                 "这是完整 Unity 源目录索引，不是导出结果索引。它用于一次性记录源文件、SerializedFile、Object、external CAB/PPtr、Animator/Animation/Renderer/Skin/AnimationClip binding 等关系。\n\n" +
                 "核心原则：索引要全，导出要精。源索引中出现的对象不代表默认素材库会导出，也不代表视觉验收通过。\n\n" +
+                "Naraka 输入探针：`narakaInputProbe` 只记录永劫无间源目录中 `.pak`、`UnityFS`、Naraka 替代头和 header size offset 分布，用来区分“当前 StreamingAssets bundle 主线”和“另行诊断的包解密线索”。它不代表默认流程会解包 `.pak`。\n\n" +
                 "Renderer/Skin 关系采用 SourceIndex 专用轻量读取：优先按 Unity TypeTree 捕获 `component.gameObject`、`renderer.material`、`skinnedMeshRenderer.mesh/rootBone/bones`；TypeTree 不可用时仅对当前 Renderer 小对象做受控 fallback 解析。失败会记录为 partial/failure，不会阻塞整个索引。\n\n" +
                 "主要表：`source_files`、`serialized_files`、`source_objects`、`source_externals`、`source_relations`、`source_animation_bindings`。\n\n" +
                 "容器关系：当前源索引会记录 `assetBundle.preload`、`assetBundle.containerAsset`、`assetBundle.containerPreload` 和 `resourceManager.container`。它们用于追来源、依赖闭包、静态 Mesh 主资源识别和缺件排查；container/path 仍是 fallback/诊断信号，不能单独升级成默认模型-动画绑定。\n\n" +
@@ -4977,6 +5175,45 @@ WHERE r.relation = $relation;";
                 // Keep original Unity path when it is not a filesystem path.
             }
             return path.Replace('\\', '/');
+        }
+
+        private sealed class NarakaInputProbe
+        {
+            public int SourceFileCount { get; set; }
+            public int LoadableFileCount { get; set; }
+            public int PakFileCount { get; set; }
+            public int UnityFsHeaderFileCount { get; set; }
+            public int NarakaHeaderFileCount { get; set; }
+            public int LoadableNarakaHeaderFileCount { get; set; }
+            public int TrailingDataHeaderFileCount { get; set; }
+            public Dictionary<string, int> HeaderSizeOffsetCounts { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public List<string> PakSamples { get; } = new();
+            public List<string> NarakaHeaderSamples { get; } = new();
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["sourceFileCount"] = SourceFileCount,
+                    ["loadableFileCount"] = LoadableFileCount,
+                    ["pakFileCount"] = PakFileCount,
+                    ["unityFsHeaderFileCount"] = UnityFsHeaderFileCount,
+                    ["narakaHeaderFileCount"] = NarakaHeaderFileCount,
+                    ["loadableNarakaHeaderFileCount"] = LoadableNarakaHeaderFileCount,
+                    ["trailingDataHeaderFileCount"] = TrailingDataHeaderFileCount,
+                    ["headerSizeOffsetCounts"] = JObject.FromObject(HeaderSizeOffsetCounts),
+                    ["pakSamples"] = new JArray(PakSamples),
+                    ["narakaHeaderSamples"] = new JArray(NarakaHeaderSamples),
+                    ["rule"] = "只记录永劫输入形态，不执行 .pak 解包，也不把社区 AES key 写入默认 Unity 素材库流程。",
+                };
+            }
+        }
+
+        private readonly struct NarakaBundleHeaderProbe
+        {
+            public bool IsUnityFs { get; init; }
+            public bool IsNarakaHeader { get; init; }
+            public long SizeOffset { get; init; }
         }
     }
 }

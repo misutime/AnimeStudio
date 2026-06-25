@@ -558,6 +558,8 @@ Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `s
 
 截至 2026-06-26 本机 `C:\Game163\program` 安装形态，默认主输入应使用 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`。该目录下主体资源是大量无扩展 Unity bundle，已能通过 Naraka header/block 修正和完整 `unity_source_index.db` 建索引、定点导出模型；根目录内少量 `.pak` 体量很小，不是当前模型、贴图、材质、骨骼主资源入口。网上流传的 QuickBMS/AES key 只能作为其它发行包或旧版本解包线索，不能写入默认 `Library` 流程，也不能替代本项目的 Unity PPtr/source index 依赖闭包。若后续遇到只能从 `.pak` 进入的发行形态，应先用显式诊断命令记录包结构、UnityFS 命中率、解密参数和版本日期，再决定是否增加独立转换入口。
 
+新建 Naraka `unity_source_index.db` 时会在 `metadata.narakaInputProbe` 和 `unity_source_index_summary.json.narakaInputProbe` 记录 `.pak` 数量、普通 `UnityFS` 头数量、Naraka 替代头数量和 header size offset 分布。这个字段只用于确认输入形态和 header/block 规则命中情况；它不会执行 `.pak` 解包，也不会把社区 AES key 写入默认素材库流程。
+
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Game163\program\NarakaBladepoint_Data\StreamingAssets" `
