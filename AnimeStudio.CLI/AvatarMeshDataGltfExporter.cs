@@ -481,7 +481,9 @@ namespace AnimeStudio.CLI
                 ["boneDriverHints"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
                 ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
+                ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
+                ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；同 SerializedFile 内存在多套节点表时不能作为 skin joint 映射。",
                 ["hairDeformDataStatus"] = SummarizeHairDeformDataStatus(hairDeformSummaries),
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
@@ -635,7 +637,9 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
+                ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
+                ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
                 ["hairDeformDataStatus"] = hairDeformDataStatus,
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
                 ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
@@ -1346,6 +1350,17 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
         }
 
+        private static IEnumerable<string> GetTransformNodeTableRangeCoveringVisualCells(
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            return (candidates ?? Array.Empty<TransformNodeTableCandidate>())
+                .Where(x => x.CoversAvatarBoneIndexRange)
+                .Select(x => x.VisualCellGameObjectName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
         private static string SummarizeHairDeformDataStatus(IEnumerable<HairDeformSummary> summaries)
         {
             var list = summaries?.ToArray() ?? Array.Empty<HairDeformSummary>();
@@ -1528,6 +1543,9 @@ LIMIT 1;";
                 yield break;
             }
 
+            var requiredNodeCount = skin.AvatarMaxBoneIndex.HasValue
+                ? skin.AvatarMaxBoneIndex.Value + 1
+                : (int?)null;
             foreach (var table in tables.Where(x => string.Equals(x.SerializedFile, file, StringComparison.OrdinalIgnoreCase)))
             {
                 var mapped = topRefs
@@ -1552,7 +1570,10 @@ LIMIT 1;";
                     VisualCellGameObjectName = table.VisualCellGameObjectName,
                     Container = table.Container,
                     TransformNodeCount = table.TransformNodeCount,
+                    RequiredNodeCount = requiredNodeCount,
+                    CoversAvatarBoneIndexRange = requiredNodeCount.HasValue && table.TransformNodeCount >= requiredNodeCount.Value,
                     MatchedTopBoneIndexCount = mapped.Length,
+                    MissingTopBoneIndexCount = topRefs.Length - mapped.Length,
                     MappedTopBoneRefs = mapped,
                 };
             }
@@ -3002,7 +3023,10 @@ WHERE relation = 'material.texture'
             public string VisualCellGameObjectName { get; init; }
             public string Container { get; init; }
             public int TransformNodeCount { get; init; }
+            public int? RequiredNodeCount { get; init; }
+            public bool CoversAvatarBoneIndexRange { get; init; }
             public int MatchedTopBoneIndexCount { get; init; }
+            public int MissingTopBoneIndexCount { get; init; }
             public IReadOnlyList<TransformNodeTableCandidateRef> MappedTopBoneRefs { get; init; } = Array.Empty<TransformNodeTableCandidateRef>();
 
             public JObject ToJson() => new()
@@ -3013,9 +3037,12 @@ WHERE relation = 'material.texture'
                 ["visualCellGameObjectName"] = VisualCellGameObjectName,
                 ["container"] = Container,
                 ["transformNodeCount"] = TransformNodeCount,
+                ["requiredNodeCount"] = RequiredNodeCount,
+                ["coversAvatarBoneIndexRange"] = CoversAvatarBoneIndexRange,
                 ["matchedTopBoneIndexCount"] = MatchedTopBoneIndexCount,
+                ["missingTopBoneIndexCount"] = MissingTopBoneIndexCount,
                 ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
-                ["rule"] = "只把 AvatarBoneWeights 的高频 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；这不是 joint 映射，不能写入 glTF skin。"
+                ["rule"] = "只把 AvatarBoneWeights 的高频 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；coversAvatarBoneIndexRange 只说明节点数量够覆盖最大 boneIndex，不是 joint 映射，不能写入 glTF skin。"
             };
         }
 
