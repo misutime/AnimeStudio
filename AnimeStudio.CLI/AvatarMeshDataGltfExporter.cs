@@ -323,6 +323,7 @@ namespace AnimeStudio.CLI
                     (string)assistant["gameObjectName"] ?? mesh.MeshName,
                     assistantEntry.SerializedFile,
                     rendererPathId,
+                    meshEntry.SerializedFile,
                     avatarMeshPathId,
                     assistantEntry.JsonPath,
                     meshEntry.JsonPath,
@@ -355,6 +356,11 @@ namespace AnimeStudio.CLI
             var rendererSkinBindings = LoadVisualCellRendererSkinBindings(sourceIndexPath, parts, warnings);
             var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
+            var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
+            foreach (var part in parts)
+            {
+                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile));
+            }
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
             var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -1241,6 +1247,204 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
         }
 
+        private static IReadOnlyList<TransformNodeTable> LoadTransformNodeTableCandidates(
+            string sourceIndexPath,
+            IReadOnlyCollection<VisualCellPart> parts,
+            List<string> warnings)
+        {
+            var result = new List<TransformNodeTable>();
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                return result;
+            }
+
+            var files = parts
+                .Select(x => NormalizeSerializedFileName(x.AvatarMeshFile))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (files.Length == 0)
+            {
+                return result;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                foreach (var file in files)
+                {
+                    foreach (var visualCell in LoadActorBodyVisualCellIds(connection, file))
+                    {
+                        var nodeIds = LoadTransformNodeIds(connection, file, visualCell.PathId, maxCount: 128);
+                        if (nodeIds.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var nodes = new List<TransformNodeTableNode>();
+                        for (var index = 0; index < nodeIds.Count; index++)
+                        {
+                            var transformPathId = nodeIds[index];
+                            var gameObjectPathId = ResolveGameObjectForComponent(connection, file, transformPathId);
+                            nodes.Add(new TransformNodeTableNode(
+                                index,
+                                transformPathId,
+                                gameObjectPathId,
+                                ResolveObjectName(connection, file, gameObjectPathId)));
+                        }
+
+                        result.Add(new TransformNodeTable
+                        {
+                            SerializedFile = file,
+                            VisualCellPathId = visualCell.PathId,
+                            VisualCellName = visualCell.Name,
+                            VisualCellGameObjectName = ResolveObjectName(connection, file, ResolveGameObjectForComponent(connection, file, visualCell.PathId)),
+                            Container = ResolveFirstContainer(connection, file, visualCell.PathId),
+                            TransformNodeCount = CountTransformNodes(connection, file, visualCell.PathId),
+                            Nodes = nodes,
+                        });
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
+            {
+                warnings.Add($"transformNodeTableCandidateQueryFailed:{ex.Message}");
+            }
+
+            return result
+                .OrderByDescending(x => x.TransformNodeCount)
+                .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static IEnumerable<SourceObjectLiteWithPathId> LoadActorBodyVisualCellIds(SqliteConnection connection, string serializedFile)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT path_id, name
+FROM source_objects INDEXED BY idx_source_objects_file_path
+WHERE serialized_file = $file
+  AND type = 'MonoBehaviour'
+  AND name = 'ActorBodyVisualCell'
+ORDER BY path_id;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                yield return new SourceObjectLiteWithPathId(
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1));
+            }
+        }
+
+        private static List<long> LoadTransformNodeIds(SqliteConnection connection, string serializedFile, long visualCellPathId, int maxCount)
+        {
+            var result = new List<long>();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT to_path_id
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_path_id = $pathId
+  AND relation = 'monoBehaviour.pptr'
+  AND from_file = $file
+  AND json_extract(raw_json, '$.details.path') = 'transformNodes.data'
+ORDER BY id
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", visualCellPathId);
+            command.Parameters.AddWithValue("$limit", Math.Max(1, maxCount));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(reader.GetInt64(0));
+            }
+
+            return result;
+        }
+
+        private static int CountTransformNodes(SqliteConnection connection, string serializedFile, long visualCellPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT to_path_id)
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_path_id = $pathId
+  AND relation = 'monoBehaviour.pptr'
+  AND from_file = $file
+  AND json_extract(raw_json, '$.details.path') = 'transformNodes.data';";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", visualCellPathId);
+            return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+
+        private static string ResolveFirstContainer(SqliteConnection connection, string serializedFile, long pathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT json_extract(raw_json, '$.details.container')
+FROM source_relations INDEXED BY idx_source_relations_to
+WHERE to_path_id = $pathId
+  AND relation = 'assetBundle.containerPreload'
+  AND to_file = $file
+ORDER BY id
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            return command.ExecuteScalar() as string ?? string.Empty;
+        }
+
+        private static IEnumerable<TransformNodeTableCandidate> BuildTransformNodeTableCandidates(
+            SkinSummary skin,
+            IReadOnlyList<TransformNodeTable> tables,
+            string serializedFile)
+        {
+            if (skin == null || tables == null || tables.Count == 0)
+            {
+                yield break;
+            }
+
+            var file = NormalizeSerializedFileName(serializedFile);
+            var topRefs = skin.AvatarTopBoneRefs
+                .Where(x => x.BoneIndex >= 0)
+                .Take(12)
+                .ToArray();
+            if (topRefs.Length == 0)
+            {
+                yield break;
+            }
+
+            foreach (var table in tables.Where(x => string.Equals(x.SerializedFile, file, StringComparison.OrdinalIgnoreCase)))
+            {
+                var mapped = topRefs
+                    .Where(x => x.BoneIndex >= 0 && x.BoneIndex < table.Nodes.Count)
+                    .Select(x =>
+                    {
+                        var node = table.Nodes[x.BoneIndex];
+                        return new TransformNodeTableCandidateRef(x.BoneIndex, x.WeightedRefCount, node.GameObjectName, node.GameObjectPathId, node.TransformPathId);
+                    })
+                    .Where(x => !string.IsNullOrWhiteSpace(x.GameObjectName))
+                    .ToArray();
+                if (mapped.Length == 0)
+                {
+                    continue;
+                }
+
+                yield return new TransformNodeTableCandidate
+                {
+                    Status = "indexOrderCandidateOnly",
+                    SerializedFile = table.SerializedFile,
+                    VisualCellPathId = table.VisualCellPathId,
+                    VisualCellGameObjectName = table.VisualCellGameObjectName,
+                    Container = table.Container,
+                    TransformNodeCount = table.TransformNodeCount,
+                    MatchedTopBoneIndexCount = mapped.Length,
+                    MappedTopBoneRefs = mapped,
+                };
+            }
+        }
+
         private static JObject ToReportJson(
             VisualCellPart part,
             VisualCellMaterialBinding materialBinding,
@@ -1252,6 +1456,7 @@ namespace AnimeStudio.CLI
             meshJson["gameObjectName"] = part.GameObjectName;
             meshJson["rendererFile"] = part.RendererFile;
             meshJson["rendererPathId"] = part.RendererPathId;
+            meshJson["avatarMeshFile"] = part.AvatarMeshFile;
             meshJson["avatarMeshPathId"] = part.AvatarMeshPathId;
             meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
             meshJson["materialBinding"] = materialBinding?.ToJson();
@@ -2373,6 +2578,7 @@ WHERE relation = 'material.texture'
             string GameObjectName,
             string RendererFile,
             long RendererPathId,
+            string AvatarMeshFile,
             long AvatarMeshPathId,
             string AssistantJsonPath,
             string MeshJsonPath,
@@ -2525,6 +2731,67 @@ WHERE relation = 'material.texture'
 
         private sealed record GameObjectTransformPath(string GameObjectName, string TransformPath, string Status);
 
+        private sealed record SourceObjectLiteWithPathId(long PathId, string Name);
+
+        private sealed class TransformNodeTable
+        {
+            public string SerializedFile { get; init; }
+            public long VisualCellPathId { get; init; }
+            public string VisualCellName { get; init; }
+            public string VisualCellGameObjectName { get; init; }
+            public string Container { get; init; }
+            public int TransformNodeCount { get; init; }
+            public IReadOnlyList<TransformNodeTableNode> Nodes { get; init; } = Array.Empty<TransformNodeTableNode>();
+        }
+
+        private sealed record TransformNodeTableNode(
+            int Index,
+            long TransformPathId,
+            long GameObjectPathId,
+            string GameObjectName);
+
+        private sealed class TransformNodeTableCandidate
+        {
+            public string Status { get; init; }
+            public string SerializedFile { get; init; }
+            public long VisualCellPathId { get; init; }
+            public string VisualCellGameObjectName { get; init; }
+            public string Container { get; init; }
+            public int TransformNodeCount { get; init; }
+            public int MatchedTopBoneIndexCount { get; init; }
+            public IReadOnlyList<TransformNodeTableCandidateRef> MappedTopBoneRefs { get; init; } = Array.Empty<TransformNodeTableCandidateRef>();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["serializedFile"] = SerializedFile,
+                ["visualCellPathId"] = VisualCellPathId,
+                ["visualCellGameObjectName"] = VisualCellGameObjectName,
+                ["container"] = Container,
+                ["transformNodeCount"] = TransformNodeCount,
+                ["matchedTopBoneIndexCount"] = MatchedTopBoneIndexCount,
+                ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
+                ["rule"] = "只把 AvatarBoneWeights 的高频 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；这不是 joint 映射，不能写入 glTF skin。"
+            };
+        }
+
+        private sealed record TransformNodeTableCandidateRef(
+            int BoneIndex,
+            int WeightedRefCount,
+            string GameObjectName,
+            long GameObjectPathId,
+            long TransformPathId)
+        {
+            public JObject ToJson() => new()
+            {
+                ["boneIndex"] = BoneIndex,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["candidateGameObjectName"] = GameObjectName,
+                ["candidateGameObjectPathId"] = GameObjectPathId,
+                ["candidateTransformPathId"] = TransformPathId,
+            };
+        }
+
         private sealed record ExportedAssetInfo(
             string Type,
             string Name,
@@ -2583,6 +2850,7 @@ WHERE relation = 'material.texture'
             public int AvatarInvalidRangeCount { get; set; }
             public int BindPoseCount { get; set; }
             public List<BoneRefCount> AvatarTopBoneRefs { get; } = new();
+            public List<TransformNodeTableCandidate> TransformNodeTableCandidates { get; } = new();
             public List<string> LayoutWarnings { get; } = new();
 
             public bool HasAnySkinField =>
@@ -2615,6 +2883,13 @@ WHERE relation = 'material.texture'
                     ["avatarMaxInfluenceCount"] = AvatarMaxInfluenceCount,
                     ["avatarInvalidRangeCount"] = AvatarInvalidRangeCount,
                     ["avatarTopBoneRefs"] = new JArray(AvatarTopBoneRefs.Select(x => x.ToJson())),
+                    ["transformNodeTableCandidateCount"] = TransformNodeTableCandidates.Count,
+                    ["transformNodeTableCandidates"] = new JArray(TransformNodeTableCandidates
+                        .OrderByDescending(x => x.MatchedTopBoneIndexCount)
+                        .ThenByDescending(x => x.TransformNodeCount)
+                        .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
+                        .Take(8)
+                        .Select(x => x.ToJson())),
                     ["bindPoseCount"] = BindPoseCount,
                     ["mappedJointCount"] = 0,
                     ["layoutWarnings"] = new JArray(LayoutWarnings),
