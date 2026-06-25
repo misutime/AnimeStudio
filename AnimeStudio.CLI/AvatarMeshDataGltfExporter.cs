@@ -1221,6 +1221,15 @@ namespace AnimeStudio.CLI
                 AppendKeyValue(sb, "normalTexture", material["normalTexture"] != null ? "true" : "false");
                 AppendKeyValue(sb, "needsCustomizationTint", ToText(anime?["needsCustomizationTint"]));
                 AppendKeyValue(sb, "needsCustomShaderLayer", ToText(anime?["needsCustomShaderLayer"]));
+                AppendKeyValue(sb, "unsupportedShader", ToText(anime?["unsupportedShader"]));
+                AppendKeyValue(sb, "customShaderRequired", ToText(anime?["customShaderRequired"]));
+                AppendKeyValue(sb, "layeredMaterialUnresolved", ToText(anime?["layeredMaterialUnresolved"]));
+                AppendKeyValue(sb, "PBR 预览状态", ToText(anime?["pbrPreviewStatus"]));
+                AppendKeyValue(sb, "PBR 预览置信度", ToText(anime?["pbrPreviewConfidence"]));
+                if (anime?["unresolvedShaderSteps"] is JArray unresolvedSteps && unresolvedSteps.Count > 0)
+                {
+                    AppendKeyValue(sb, "未复刻步骤", string.Join(", ", unresolvedSteps.Values<string>()));
+                }
                 AppendKeyValue(sb, "说明", ToText(anime?["note"]));
                 if (anime?["customShaderLayerSlots"] is JArray customSlots && customSlots.Count > 0)
                 {
@@ -2511,6 +2520,12 @@ namespace AnimeStudio.CLI
                         ["needsCustomizationTint"] = !usedBaseColor,
                         ["needsCustomShaderLayer"] = needsCustomShaderLayer,
                         ["customShaderLayerSlots"] = new JArray(customShaderLayerSlots.Select(x => new JValue(x))),
+                        ["unsupportedShader"] = false,
+                        ["customShaderRequired"] = false,
+                        ["layeredMaterialUnresolved"] = false,
+                        ["pbrPreviewStatus"] = "bestEffortPbrPreview",
+                        ["pbrPreviewConfidence"] = usedBaseColor ? "standard" : "partial",
+                        ["unresolvedShaderSteps"] = new JArray(),
                         ["note"] = "只把通用 base color/normal 槽写入 glTF 预览；ID、mask、SH、dir、LUT 等自定义 shader 数据只保留引用，避免伪造材质。"
                     }
                 }
@@ -2518,6 +2533,15 @@ namespace AnimeStudio.CLI
             if (needsCustomShaderLayer)
             {
                 var anime = (JObject)result["extras"]["animeStudioMaterial"];
+                anime["unsupportedShader"] = true;
+                anime["customShaderRequired"] = true;
+                anime["layeredMaterialUnresolved"] = true;
+                anime["pbrPreviewStatus"] = "bestEffortDegradedPreview";
+                anime["pbrPreviewConfidence"] = "partial";
+                anime["unresolvedShaderSteps"] = new JArray(
+                    "privateLayeredTextureComposite",
+                    "privateMaskBlend",
+                    "runtimeShaderParameterEvaluation");
                 anime["customShaderLayerRule"] = "这些 Unity 材质槽需要 Naraka shader 分层合成，例如虹膜、眉毛 decal 或皱纹层。当前 glTF 只做保守预览并保留贴图引用，不能把它当作完整 shader 复刻。";
                 anime["note"] = "通用 base color/normal 已写入 glTF 预览；customShaderLayerSlots 仍需要后续 shader/烘焙管线处理，不能硬猜合成方式。";
             }

@@ -603,9 +603,9 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 Naraka 部分材质会在 `_ReflectionTexture` 等槽里引用 `Cubemap`。这类对象如果已经能通过 Unity PPtr 解析，报告应写入 `modelConversionIssueTypes.unsupportedMaterialTexture`，但不应计入 `unresolvedModelDependencyCount`；它表示当前 glTF PBR 预览暂不消费反射 cubemap，不等于材质 CAB 或贴图依赖丢失。只有 `unresolvedMaterialTexture` 这类真正解析不到对象的记录，才作为模型依赖缺失继续追查。
 
-Naraka 自定义脸部/眼部材质若包含 `_Iris*`、`*Decal*`、`*Wrinkle*` 等 Unity 材质槽，诊断 glTF 会继续只写标准 base color / normal 预览，并在 glTF `extras.animeStudioMaterial`、`MATERIAL_REPORT.md`、`asset_catalog.jsonl` 和 `model_validation.json` 中标记 `needsCustomShaderLayer` / `needs_custom_shader_layer`。这表示贴图和材质引用已经被确定性记录，但虹膜、眉毛 decal、皱纹等 shader 分层合成尚未复刻；不要把它当作贴图丢失，也不要在未找到 shader/参数规则前硬烘焙。
+Naraka 自定义脸部/眼部材质若包含 `_Iris*`、`*Decal*`、`*Wrinkle*` 等 Unity 材质槽，诊断 glTF 会继续只写标准 base color / normal 降级预览，并在 glTF `extras.animeStudioMaterial`、`MATERIAL_REPORT.md`、`asset_catalog.jsonl`、`model_validation.json` 和 SQLite `material_sidecars` 中标记 `needsCustomShaderLayer`、`unsupportedShader`、`customShaderRequired`、`layeredMaterialUnresolved` / `needs_custom_shader_layer`。这表示贴图和材质引用已经被确定性记录，但虹膜、眉毛 decal、皱纹等 shader 分层合成尚未复刻；不要把它当作贴图丢失，也不要在未找到 shader/参数规则前硬烘焙。
 
-重建 `library_index.db` 后，`assets.material_needs_custom_shader_layer=1` 可直接筛出这类材质预览未完整的模型；动画门禁会使用 `material_custom_shader_layer_not_ready`，和缺少 customization/tint 配色的 `material_customization_tint_not_ready` 分开记录。
+重建 `library_index.db` 后，`assets.material_needs_custom_shader_layer=1` 可直接筛出这类材质预览未完整的模型；`material_sidecars.layered_material_unresolved=1` 可定位到具体材质、关键贴图槽、已导出贴图、未复刻步骤、PBR 降级预览状态和置信度。动画门禁会使用 `material_custom_shader_layer_not_ready`，和缺少 customization/tint 配色的 `material_customization_tint_not_ready` 分开记录。
 
 `assets/res/prefab/actor_visual_part/...` 这类 Naraka 模块化角色 body/base 可以导出为可用身体或服装部件，但如果当前 Library 没有同时导出可组装的 face/hair 模块，catalog 会标记 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，并在动画门禁中写入 `modular_character_incomplete`。这不是模型导出失败；它是在说明该 glTF 不能单独当完整角色或生产动画 smoke 样本。需要完整角色验收时，应继续通过 `character_assemblies.json` 或 Naraka 自定义 `ActorBodyVisualCell` / `AvatarPartDataAsset` 关系找到确定性 face、hair、accessory 组合。
 

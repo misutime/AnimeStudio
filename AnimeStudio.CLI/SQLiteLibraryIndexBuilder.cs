@@ -422,6 +422,26 @@ CREATE TABLE material_sidecars (
     asset_id INTEGER,
     material_output TEXT,
     material_name TEXT,
+    name TEXT,
+    relative_path TEXT,
+    size_bytes INTEGER,
+    texture_slot_count INTEGER,
+    color_count INTEGER,
+    scalar_count INTEGER,
+    switch_count INTEGER,
+    blend_mode TEXT,
+    shading_model TEXT,
+    source_kind TEXT,
+    material_status TEXT,
+    unsupported_shader INTEGER,
+    custom_shader_required INTEGER,
+    layered_material_unresolved INTEGER,
+    shader_name TEXT,
+    key_texture_slots_json TEXT,
+    exported_textures_json TEXT,
+    unresolved_steps_json TEXT,
+    pbr_preview_status TEXT,
+    pbr_preview_confidence TEXT,
     raw_json TEXT
 );
 CREATE TABLE library_reports (
@@ -476,6 +496,8 @@ CREATE TABLE library_reports (
                 "CREATE INDEX idx_texture_links_sha256 ON texture_links(sha256);",
                 "CREATE INDEX idx_material_sidecars_asset ON material_sidecars(asset_id);",
                 "CREATE INDEX idx_material_sidecars_output ON material_sidecars(material_output);",
+                "CREATE INDEX idx_material_sidecars_status ON material_sidecars(material_status);",
+                "CREATE INDEX idx_material_sidecars_custom_shader ON material_sidecars(custom_shader_required, layered_material_unresolved);",
                 "CREATE INDEX idx_export_manifest_output ON export_manifest(output);",
                 "CREATE INDEX idx_files_kind ON files(kind);",
             };
@@ -1097,9 +1119,34 @@ WHERE kind='Model'
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = @"
-INSERT INTO material_sidecars(asset_id, material_output, material_name, raw_json)
-VALUES ($assetId, $materialOutput, $materialName, $rawJson);";
-            var p = AddParameters(insert, "$assetId", "$materialOutput", "$materialName", "$rawJson");
+INSERT INTO material_sidecars(asset_id, material_output, material_name, name, relative_path, size_bytes, texture_slot_count, color_count, scalar_count, switch_count, blend_mode, shading_model, source_kind, material_status, unsupported_shader, custom_shader_required, layered_material_unresolved, shader_name, key_texture_slots_json, exported_textures_json, unresolved_steps_json, pbr_preview_status, pbr_preview_confidence, raw_json)
+VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeBytes, $textureSlotCount, $colorCount, $scalarCount, $switchCount, $blendMode, $shadingModel, $sourceKind, $materialStatus, $unsupportedShader, $customShaderRequired, $layeredMaterialUnresolved, $shaderName, $keyTextureSlotsJson, $exportedTexturesJson, $unresolvedStepsJson, $pbrPreviewStatus, $pbrPreviewConfidence, $rawJson);";
+            var p = AddParameters(
+                insert,
+                "$assetId",
+                "$materialOutput",
+                "$materialName",
+                "$name",
+                "$relativePath",
+                "$sizeBytes",
+                "$textureSlotCount",
+                "$colorCount",
+                "$scalarCount",
+                "$switchCount",
+                "$blendMode",
+                "$shadingModel",
+                "$sourceKind",
+                "$materialStatus",
+                "$unsupportedShader",
+                "$customShaderRequired",
+                "$layeredMaterialUnresolved",
+                "$shaderName",
+                "$keyTextureSlotsJson",
+                "$exportedTexturesJson",
+                "$unresolvedStepsJson",
+                "$pbrPreviewStatus",
+                "$pbrPreviewConfidence",
+                "$rawJson");
 
             long count = 0;
             foreach (var model in models)
@@ -1123,6 +1170,26 @@ VALUES ($assetId, $materialOutput, $materialName, $rawJson);";
                     Set(p, "$assetId", model.Id);
                     Set(p, "$materialOutput", sidecar.Output);
                     Set(p, "$materialName", sidecar.Name);
+                    Set(p, "$name", sidecar.Name);
+                    Set(p, "$relativePath", sidecar.RelativePath);
+                    Set(p, "$sizeBytes", sidecar.SizeBytes);
+                    Set(p, "$textureSlotCount", sidecar.TextureSlotCount);
+                    Set(p, "$colorCount", sidecar.ColorCount);
+                    Set(p, "$scalarCount", sidecar.ScalarCount);
+                    Set(p, "$switchCount", sidecar.SwitchCount);
+                    Set(p, "$blendMode", sidecar.BlendMode);
+                    Set(p, "$shadingModel", sidecar.ShadingModel);
+                    Set(p, "$sourceKind", sidecar.SourceKind);
+                    Set(p, "$materialStatus", sidecar.MaterialStatus);
+                    Set(p, "$unsupportedShader", sidecar.UnsupportedShader);
+                    Set(p, "$customShaderRequired", sidecar.CustomShaderRequired);
+                    Set(p, "$layeredMaterialUnresolved", sidecar.LayeredMaterialUnresolved);
+                    Set(p, "$shaderName", sidecar.ShaderName);
+                    Set(p, "$keyTextureSlotsJson", sidecar.KeyTextureSlotsJson);
+                    Set(p, "$exportedTexturesJson", sidecar.ExportedTexturesJson);
+                    Set(p, "$unresolvedStepsJson", sidecar.UnresolvedStepsJson);
+                    Set(p, "$pbrPreviewStatus", sidecar.PbrPreviewStatus);
+                    Set(p, "$pbrPreviewConfidence", sidecar.PbrPreviewConfidence);
                     Set(p, "$rawJson", sidecar.RawJson.ToString(Formatting.None));
                     insert.ExecuteNonQuery();
                     count++;
@@ -1145,16 +1212,17 @@ VALUES ($assetId, $materialOutput, $materialName, $rawJson);";
                 yield break;
             }
 
-            var materialNames = gltf["materials"]?
-                .OfType<JObject>()
+            var materials = gltf["materials"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var materialNames = materials
                 .Select(x => S(x, "name"))
                 .Where(x => !string.IsNullOrWhiteSpace(x))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (materialNames.Count == 0)
             {
                 yield break;
             }
 
+            var jsonSidecars = new Dictionary<string, (string Path, JObject Json)>(StringComparer.OrdinalIgnoreCase);
             foreach (var file in Directory.EnumerateFiles(modelDir, "*.json", SearchOption.TopDirectoryOnly))
             {
                 JObject sidecar;
@@ -1179,17 +1247,177 @@ VALUES ($assetId, $materialOutput, $materialName, $rawJson);";
                     continue;
                 }
 
-                var output = MakeRelative(root, file);
-                var raw = new JObject
-                {
-                    ["materialOutput"] = output,
-                    ["materialName"] = materialName,
-                    ["modelGltf"] = MakeRelative(root, gltfPath),
-                    ["unityMaterial"] = sidecar,
-                    ["rule"] = "只索引模型 glTF 同目录、名称命中 glTF material、且包含 Unity Material 结构的 JSON；不按任意文件名猜材质关系。"
-                };
+                jsonSidecars.TryAdd(materialName, (file, sidecar));
+            }
 
-                yield return new MaterialSidecarRow(output, materialName, raw);
+            for (var index = 0; index < materials.Length; index++)
+            {
+                var material = materials[index];
+                var materialName = S(material, "name") ?? $"material_{index.ToString(CultureInfo.InvariantCulture)}";
+                jsonSidecars.TryGetValue(materialName, out var sidecar);
+                if (sidecar.Json == null && TryLoadReferencedUnityMaterial(material, out var referencedMaterialPath, out var referencedMaterialJson))
+                {
+                    sidecar = (referencedMaterialPath, referencedMaterialJson);
+                }
+
+                yield return BuildGltfMaterialSidecarRow(root, gltfPath, index, material, sidecar.Path, sidecar.Json);
+            }
+        }
+
+        private static MaterialSidecarRow BuildGltfMaterialSidecarRow(
+            string root,
+            string gltfPath,
+            int materialIndex,
+            JObject material,
+            string unityMaterialPath,
+            JObject unityMaterial)
+        {
+            var materialName = S(material, "name") ?? $"material_{materialIndex.ToString(CultureInfo.InvariantCulture)}";
+            var modelGltf = MakeRelative(root, gltfPath);
+            var hasPhysicalSidecar = !string.IsNullOrWhiteSpace(unityMaterialPath)
+                && File.Exists(unityMaterialPath)
+                && IsPathUnderRoot(root, unityMaterialPath);
+            var output = hasPhysicalSidecar
+                ? MakeRelative(root, unityMaterialPath)
+                : $"{modelGltf}#materials/{materialIndex.ToString(CultureInfo.InvariantCulture)}";
+            var anime = material["extras"]?["animeStudioMaterial"] as JObject;
+            var textureSlots = anime?["textureSlots"] as JArray ?? new JArray();
+            var customSlots = anime?["customShaderLayerSlots"] as JArray ?? new JArray();
+            var needsCustomShader = IsTrue(anime, "needsCustomShaderLayer") || customSlots.Count > 0;
+            var needsTint = IsTrue(anime, "needsCustomizationTint");
+            var unresolvedSteps = anime?["unresolvedShaderSteps"] as JArray
+                ?? (needsCustomShader
+                    ? new JArray("privateLayeredTextureComposite", "privateMaskBlend", "runtimeShaderParameterEvaluation")
+                    : new JArray());
+            var keyTextureSlots = customSlots.Count > 0
+                ? customSlots
+                : new JArray(textureSlots.OfType<JObject>()
+                    .Select(x => (string)x["slot"])
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(x => new JValue(x)));
+            var exportedTextures = new JArray(textureSlots.OfType<JObject>()
+                .Where(x => !string.IsNullOrWhiteSpace((string)x["uri"]))
+                .Select(x => new JObject
+                {
+                    ["slot"] = x["slot"]?.DeepClone(),
+                    ["uri"] = x["uri"]?.DeepClone(),
+                    ["textureName"] = x["resolvedTextureName"]?.DeepClone() ?? x["textureName"]?.DeepClone(),
+                    ["previewUsage"] = x["previewUsage"]?.DeepClone()
+                }));
+            var materialStatus = needsCustomShader
+                ? "layeredMaterialUnresolved"
+                : needsTint
+                    ? "needsCustomizationTint"
+                    : "bestEffortPbrPreview";
+            var shaderName = ReadUnityShaderName(unityMaterial);
+            var raw = new JObject
+            {
+                ["materialOutput"] = output,
+                ["materialName"] = materialName,
+                ["modelGltf"] = modelGltf,
+                ["gltfMaterialIndex"] = materialIndex,
+                ["sourceKind"] = hasPhysicalSidecar ? "gltfMaterialWithUnityMaterialJson" : "gltfMaterialExtras",
+                ["unityMaterialPath"] = string.IsNullOrWhiteSpace(unityMaterialPath) ? null : unityMaterialPath,
+                ["materialStatus"] = materialStatus,
+                ["unsupportedShader"] = needsCustomShader,
+                ["customShaderRequired"] = needsCustomShader,
+                ["layeredMaterialUnresolved"] = needsCustomShader,
+                ["shaderName"] = string.IsNullOrWhiteSpace(shaderName) ? null : shaderName,
+                ["keyTextureSlots"] = keyTextureSlots.DeepClone(),
+                ["exportedTextures"] = exportedTextures,
+                ["unresolvedShaderSteps"] = unresolvedSteps.DeepClone(),
+                ["pbrPreviewStatus"] = S(anime, "pbrPreviewStatus") ?? (needsCustomShader ? "bestEffortDegradedPreview" : "bestEffortPbrPreview"),
+                ["pbrPreviewConfidence"] = S(anime, "pbrPreviewConfidence") ?? (needsCustomShader ? "partial" : "standard"),
+                ["gltfMaterial"] = material.DeepClone(),
+                ["animeStudioMaterial"] = anime?.DeepClone(),
+                ["unityMaterial"] = unityMaterial?.DeepClone(),
+                ["rule"] = "优先从 glTF material extras 建立材质摘要；同名或显式引用的 Unity Material JSON 只作为原始证据合并，不按文件名猜新关系。"
+            };
+
+            return new MaterialSidecarRow(
+                output,
+                materialName,
+                output,
+                hasPhysicalSidecar ? new FileInfo(unityMaterialPath).Length : null,
+                textureSlots.Count,
+                CountSavedPropertyObject(unityMaterial, "m_Colors"),
+                CountSavedPropertyObject(unityMaterial, "m_Floats"),
+                CountSavedPropertyObject(unityMaterial, "m_Ints"),
+                null,
+                null,
+                hasPhysicalSidecar ? "gltfMaterialWithUnityMaterialJson" : "gltfMaterialExtras",
+                materialStatus,
+                needsCustomShader ? 1 : 0,
+                needsCustomShader ? 1 : 0,
+                needsCustomShader ? 1 : 0,
+                shaderName,
+                keyTextureSlots.ToString(Formatting.None),
+                exportedTextures.ToString(Formatting.None),
+                unresolvedSteps.ToString(Formatting.None),
+                S(anime, "pbrPreviewStatus") ?? (needsCustomShader ? "bestEffortDegradedPreview" : "bestEffortPbrPreview"),
+                S(anime, "pbrPreviewConfidence") ?? (needsCustomShader ? "partial" : "standard"),
+                raw);
+        }
+
+        private static bool TryLoadReferencedUnityMaterial(JObject material, out string path, out JObject json)
+        {
+            path = null;
+            json = null;
+            var materialJsonPath = S(material["extras"]?["animeStudioMaterial"] as JObject, "materialJson");
+            if (string.IsNullOrWhiteSpace(materialJsonPath) || !File.Exists(materialJsonPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var candidate = JObject.Parse(File.ReadAllText(materialJsonPath));
+                if (!LooksLikeUnityMaterialSidecar(candidate))
+                {
+                    return false;
+                }
+
+                path = materialJsonPath;
+                json = candidate;
+                return true;
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Skipping referenced Unity material sidecar: {materialJsonPath}: {e.Message}");
+                return false;
+            }
+        }
+
+        private static string ReadUnityShaderName(JObject unityMaterial)
+        {
+            var shader = unityMaterial?["m_Shader"] as JObject ?? unityMaterial?["unityMaterial"]?["m_Shader"] as JObject;
+            return S(shader, "Name") ?? S(shader, "m_Name");
+        }
+
+        private static int? CountSavedPropertyObject(JObject unityMaterial, string name)
+        {
+            var saved = unityMaterial?["m_SavedProperties"] as JObject
+                ?? unityMaterial?["unityMaterial"]?["m_SavedProperties"] as JObject;
+            return saved?[name] is JObject obj ? obj.Count : null;
+        }
+
+        private static bool IsPathUnderRoot(string root, string path)
+        {
+            if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            try
+            {
+                var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                var fullPath = Path.GetFullPath(path);
+                return fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception e) when (e is ArgumentException || e is NotSupportedException || e is PathTooLongException)
+            {
+                return false;
             }
         }
 
@@ -6724,6 +6952,25 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
         private sealed record MaterialSidecarRow(
             string Output,
             string Name,
+            string RelativePath,
+            long? SizeBytes,
+            int? TextureSlotCount,
+            int? ColorCount,
+            int? ScalarCount,
+            int? SwitchCount,
+            string BlendMode,
+            string ShadingModel,
+            string SourceKind,
+            string MaterialStatus,
+            int? UnsupportedShader,
+            int? CustomShaderRequired,
+            int? LayeredMaterialUnresolved,
+            string ShaderName,
+            string KeyTextureSlotsJson,
+            string ExportedTexturesJson,
+            string UnresolvedStepsJson,
+            string PbrPreviewStatus,
+            string PbrPreviewConfidence,
             JObject RawJson);
 
         private static string ClassifyFile(string root, string file)
