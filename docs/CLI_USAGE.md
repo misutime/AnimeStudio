@@ -575,6 +575,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 这个样本用于验证标准模型链路：`model_validation.json` 应显示 `Status=ok`、`HasCompleteSkinBinding=true`、`PrimitivesWithMaterial=PrimitiveCount`，`asset_library.json` 应声明 `sourceGame=Naraka` 且 `capabilities.models=true`。glTF validator 仍可能输出 `UNUSED_MESH_TANGENT`、`NODE_EMPTY` 或未使用 texture 这类 info；它们不是 error/warning，但如果截图里出现白模、缺件、破面或材质错绑，仍必须按模型阶段失败继续追源关系。
 
+Naraka 部分材质会在 `_ReflectionTexture` 等槽里引用 `Cubemap`。这类对象如果已经能通过 Unity PPtr 解析，报告应写入 `modelConversionIssueTypes.unsupportedMaterialTexture`，但不应计入 `unresolvedModelDependencyCount`；它表示当前 glTF PBR 预览暂不消费反射 cubemap，不等于材质 CAB 或贴图依赖丢失。只有 `unresolvedMaterialTexture` 这类真正解析不到对象的记录，才作为模型依赖缺失继续追查。
+
 `--names` 也可以传纯数字 PathID 做精确查询，报告会写 `selectorQueryMode=targeted_exact_path_id` 和 `selectorExactPathId`。Endfield 这类游戏常有大量同名 `GameObject` 变体：有的是真实可见模型，有的只有 Animator/Avatar，有的只用于剧情或 UI。排查动画关系时应优先用 `source_model_candidates.json` 里通过模型门禁的具体 PathID，再用同一个 PathID 查询 `--list_source_model_animations`，避免同名变体把模型质量和动画关系混在一起。
 
 `selectorQueryMode=targeted_exact_name` / `targeted_exact_path_id` 默认不再沿 `Transform.child` 子树做深层递归。Endfield 大源索引里同名 actor 变体很多，某些根节点层级很深或只是配置/场景实例，默认递归会让交互式候选查询卡住。候选报告现在优先快速返回 Animator、Avatar、Controller 和直接 SkinnedRenderer 线索；是否真的有完整 Mesh/Material/Texture/skin，必须通过实际 Library 导出、`model_validation.json`、glTF validator 和清晰截图确认。

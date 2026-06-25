@@ -990,19 +990,29 @@ namespace AnimeStudio
                     {
                         if (!texEnv.Value.m_Texture.TryGet<Texture2D>(out var m_Texture2D)) //TODO other Texture
                         {
-                        if (!texEnv.Value.m_Texture.IsNull)
-                        {
-                            RecordConversionIssue(
-                                "unresolvedMaterialTexture",
-                                mat.m_Name,
-                                mat.assetsFile?.originalPath ?? mat.assetsFile?.fileName,
-                                GetExternalFileName(texEnv.Value.m_Texture.m_FileID, mat.assetsFile),
-                                texEnv.Value.m_Texture.m_PathID,
-                                texEnv.Key);
-                            Logger.Warning($"Unable to resolve texture {texEnv.Key} for material {mat.m_Name}.");
+                            if (!texEnv.Value.m_Texture.IsNull)
+                            {
+                                var kind = "unresolvedMaterialTexture";
+                                var detail = texEnv.Key;
+                                if (texEnv.Value.m_Texture.TryGet<AnimeStudio.Object>(out var resolvedTexture))
+                                {
+                                    // Cubemap / Texture3D / Texture2DArray 是已解析 Unity 贴图，
+                                    // 只是当前 glTF PBR 预览不能直接消费，不能误报成缺依赖。
+                                    kind = "unsupportedMaterialTexture";
+                                    detail = $"{texEnv.Key}:{resolvedTexture.type}";
+                                }
+
+                                RecordConversionIssue(
+                                    kind,
+                                    mat.m_Name,
+                                    mat.assetsFile?.originalPath ?? mat.assetsFile?.fileName,
+                                    GetExternalFileName(texEnv.Value.m_Texture.m_FileID, mat.assetsFile),
+                                    texEnv.Value.m_Texture.m_PathID,
+                                    detail);
+                                Logger.Warning($"Unable to use texture {texEnv.Key} for material {mat.m_Name}: {kind}.");
+                            }
+                            continue;
                         }
-                        continue;
-                    }
 
                         var texture = new ImportedMaterialTexture();
                         iMat.Textures.Add(texture);

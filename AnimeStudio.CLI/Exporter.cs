@@ -2811,7 +2811,15 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             var conversionIssues = imported is ModelConverter modelConverter
                 ? modelConverter.ConversionIssues ?? new List<ModelConversionIssue>()
                 : new List<ModelConversionIssue>();
+            var unresolvedConversionIssues = conversionIssues
+                .Where(IsUnresolvedModelDependencyIssue)
+                .ToList();
             var conversionIssueTypes = conversionIssues
+                .GroupBy(x => x.Kind ?? "unknown", StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(x => x.Count())
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+            var unresolvedConversionIssueTypes = unresolvedConversionIssues
                 .GroupBy(x => x.Kind ?? "unknown", StringComparer.OrdinalIgnoreCase)
                 .OrderByDescending(x => x.Count())
                 .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
@@ -2848,10 +2856,14 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialProbableSimulationHelperPrimitiveCount = missingMaterialEvidence?.ProbableSimulationHelperCount ?? 0,
                 materialHiddenSimulationHelperPrimitiveCount = hiddenSimulationHelperPrimitiveCount,
                 materialMissingRendererPrimitiveUnityEvidence = missingMaterialEvidence?.Evidence,
-                unresolvedModelDependencyCount = conversionIssues.Count,
-                unresolvedModelDependencyTypes = conversionIssueTypes,
-                unresolvedModelDependencies = conversionIssues.Take(64).ToArray(),
-                unresolvedModelDependenciesTruncated = conversionIssues.Count > 64,
+                modelConversionIssueCount = conversionIssues.Count,
+                modelConversionIssueTypes = conversionIssueTypes,
+                modelConversionIssues = conversionIssues.Take(64).ToArray(),
+                modelConversionIssuesTruncated = conversionIssues.Count > 64,
+                unresolvedModelDependencyCount = unresolvedConversionIssues.Count,
+                unresolvedModelDependencyTypes = unresolvedConversionIssueTypes,
+                unresolvedModelDependencies = unresolvedConversionIssues.Take(64).ToArray(),
+                unresolvedModelDependenciesTruncated = unresolvedConversionIssues.Count > 64,
                 animationCount = embeddedAnimationCount,
                 embeddedAnimationCount,
                 importedAnimationListCount,
@@ -2869,6 +2881,12 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
+        }
+
+        private static bool IsUnresolvedModelDependencyIssue(ModelConversionIssue issue)
+        {
+            return !string.IsNullOrWhiteSpace(issue?.Kind)
+                && issue.Kind.StartsWith("unresolved", StringComparison.OrdinalIgnoreCase);
         }
 
         private static MissingMaterialUnityEvidenceSummary BuildMissingMaterialUnityEvidence(
