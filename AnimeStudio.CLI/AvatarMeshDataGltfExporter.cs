@@ -618,6 +618,8 @@ namespace AnimeStudio.CLI
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
                 ["rendererSkinJsonStatus"] = SummarizeRendererSkinJsonStatus(rendererSkinBindings.Values),
                 ["rendererSkinJsonEmptyBoneRendererCount"] = rendererSkinBindings.Values.Count(x => string.Equals(x.RendererJsonStatus, "skinnedRendererJsonEmptyBones", StringComparison.OrdinalIgnoreCase)),
+                ["rendererBonesAnimSkinStatus"] = SummarizeRendererBonesAnimSkinStatus(parts, rendererSkinBindings),
+                ["rendererBonesAnimSkinExactPartCount"] = CountRendererBonesAnimSkinExactParts(parts, rendererSkinBindings),
                 ["previewMaterialSource"] = gltfMaterials.Count > 1 && !string.IsNullOrWhiteSpace(previewMaterialSource) ? Path.GetFullPath(previewMaterialSource) : null,
                 ["avatarMeshExplicitReferenceStatus"] = SummarizeAvatarMeshRelationStatus(avatarMeshRelationEvidence.Values),
                 ["avatarMeshRelationCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.RelationCount),
@@ -4030,11 +4032,128 @@ LIMIT 1;";
             meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
             meshJson["materialBinding"] = materialBinding?.ToJson();
             meshJson["rendererSkinBinding"] = rendererSkinBinding?.ToJson();
+            meshJson["rendererBonesAnimSkinEvidence"] = BuildRendererBonesAnimSkinEvidence(part, rendererSkinBinding).ToJson();
             meshJson["avatarMeshDataRelations"] = avatarMeshRelations?.ToJson();
             meshJson["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence);
             meshJson["avatarPartDataEvidence"] = new JArray((avatarPartDataEvidence ?? Array.Empty<AvatarPartDataEvidence>()).Select(x => x.ToJson()));
             meshJson["headCollisionData"] = headCollisionEvidence?.ToJson();
             return meshJson;
+        }
+
+        private static string SummarizeRendererBonesAnimSkinStatus(
+            IReadOnlyCollection<VisualCellPart> parts,
+            IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings)
+        {
+            var evidences = BuildRendererBonesAnimSkinEvidences(parts, rendererSkinBindings).ToArray();
+            if (evidences.Length == 0)
+            {
+                return "missingParts";
+            }
+            if (evidences.Any(x => string.Equals(x.Status, "rendererBonesMatchAnimSkinBindPoseSlots", StringComparison.OrdinalIgnoreCase)))
+            {
+                return evidences.All(x => string.Equals(x.Status, "rendererBonesMatchAnimSkinBindPoseSlots", StringComparison.OrdinalIgnoreCase))
+                    ? "allPartsRendererBonesMatchAnimSkinBindPoseSlots"
+                    : "somePartsRendererBonesMatchAnimSkinBindPoseSlots";
+            }
+            if (evidences.Any(x => x.RendererBoneCount > 0))
+            {
+                return "rendererBonesPresentButDoNotMatchAnimSkin";
+            }
+            return "rendererBonesMissing";
+        }
+
+        private static int CountRendererBonesAnimSkinExactParts(
+            IReadOnlyCollection<VisualCellPart> parts,
+            IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings)
+        {
+            return BuildRendererBonesAnimSkinEvidences(parts, rendererSkinBindings)
+                .Count(x => string.Equals(x.Status, "rendererBonesMatchAnimSkinBindPoseSlots", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static IEnumerable<RendererBonesAnimSkinEvidence> BuildRendererBonesAnimSkinEvidences(
+            IReadOnlyCollection<VisualCellPart> parts,
+            IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings)
+        {
+            foreach (var part in parts ?? Array.Empty<VisualCellPart>())
+            {
+                VisualCellRendererSkinBinding binding = null;
+                rendererSkinBindings?.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out binding);
+                yield return BuildRendererBonesAnimSkinEvidence(part, binding);
+            }
+        }
+
+        private static RendererBonesAnimSkinEvidence BuildRendererBonesAnimSkinEvidence(
+            VisualCellPart part,
+            VisualCellRendererSkinBinding rendererSkinBinding)
+        {
+            // Renderer.bones 是 Unity 显式关系；这里先只和 Naraka 局部 m_AnimSkinData/m_BindPoses 槽位对齐，
+            // 不直接写 skin，避免把尚未视觉验证的矩阵空间误当成生产绑定。
+            var evidence = new RendererBonesAnimSkinEvidence
+            {
+                Status = "missingRendererSkinBinding",
+                RendererPathId = part?.RendererPathId,
+                AvatarMeshPathId = part?.AvatarMeshPathId,
+                MeshName = part?.Mesh?.MeshName,
+            };
+            var skin = part?.Mesh?.Skin;
+            if (rendererSkinBinding == null)
+            {
+                return evidence;
+            }
+
+            var boneTargets = GetRendererBoneTargets(rendererSkinBinding).ToArray();
+            evidence.RendererBoneCount = boneTargets.Length;
+            evidence.RendererJsonBoneCount = rendererSkinBinding.RendererJsonBoneCount;
+            evidence.AnimSkinUniqueBoneCount = skin?.AnimSkinUniqueBoneCount ?? 0;
+            evidence.AnimSkinMaxBoneIndex = skin?.AnimSkinMaxBoneIndex;
+            evidence.BindPoseCount = skin?.BindPoseCount ?? 0;
+            evidence.AnimSkinIndicesFitBindPoseSlots = skin?.AnimSkinIndicesFitBindPoseSlots ?? false;
+
+            var refCounts = (skin?.AnimSkinBoneRefs ?? new List<BoneRefCount>())
+                .ToDictionary(x => x.BoneIndex, x => x.WeightedRefCount);
+            for (var slot = 0; slot < Math.Min(32, boneTargets.Length); slot++)
+            {
+                refCounts.TryGetValue(slot, out var weightedRefCount);
+                evidence.SlotMappings.Add(new RendererBonesAnimSkinSlot(
+                    slot,
+                    weightedRefCount,
+                    boneTargets[slot].FileId,
+                    boneTargets[slot].PathId,
+                    boneTargets[slot].TypeHint));
+            }
+
+            if (boneTargets.Length == 0)
+            {
+                evidence.Status = "rendererBonesMissing";
+            }
+            else if (skin == null || !skin.HasAnySkinField)
+            {
+                evidence.Status = "sourceSkinMissing";
+            }
+            else if (skin.AnimSkinDataCount <= 0)
+            {
+                evidence.Status = "animSkinDataMissing";
+            }
+            else if (!skin.AnimSkinIndicesFitBindPoseSlots)
+            {
+                evidence.Status = "animSkinDoesNotFitBindPoseSlots";
+            }
+            else if (boneTargets.Length == skin.BindPoseCount
+                && skin.AnimSkinMaxBoneIndex.HasValue
+                && skin.AnimSkinMaxBoneIndex.Value < boneTargets.Length)
+            {
+                evidence.Status = "rendererBonesMatchAnimSkinBindPoseSlots";
+            }
+            else if (boneTargets.Length == skin.BindPoseCount)
+            {
+                evidence.Status = "rendererBoneCountMatchesBindPoseOnly";
+            }
+            else
+            {
+                evidence.Status = "rendererBoneCountMismatch";
+            }
+
+            return evidence;
         }
 
         private static HairCustomizationTintEvidence LoadHairCustomizationTintEvidence(
@@ -4915,6 +5034,28 @@ LIMIT 1;";
             catch (JsonException)
             {
                 return null;
+            }
+        }
+
+        private static IEnumerable<RendererBoneTarget> GetRendererBoneTargets(VisualCellRendererSkinBinding binding)
+        {
+            if (binding?.BoneTargets == null)
+            {
+                yield break;
+            }
+
+            foreach (var item in binding.BoneTargets.OfType<JObject>())
+            {
+                var pathId = ReadPPtrPathId(item);
+                if (pathId == 0)
+                {
+                    continue;
+                }
+
+                yield return new RendererBoneTarget(
+                    item["fileId"]?.Value<int?>() ?? item["m_FileID"]?.Value<int?>() ?? 0,
+                    pathId,
+                    (string)item["typeHint"]);
             }
         }
 
@@ -7390,6 +7531,56 @@ LIMIT 1;";
                 };
             }
         }
+
+        private sealed class RendererBonesAnimSkinEvidence
+        {
+            public string Status { get; set; }
+            public long? RendererPathId { get; set; }
+            public long? AvatarMeshPathId { get; set; }
+            public string MeshName { get; set; }
+            public int RendererBoneCount { get; set; }
+            public int? RendererJsonBoneCount { get; set; }
+            public int AnimSkinUniqueBoneCount { get; set; }
+            public int? AnimSkinMaxBoneIndex { get; set; }
+            public int BindPoseCount { get; set; }
+            public bool AnimSkinIndicesFitBindPoseSlots { get; set; }
+            public List<RendererBonesAnimSkinSlot> SlotMappings { get; } = new();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["rendererPathId"] = RendererPathId,
+                ["avatarMeshPathId"] = AvatarMeshPathId,
+                ["meshName"] = MeshName,
+                ["rendererBoneCount"] = RendererBoneCount,
+                ["rendererJsonBoneCount"] = RendererJsonBoneCount,
+                ["animSkinUniqueBoneCount"] = AnimSkinUniqueBoneCount,
+                ["animSkinMaxBoneIndex"] = AnimSkinMaxBoneIndex,
+                ["bindPoseCount"] = BindPoseCount,
+                ["animSkinIndicesFitBindPoseSlots"] = AnimSkinIndicesFitBindPoseSlots,
+                ["slotMappings"] = new JArray(SlotMappings.Select(x => x.ToJson())),
+                ["rule"] = "这是 Naraka 自定义网格的局部诊断：SkinnedMeshRenderer.bones 是 Unity 显式关系，m_AnimSkinData.boneIndex 和 m_BindPoses 是 AvatarMeshDataAsset 内部槽位。三者数量和范围一致时，只说明可优先研究这条 Renderer-bones 局部 skin 链路；在 inverse bind matrix 空间和视觉验收完成前，仍不能放行生产 skin 或动画 smoke。"
+            };
+        }
+
+        private sealed record RendererBonesAnimSkinSlot(
+            int Slot,
+            int WeightedRefCount,
+            int RendererBoneFileId,
+            long RendererBonePathId,
+            string RendererBoneTypeHint)
+        {
+            public JObject ToJson() => new()
+            {
+                ["slot"] = Slot,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["rendererBoneFileId"] = RendererBoneFileId,
+                ["rendererBonePathId"] = RendererBonePathId,
+                ["rendererBoneTypeHint"] = RendererBoneTypeHint,
+            };
+        }
+
+        private sealed record RendererBoneTarget(int FileId, long PathId, string TypeHint);
 
         private sealed class AvatarMeshDataRelationEvidence
         {
