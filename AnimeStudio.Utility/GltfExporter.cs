@@ -721,6 +721,7 @@ namespace AnimeStudio
                 ["roughnessFactor"] = 0.8f,
             };
             Dictionary<string, object> normalTexture = null;
+            var skippedNormalTextures = new List<Dictionary<string, object>>();
             var unityTextures = new List<Dictionary<string, object>>();
             var baseColorTextureIndex = -1;
             var colorMaskTextureIndex = -1;
@@ -747,7 +748,22 @@ namespace AnimeStudio
                 }
                 else if (textureRef.Dest == 1 || textureRef.Dest == 3)
                 {
-                    normalTexture ??= new Dictionary<string, object> { ["index"] = textureIndex };
+                    if (normalTexture == null)
+                    {
+                        if (LooksLikePackedUnityNormal(textureIndex, textureRef.Slot, out var reason))
+                        {
+                            skippedNormalTextures.Add(new Dictionary<string, object>
+                            {
+                                ["slot"] = textureRef.Slot ?? string.Empty,
+                                ["texture"] = textureIndex,
+                                ["reason"] = reason,
+                            });
+                        }
+                        else
+                        {
+                            normalTexture = new Dictionary<string, object> { ["index"] = textureIndex };
+                        }
+                    }
                 }
                 else if (IsColorMaskSlot(textureRef.Slot))
                 {
@@ -781,6 +797,16 @@ namespace AnimeStudio
                 extras["unityTextures"] = unityTextures;
                 extras["unityMaterial"] = BuildUnityMaterialExtra(material, unityTextures);
             }
+            if (skippedNormalTextures.Count > 0)
+            {
+                var extras = EnsureMaterialExtras(gltfMaterial);
+                extras["animeStudioNormalMap"] = new Dictionary<string, object>
+                {
+                    ["status"] = "packedNormalSkipped",
+                    ["rule"] = "Unity/自定义 shader 的 packed normal 不能直接作为 glTF RGB normal 使用；贴图仍保留在 unityMaterial.textures 中，等待后续明确解包。",
+                    ["textures"] = skippedNormalTextures,
+                };
+            }
             ApplyColorMaskTintPipeline(
                 material,
                 pbr,
@@ -790,11 +816,125 @@ namespace AnimeStudio
                 maskTextureIndex,
                 maskTextureSlot);
             ProtectOpaquePreviewBaseColorTextureAlpha(material, pbr, gltfMaterial);
+            if (skippedNormalTextures.Count > 0)
+            {
+                AddAnimeStudioMaterialNote(
+                    gltfMaterial,
+                    "packedNormalSkipped",
+                    "检测到疑似 packed normal，未写入 glTF normalTexture，避免错误法线破坏静态预览；原始贴图仍保存在 extras.unityMaterial。");
+            }
 
             var index = _materials.Count;
             _materials.Add(gltfMaterial);
             _materialMap[name] = index;
             return index;
+        }
+
+        private bool LooksLikePackedUnityNormal(int textureIndex, string slotName, out string reason)
+        {
+            reason = null;
+            // glTF normalTexture 需要切线空间法线，BentNormal 这类光照辅助图不能直接塞进去。
+            if (!string.IsNullOrWhiteSpace(slotName)
+                && (slotName.IndexOf("NormalBent", StringComparison.OrdinalIgnoreCase) >= 0
+                    || slotName.IndexOf("BentNormal", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                reason = "bent_normal_slot_not_tangent_normal";
+                return true;
+            }
+
+            if (!_textureImagePathMap.TryGetValue(textureIndex, out var imagePath)
+                || string.IsNullOrWhiteSpace(imagePath)
+                || !File.Exists(imagePath)
+                || !Path.GetExtension(imagePath).Equals(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var image = Image.Load<Rgba32>(imagePath);
+                var width = Math.Max(1, image.Width);
+                var height = Math.Max(1, image.Height);
+                var stepX = Math.Max(1, width / 64);
+                var stepY = Math.Max(1, height / 64);
+                long count = 0;
+                long blueNearZero = 0;
+                long blueNearMid = 0;
+                long alphaVaries = 0;
+                long alphaMid = 0;
+                long rgVaries = 0;
+                var minAlpha = 255;
+                var maxAlpha = 0;
+
+                for (var y = 0; y < height; y += stepY)
+                {
+                    var row = image.DangerousGetPixelRowMemory(y).Span;
+                    for (var x = 0; x < width; x += stepX)
+                    {
+                        var pixel = row[x];
+                        count++;
+                        if (pixel.B <= 8)
+                        {
+                            blueNearZero++;
+                        }
+                        if (Math.Abs(pixel.B - 128) <= 12)
+                        {
+                            blueNearMid++;
+                        }
+                        if (pixel.A < minAlpha)
+                        {
+                            minAlpha = pixel.A;
+                        }
+                        if (pixel.A > maxAlpha)
+                        {
+                            maxAlpha = pixel.A;
+                        }
+                        if (pixel.A > 8 && pixel.A < 247)
+                        {
+                            alphaMid++;
+                        }
+                        if (pixel.R > 8 && pixel.R < 247 && pixel.G > 8 && pixel.G < 247)
+                        {
+                            rgVaries++;
+                        }
+                    }
+                }
+
+                if (count == 0)
+                {
+                    return false;
+                }
+
+                if (maxAlpha - minAlpha > 32)
+                {
+                    alphaVaries = count;
+                }
+
+                var blueZeroRatio = blueNearZero / (double)count;
+                var blueMidRatio = blueNearMid / (double)count;
+                var alphaSignalRatio = Math.Max(alphaVaries, alphaMid) / (double)count;
+                var rgSignalRatio = rgVaries / (double)count;
+                // 一些 Unity/自定义 shader 会把法线或附加数据打包进 RG/A，蓝通道不是 glTF 可用的 Z 分量。
+                if (blueZeroRatio > 0.85 && rgSignalRatio > 0.10)
+                {
+                    reason = alphaSignalRatio > 0.10
+                        ? "blue_channel_near_zero_with_alpha_signal"
+                        : "blue_channel_near_zero_rg_packed";
+                    return true;
+                }
+
+                if (blueMidRatio > 0.85 && alphaSignalRatio > 0.10 && rgSignalRatio > 0.10)
+                {
+                    reason = "blue_channel_near_mid_with_alpha_signal";
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            return false;
         }
 
         private bool ShouldProtectVertexColorAlpha(ImportedMesh mesh)
@@ -882,19 +1022,23 @@ namespace AnimeStudio
             }
 
             var extras = EnsureMaterialExtras(gltfMaterial);
-            extras["animeStudioMaterial"] = new Dictionary<string, object>
+            if (!extras.TryGetValue("animeStudioMaterial", out var animeValue)
+                || animeValue is not Dictionary<string, object> anime)
             {
-                ["workflow"] = "ColorMaskTint",
-                ["status"] = status,
-                ["baseColorTexture"] = baseColorTextureIndex,
-                ["maskTextures"] = maskSlots,
-                ["tintColors"] = tintColors.Select(x => new Dictionary<string, object>
-                {
-                    ["name"] = x.name,
-                    ["color"] = new[] { x.color.R, x.color.G, x.color.B, x.color.A },
-                }).ToArray(),
-                ["notes"] = notes,
-            };
+                anime = new Dictionary<string, object>();
+                extras["animeStudioMaterial"] = anime;
+            }
+
+            anime["workflow"] = "ColorMaskTint";
+            anime["status"] = status;
+            anime["baseColorTexture"] = baseColorTextureIndex;
+            anime["maskTextures"] = maskSlots;
+            anime["tintColors"] = tintColors.Select(x => new Dictionary<string, object>
+            {
+                ["name"] = x.name,
+                ["color"] = new[] { x.color.R, x.color.G, x.color.B, x.color.A },
+            }).ToArray();
+            AppendAnimeStudioMaterialNotes(anime, notes);
         }
 
         private static Dictionary<string, object> EnsureMaterialExtras(Dictionary<string, object> gltfMaterial)
@@ -1180,17 +1324,32 @@ namespace AnimeStudio
             }
 
             anime[flagName] = true;
+            AppendAnimeStudioMaterialNotes(anime, new[] { note });
+        }
+
+        private static void AppendAnimeStudioMaterialNotes(
+            Dictionary<string, object> anime,
+            IEnumerable<string> notesToAdd)
+        {
+            var newNotes = notesToAdd?
+                .Where(note => !string.IsNullOrWhiteSpace(note))
+                .ToArray();
+            if (newNotes == null || newNotes.Length == 0)
+            {
+                return;
+            }
+
             if (anime.TryGetValue("notes", out var notesValue) && notesValue is List<string> notes)
             {
-                notes.Add(note);
+                notes.AddRange(newNotes);
             }
             else if (notesValue is string[] noteArray)
             {
-                anime["notes"] = noteArray.Concat(new[] { note }).ToArray();
+                anime["notes"] = noteArray.Concat(newNotes).ToArray();
             }
             else
             {
-                anime["notes"] = new[] { note };
+                anime["notes"] = newNotes;
             }
         }
 
