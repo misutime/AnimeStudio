@@ -1835,6 +1835,10 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             {
                 return "Character";
             }
+            if (Regex.IsMatch(text, @"(^|/)actor_visual_parts?(/|$)"))
+            {
+                return "Character";
+            }
             if (Regex.IsMatch(text, @"(^|/)avatars?(/|$)|(^|/)bodies(/|$)|(^|/)costumes?(/|$)"))
             {
                 return "Avatar";
@@ -4025,6 +4029,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 {
                     changed |= SetCatalogValue(model, "modelValidation", validation.DeepClone());
                     changed |= ApplyModelValidationMaterialSummary(model, validation);
+                    changed |= ApplyModelResourceKindOutputFallback(model);
                 }
             }
 
@@ -4036,6 +4041,38 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             RewriteCatalogEntries(catalogPath, entries);
             Logger.Info($"Updated asset_catalog.jsonl with model validation summary for {models.Count} model row(s).");
             return true;
+        }
+
+        private static bool ApplyModelResourceKindOutputFallback(JObject model)
+        {
+            var current = JsonText(model, "resourceKind");
+            if (!IsUnknownResourceKind(current))
+            {
+                return false;
+            }
+
+            var output = JsonText(model, "output");
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return false;
+            }
+
+            // 只用 Library 相对 output 做兜底，不读取绝对安装路径，避免路径中游戏名或目录名污染分类。
+            var inferred = InferLibraryResourceKind(JsonText(model, "name"), JsonText(model, "container"), output);
+            if (IsUnknownResourceKind(inferred))
+            {
+                return false;
+            }
+
+            var changed = SetCatalogValue(model, "resourceKind", inferred);
+            changed |= SetCatalogValue(model, "resourceKindEvidence", JObject.FromObject(new
+            {
+                basis = "libraryRelativeOutputFallback",
+                oldResourceKind = current,
+                output,
+                rule = "仅当原 resourceKind 为 Unknown 时，使用 Library 相对输出路径里的通用素材语义补判；不按游戏私有角色名前缀猜。"
+            }));
+            return changed;
         }
 
         private static bool ApplyModelValidationMaterialSummary(JObject model, JObject validation)

@@ -2425,6 +2425,7 @@ Humanoid/Muscle 预览会把 `RootT.*` / `RootQ.*` 作为 root motion 写到 glT
 - `materialMissingRendererPrimitiveCount` / `materialMissingRendererPrimitives`：缺材质 primitive 数量和名称样本，方便浏览器或批处理直接筛掉灰模/缺绑定模型。
 - `materialHasBaseColorTexture` / `materialHasNormalTexture` / `materialImageCount`：判断模型是否已有标准贴图显示能力。`materialImageCount` 会优先同步验证后的 glTF image 数量。
 - `modelValidationStatus` / `modelBodyStatus`：从 `model_validation.json` 回写到 catalog 的模型验收状态，SQLite `assets.validation_status` 也会同步该值。
+- `resourceKindEvidence`：当模型原本是 `Unknown`，但 Library 相对输出路径里存在 `actor_visual_part` 等通用角色素材语义时，会记录本次 `resourceKind` 补判依据。这个兜底只使用 Library 相对路径，不按游戏私有角色名前缀猜。
 
 AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`trueBlendShapeBindingCount`、`rendererMaterialBindingCount`、`rendererPropertyBindingCount`、`activeStateBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、真正的 BlendShape 动画、材质/Renderer/显隐动画，还是只作用在 socket/helper 上的辅助动画。`blendShapeBindingCount` 是兼容旧索引的粗略 SkinnedMeshRenderer 计数，默认能力判断应优先看 `trueBlendShapeBindingCount`。
 
