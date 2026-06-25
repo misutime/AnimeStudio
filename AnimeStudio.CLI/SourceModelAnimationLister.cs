@@ -106,6 +106,11 @@ namespace AnimeStudio.CLI
             var monoBehaviourPPtrDiagnostics = hasReverseRelationIndex
                 ? LoadMonoBehaviourPPtrDiagnosticsForSelector(connection, modelSelector, Math.Min(limit, 80))
                 : new List<MonoBehaviourPPtrDiagnosticRow>();
+            var avatarTosClipDiagnostics = LoadAvatarTosClipDiagnosticsForModels(
+                connection,
+                selectedModels,
+                animationSelector,
+                Math.Min(limit, 80));
             if (!hasReverseRelationIndex)
             {
                 if (canScanSharedAvatarForward)
@@ -154,10 +159,12 @@ namespace AnimeStudio.CLI
                 ["sharedAvatarBridgeRule"] = "sharedAvatarController rows require a MonoBehaviour config that points to the selected prefab and an Avatar, plus an Animator that explicitly uses the same Avatar and controller clips. They are deterministic candidates, not visual proof; model gate, TRS export and screenshots must still pass.",
                 ["animatorDiagnosticRule"] = "Diagnostics list matching GameObjects and their Animator/Controller/Clip state. They explain why explicit candidates may be zero, but they do not create or imply a model-animation binding.",
                 ["monoBehaviourPPtrDiagnosticRule"] = "Diagnostics list MonoBehaviour PPtr fields that point at the selected model, plus sibling PPtr fields from the same MonoBehaviour. These are deterministic config clues only; they do not become playable animation candidates unless a model-first gate and explicit animation relation are also proven.",
+                ["avatarTosClipDiagnosticRule"] = "Diagnostics list AnimationClip binding pathHash coverage against the selected model's explicit Animator.avatar -> Avatar.m_TOS table. This is structural evidence for Naraka hash-only path recovery only; it is not a default model-animation relation and must not bypass Animator/Controller context, model validation, TRS export, or visual review.",
                 ["selectedModels"] = new JArray(selectedModels.Select(ToJson)),
                 ["models"] = new JArray(models.Select(ToJson)),
                 ["animatorDiagnostics"] = new JArray(animatorDiagnostics.Select(ToJson)),
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
+                ["avatarTosClipDiagnostics"] = new JArray(avatarTosClipDiagnostics.Select(ToJson)),
                 ["candidates"] = new JArray(filtered.Select(ToJson)),
             };
 
@@ -185,6 +192,13 @@ namespace AnimeStudio.CLI
                 foreach (var row in monoBehaviourPPtrDiagnostics.Take(8))
                 {
                     Logger.Info($"- mono pptr diagnostic {row.MonoBehaviourName ?? string.Empty}#{row.MonoBehaviourPathId}: {row.ReferenceFieldPath} -> {row.TargetType}/{row.TargetName}#{row.TargetPathId}");
+                }
+            }
+            if (filtered.Count == 0 && avatarTosClipDiagnostics.Count > 0)
+            {
+                foreach (var row in avatarTosClipDiagnostics.Take(8))
+                {
+                    Logger.Info($"- avatar TOS diagnostic {row.ModelName}#{row.ModelPathId}: avatar={row.AvatarName} clip={row.AnimationName} coverage={Ratio(row.ResolvedPathHashCount, row.UniqueHashOnlyPathHashCount):0.######}");
                 }
             }
 
@@ -551,6 +565,339 @@ LIMIT $limit;");
             }
 
             return rows;
+        }
+
+        private static List<AvatarTosClipDiagnosticRow> LoadAvatarTosClipDiagnosticsForModels(
+            SqliteConnection connection,
+            IReadOnlyList<ModelRow> models,
+            string animationSelector,
+            int limit)
+        {
+            var result = new List<AvatarTosClipDiagnosticRow>();
+            foreach (var model in models ?? Array.Empty<ModelRow>())
+            {
+                result.AddRange(LoadAvatarTosClipDiagnosticsForModel(connection, model, animationSelector, Math.Max(1, limit - result.Count)));
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+            }
+
+            return result
+                .OrderByDescending(x => Ratio(x.ResolvedPathHashCount, x.UniqueHashOnlyPathHashCount))
+                .ThenByDescending(x => x.UniqueHashOnlyPathHashCount)
+                .ThenBy(x => x.AnimationName, StringComparer.OrdinalIgnoreCase)
+                .Take(limit)
+                .ToList();
+        }
+
+        private static List<AvatarTosClipDiagnosticRow> LoadAvatarTosClipDiagnosticsForModel(
+            SqliteConnection connection,
+            ModelRow model,
+            string animationSelector,
+            int limit)
+        {
+            var avatars = LoadAnimatorAvatarTosRows(connection, model);
+            if (avatars.Count == 0)
+            {
+                return new List<AvatarTosClipDiagnosticRow>();
+            }
+
+            var clipRows = LoadHashOnlyAnimationBindingRows(connection, animationSelector, Math.Clamp(limit * 50, 500, 10000));
+            var result = new List<AvatarTosClipDiagnosticRow>();
+            foreach (var avatar in avatars)
+            {
+                foreach (var clip in clipRows)
+                {
+                    if (!MatchesAnimationSelector(animationSelector, clip.AnimationName))
+                    {
+                        continue;
+                    }
+
+                    var resolved = clip.HashOnlyPathHashes.Count(hash => avatar.HashToPath.ContainsKey(hash));
+                    if (resolved == 0)
+                    {
+                        continue;
+                    }
+
+                    result.Add(new AvatarTosClipDiagnosticRow(
+                        model.Name,
+                        model.SourcePath,
+                        model.SerializedFile,
+                        model.PathId,
+                        model.ContainerPath,
+                        avatar.AnimatorName,
+                        avatar.AnimatorSerializedFile,
+                        avatar.AnimatorPathId,
+                        avatar.AvatarName,
+                        avatar.AvatarSourcePath,
+                        avatar.AvatarSerializedFile,
+                        avatar.AvatarPathId,
+                        clip.AnimationName,
+                        clip.AnimationSourcePath,
+                        clip.AnimationSerializedFile,
+                        clip.AnimationPathId,
+                        clip.BindingCount,
+                        clip.HashOnlyPathHashes.Count,
+                        resolved,
+                        clip.ZeroPathHashBindingCount,
+                        BuildResolvedPathSamples(clip.HashOnlyPathHashes, avatar.HashToPath, 8),
+                        BuildUnresolvedHashSamples(clip.HashOnlyPathHashes, avatar.HashToPath, 8)));
+                }
+            }
+
+            return result
+                .OrderByDescending(x => Ratio(x.ResolvedPathHashCount, x.UniqueHashOnlyPathHashCount))
+                .ThenByDescending(x => x.UniqueHashOnlyPathHashCount)
+                .ThenBy(x => x.AnimationName, StringComparer.OrdinalIgnoreCase)
+                .Take(limit)
+                .ToList();
+        }
+
+        private static List<AnimatorAvatarTosRow> LoadAnimatorAvatarTosRows(SqliteConnection connection, ModelRow model)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT DISTINCT
+    animator.name,
+    animator.serialized_file,
+    animator.path_id,
+    avatar.name,
+    avatar.source_path,
+    avatar.serialized_file,
+    avatar.path_id,
+    avatar.raw_json
+FROM source_relations goRel INDEXED BY idx_source_relations_from
+JOIN source_objects animator
+  ON animator.serialized_file = goRel.to_file
+ AND animator.path_id = goRel.to_path_id
+ AND animator.type = 'Animator'
+JOIN source_relations avatarRel INDEXED BY idx_source_relations_from
+  ON avatarRel.from_file = animator.serialized_file
+ AND avatarRel.from_path_id = animator.path_id
+ AND avatarRel.relation = 'animator.avatar'
+JOIN source_objects avatar
+  ON avatar.serialized_file = avatarRel.to_file
+ AND avatar.path_id = avatarRel.to_path_id
+ AND avatar.type = 'Avatar'
+WHERE goRel.from_file = $modelFile
+  AND goRel.from_path_id = $modelPathId
+  AND goRel.relation = 'gameObject.component'
+ORDER BY avatar.name COLLATE NOCASE;");
+            command.Parameters.AddWithValue("$modelFile", model.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$modelPathId", model.PathId);
+
+            var result = new List<AnimatorAvatarTosRow>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var hashToPath = ExtractAvatarTos(ReadString(reader, 7));
+                if (hashToPath.Count == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new AnimatorAvatarTosRow(
+                    ReadString(reader, 0),
+                    ReadString(reader, 1),
+                    ReadLong(reader, 2),
+                    ReadString(reader, 3),
+                    ReadString(reader, 4),
+                    ReadString(reader, 5),
+                    ReadLong(reader, 6),
+                    hashToPath));
+            }
+
+            return result;
+        }
+
+        private static List<HashOnlyAnimationBindingRow> LoadHashOnlyAnimationBindingRows(SqliteConnection connection, string animationSelector, int sqlLimit)
+        {
+            if (!TableExists(connection, "source_animation_bindings"))
+            {
+                return new List<HashOnlyAnimationBindingRow>();
+            }
+
+            var likeToken = ExtractLongestLiteralToken(animationSelector);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT animation_name, animation_source, animation_file, animation_path_id, binding_count, raw_json
+FROM source_animation_bindings
+WHERE $likeToken = '' OR animation_name LIKE $like
+ORDER BY COALESCE(binding_count, 0) DESC, animation_name COLLATE NOCASE
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$likeToken", likeToken ?? string.Empty);
+            command.Parameters.AddWithValue("$like", "%" + (likeToken ?? string.Empty) + "%");
+            command.Parameters.AddWithValue("$limit", Math.Clamp(sqlLimit, 1, 10000));
+
+            var result = new List<HashOnlyAnimationBindingRow>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var animationName = ReadString(reader, 0);
+                if (!MatchesAnimationSelector(animationSelector, animationName))
+                {
+                    continue;
+                }
+
+                var hashes = ExtractHashOnlyBindingPathHashes(ReadString(reader, 5), out var zeroPathHashBindingCount);
+                if (hashes.Count == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new HashOnlyAnimationBindingRow(
+                    animationName,
+                    ReadString(reader, 1),
+                    ReadString(reader, 2),
+                    ReadLong(reader, 3),
+                    ReadLong(reader, 4),
+                    hashes,
+                    zeroPathHashBindingCount));
+            }
+
+            return result;
+        }
+
+        private static Dictionary<uint, string> ExtractAvatarTos(string rawJson)
+        {
+            var result = new Dictionary<uint, string>();
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return result;
+            }
+
+            JObject raw;
+            try
+            {
+                raw = JObject.Parse(rawJson);
+            }
+            catch (JsonException)
+            {
+                return result;
+            }
+
+            foreach (var item in raw.SelectToken("avatar.tos") as JArray ?? new JArray())
+            {
+                if (!TryReadUInt32(item["pathHash"], out var hash) || hash == 0)
+                {
+                    continue;
+                }
+
+                var path = item["path"]?.ToString();
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                result.TryAdd(hash, path);
+            }
+
+            return result;
+        }
+
+        private static HashSet<uint> ExtractHashOnlyBindingPathHashes(string rawJson, out long zeroPathHashBindingCount)
+        {
+            zeroPathHashBindingCount = 0;
+            var result = new HashSet<uint>();
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return result;
+            }
+
+            JObject raw;
+            try
+            {
+                raw = JObject.Parse(rawJson);
+            }
+            catch (JsonException)
+            {
+                return result;
+            }
+
+            foreach (var binding in raw["bindings"] as JArray ?? new JArray())
+            {
+                var path = binding["path"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                if (!TryReadUInt32(binding["pathHash"], out var hash) || hash == 0)
+                {
+                    zeroPathHashBindingCount++;
+                    continue;
+                }
+
+                result.Add(hash);
+            }
+
+            return result;
+        }
+
+        private static JArray BuildResolvedPathSamples(HashSet<uint> hashes, IReadOnlyDictionary<uint, string> hashToPath, int limit)
+        {
+            return new JArray(hashes
+                .OrderBy(x => x)
+                .Where(hash => hashToPath.ContainsKey(hash))
+                .Take(Math.Max(0, limit))
+                .Select(hash => new JObject
+                {
+                    ["pathHash"] = hash,
+                    ["pathHashHex"] = $"0x{hash:X8}",
+                    ["path"] = hashToPath[hash],
+                }));
+        }
+
+        private static JArray BuildUnresolvedHashSamples(HashSet<uint> hashes, IReadOnlyDictionary<uint, string> hashToPath, int limit)
+        {
+            return new JArray(hashes
+                .OrderBy(x => x)
+                .Where(hash => !hashToPath.ContainsKey(hash))
+                .Take(Math.Max(0, limit))
+                .Select(hash => new JObject
+                {
+                    ["pathHash"] = hash,
+                    ["pathHashHex"] = $"0x{hash:X8}",
+                }));
+        }
+
+        private static bool TryReadUInt32(JToken token, out uint value)
+        {
+            value = 0;
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return false;
+            }
+
+            if (token.Type == JTokenType.Integer)
+            {
+                var number = token.Value<long>();
+                if (number < 0 || number > uint.MaxValue)
+                {
+                    return false;
+                }
+
+                value = (uint)number;
+                return true;
+            }
+
+            var text = token.ToString().Trim();
+            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                text = text.Substring(2);
+                return uint.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
+            }
+
+            return uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+        }
+
+        private static bool TableExists(SqliteConnection connection, string tableName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$name;";
+            command.Parameters.AddWithValue("$name", tableName);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture) > 0;
         }
 
         private static List<AnimatorComponentRow> LoadAnimatorsForModel(SqliteConnection connection, ModelRow model)
@@ -1236,6 +1583,16 @@ LIMIT $limit;";
                 || Regex.IsMatch(row.RelationKind ?? string.Empty, selector, RegexOptions.IgnoreCase);
         }
 
+        private static bool MatchesAnimationSelector(string selector, string animationName)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return true;
+            }
+
+            return Regex.IsMatch(animationName ?? string.Empty, selector, RegexOptions.IgnoreCase);
+        }
+
         private static string BuildReviewHint(CandidateRow row)
         {
             var text = string.Join("/", row.ModelName, row.ModelSourcePath, row.ModelSerializedFile, row.ModelContainerPath, row.ControllerName, row.AnimationName, row.AnimationSourcePath, row.AnimationSerializedFile).ToLowerInvariant();
@@ -1459,6 +1816,58 @@ LIMIT $limit;";
             };
         }
 
+        private static JObject ToJson(AvatarTosClipDiagnosticRow row)
+        {
+            return new JObject
+            {
+                ["deterministic"] = true,
+                ["diagnosticOnly"] = true,
+                ["relationKind"] = "animator.avatar_tos_pathHash_coverage",
+                ["relationSource"] = "structural_source_index",
+                ["modelReadyForAnimation"] = false,
+                ["modelReadyForAnimationReason"] = "This diagnostic cannot prove model quality or animation semantics. Export and validate the model before any forced preview.",
+                ["coverage"] = new JObject
+                {
+                    ["uniqueHashOnlyPathHashCount"] = row.UniqueHashOnlyPathHashCount,
+                    ["resolvedPathHashCount"] = row.ResolvedPathHashCount,
+                    ["coverageRatio"] = Ratio(row.ResolvedPathHashCount, row.UniqueHashOnlyPathHashCount),
+                    ["zeroPathHashBindingCount"] = row.ZeroPathHashBindingCount,
+                    ["resolvedPathSamples"] = row.ResolvedPathSamples ?? new JArray(),
+                    ["unresolvedHashSamples"] = row.UnresolvedHashSamples ?? new JArray(),
+                },
+                ["model"] = new JObject
+                {
+                    ["name"] = row.ModelName,
+                    ["sourcePath"] = row.ModelSourcePath,
+                    ["serializedFile"] = row.ModelSerializedFile,
+                    ["pathId"] = row.ModelPathId,
+                    ["containerPath"] = row.ModelContainerPath,
+                },
+                ["animator"] = new JObject
+                {
+                    ["name"] = row.AnimatorName,
+                    ["serializedFile"] = row.AnimatorSerializedFile,
+                    ["pathId"] = row.AnimatorPathId,
+                },
+                ["avatar"] = new JObject
+                {
+                    ["name"] = row.AvatarName,
+                    ["sourcePath"] = row.AvatarSourcePath,
+                    ["serializedFile"] = row.AvatarSerializedFile,
+                    ["pathId"] = row.AvatarPathId,
+                },
+                ["animation"] = new JObject
+                {
+                    ["name"] = row.AnimationName,
+                    ["sourcePath"] = row.AnimationSourcePath,
+                    ["serializedFile"] = row.AnimationSerializedFile,
+                    ["pathId"] = row.AnimationPathId,
+                    ["bindingCount"] = row.BindingCount,
+                },
+                ["rule"] = "Animator.avatar -> Avatar.m_TOS can resolve hash-only AnimationClip paths, but this is structural compatibility only. It must not be written as a default model-animation relation without Animator/Controller context, model validation, TRS export, and visual review.",
+            };
+        }
+
         private static string ToCsv(List<CandidateRow> rows)
         {
             var builder = new StringBuilder();
@@ -1505,6 +1914,11 @@ LIMIT $limit;";
         private static long ReadLong(SqliteDataReader reader, int ordinal)
         {
             return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+        }
+
+        private static double Ratio(long part, long total)
+        {
+            return total <= 0 ? 0.0 : Math.Round((double)part / total, 6);
         }
 
         private sealed record ModelRow(
@@ -1579,5 +1993,48 @@ LIMIT $limit;";
             string TargetName,
             string TargetSourcePath,
             bool IsSelectedModel);
+
+        private sealed record AnimatorAvatarTosRow(
+            string AnimatorName,
+            string AnimatorSerializedFile,
+            long AnimatorPathId,
+            string AvatarName,
+            string AvatarSourcePath,
+            string AvatarSerializedFile,
+            long AvatarPathId,
+            Dictionary<uint, string> HashToPath);
+
+        private sealed record HashOnlyAnimationBindingRow(
+            string AnimationName,
+            string AnimationSourcePath,
+            string AnimationSerializedFile,
+            long AnimationPathId,
+            long BindingCount,
+            HashSet<uint> HashOnlyPathHashes,
+            long ZeroPathHashBindingCount);
+
+        private sealed record AvatarTosClipDiagnosticRow(
+            string ModelName,
+            string ModelSourcePath,
+            string ModelSerializedFile,
+            long ModelPathId,
+            string ModelContainerPath,
+            string AnimatorName,
+            string AnimatorSerializedFile,
+            long AnimatorPathId,
+            string AvatarName,
+            string AvatarSourcePath,
+            string AvatarSerializedFile,
+            long AvatarPathId,
+            string AnimationName,
+            string AnimationSourcePath,
+            string AnimationSerializedFile,
+            long AnimationPathId,
+            long BindingCount,
+            int UniqueHashOnlyPathHashCount,
+            int ResolvedPathHashCount,
+            long ZeroPathHashBindingCount,
+            JArray ResolvedPathSamples,
+            JArray UnresolvedHashSamples);
     }
 }
