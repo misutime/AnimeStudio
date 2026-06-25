@@ -65,6 +65,8 @@ namespace AnimeStudio.CLI
                 .Where(x => string.Equals(x.TargetType, "Transform", StringComparison.Ordinal))
                 .Select(x => x.Target));
             transformNodeObjects = DistinctObjects(transformNodeObjects).ToList();
+            var rendererBoneTransformObjects = DistinctObjects(LoadRendererBoneTransformClosure(connection, parts)).ToList();
+            var transformExportObjects = DistinctObjects(transformNodeObjects.Concat(rendererBoneTransformObjects)).ToList();
             var hairCustomizationTintObjects = LoadHairCustomizationTintObjects(connection).ToList();
             var monoObjects = new List<SourceObjectRef>
             {
@@ -116,6 +118,12 @@ namespace AnimeStudio.CLI
                 ["monoBehaviourExport"] = BuildExportBlock(monoObjects, sourceRoot),
                 ["skinnedMeshRendererExport"] = BuildExportBlock(rendererObjects, sourceRoot),
                 ["transformNodeExport"] = BuildExportBlock(transformNodeObjects, sourceRoot),
+                ["rendererBoneTransformExport"] = new JObject
+                {
+                    ["status"] = rendererBoneTransformObjects.Count > 0 ? "rendererBoneParentChainFound" : "missing",
+                    ["rule"] = "这些 Transform 只来自 SkinnedMeshRenderer.bones/rootBone 和 transform.parent 显式关系，用于补齐 Renderer-bones 诊断的父链矩阵比较；不能按名称或同包对象猜 skin 绑定。",
+                    ["export"] = BuildExportBlock(rendererBoneTransformObjects, sourceRoot),
+                },
                 ["materialTextureExport"] = BuildExportBlock(materialObjects, sourceRoot),
                 ["hairCustomizationTintExport"] = new JObject
                 {
@@ -156,7 +164,7 @@ namespace AnimeStudio.CLI
                     ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；计划器会完整导出同包节点表，并把 PathID 分块写入命令，避免后续 TRS/节点诊断被采样截断。它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
                 },
             };
-            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, rendererObjects, transformNodeObjects, materialObjects, hairCustomizationTintObjects);
+            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, rendererObjects, transformExportObjects, materialObjects, hairCustomizationTintObjects);
 
             var planPath = Path.Combine(outputFolder, "naraka_avatar_mesh_export_plan.json");
             File.WriteAllText(planPath, plan.ToString(Formatting.Indented));
@@ -559,6 +567,172 @@ ORDER BY rel.id;";
                         targetType,
                         targetRef);
                 }
+            }
+        }
+
+        private static IEnumerable<SourceObjectRef> LoadRendererBoneTransformClosure(
+            SqliteConnection connection,
+            IReadOnlyCollection<Lod0Part> parts)
+        {
+            var result = new List<SourceObjectRef>();
+            var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var part in (parts ?? Array.Empty<Lod0Part>())
+                .Where(x => !string.IsNullOrWhiteSpace(x.RendererFile) && x.RendererPathId != 0)
+                .GroupBy(x => $"{NormalizeSerializedFileName(x.RendererFile)}#{x.RendererPathId}", StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First()))
+            {
+                foreach (var target in LoadRendererBoneTransformTargets(connection, part.RendererFile, part.RendererPathId))
+                {
+                    AddTransformAndParents(connection, target.SerializedFile, target.PathId, target.Role, result, emitted);
+                }
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<RendererTransformTarget> LoadRendererBoneTransformTargets(
+            SqliteConnection connection,
+            string rendererFile,
+            long rendererPathId)
+        {
+            var normalizedRendererFile = NormalizeSerializedFileName(rendererFile);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT relation,
+       to_file,
+       to_path_id,
+       raw_json
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_file = $rendererFile COLLATE NOCASE
+  AND from_path_id = $rendererPathId
+  AND relation IN ('skinnedMeshRenderer.bones', 'skinnedMeshRenderer.rootBone')
+ORDER BY relation, id;";
+            command.Parameters.AddWithValue("$rendererFile", normalizedRendererFile ?? string.Empty);
+            command.Parameters.AddWithValue("$rendererPathId", rendererPathId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var relation = reader.GetString(0);
+                var targetFile = reader.IsDBNull(1) ? normalizedRendererFile : NormalizeSerializedFileName(reader.GetString(1));
+                var targetPathId = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+                var rawJson = reader.IsDBNull(3) ? null : reader.GetString(3);
+                if (string.Equals(relation, "skinnedMeshRenderer.rootBone", StringComparison.OrdinalIgnoreCase)
+                    && targetPathId != 0)
+                {
+                    yield return new RendererTransformTarget(targetFile, targetPathId, "SkinnedMeshRendererRootBoneTransform");
+                    continue;
+                }
+
+                if (!string.Equals(relation, "skinnedMeshRenderer.bones", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var details = TryReadRelationDetails(rawJson);
+                foreach (var item in (details?["targets"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var pathId = item["pathId"]?.Value<long?>()
+                        ?? item["m_PathID"]?.Value<long?>()
+                        ?? 0;
+                    if (pathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var fileId = item["fileId"]?.Value<int?>()
+                        ?? item["m_FileID"]?.Value<int?>()
+                        ?? 0;
+                    // Naraka 当前样本的 Renderer bones 是本文件 PPtr；外部 fileId 先保守记录为同关系 targetFile。
+                    yield return new RendererTransformTarget(
+                        fileId == 0 ? normalizedRendererFile : targetFile,
+                        pathId,
+                        "SkinnedMeshRendererBoneTransform");
+                }
+            }
+        }
+
+        private static void AddTransformAndParents(
+            SqliteConnection connection,
+            string serializedFile,
+            long pathId,
+            string role,
+            List<SourceObjectRef> result,
+            HashSet<string> emitted)
+        {
+            var currentFile = NormalizeSerializedFileName(serializedFile);
+            var currentPathId = pathId;
+            var currentRole = role;
+            var localSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var depth = 0; depth < 256 && !string.IsNullOrWhiteSpace(currentFile) && currentPathId != 0; depth++)
+            {
+                var key = $"{currentFile}#{currentPathId}";
+                if (!localSeen.Add(key))
+                {
+                    break;
+                }
+
+                if (emitted.Add(key))
+                {
+                    var sourceObject = ResolveSourceObject(connection, currentFile, currentPathId);
+                    result.Add(new SourceObjectRef(
+                        sourceObject.Name,
+                        sourceObject.SourcePath,
+                        currentFile,
+                        currentPathId,
+                        currentRole));
+                }
+
+                var parent = LoadTransformParent(connection, currentFile, currentPathId);
+                if (parent.PathId == 0)
+                {
+                    break;
+                }
+
+                currentFile = string.IsNullOrWhiteSpace(parent.SerializedFile) ? currentFile : parent.SerializedFile;
+                currentPathId = parent.PathId;
+                currentRole = "RendererBoneParentTransform";
+            }
+        }
+
+        private static RendererTransformTarget LoadTransformParent(SqliteConnection connection, string serializedFile, long pathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT to_file, to_path_id
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_file = $file COLLATE NOCASE
+  AND from_path_id = $pathId
+  AND relation = 'transform.parent'
+ORDER BY id
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile) ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return new RendererTransformTarget(string.Empty, 0, string.Empty);
+            }
+
+            return new RendererTransformTarget(
+                reader.IsDBNull(0) ? NormalizeSerializedFileName(serializedFile) : NormalizeSerializedFileName(reader.GetString(0)),
+                reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                "RendererBoneParentTransform");
+        }
+
+        private static JObject TryReadRelationDetails(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return null;
+            }
+
+            try
+            {
+                return JObject.Parse(rawJson)["details"] as JObject;
+            }
+            catch (JsonException)
+            {
+                return null;
             }
         }
 
@@ -1298,6 +1472,8 @@ LIMIT 1;";
         private sealed record SourceObjectLite(string Name, string SourcePath);
 
         private sealed record AvatarPartMeshRef(long RelationId, string MeshFile, long MeshPathId);
+
+        private sealed record RendererTransformTarget(string SerializedFile, long PathId, string Role);
 
         private sealed record BoneDriverHintRef(string Name, string SourcePath, string SerializedFile, long PathId, string ScriptName)
         {
