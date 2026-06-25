@@ -54,6 +54,9 @@ namespace AnimeStudio.CLI
                 .ThenBy(x => x.GameObjectName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var transformNodeEvidence = allTransformNodeEvidence.Take(24).ToList();
+            var transformNodeObjects = DistinctObjects(transformNodeEvidence
+                .SelectMany(x => LoadTransformNodeRefs(connection, x.VisualCellSourcePath, target.VisualCellFile, x.VisualCellPathId)))
+                .ToList();
             var monoObjects = new List<SourceObjectRef>
             {
                 new(target.VisualCellName, target.VisualCellSourcePath, target.VisualCellFile, target.VisualCellPathId, "ActorBodyVisualCell")
@@ -84,6 +87,7 @@ namespace AnimeStudio.CLI
                 ["rule"] = "只根据 unity_source_index.db 中的 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset、_renderer、renderer.material、material.texture 确定导出闭包；AvatarPartDataAsset.m_MeshData 只作为部件/LOD 顺序证据，不当作骨骼或 skin 绑定；不按名字猜部件、材质或贴图。",
                 ["target"] = target.ToJson(),
                 ["monoBehaviourExport"] = BuildExportBlock(monoObjects, sourceRoot),
+                ["transformNodeExport"] = BuildExportBlock(transformNodeObjects, sourceRoot),
                 ["materialTextureExport"] = BuildExportBlock(materialObjects, sourceRoot),
                 ["lod0Parts"] = new JArray(parts.Select(x => x.ToJson())),
                 ["boneDriverHints"] = new JObject
@@ -104,7 +108,7 @@ namespace AnimeStudio.CLI
                     ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
                 },
             };
-            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, materialObjects);
+            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, transformNodeObjects, materialObjects);
 
             var planPath = Path.Combine(outputFolder, "naraka_avatar_mesh_export_plan.json");
             File.WriteAllText(planPath, plan.ToString(Formatting.Indented));
@@ -495,6 +499,43 @@ LIMIT $limit;";
             }
         }
 
+        private static IEnumerable<SourceObjectRef> LoadTransformNodeRefs(
+            SqliteConnection connection,
+            string visualCellSourcePath,
+            string serializedFile,
+            long visualCellPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT DISTINCT transform.name,
+       transform.source_path,
+       transform.serialized_file,
+       transform.path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects transform
+  ON transform.serialized_file = rel.to_file
+ AND transform.path_id = rel.to_path_id
+ AND transform.type = 'Transform'
+WHERE rel.from_path_id = $pathId
+  AND rel.relation = 'monoBehaviour.pptr'
+  AND rel.from_file = $file
+  AND json_extract(rel.raw_json, '$.details.path') = 'transformNodes.data'
+ORDER BY rel.id;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", visualCellPathId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                // Transform 自身一般没有稳定名称，使用来源 visual cell 名称只是辅助说明。
+                yield return new SourceObjectRef(
+                    reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                    reader.IsDBNull(1) ? visualCellSourcePath ?? string.Empty : reader.GetString(1),
+                    reader.IsDBNull(2) ? serializedFile ?? string.Empty : reader.GetString(2),
+                    reader.GetInt64(3),
+                    "ActorBodyVisualCellTransformNode");
+            }
+        }
+
         private static long ResolveGameObjectForComponent(SqliteConnection connection, string serializedFile, long componentPathId)
         {
             using var command = connection.CreateCommand();
@@ -611,6 +652,7 @@ LIMIT 1;";
             string outputFolder,
             string dumpRoot,
             IReadOnlyList<SourceObjectRef> monoObjects,
+            IReadOnlyList<SourceObjectRef> transformNodeObjects,
             IReadOnlyList<SourceObjectRef> materialObjects)
         {
             var commands = new JObject();
@@ -624,6 +666,13 @@ LIMIT 1;";
             foreach (var step in BuildExportSteps("dumpMonoBehaviours", sourceRoot, dumpRoot, sourceIndexPath, "MonoBehaviour", monoObjects))
             {
                 steps.Add(step.ToJson());
+            }
+            if (transformNodeObjects.Count > 0)
+            {
+                foreach (var step in BuildExportSteps("dumpTransformNodes", sourceRoot, dumpRoot, null, "Transform", transformNodeObjects, "JSON"))
+                {
+                    steps.Add(step.ToJson());
+                }
             }
             if (materialObjects.Count > 0)
             {
@@ -655,6 +704,9 @@ LIMIT 1;";
             commands["dumpMonoBehaviours"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
                 .Where(x => ((string)x["name"])?.StartsWith("dumpMonoBehaviours", StringComparison.OrdinalIgnoreCase) == true)
                 .Select(x => (string)x["command"]));
+            commands["dumpTransformNodes"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
+                .Where(x => ((string)x["name"])?.StartsWith("dumpTransformNodes", StringComparison.OrdinalIgnoreCase) == true)
+                .Select(x => (string)x["command"]));
             commands["exportMaterialsAndTextures"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
                 .Where(x => ((string)x["name"])?.StartsWith("exportMaterialsAndTextures", StringComparison.OrdinalIgnoreCase) == true)
                 .Select(x => (string)x["command"]));
@@ -669,7 +721,8 @@ LIMIT 1;";
             string outputFolder,
             string sourceIndexPath,
             string types,
-            IReadOnlyList<SourceObjectRef> objects)
+            IReadOnlyList<SourceObjectRef> objects,
+            string exportType = "Convert")
         {
             var groups = objects
                 .Where(x => x.PathId != 0)
@@ -687,7 +740,8 @@ LIMIT 1;";
                     .Distinct()
                     .OrderBy(x => x)
                     .ToArray();
-                var command = string.Join(" ",
+                var args = new List<string>
+                {
                     CliExe(),
                     PsQuote(sourceRoot),
                     PsQuote(outputFolder),
@@ -699,10 +753,15 @@ LIMIT 1;";
                     types,
                     "--path_ids",
                     string.Join(" ", pathIds.Select(x => x.ToString(CultureInfo.InvariantCulture))),
-                    "--export_type Convert",
+                    "--export_type " + exportType,
                     "--group_assets ByType",
-                    "--source_index",
-                    PsQuote(sourceIndexPath));
+                };
+                if (!string.IsNullOrWhiteSpace(sourceIndexPath))
+                {
+                    args.Add("--source_index");
+                    args.Add(PsQuote(sourceIndexPath));
+                }
+                var command = string.Join(" ", args);
 
                 yield return new PlanStep(
                     $"{stepPrefix}_{index:D2}_{FixStepName(group.Key)}",
