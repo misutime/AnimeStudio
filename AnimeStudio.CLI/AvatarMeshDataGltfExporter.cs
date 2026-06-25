@@ -843,8 +843,54 @@ namespace AnimeStudio.CLI
                 }
             };
 
-            RewriteJsonLineByOutput(Path.Combine(outputFolder, "asset_catalog.jsonl"), relativeOutput, catalogEntry);
+            var catalogPath = Path.Combine(outputFolder, "asset_catalog.jsonl");
+            RewriteJsonLineByOutput(catalogPath, relativeOutput, catalogEntry);
+            WriteCustomMeshTextureCatalogEntries(catalogPath, outputFolder, relativeOutput, gltfImages);
             WriteOrUpdateCustomMeshValidation(outputFolder, gltfPath, relativeOutput, validationReasons);
+        }
+
+        private static void WriteCustomMeshTextureCatalogEntries(string catalogPath, string outputFolder, string modelOutput, JArray gltfImages)
+        {
+            var textureRoot = Path.Combine(outputFolder, "Texture2D");
+            if (!Directory.Exists(textureRoot))
+            {
+                return;
+            }
+
+            var previewImageUris = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var image in gltfImages.OfType<JObject>())
+            {
+                var uri = NormalizeRelativePath((string)image["uri"]);
+                if (!string.IsNullOrWhiteSpace(uri))
+                {
+                    previewImageUris.Add(uri);
+                }
+            }
+
+            foreach (var texturePath in Directory.EnumerateFiles(textureRoot, "*.png", SearchOption.AllDirectories))
+            {
+                var relativeOutput = ToLibraryRelativePath(outputFolder, texturePath);
+                var file = new FileInfo(texturePath);
+                var isPreviewImage = previewImageUris.Contains(NormalizeRelativePath(relativeOutput));
+                var entry = new JObject
+                {
+                    ["kind"] = "Texture",
+                    ["libraryRole"] = isPreviewImage ? "ModelPreviewTexture" : "MaterialDependency",
+                    ["resourceKind"] = "Texture2D",
+                    ["exportedAt"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                    ["name"] = Path.GetFileNameWithoutExtension(texturePath),
+                    ["sourceType"] = "NarakaMaterialTexture",
+                    ["source"] = modelOutput,
+                    ["pathId"] = 0,
+                    ["output"] = relativeOutput,
+                    ["format"] = "Png",
+                    ["modelOutput"] = modelOutput,
+                    ["usedByGltfPreview"] = isPreviewImage,
+                    ["sizeBytes"] = file.Exists ? file.Length : 0,
+                    ["rule"] = "只把本次 Naraka 自定义网格诊断流程真实导出的 Texture2D PNG 写入 catalog；是否用于 glTF 标准预览由 glTF image URI 决定，不按名字猜材质用途。"
+                };
+                RewriteJsonLineByOutput(catalogPath, relativeOutput, entry);
+            }
         }
 
         private static void WriteOrUpdateCustomMeshValidation(
