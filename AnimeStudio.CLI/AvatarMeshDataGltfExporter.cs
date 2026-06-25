@@ -1988,6 +1988,88 @@ namespace AnimeStudio.CLI
                 .ToArray();
         }
 
+        private static FaceRuntimeBindLocalTrsCheck BuildFaceRuntimeBindLocalTrsCheck(
+            IReadOnlyList<FaceRuntimeBoneSample> bones)
+        {
+            var list = (bones ?? Array.Empty<FaceRuntimeBoneSample>())
+                .OrderBy(x => x.BoneIndex)
+                .ToArray();
+            var check = new FaceRuntimeBindLocalTrsCheck
+            {
+                BoneCount = list.Length,
+                ReadableLocalTrsCount = list.Count(x => x.HasLocalTrs),
+            };
+            if (list.Length == 0)
+            {
+                check.Status = "missingBones";
+                return check;
+            }
+
+            var boneByIndex = list.ToDictionary(x => x.BoneIndex, x => x);
+            var parentByChild = new Dictionary<int, int>();
+            foreach (var bone in list)
+            {
+                foreach (var child in bone.ChildBoneIndices ?? Array.Empty<int>())
+                {
+                    if (!boneByIndex.ContainsKey(child))
+                    {
+                        check.InvalidChildRefCount++;
+                        continue;
+                    }
+                    if (!parentByChild.ContainsKey(child))
+                    {
+                        parentByChild[child] = bone.BoneIndex;
+                    }
+                }
+            }
+            check.RootBoneCount = list.Count(x => !parentByChild.ContainsKey(x.BoneIndex));
+
+            var worldCache = new Dictionary<int, System.Numerics.Matrix4x4>();
+            System.Numerics.Matrix4x4 GetWorld(int boneIndex)
+            {
+                if (worldCache.TryGetValue(boneIndex, out var cached))
+                {
+                    return cached;
+                }
+                if (!boneByIndex.TryGetValue(boneIndex, out var bone) || !bone.HasLocalTrs)
+                {
+                    return System.Numerics.Matrix4x4.Identity;
+                }
+
+                var local = ToMatrix4x4(bone);
+                var world = parentByChild.TryGetValue(boneIndex, out var parentIndex)
+                    ? local * GetWorld(parentIndex)
+                    : local;
+                worldCache[boneIndex] = world;
+                return world;
+            }
+
+            var identity = IdentityMatrix4x4Array();
+            foreach (var bone in list.Where(x => x.HasLocalTrs))
+            {
+                var world = GetWorld(bone.BoneIndex);
+                if (!System.Numerics.Matrix4x4.Invert(world, out var inverse))
+                {
+                    check.InvalidMatrixCount++;
+                    continue;
+                }
+
+                var restTimesInverse = ToFloatArray(world * inverse).ToArray();
+                check.CheckedBoneCount++;
+                check.MaxRmsError = Math.Max(check.MaxRmsError, CalculateMatrixRmsError(restTimesInverse, identity));
+                check.MaxAbsError = Math.Max(check.MaxAbsError, CalculateMatrixMaxAbsError(restTimesInverse, identity));
+            }
+
+            check.Status = check.ReadableLocalTrsCount != check.BoneCount
+                ? "bindLocalTrsIncomplete"
+                : check.InvalidChildRefCount > 0 || check.InvalidMatrixCount > 0
+                    ? "bindLocalTrsHasInvalidRefsOrMatrices"
+                    : check.MaxRmsError <= 0.0001f && check.MaxAbsError <= 0.0001f
+                        ? "bindLocalTrsSelfConsistent"
+                        : "bindLocalTrsMismatch";
+            return check;
+        }
+
         private static IReadOnlyList<float[]> BuildInverseBindMatrices(
             IReadOnlyList<long> jointPathIds,
             IReadOnlyCollection<long> includedPathIds,
@@ -4730,6 +4812,7 @@ LIMIT 1;";
                     || x["m_BindLocalRotation"] != null
                     || x["m_BindLocalScale"] != null) ?? 0;
             evidence.AvatarFaceDataBoneSamples.AddRange(ReadAvatarFaceDataBoneSamples(avatarBones));
+            evidence.BindLocalTrsSelfCheck = BuildFaceRuntimeBindLocalTrsCheck(evidence.AvatarFaceDataBoneSamples);
 
             var faceBoneNames = ReadAvatarFaceDataBoneNames(avatarBones).ToArray();
             evidence.RuntimeBoneNamesMatchAvatarFaceData = evidence.RuntimeBoneNames.Count == faceBoneNames.Length
@@ -7638,6 +7721,7 @@ LIMIT 1;";
             public List<FaceRuntimeBoneSample> AvatarFaceDataBoneSamples { get; } = new();
             public List<FaceRuntimeMappedBoneRef> MappedUsedBoneSamples { get; } = new();
             public List<BoneRefCount> MissingUsedBoneRefs { get; } = new();
+            public FaceRuntimeBindLocalTrsCheck BindLocalTrsSelfCheck { get; set; }
 
             public JObject ToJson() => new()
             {
@@ -7667,10 +7751,39 @@ LIMIT 1;";
                 ["missingUsedBoneIndexCount"] = MissingUsedBoneIndexCount,
                 ["allUsedBoneIndicesMapped"] = AllUsedBoneIndicesMapped,
                 ["runtimeBoneNameSamples"] = new JArray(RuntimeBoneNames.Take(32).Select(x => new JValue(x))),
+                ["bindLocalTrsSelfCheck"] = BindLocalTrsSelfCheck?.ToJson(),
                 ["avatarFaceDataBoneSamples"] = new JArray(AvatarFaceDataBoneSamples.Select(x => x.ToJson())),
                 ["mappedUsedBoneSamples"] = new JArray(MappedUsedBoneSamples.Select(x => x.ToJson())),
                 ["missingUsedBoneRefs"] = new JArray(MissingUsedBoneRefs.Select(x => x.ToJson())),
                 ["rule"] = "AvatarFaceRuntime 和 AvatarFaceData 只提供脸部 boneIndex 顺序、骨骼名和 bind local TRS 线索；缺少最终 joint 层级写入和视觉验证前，仍保持 diagnostic skin blocked。"
+            };
+        }
+
+        private sealed class FaceRuntimeBindLocalTrsCheck
+        {
+            public string Status { get; set; }
+            public int BoneCount { get; init; }
+            public int ReadableLocalTrsCount { get; init; }
+            public int RootBoneCount { get; set; }
+            public int CheckedBoneCount { get; set; }
+            public int InvalidChildRefCount { get; set; }
+            public int InvalidMatrixCount { get; set; }
+            public float MaxRmsError { get; set; }
+            public float MaxAbsError { get; set; }
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["boneCount"] = BoneCount,
+                ["readableLocalTrsCount"] = ReadableLocalTrsCount,
+                ["rootBoneCount"] = RootBoneCount,
+                ["checkedBoneCount"] = CheckedBoneCount,
+                ["invalidChildRefCount"] = InvalidChildRefCount,
+                ["invalidMatrixCount"] = InvalidMatrixCount,
+                ["maxRmsError"] = RoundFloat(MaxRmsError),
+                ["maxAbsError"] = RoundFloat(MaxAbsError),
+                ["check"] = "avatarFaceDataBindLocalWorld * inverse(avatarFaceDataBindLocalWorld) ~= identity",
+                ["rule"] = "该检查只证明 AvatarFaceData 的 bind local TRS 层级和诊断 inverse bind matrix 内部自洽；它不证明完整角色父骨、Renderer 装配或动画绑定已经成立。"
             };
         }
 
