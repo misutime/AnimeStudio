@@ -1388,6 +1388,7 @@ namespace AnimeStudio.CLI
                     }
                 }
             };
+            ProtectCustomizationTintPreviewBaseColor(result, color, usedBaseColor);
             if (normalTexture != null)
             {
                 result["normalTexture"] = normalTexture;
@@ -1403,6 +1404,34 @@ namespace AnimeStudio.CLI
                 ((JObject)result["extras"]["animeStudioMaterial"])["previewAlpha"] = alphaDecision.Extras;
             }
             return result;
+        }
+
+        private static void ProtectCustomizationTintPreviewBaseColor(JObject material, JToken unityColor, bool hasBaseColorTexture)
+        {
+            if (hasBaseColorTexture)
+            {
+                return;
+            }
+
+            var pbr = material["pbrMetallicRoughness"] as JObject;
+            var anime = material["extras"]?["animeStudioMaterial"] as JObject;
+            if (pbr == null || anime == null)
+            {
+                return;
+            }
+
+            var factor = ReadColorFactor(unityColor);
+            if (!IsNearlyWhite(factor))
+            {
+                return;
+            }
+
+            // Naraka 发型常把真实颜色放在 customization / shader 参数里，_Color=白色不是最终发色。
+            // 这里只保护诊断预览可读性，不把任何私有 shader slot 猜成最终颜色。
+            anime["originalBaseColorFactor"] = factor;
+            anime["previewBaseColorFactorProtected"] = true;
+            anime["previewBaseColorFactorReason"] = "Unity _Color is nearly white and no safe base color texture was found; the Naraka custom mesh preview uses neutral gray while preserving the original value and needsCustomizationTint=true.";
+            pbr["baseColorFactor"] = new JArray(0.55, 0.55, 0.55, 1.0);
         }
 
         private static int AddGltfTexture(JArray images, JArray textures, string name, string relativePath)
@@ -1449,6 +1478,19 @@ namespace AnimeStudio.CLI
                 color["g"]?.Value<float>() ?? 0.8f,
                 color["b"]?.Value<float>() ?? 0.8f,
                 color["a"]?.Value<float>() ?? 1.0f);
+        }
+
+        private static bool IsNearlyWhite(JArray factor)
+        {
+            if (factor == null || factor.Count < 4)
+            {
+                return false;
+            }
+
+            return factor[0]?.Value<float>() >= 0.97f
+                && factor[1]?.Value<float>() >= 0.97f
+                && factor[2]?.Value<float>() >= 0.97f
+                && factor[3]?.Value<float>() > 0.5f;
         }
 
         private static bool TryBuildPreviewAlphaDecision(
