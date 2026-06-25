@@ -1002,6 +1002,8 @@ namespace AnimeStudio
 
             if (
                 key == "_MainTex"
+                || key == "_MainTexture"
+                || key == "_BaseTexture"
                 || key.Contains("Diffuse")
                 || key.Contains("Albedo")
                 || key.Contains("BaseMap")

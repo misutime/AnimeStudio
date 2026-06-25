@@ -1804,6 +1804,8 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             }
             if (
                 key == "_MainTex"
+                || key == "_MainTexture"
+                || key == "_BaseTexture"
                 || key.Contains("Diffuse")
                 || key.Contains("Albedo")
                 || key.Contains("BaseMap")

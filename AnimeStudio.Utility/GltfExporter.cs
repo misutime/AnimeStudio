@@ -725,6 +725,7 @@ namespace AnimeStudio
             var baseColorTextureIndex = -1;
             var colorMaskTextureIndex = -1;
             var maskTextureIndex = -1;
+            var maskTextureSlot = "_MaskMap";
 
             foreach (var textureRef in material.Textures ?? Enumerable.Empty<ImportedMaterialTexture>())
             {
@@ -755,6 +756,7 @@ namespace AnimeStudio
                 else if (IsMaskSlot(textureRef.Slot))
                 {
                     maskTextureIndex = textureIndex;
+                    maskTextureSlot = textureRef.Slot;
                 }
             }
 
@@ -785,7 +787,8 @@ namespace AnimeStudio
                 gltfMaterial,
                 baseColorTextureIndex,
                 colorMaskTextureIndex,
-                maskTextureIndex);
+                maskTextureIndex,
+                maskTextureSlot);
             ProtectOpaquePreviewBaseColorTextureAlpha(material, pbr, gltfMaterial);
 
             var index = _materials.Count;
@@ -825,7 +828,8 @@ namespace AnimeStudio
             Dictionary<string, object> gltfMaterial,
             int baseColorTextureIndex,
             int colorMaskTextureIndex,
-            int maskTextureIndex)
+            int maskTextureIndex,
+            string maskTextureSlot)
         {
             if (baseColorTextureIndex < 0)
             {
@@ -847,7 +851,7 @@ namespace AnimeStudio
             {
                 maskSlots.Add(new Dictionary<string, object>
                 {
-                    ["slot"] = "_MaskMap",
+                    ["slot"] = maskTextureSlot,
                     ["texture"] = maskTextureIndex,
                     ["usage"] = "shader-mask",
                 });
@@ -1011,7 +1015,12 @@ namespace AnimeStudio
         private static bool IsMaskSlot(string slot)
         {
             return string.Equals(slot, "_MaskMap", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(slot, "_Masks", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(slot, "_MaskTexture", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_Masks", StringComparison.OrdinalIgnoreCase)
+                // 一些 Unity 自定义角色 shader 会把分区/材质 ID 图放在 AdvID/IDTex 槽。
+                // 它只能作为 shader-mask 证据记录，不能默认当作可烘焙配色的 _ColorMask。
+                || string.Equals(slot, "_AdvIDTex", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_IDTex", StringComparison.OrdinalIgnoreCase);
         }
 
         private static float Clamp01(float value) => Math.Max(0.0f, Math.Min(1.0f, value));
