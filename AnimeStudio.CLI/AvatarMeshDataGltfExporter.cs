@@ -4243,8 +4243,11 @@ LIMIT 1;";
                 }
 
                 var boneTargets = GetRendererBoneTargets(binding).ToArray();
-                var inverseBindMatrices = part.Mesh.Skin.BindPoseMatrix.Matrices.Count == boneTargets.Length
-                    ? part.Mesh.Skin.BindPoseMatrix.Matrices.Select(TransposeMatrix4x4).ToArray()
+                var rawBindMatrices = part.Mesh.Skin.BindPoseMatrix.Matrices.Count == boneTargets.Length
+                    ? part.Mesh.Skin.BindPoseMatrix.Matrices.ToArray()
+                    : Array.Empty<IReadOnlyList<float>>();
+                var inverseBindMatrices = rawBindMatrices.Length == boneTargets.Length
+                    ? rawBindMatrices.Select(TransposeMatrix4x4).ToArray()
                     : Array.Empty<float[]>();
                 if (inverseBindMatrices.Length != boneTargets.Length)
                 {
@@ -4319,7 +4322,8 @@ LIMIT 1;";
                     boneIndexToJointSlot,
                     inverseBindMatrices,
                     nodeIndexByPath.Count,
-                    BuildRendererBonesDiagnosticRestCheck(part, restMatrices, inverseBindMatrices, restMatrixInvertFailureCount));
+                    BuildRendererBonesDiagnosticRestCheck(part, restMatrices, inverseBindMatrices, restMatrixInvertFailureCount),
+                    BuildRendererBonesTransformMatrixCheck(part, boneTargets, rawBindMatrices, inverseBindMatrices, exported));
             }
 
             if (result.Count == 0)
@@ -4377,6 +4381,124 @@ LIMIT 1;";
                     ? "bindPoseDerivedRestSelfConsistent"
                     : "bindPoseDerivedRestMismatch";
             return check;
+        }
+
+        private static RendererBonesTransformMatrixCheck BuildRendererBonesTransformMatrixCheck(
+            VisualCellPart part,
+            IReadOnlyList<RendererBoneTarget> boneTargets,
+            IReadOnlyList<IReadOnlyList<float>> rawBindMatrices,
+            IReadOnlyList<float[]> transposedBindMatrices,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
+        {
+            var check = new RendererBonesTransformMatrixCheck
+            {
+                Part = part?.GameObjectName,
+                MeshName = part?.Mesh?.MeshName,
+                JointCount = boneTargets?.Count ?? 0,
+                MatrixSource = "Renderer.m_Bones explicit PPtr transforms compared with AvatarMeshDataAsset.m_BindPoses"
+            };
+            if (boneTargets == null || rawBindMatrices == null || transposedBindMatrices == null
+                || boneTargets.Count == 0 || rawBindMatrices.Count != boneTargets.Count || transposedBindMatrices.Count != boneTargets.Count)
+            {
+                check.Status = "matrixCountMismatch";
+                return check;
+            }
+
+            var exported = exportedTransformNodes ?? new Dictionary<long, ExportedTransformNode>();
+            check.ReadableTransformCount = boneTargets.Count(x => exported.TryGetValue(x.PathId, out var transform) && transform.HasLocalTrs);
+            check.ReadableFullChainCount = boneTargets.Count(x => HasReadableTransformChain(x.PathId, exported));
+            check.MissingTransformCount = Math.Max(0, boneTargets.Count - check.ReadableTransformCount);
+            if (check.ReadableTransformCount == 0)
+            {
+                check.Status = "missingReadableRendererBoneTransforms";
+                return check;
+            }
+
+            var includedPathIds = exported.Keys.ToArray();
+            var jointPathIds = boneTargets.Select(x => x.PathId).ToArray();
+            var unityInverseByPath = BuildUnityInverseBindMatrices(jointPathIds, includedPathIds, exported);
+            var gltfInverseByPath = BuildInverseBindMatrices(jointPathIds, includedPathIds, exported);
+
+            for (var slot = 0; slot < boneTargets.Count; slot++)
+            {
+                var target = boneTargets[slot];
+                if (!exported.TryGetValue(target.PathId, out var transform) || !transform.HasLocalTrs)
+                {
+                    continue;
+                }
+
+                var unityInverse = unityInverseByPath.Count > slot ? unityInverseByPath[slot] : Array.Empty<float>();
+                var gltfInverse = gltfInverseByPath.Count > slot ? gltfInverseByPath[slot] : Array.Empty<float>();
+                RendererBonesTransformMatrixMatch best = null;
+                Consider("rawBindPose", "unityInverseWorld", rawBindMatrices[slot], unityInverse);
+                Consider("transposedBindPose", "unityInverseWorld", transposedBindMatrices[slot], unityInverse);
+                Consider("rawBindPose", "gltfInverseWorld", rawBindMatrices[slot], gltfInverse);
+                Consider("transposedBindPose", "gltfInverseWorld", transposedBindMatrices[slot], gltfInverse);
+
+                if (best != null)
+                {
+                    check.CheckedJointCount++;
+                    check.CloseMatchCount += best.RmsError <= 0.001f ? 1 : 0;
+                    check.BestRmsErrorMin = check.CheckedJointCount == 1 ? best.RmsError : Math.Min(check.BestRmsErrorMin, best.RmsError);
+                    check.BestRmsErrorMax = check.CheckedJointCount == 1 ? best.RmsError : Math.Max(check.BestRmsErrorMax, best.RmsError);
+                    check.Matches.Add(best);
+                }
+
+                void Consider(string bindPoseInterpretation, string transformMatrixSpace, IReadOnlyList<float> left, IReadOnlyList<float> right)
+                {
+                    if (left == null || right == null || left.Count != 16 || right.Count != 16)
+                    {
+                        return;
+                    }
+
+                    var error = CalculateMatrixRmsError(left, right);
+                    if (best == null || error < best.RmsError)
+                    {
+                        best = new RendererBonesTransformMatrixMatch
+                        {
+                            BindPoseSlot = slot,
+                            RendererBonePathId = target.PathId,
+                            RendererBoneFileId = target.FileId,
+                            RendererBoneTypeHint = target.TypeHint,
+                            SourceGameObjectPathId = transform.GameObjectPathId,
+                            SourceJson = transform.JsonPath,
+                            BindPoseInterpretation = bindPoseInterpretation,
+                            TransformMatrixSpace = transformMatrixSpace,
+                            RmsError = error,
+                            FullTransformChainReadable = HasReadableTransformChain(target.PathId, exported),
+                        };
+                    }
+                }
+            }
+
+            check.Status = check.CheckedJointCount == 0
+                ? "missingComparableRendererBoneMatrices"
+                : check.CloseMatchCount == check.CheckedJointCount
+                    ? "allRendererBoneTransformMatricesClose"
+                    : check.CloseMatchCount > 0
+                        ? "partialRendererBoneTransformMatricesClose"
+                        : "rendererBoneTransformMatricesMismatch";
+            return check;
+        }
+
+        private static bool HasReadableTransformChain(long pathId, IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
+        {
+            var seen = new HashSet<long>();
+            var current = pathId;
+            while (current != 0)
+            {
+                if (!seen.Add(current)
+                    || exportedTransformNodes == null
+                    || !exportedTransformNodes.TryGetValue(current, out var transform)
+                    || !transform.HasLocalTrs)
+                {
+                    return false;
+                }
+
+                current = transform.FatherPathId;
+            }
+
+            return true;
         }
 
         private static HairCustomizationTintEvidence LoadHairCustomizationTintEvidence(
@@ -7890,7 +8012,8 @@ LIMIT 1;";
                 IReadOnlyDictionary<int, int> boneIndexToJointSlot,
                 IReadOnlyList<float[]> inverseBindMatrices,
                 int nodeCount,
-                RendererBonesDiagnosticRestCheck restCheck)
+                RendererBonesDiagnosticRestCheck restCheck,
+                RendererBonesTransformMatrixCheck transformMatrixCheck)
             {
                 Part = part;
                 _evidence = evidence;
@@ -7900,6 +8023,7 @@ LIMIT 1;";
                 InverseBindMatrices = inverseBindMatrices ?? Array.Empty<float[]>();
                 NodeCount = Math.Max(0, nodeCount);
                 RestCheck = restCheck;
+                TransformMatrixCheck = transformMatrixCheck;
             }
 
             public VisualCellPart Part { get; }
@@ -7911,6 +8035,7 @@ LIMIT 1;";
             public int NodeCount { get; }
             public int JointCount => JointNodeIndices.Count;
             public RendererBonesDiagnosticRestCheck RestCheck { get; }
+            public RendererBonesTransformMatrixCheck TransformMatrixCheck { get; }
 
             public JObject BuildSkinJson(Stream stream, JArray bufferViews, JArray accessors)
             {
@@ -7965,6 +8090,7 @@ LIMIT 1;";
                 ["weightSource"] = "AvatarMeshDataAsset.m_AnimSkinData",
                 ["jointSource"] = "SkinnedMeshRenderer.m_Bones explicit PPtr order",
                 ["restSelfCheck"] = RestCheck?.ToJson(),
+                ["transformHierarchyMatrixCheck"] = TransformMatrixCheck?.ToJson(),
                 ["evidence"] = _evidence?.ToJson(),
                 ["rule"] = "该 skin 只在显式诊断开关下写出。Renderer.m_Bones 是 Unity 显式关系，m_AnimSkinData 是当前网格局部权重，m_BindPoses 仍需确认矩阵空间和静态视觉效果；通过前不能进入生产 skin、正式模型验收或动画 smoke。"
             };
@@ -8007,6 +8133,73 @@ LIMIT 1;";
                 ["inverseBindMatrixSource"] = InverseBindMatrixSource,
                 ["check"] = "jointRestMatrix * inverseBindMatrix ~= identity",
                 ["rule"] = "该检查只证明诊断节点的静态 rest 与写出的 inverse bind matrix 自洽，不能证明 Unity 原始 Transform 层级、完整角色装配或动画绑定已经成立。"
+            };
+        }
+
+        private sealed class RendererBonesTransformMatrixCheck
+        {
+            public string Status { get; set; }
+            public string Part { get; init; }
+            public string MeshName { get; init; }
+            public int JointCount { get; init; }
+            public int ReadableTransformCount { get; set; }
+            public int ReadableFullChainCount { get; set; }
+            public int MissingTransformCount { get; set; }
+            public int CheckedJointCount { get; set; }
+            public int CloseMatchCount { get; set; }
+            public float BestRmsErrorMin { get; set; }
+            public float BestRmsErrorMax { get; set; }
+            public string MatrixSource { get; init; }
+            public List<RendererBonesTransformMatrixMatch> Matches { get; } = new();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["part"] = Part,
+                ["meshName"] = MeshName,
+                ["jointCount"] = JointCount,
+                ["readableTransformCount"] = ReadableTransformCount,
+                ["readableFullChainCount"] = ReadableFullChainCount,
+                ["missingTransformCount"] = MissingTransformCount,
+                ["checkedJointCount"] = CheckedJointCount,
+                ["closeMatchCount"] = CloseMatchCount,
+                ["bestRmsErrorMin"] = CheckedJointCount == 0 ? JValue.CreateNull() : RoundFloat(BestRmsErrorMin),
+                ["bestRmsErrorMax"] = CheckedJointCount == 0 ? JValue.CreateNull() : RoundFloat(BestRmsErrorMax),
+                ["matrixSource"] = MatrixSource,
+                ["matches"] = new JArray(Matches
+                    .OrderBy(x => x.BindPoseSlot)
+                    .ThenBy(x => x.RmsError)
+                    .Take(32)
+                    .Select(x => x.ToJson())),
+                ["rule"] = "该检查只比较 Renderer.m_Bones 显式 Transform 层级逆世界矩阵和 m_BindPoses 槽位矩阵是否接近；不接近时说明不能直接拿 Unity Transform 层级当诊断 skin 的 rest，接近也仍需 joint 层级、装配和视觉验收。"
+            };
+        }
+
+        private sealed class RendererBonesTransformMatrixMatch
+        {
+            public int BindPoseSlot { get; init; }
+            public int RendererBoneFileId { get; init; }
+            public long RendererBonePathId { get; init; }
+            public string RendererBoneTypeHint { get; init; }
+            public long SourceGameObjectPathId { get; init; }
+            public string SourceJson { get; init; }
+            public string BindPoseInterpretation { get; init; }
+            public string TransformMatrixSpace { get; init; }
+            public float RmsError { get; init; }
+            public bool FullTransformChainReadable { get; init; }
+
+            public JObject ToJson() => new()
+            {
+                ["bindPoseSlot"] = BindPoseSlot,
+                ["rendererBoneFileId"] = RendererBoneFileId,
+                ["rendererBonePathId"] = RendererBonePathId,
+                ["rendererBoneTypeHint"] = RendererBoneTypeHint,
+                ["sourceGameObjectPathId"] = SourceGameObjectPathId,
+                ["sourceJson"] = string.IsNullOrWhiteSpace(SourceJson) ? null : Path.GetFullPath(SourceJson),
+                ["bindPoseInterpretation"] = BindPoseInterpretation,
+                ["transformMatrixSpace"] = TransformMatrixSpace,
+                ["rmsError"] = RoundFloat(RmsError),
+                ["fullTransformChainReadable"] = FullTransformChainReadable,
             };
         }
 
