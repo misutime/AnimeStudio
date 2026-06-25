@@ -2610,6 +2610,10 @@ LIMIT 1;";
             var requiredNodeCount = skin.AvatarMaxBoneIndex.HasValue
                 ? skin.AvatarMaxBoneIndex.Value + 1
                 : (int?)null;
+            var selectedTable = selectedVisualCellPathId.HasValue
+                ? tables.FirstOrDefault(x => string.Equals(x.SerializedFile, file, StringComparison.OrdinalIgnoreCase)
+                    && x.VisualCellPathId == selectedVisualCellPathId.Value)
+                : null;
             var driverNames = boneDriverNodeNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var table in tables.Where(x => string.Equals(x.SerializedFile, file, StringComparison.OrdinalIgnoreCase)))
             {
@@ -2689,10 +2693,84 @@ LIMIT 1;";
                     ExportedCoveredUsedBoneTransformCount = exportedCoveredUsedBoneTransformCount,
                     MissingExportedCoveredUsedBoneTransformCount = Math.Max(0, coveredUsedRefs.Length - exportedCoveredUsedBoneTransformCount),
                     AllCoveredUsedBoneTransformsExported = coveredUsedRefs.Length > 0 && exportedCoveredUsedBoneTransformCount == coveredUsedRefs.Length,
+                    SelectedVisualCellIndexOrderComparison = CompareWithSelectedTransformNodeTable(table, selectedTable, usedRefs),
                     BoneDriverNodeNameMatchCount = boneDriverMatches.Length,
                     BoneDriverNodeNameMatches = boneDriverMatches,
                 };
             }
+        }
+
+        private static SelectedTransformNodeTableComparison CompareWithSelectedTransformNodeTable(
+            TransformNodeTable candidate,
+            TransformNodeTable selectedTable,
+            IReadOnlyCollection<BoneRefCount> usedRefs)
+        {
+            if (candidate == null)
+            {
+                return null;
+            }
+
+            if (selectedTable == null)
+            {
+                return new SelectedTransformNodeTableComparison
+                {
+                    Status = "selectedVisualCellTransformNodeTableMissing",
+                };
+            }
+
+            if (candidate.VisualCellPathId == selectedTable.VisualCellPathId
+                && string.Equals(candidate.SerializedFile, selectedTable.SerializedFile, StringComparison.OrdinalIgnoreCase))
+            {
+                var comparedCount = (usedRefs ?? Array.Empty<BoneRefCount>())
+                    .Count(x => x.BoneIndex >= 0 && x.BoneIndex < selectedTable.Nodes.Count);
+                return new SelectedTransformNodeTableComparison
+                {
+                    Status = "selectedVisualCellSelf",
+                    ComparedBoneIndexCount = comparedCount,
+                    NameMatchCount = comparedCount,
+                };
+            }
+
+            var refs = new List<SelectedTransformNodeTableComparisonRef>();
+            foreach (var usedRef in usedRefs ?? Array.Empty<BoneRefCount>())
+            {
+                if (usedRef.BoneIndex < 0
+                    || usedRef.BoneIndex >= selectedTable.Nodes.Count
+                    || usedRef.BoneIndex >= candidate.Nodes.Count)
+                {
+                    continue;
+                }
+
+                var selectedNode = selectedTable.Nodes[usedRef.BoneIndex];
+                var candidateNode = candidate.Nodes[usedRef.BoneIndex];
+                var nameMatches = !string.IsNullOrWhiteSpace(selectedNode.GameObjectName)
+                    && string.Equals(selectedNode.GameObjectName, candidateNode.GameObjectName, StringComparison.OrdinalIgnoreCase);
+                refs.Add(new SelectedTransformNodeTableComparisonRef(
+                    usedRef.BoneIndex,
+                    usedRef.WeightedRefCount,
+                    selectedNode.GameObjectName,
+                    selectedNode.GameObjectPathId,
+                    selectedNode.TransformPathId,
+                    candidateNode.GameObjectName,
+                    candidateNode.GameObjectPathId,
+                    candidateNode.TransformPathId,
+                    nameMatches));
+            }
+
+            var matchCount = refs.Count(x => x.NameMatches);
+            var conflictCount = refs.Count - matchCount;
+            return new SelectedTransformNodeTableComparison
+            {
+                Status = refs.Count == 0
+                    ? "noSharedUsedBoneIndicesWithSelectedVisualCell"
+                    : conflictCount == 0
+                        ? "sameIndexNamesMatchSelectedVisualCell"
+                        : "sameIndexNamesConflictWithSelectedVisualCell",
+                ComparedBoneIndexCount = refs.Count,
+                NameMatchCount = matchCount,
+                NameConflictCount = conflictCount,
+                Conflicts = refs.Where(x => !x.NameMatches).Take(32).ToArray(),
+            };
         }
 
         private static JObject ToReportJson(
@@ -5313,6 +5391,7 @@ LIMIT 1;";
             public int ExportedCoveredUsedBoneTransformCount { get; init; }
             public int MissingExportedCoveredUsedBoneTransformCount { get; init; }
             public bool AllCoveredUsedBoneTransformsExported { get; init; }
+            public SelectedTransformNodeTableComparison SelectedVisualCellIndexOrderComparison { get; init; }
             public int BoneDriverNodeNameMatchCount { get; init; }
             public IReadOnlyList<string> BoneDriverNodeNameMatches { get; init; } = Array.Empty<string>();
 
@@ -5339,10 +5418,55 @@ LIMIT 1;";
                 ["exportedCoveredUsedBoneTransformCount"] = ExportedCoveredUsedBoneTransformCount,
                 ["missingExportedCoveredUsedBoneTransformCount"] = MissingExportedCoveredUsedBoneTransformCount,
                 ["allCoveredUsedBoneTransformsExported"] = AllCoveredUsedBoneTransformsExported,
+                ["selectedVisualCellIndexOrderComparison"] = SelectedVisualCellIndexOrderComparison?.ToJson(),
                 ["boneDriverNodeNameMatchCount"] = BoneDriverNodeNameMatchCount,
                 ["boneDriverNodeNameMatches"] = new JArray((BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
                 ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
-                ["rule"] = "只把 AvatarBoneWeights 的 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；covered/missing usedBoneRefs 只说明实际权重索引是否落在候选表内，allCoveredUsedBoneTransformsExported 只说明候选 Transform JSON 可读，仍不能单独证明 joint 映射，不能写入 glTF skin。"
+                ["rule"] = "只把 AvatarBoneWeights 的 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；covered/missing usedBoneRefs 只说明实际权重索引是否落在候选表内，selectedVisualCellIndexOrderComparison 用来防止把同 index 但节点名冲突的其它 VisualCell 表误当成可拼接 skin，仍不能写入 glTF skin。"
+            };
+        }
+
+        private sealed class SelectedTransformNodeTableComparison
+        {
+            public string Status { get; init; }
+            public int ComparedBoneIndexCount { get; init; }
+            public int NameMatchCount { get; init; }
+            public int NameConflictCount { get; init; }
+            public IReadOnlyList<SelectedTransformNodeTableComparisonRef> Conflicts { get; init; } = Array.Empty<SelectedTransformNodeTableComparisonRef>();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["comparedBoneIndexCount"] = ComparedBoneIndexCount,
+                ["nameMatchCount"] = NameMatchCount,
+                ["nameConflictCount"] = NameConflictCount,
+                ["conflicts"] = new JArray((Conflicts ?? Array.Empty<SelectedTransformNodeTableComparisonRef>()).Select(x => x.ToJson())),
+                ["rule"] = "同一个 boneIndex 在不同 ActorBodyVisualCell.transformNodes.data 中可能表示完全不同节点；如果这里大量冲突，同包其它覆盖表只能作为来源线索，不能拿来补选中网格的 skin joint。"
+            };
+        }
+
+        private sealed record SelectedTransformNodeTableComparisonRef(
+            int BoneIndex,
+            int WeightedRefCount,
+            string SelectedGameObjectName,
+            long SelectedGameObjectPathId,
+            long SelectedTransformPathId,
+            string CandidateGameObjectName,
+            long CandidateGameObjectPathId,
+            long CandidateTransformPathId,
+            bool NameMatches)
+        {
+            public JObject ToJson() => new()
+            {
+                ["boneIndex"] = BoneIndex,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["selectedGameObjectName"] = SelectedGameObjectName,
+                ["selectedGameObjectPathId"] = SelectedGameObjectPathId,
+                ["selectedTransformPathId"] = SelectedTransformPathId,
+                ["candidateGameObjectName"] = CandidateGameObjectName,
+                ["candidateGameObjectPathId"] = CandidateGameObjectPathId,
+                ["candidateTransformPathId"] = CandidateTransformPathId,
+                ["nameMatches"] = NameMatches,
             };
         }
 
