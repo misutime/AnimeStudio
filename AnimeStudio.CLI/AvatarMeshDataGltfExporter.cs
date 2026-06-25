@@ -412,6 +412,7 @@ namespace AnimeStudio.CLI
 
             var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var externalSkeletonContextCandidate = SelectExternalSkeletonContextCandidate(transformNodeTableCandidates);
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
             var usedBoneCoverageCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices);
@@ -581,6 +582,9 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellTransformNodeCoverageStatus"] = selectedTransformNodeCoverageStatus,
                 ["sourceSkinMappingStatus"] = sourceSkinMappingStatus,
                 ["sourceSkinMappingRule"] = "只有选中 ActorBodyVisualCell 自己的 transformNodes.data 覆盖 AvatarBoneWeights 的最大 boneIndex，且 joint 名称/路径映射也能确定时，才允许写 glTF skin；同包其它 VisualCell 的覆盖表只能作为诊断线索。",
+                ["externalSkeletonContextCandidateStatus"] = SummarizeExternalSkeletonContextCandidateStatus(externalSkeletonContextCandidate),
+                ["externalSkeletonContextCandidate"] = BuildExternalSkeletonContextCandidateJson(externalSkeletonContextCandidate),
+                ["externalSkeletonContextRule"] = "外部 VisualCell 的 transformNodes 只说明当前网格可能需要完整角色/身体骨架上下文；它不能替代选中 VisualCell 自己的 joint 映射，也不能直接写 glTF skin。",
                 ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
                 ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
@@ -653,6 +657,7 @@ namespace AnimeStudio.CLI
                 ? "needsCustomizationTint"
                 : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var externalSkeletonContextCandidate = SelectExternalSkeletonContextCandidate(transformNodeTableCandidates);
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = (string)report["selectedVisualCellTransformNodeTableStatus"];
             var usedBoneCoverageCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices);
@@ -715,6 +720,9 @@ namespace AnimeStudio.CLI
                 transformNodeTableCandidates.Any(x => x.BoneDriverNodeNameMatchCount > 0)
                     ? "global_bone_driver_transform_node_overlap_present"
                     : "global_bone_driver_transform_node_overlap_missing",
+                externalSkeletonContextCandidate != null
+                    ? "external_skeleton_context_candidate_present"
+                    : "external_skeleton_context_candidate_missing",
                 hairDeformDataStatus == "missing"
                     ? "hair_deform_data_missing"
                     : hairDeformDataStatus == "countMismatch"
@@ -841,6 +849,9 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellTransformNodeMissingCount"] = report["selectedVisualCellTransformNodeMissingCount"]?.DeepClone(),
                 ["selectedVisualCellTransformNodeCoverageStatus"] = report["selectedVisualCellTransformNodeCoverageStatus"]?.DeepClone(),
                 ["sourceSkinMappingStatus"] = report["sourceSkinMappingStatus"]?.DeepClone(),
+                ["externalSkeletonContextCandidateStatus"] = report["externalSkeletonContextCandidateStatus"]?.DeepClone(),
+                ["externalSkeletonContextCandidate"] = report["externalSkeletonContextCandidate"]?.DeepClone(),
+                ["externalSkeletonContextRule"] = report["externalSkeletonContextRule"]?.DeepClone(),
                 ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
                 ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
@@ -877,6 +888,7 @@ namespace AnimeStudio.CLI
                     ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                     ["selectedTransformNodeCoverageStatus"] = report["selectedVisualCellTransformNodeCoverageStatus"]?.DeepClone(),
                     ["sourceSkinMappingStatus"] = report["sourceSkinMappingStatus"]?.DeepClone(),
+                    ["externalSkeletonContextCandidateStatus"] = report["externalSkeletonContextCandidateStatus"]?.DeepClone(),
                     ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；BoneDriver 会同时区分全目录线索和选中 VisualCell 作用域，Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
@@ -2143,6 +2155,77 @@ namespace AnimeStudio.CLI
             return matched == 1
                 ? "singleBoneDriverNodeOverlapCandidate"
                 : "multipleBoneDriverNodeOverlapCandidates";
+        }
+
+        private static TransformNodeTableCandidate SelectExternalSkeletonContextCandidate(
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            // 只选非当前 VisualCell 的节点表作为“完整角色/身体上下文”线索。
+            // 它不授权写 skin，只方便后续装配阶段定位最可能的骨架来源。
+            return (candidates ?? Array.Empty<TransformNodeTableCandidate>())
+                .Where(x => !x.IsSelectedVisualCell)
+                .OrderByDescending(x => x.CoversAllUsedBoneIndices && x.AllCoveredUsedBoneTransformsExported)
+                .ThenByDescending(x => x.CoversAvatarBoneIndexRange)
+                .ThenByDescending(x => x.BoneDriverNodeNameMatchCount)
+                .ThenByDescending(x => x.MatchedTopBoneIndexCount)
+                .ThenByDescending(x => x.TransformNodeCount)
+                .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
+
+        private static string SummarizeExternalSkeletonContextCandidateStatus(TransformNodeTableCandidate candidate)
+        {
+            if (candidate == null)
+            {
+                return "missingExternalSkeletonContextCandidate";
+            }
+
+            if (candidate.CoversAllUsedBoneIndices && candidate.AllCoveredUsedBoneTransformsExported)
+            {
+                return "externalSkeletonContextCoversUsedBonesWithTrs";
+            }
+
+            if (candidate.CoversAllUsedBoneIndices)
+            {
+                return "externalSkeletonContextCoversUsedBonesMissingTrs";
+            }
+
+            if (candidate.CoversAvatarBoneIndexRange)
+            {
+                return "externalSkeletonContextCoversAvatarRangeOnly";
+            }
+
+            return "externalSkeletonContextDiagnosticOnly";
+        }
+
+        private static JObject BuildExternalSkeletonContextCandidateJson(TransformNodeTableCandidate candidate)
+        {
+            if (candidate == null)
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["status"] = SummarizeExternalSkeletonContextCandidateStatus(candidate),
+                ["serializedFile"] = candidate.SerializedFile,
+                ["visualCellPathId"] = candidate.VisualCellPathId,
+                ["visualCellGameObjectName"] = candidate.VisualCellGameObjectName,
+                ["container"] = candidate.Container,
+                ["transformNodeCount"] = candidate.TransformNodeCount,
+                ["requiredNodeCount"] = candidate.RequiredNodeCount,
+                ["usedBoneIndexCount"] = candidate.UsedBoneIndexCount,
+                ["coveredUsedBoneIndexCount"] = candidate.CoveredUsedBoneIndexCount,
+                ["missingUsedBoneIndexCount"] = candidate.MissingUsedBoneIndexCount,
+                ["coversAllUsedBoneIndices"] = candidate.CoversAllUsedBoneIndices,
+                ["allCoveredUsedBoneTransformsExported"] = candidate.AllCoveredUsedBoneTransformsExported,
+                ["matchedTopBoneIndexCount"] = candidate.MatchedTopBoneIndexCount,
+                ["missingTopBoneIndexCount"] = candidate.MissingTopBoneIndexCount,
+                ["boneDriverNodeNameMatchCount"] = candidate.BoneDriverNodeNameMatchCount,
+                ["boneDriverNodeNameMatches"] = new JArray((candidate.BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
+                ["mappedTopBoneRefs"] = new JArray((candidate.MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Take(24).Select(x => x.ToJson())),
+                ["rule"] = "这是外部 VisualCell 的 transformNodes 候选，只能作为完整角色装配/骨架上下文线索；选中网格自身没有确定 joint 映射时仍不能写 glTF skin。",
+            };
         }
 
         private static string SummarizeSelectedVisualCellTransformNodeTableStatus(
