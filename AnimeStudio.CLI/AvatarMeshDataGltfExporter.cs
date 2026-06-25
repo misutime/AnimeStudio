@@ -360,9 +360,10 @@ namespace AnimeStudio.CLI
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, warnings);
             var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
+            var boneDriverNodeNames = BuildBoneDriverNodeNameSet(boneDriverHints);
             foreach (var part in parts)
             {
-                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile, exportedTransformNodes));
+                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile, exportedTransformNodes, boneDriverNodeNames));
             }
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
@@ -494,6 +495,8 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
+                ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
                 ["transformNodeJsonCount"] = exportedTransformNodes.Count,
                 ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
@@ -588,6 +591,9 @@ namespace AnimeStudio.CLI
                     : transformNodeTableCandidateStatus == "indexOrderCandidatesAmbiguous"
                         ? "transform_node_table_candidates_ambiguous"
                         : "transform_node_table_candidate_present",
+                transformNodeTableCandidates.Any(x => x.BoneDriverNodeNameMatchCount > 0)
+                    ? "bone_driver_transform_node_overlap_present"
+                    : "bone_driver_transform_node_overlap_missing",
                 hairDeformDataStatus == "missing"
                     ? "hair_deform_data_missing"
                     : hairDeformDataStatus == "countMismatch"
@@ -670,6 +676,8 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
+                ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
                 ["transformNodeJsonCount"] = exportedTransformNodes.Count,
                 ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
@@ -1443,6 +1451,28 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
         }
 
+        private static HashSet<string> BuildBoneDriverNodeNameSet(IEnumerable<BoneDriverHint> hints)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var hint in hints ?? Array.Empty<BoneDriverHint>())
+            {
+                if (!string.IsNullOrWhiteSpace(hint.GameObjectName))
+                {
+                    result.Add(hint.GameObjectName.Trim());
+                }
+
+                var path = (hint.TransformPath ?? string.Empty).Replace('\\', '/').Trim('/');
+                var lastSlash = path.LastIndexOf('/');
+                var leaf = lastSlash >= 0 ? path[(lastSlash + 1)..] : path;
+                if (!string.IsNullOrWhiteSpace(leaf))
+                {
+                    result.Add(leaf.Trim());
+                }
+            }
+
+            return result;
+        }
+
         private static IEnumerable<TransformNodeTableCandidate> GetDistinctTransformNodeTableCandidates(
             IEnumerable<VisualCellPart> parts)
         {
@@ -1475,6 +1505,26 @@ namespace AnimeStudio.CLI
             return count == 1
                 ? "indexOrderCandidateOnly"
                 : "indexOrderCandidatesAmbiguous";
+        }
+
+        private static string SummarizeTransformNodeTableBoneDriverOverlapStatus(
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            var list = candidates?.ToArray() ?? Array.Empty<TransformNodeTableCandidate>();
+            if (list.Length == 0)
+            {
+                return "missingTransformNodeCandidates";
+            }
+
+            var matched = list.Count(x => x.BoneDriverNodeNameMatchCount > 0);
+            if (matched == 0)
+            {
+                return "missingBoneDriverNodeOverlap";
+            }
+
+            return matched == 1
+                ? "singleBoneDriverNodeOverlapCandidate"
+                : "multipleBoneDriverNodeOverlapCandidates";
         }
 
         private static string ResolveAnimSkinBindPoseSlotStatus(SkinSummary summary)
@@ -1709,7 +1759,8 @@ LIMIT 1;";
             SkinSummary skin,
             IReadOnlyList<TransformNodeTable> tables,
             string serializedFile,
-            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes,
+            ISet<string> boneDriverNodeNames)
         {
             if (skin == null || tables == null || tables.Count == 0)
             {
@@ -1729,6 +1780,7 @@ LIMIT 1;";
             var requiredNodeCount = skin.AvatarMaxBoneIndex.HasValue
                 ? skin.AvatarMaxBoneIndex.Value + 1
                 : (int?)null;
+            var driverNames = boneDriverNodeNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var table in tables.Where(x => string.Equals(x.SerializedFile, file, StringComparison.OrdinalIgnoreCase)))
             {
                 var mapped = topRefs
@@ -1747,6 +1799,13 @@ LIMIT 1;";
                     continue;
                 }
 
+                var boneDriverMatches = table.Nodes
+                    .Where(x => !string.IsNullOrWhiteSpace(x.GameObjectName) && driverNames.Contains(x.GameObjectName))
+                    .Select(x => x.GameObjectName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
                 yield return new TransformNodeTableCandidate
                 {
                     Status = "indexOrderCandidateOnly",
@@ -1760,6 +1819,8 @@ LIMIT 1;";
                     MatchedTopBoneIndexCount = mapped.Length,
                     MissingTopBoneIndexCount = topRefs.Length - mapped.Length,
                     MappedTopBoneRefs = mapped,
+                    BoneDriverNodeNameMatchCount = boneDriverMatches.Length,
+                    BoneDriverNodeNameMatches = boneDriverMatches,
                 };
             }
         }
@@ -3509,6 +3570,8 @@ WHERE relation = 'material.texture'
             public int MatchedTopBoneIndexCount { get; init; }
             public int MissingTopBoneIndexCount { get; init; }
             public IReadOnlyList<TransformNodeTableCandidateRef> MappedTopBoneRefs { get; init; } = Array.Empty<TransformNodeTableCandidateRef>();
+            public int BoneDriverNodeNameMatchCount { get; init; }
+            public IReadOnlyList<string> BoneDriverNodeNameMatches { get; init; } = Array.Empty<string>();
 
             public JObject ToJson() => new()
             {
@@ -3522,8 +3585,10 @@ WHERE relation = 'material.texture'
                 ["coversAvatarBoneIndexRange"] = CoversAvatarBoneIndexRange,
                 ["matchedTopBoneIndexCount"] = MatchedTopBoneIndexCount,
                 ["missingTopBoneIndexCount"] = MissingTopBoneIndexCount,
+                ["boneDriverNodeNameMatchCount"] = BoneDriverNodeNameMatchCount,
+                ["boneDriverNodeNameMatches"] = new JArray((BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
                 ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
-                ["rule"] = "只把 AvatarBoneWeights 的高频 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；coversAvatarBoneIndexRange 只说明节点数量够覆盖最大 boneIndex，不是 joint 映射，不能写入 glTF skin。"
+                ["rule"] = "只把 AvatarBoneWeights 的高频 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；boneDriverNodeNameMatchCount 只说明 BoneFollowDriver 所在节点名与该节点表重合，不能单独证明 joint 映射，不能写入 glTF skin。"
             };
         }
 
