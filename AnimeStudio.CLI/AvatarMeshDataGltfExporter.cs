@@ -6109,6 +6109,17 @@ LIMIT 1;";
                 AvatarBoneWeightsCount = (json["m_AvatarBoneWeights"] as JArray)?.Count ?? 0,
                 BindPoseCount = (json["m_BindPoses"] as JArray)?.Count ?? 0,
             };
+            summary.BindPoseMatrix = SummarizeBindPoseMatrices(json["m_BindPoses"] as JArray);
+            if (summary.BindPoseMatrix.NonFiniteCount > 0)
+            {
+                warnings.Add("bindPoseMatrixNonFinite");
+                summary.LayoutWarnings.Add("bindPoseMatrixNonFinite");
+            }
+            if (summary.BindPoseMatrix.NonAffineCount > 0)
+            {
+                warnings.Add("bindPoseMatrixNonAffine");
+                summary.LayoutWarnings.Add("bindPoseMatrixNonAffine");
+            }
 
             var animSkinData = json["m_AnimSkinData"] as JArray;
             if (animSkinData != null)
@@ -6298,6 +6309,118 @@ LIMIT 1;";
                 "animSkinBoneIndicesWithinBindPoseRange",
                 StringComparison.OrdinalIgnoreCase);
             return summary;
+        }
+
+        private static BindPoseMatrixSummary SummarizeBindPoseMatrices(JArray bindPoses)
+        {
+            var summary = new BindPoseMatrixSummary
+            {
+                Count = bindPoses?.Count ?? 0,
+            };
+            if (bindPoses == null || bindPoses.Count == 0)
+            {
+                summary.Status = "missing";
+                return summary;
+            }
+
+            for (var index = 0; index < bindPoses.Count; index++)
+            {
+                var matrix = bindPoses[index] as JObject;
+                if (matrix == null || !TryReadBindPoseMatrix(matrix, out var values))
+                {
+                    summary.IncompleteCount++;
+                    if (summary.Samples.Count < 3)
+                    {
+                        summary.Samples.Add(BindPoseMatrixSample.Incomplete(index));
+                    }
+                    continue;
+                }
+
+                var finite = values.All(float.IsFinite);
+                if (!finite)
+                {
+                    summary.NonFiniteCount++;
+                }
+                else
+                {
+                    summary.FiniteCount++;
+                }
+
+                var affine = finite
+                    && Math.Abs(values[12]) <= 0.0001f
+                    && Math.Abs(values[13]) <= 0.0001f
+                    && Math.Abs(values[14]) <= 0.0001f
+                    && Math.Abs(values[15] - 1f) <= 0.0001f;
+                if (!affine)
+                {
+                    summary.NonAffineCount++;
+                }
+
+                var determinant = finite ? CalculateMatrix3x3Determinant(values) : float.NaN;
+                if (finite)
+                {
+                    summary.MinDeterminant = summary.FiniteCount == 1
+                        ? determinant
+                        : Math.Min(summary.MinDeterminant, determinant);
+                    summary.MaxDeterminant = summary.FiniteCount == 1
+                        ? determinant
+                        : Math.Max(summary.MaxDeterminant, determinant);
+                    if (Math.Abs(determinant) < 0.000001f)
+                    {
+                        summary.NearZeroDeterminantCount++;
+                    }
+
+                    var translationLength = MathF.Sqrt(
+                        values[3] * values[3]
+                        + values[7] * values[7]
+                        + values[11] * values[11]);
+                    summary.MinTranslationLength = summary.FiniteCount == 1
+                        ? translationLength
+                        : Math.Min(summary.MinTranslationLength, translationLength);
+                    summary.MaxTranslationLength = summary.FiniteCount == 1
+                        ? translationLength
+                        : Math.Max(summary.MaxTranslationLength, translationLength);
+                }
+
+                if (summary.Samples.Count < 3)
+                {
+                    summary.Samples.Add(BindPoseMatrixSample.FromMatrix(index, values, determinant, affine));
+                }
+            }
+
+            summary.Status = summary.IncompleteCount > 0 || summary.NonFiniteCount > 0
+                ? "invalid"
+                : summary.NonAffineCount > 0
+                    ? "nonAffine"
+                    : "readableAffine";
+            return summary;
+        }
+
+        private static bool TryReadBindPoseMatrix(JObject matrix, out float[] values)
+        {
+            values = new float[16];
+            for (var row = 0; row < 4; row++)
+            {
+                for (var column = 0; column < 4; column++)
+                {
+                    var token = matrix[$"e{row}{column}"];
+                    if (token == null)
+                    {
+                        values = Array.Empty<float>();
+                        return false;
+                    }
+                    values[row * 4 + column] = token.Value<float>();
+                }
+            }
+
+            return true;
+        }
+
+        private static float CalculateMatrix3x3Determinant(IReadOnlyList<float> values)
+        {
+            return values[0] * (values[5] * values[10] - values[6] * values[9])
+                - values[1] * (values[4] * values[10] - values[6] * values[8])
+                + values[2] * (values[4] * values[9] - values[5] * values[8]);
         }
 
         private static HairDeformSummary ReadHairDeformSummary(JObject json, int vertexCount, List<string> warnings)
@@ -7579,6 +7702,7 @@ LIMIT 1;";
             public int AvatarMaxInfluenceCount { get; set; }
             public int AvatarInvalidRangeCount { get; set; }
             public int BindPoseCount { get; set; }
+            public BindPoseMatrixSummary BindPoseMatrix { get; set; } = new();
             public List<BoneRefCount> AvatarBoneRefs { get; } = new();
             public List<BoneRefCount> AvatarTopBoneRefs { get; } = new();
             public List<IReadOnlyList<VertexSkinInfluence>> VertexAvatarInfluences { get; } = new();
@@ -7628,9 +7752,11 @@ LIMIT 1;";
                     ["transformNodeTableCandidateCount"] = TransformNodeTableCandidates.Count,
                     ["transformNodeTableCandidates"] = new JArray(GetReportTransformNodeTableCandidates().Select(x => x.ToJson())),
                     ["bindPoseCount"] = BindPoseCount,
+                    ["bindPoseMatrixStatus"] = BindPoseMatrix?.Status ?? "missing",
+                    ["bindPoseMatrix"] = BindPoseMatrix?.ToJson(),
                     ["mappedJointCount"] = 0,
                     ["layoutWarnings"] = new JArray(LayoutWarnings),
-                    ["rule"] = "m_AnimSkinData 的 boneIndex 只先按 m_BindPoses 槽位做自洽检查；m_AvatarBoneWeights 是另一套 avatar boneIndex 证据，avatarBoneRefs 只列出实际参与权重的非负 boneIndex，缺少确定性 joint 名称/路径映射前不写 glTF skin。"
+                    ["rule"] = "m_AnimSkinData 的 boneIndex 只先按 m_BindPoses 槽位做自洽检查；bindPoseMatrix 只说明 m_BindPoses 数值是否可读/仿射/非奇异；m_AvatarBoneWeights 是另一套 avatar boneIndex 证据，avatarBoneRefs 只列出实际参与权重的非负 boneIndex，缺少确定性 joint 名称/路径映射前不写 glTF skin。"
                 };
             }
 
@@ -7661,6 +7787,69 @@ LIMIT 1;";
                 return picked;
             }
         }
+
+        private sealed class BindPoseMatrixSummary
+        {
+            public string Status { get; set; } = "missing";
+            public int Count { get; set; }
+            public int FiniteCount { get; set; }
+            public int IncompleteCount { get; set; }
+            public int NonFiniteCount { get; set; }
+            public int NonAffineCount { get; set; }
+            public int NearZeroDeterminantCount { get; set; }
+            public float MinDeterminant { get; set; }
+            public float MaxDeterminant { get; set; }
+            public float MinTranslationLength { get; set; }
+            public float MaxTranslationLength { get; set; }
+            public List<BindPoseMatrixSample> Samples { get; } = new();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["count"] = Count,
+                ["finiteCount"] = FiniteCount,
+                ["incompleteCount"] = IncompleteCount,
+                ["nonFiniteCount"] = NonFiniteCount,
+                ["nonAffineCount"] = NonAffineCount,
+                ["nearZeroDeterminantCount"] = NearZeroDeterminantCount,
+                ["determinantMin"] = FiniteCount == 0 ? JValue.CreateNull() : RoundFloat(MinDeterminant),
+                ["determinantMax"] = FiniteCount == 0 ? JValue.CreateNull() : RoundFloat(MaxDeterminant),
+                ["translationLengthMin"] = FiniteCount == 0 ? JValue.CreateNull() : RoundFloat(MinTranslationLength),
+                ["translationLengthMax"] = FiniteCount == 0 ? JValue.CreateNull() : RoundFloat(MaxTranslationLength),
+                ["samples"] = new JArray(Samples.Select(x => x.ToJson())),
+                ["rule"] = "该摘要只检查 AvatarMeshDataAsset.m_BindPoses 矩阵数值健康度；它不能单独证明 boneIndex 到 Unity joint 的映射正确。"
+            };
+        }
+
+        private sealed record BindPoseMatrixSample(int Index, string Status, float[] Row0, float[] Row1, float[] Row2, float Determinant, bool Affine)
+        {
+            public static BindPoseMatrixSample Incomplete(int index) =>
+                new(index, "incomplete", Array.Empty<float>(), Array.Empty<float>(), Array.Empty<float>(), float.NaN, false);
+
+            public static BindPoseMatrixSample FromMatrix(int index, IReadOnlyList<float> values, float determinant, bool affine) =>
+                new(
+                    index,
+                    affine ? "affine" : "nonAffine",
+                    new[] { values[0], values[1], values[2], values[3] },
+                    new[] { values[4], values[5], values[6], values[7] },
+                    new[] { values[8], values[9], values[10], values[11] },
+                    determinant,
+                    affine);
+
+            public JObject ToJson() => new()
+            {
+                ["index"] = Index,
+                ["status"] = Status,
+                ["affine"] = Affine,
+                ["determinant"] = float.IsFinite(Determinant) ? RoundFloat(Determinant) : JValue.CreateNull(),
+                ["row0"] = new JArray(Row0.Select(RoundFloat)),
+                ["row1"] = new JArray(Row1.Select(RoundFloat)),
+                ["row2"] = new JArray(Row2.Select(RoundFloat)),
+            };
+        }
+
+        private static JValue RoundFloat(float value) =>
+            new(Math.Round(value, 6));
 
         private sealed record BoneRefCount(int BoneIndex, int WeightedRefCount)
         {
