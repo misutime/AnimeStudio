@@ -185,6 +185,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.RebuildLibraryIndexes,
                 optionsBinder.MigrateLibraryRelativePaths,
                 optionsBinder.BuildSqliteIndex,
+                optionsBinder.ProbeSourceInput,
                 optionsBinder.BuildSourceSqliteIndex,
                 optionsBinder.VerifySourceIndex,
                 optionsBinder.EnsureSourceIndexQueryIndexes,
@@ -346,6 +347,7 @@ namespace AnimeStudio.CLI
         public DirectoryInfo RebuildLibraryIndexes { get; set; }
         public DirectoryInfo MigrateLibraryRelativePaths { get; set; }
         public DirectoryInfo BuildSqliteIndex { get; set; }
+        public bool ProbeSourceInput { get; set; }
         public bool BuildSourceSqliteIndex { get; set; }
         public FileInfo VerifySourceIndex { get; set; }
         public FileInfo EnsureSourceIndexQueryIndexes { get; set; }
@@ -502,6 +504,7 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> RebuildLibraryIndexes;
         public readonly Option<DirectoryInfo> MigrateLibraryRelativePaths;
         public readonly Option<DirectoryInfo> BuildSqliteIndex;
+        public readonly Option<bool> ProbeSourceInput;
         public readonly Option<bool> BuildSourceSqliteIndex;
         public readonly Option<FileInfo> VerifySourceIndex;
         public readonly Option<FileInfo> EnsureSourceIndexQueryIndexes;
@@ -656,6 +659,7 @@ namespace AnimeStudio.CLI
             RebuildLibraryIndexes = new Option<DirectoryInfo>("--rebuild_library_indexes", "Rebuild summary, validation, skeleton, model-animation, and compact indexes from a previous Library export. If unity_source_index.db exists beside the Library, deterministic Unity Animator/Animation/Controller relations are restored without full re-export.").LegalFilePathsOnly();
             MigrateLibraryRelativePaths = new Option<DirectoryInfo>("--migrate_library_relative_paths", "Convert an existing exported Library index to portable root-relative internal asset paths and rebuild library_index.db. Unity source paths are preserved.").LegalFilePathsOnly();
             BuildSqliteIndex = new Option<DirectoryInfo>("--build_sqlite_index", "Rebuild the reusable SQLite index from a previous Library or AudioLibrary export. For Library roots, pass --source_index to use an external fresh source index; otherwise unity_source_index.db beside the Library is used to restore deterministic model-animation candidates.").LegalFilePathsOnly();
+            ProbeSourceInput = new Option<bool>("--probe_source_input", "Diagnostic: quickly inspect input_path file headers and write source_input_probe.json. Useful before Naraka source-index builds to distinguish loadable StreamingAssets bundles from external .pak/AES unpacking tasks.");
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
             VerifySourceIndex = new Option<FileInfo>("--verify_source_index", "Inspect an existing unity_source_index.db and write an animation relation health report without rebuilding it.").LegalFilePathsOnly();
             EnsureSourceIndexQueryIndexes = new Option<FileInfo>("--ensure_source_index_query_indexes", "Create or rebuild query indexes on an existing unity_source_index.db. Useful for old large indexes before candidate or animation relation scans.").LegalFilePathsOnly();
@@ -904,6 +908,7 @@ namespace AnimeStudio.CLI
                 RebuildLibraryIndexes = bindingContext.ParseResult.GetValueForOption(RebuildLibraryIndexes),
                 MigrateLibraryRelativePaths = bindingContext.ParseResult.GetValueForOption(MigrateLibraryRelativePaths),
                 BuildSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSqliteIndex),
+                ProbeSourceInput = bindingContext.ParseResult.GetValueForOption(ProbeSourceInput),
                 BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
                 VerifySourceIndex = bindingContext.ParseResult.GetValueForOption(VerifySourceIndex),
                 EnsureSourceIndexQueryIndexes = bindingContext.ParseResult.GetValueForOption(EnsureSourceIndexQueryIndexes),
