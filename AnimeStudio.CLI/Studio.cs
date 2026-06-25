@@ -4331,6 +4331,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
 
             var status = JsonText(model, "materialStatus");
             return string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "needsCustomShaderLayer", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase);
         }
 

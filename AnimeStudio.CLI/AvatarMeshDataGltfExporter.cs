@@ -785,6 +785,9 @@ namespace AnimeStudio.CLI
             var needsCustomizationTint = gltfMaterials
                 .OfType<JObject>()
                 .Any(x => x["extras"]?["animeStudioMaterial"]?["needsCustomizationTint"]?.Value<bool>() == true);
+            var needsCustomShaderLayer = gltfMaterials
+                .OfType<JObject>()
+                .Any(x => x["extras"]?["animeStudioMaterial"]?["needsCustomShaderLayer"]?.Value<bool>() == true);
             var hasBaseColorTexture = gltfMaterials
                 .OfType<JObject>()
                 .Any(x => x["pbrMetallicRoughness"]?["baseColorTexture"] != null);
@@ -793,6 +796,8 @@ namespace AnimeStudio.CLI
                 .Any(x => x["normalTexture"] != null);
             var materialStatus = needsCustomizationTint
                 ? "needsCustomizationTint"
+                : needsCustomShaderLayer
+                    ? "needsCustomShaderLayer"
                 : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var externalSkeletonContextCandidate = SelectExternalSkeletonContextCandidate(transformNodeTableCandidates);
@@ -882,7 +887,11 @@ namespace AnimeStudio.CLI
                     : hairDeformDataStatus == "countMismatch"
                         ? "hair_deform_data_count_mismatch"
                         : "hair_deform_data_packed_half4_diagnostic",
-                needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
+                needsCustomizationTint
+                    ? "needs_customization_tint"
+                    : needsCustomShaderLayer
+                        ? "needs_custom_shader_layer"
+                        : "preview_material_not_full_shader");
             var faceRuntimeStatus = (string)report["faceRuntimeEvidenceStatus"];
             if (string.Equals(faceRuntimeStatus, "avatarFaceDataMatchesSourceSkinBoneTable", StringComparison.OrdinalIgnoreCase))
             {
@@ -951,6 +960,7 @@ namespace AnimeStudio.CLI
                 ["textureCount"] = gltfTextures.Count,
                 ["materialStatus"] = materialStatus,
                 ["materialNeedsCustomizationTint"] = needsCustomizationTint,
+                ["materialNeedsCustomShaderLayer"] = needsCustomShaderLayer,
                 ["materialMissingRendererBinding"] = materialBindings.Values.Any(x => x.Materials.Count == 0),
                 ["materialHasBaseColorTexture"] = hasBaseColorTexture,
                 ["materialHasNormalTexture"] = hasNormalTexture,
@@ -1124,6 +1134,7 @@ namespace AnimeStudio.CLI
             AppendKeyValue(sb, "资源类型", (string)catalogEntry["resourceKind"]);
             AppendKeyValue(sb, "模型状态", (string)catalogEntry["modelValidationStatus"]);
             AppendKeyValue(sb, "材质状态", (string)catalogEntry["materialStatus"]);
+            AppendKeyValue(sb, "需要 shader 分层预览", ToText(catalogEntry["materialNeedsCustomShaderLayer"]));
             AppendKeyValue(sb, "诊断资产", ((bool?)catalogEntry["diagnosticOnly"] ?? true) ? "true" : "false");
             AppendKeyValue(sb, "装配角色", ToText(catalogEntry["characterAssemblyRole"]));
             AppendKeyValue(sb, "装配 family", ToText(catalogEntry["characterAssemblyFamily"]));
@@ -1183,6 +1194,7 @@ namespace AnimeStudio.CLI
             AppendKeyValue(sb, "模型", relativeOutput);
             AppendKeyValue(sb, "材质状态", (string)catalogEntry["materialStatus"]);
             AppendKeyValue(sb, "需要 tint/customization", ToText(catalogEntry["materialNeedsCustomizationTint"]));
+            AppendKeyValue(sb, "需要 shader 分层预览", ToText(catalogEntry["materialNeedsCustomShaderLayer"]));
             AppendKeyValue(sb, "有 baseColorTexture", ToText(catalogEntry["materialHasBaseColorTexture"]));
             AppendKeyValue(sb, "有 normalTexture", ToText(catalogEntry["materialHasNormalTexture"]));
             AppendKeyValue(sb, "glTF image 数", ToText(catalogEntry["materialImageCount"]));
@@ -1208,7 +1220,12 @@ namespace AnimeStudio.CLI
                 AppendKeyValue(sb, "baseColorTexture", material["pbrMetallicRoughness"]?["baseColorTexture"] != null ? "true" : "false");
                 AppendKeyValue(sb, "normalTexture", material["normalTexture"] != null ? "true" : "false");
                 AppendKeyValue(sb, "needsCustomizationTint", ToText(anime?["needsCustomizationTint"]));
+                AppendKeyValue(sb, "needsCustomShaderLayer", ToText(anime?["needsCustomShaderLayer"]));
                 AppendKeyValue(sb, "说明", ToText(anime?["note"]));
+                if (anime?["customShaderLayerSlots"] is JArray customSlots && customSlots.Count > 0)
+                {
+                    AppendKeyValue(sb, "自定义 shader 分层槽", string.Join(", ", customSlots.Values<string>()));
+                }
                 if (textureSlots != null && textureSlots.Count > 0)
                 {
                     sb.AppendLine();
@@ -1230,6 +1247,7 @@ namespace AnimeStudio.CLI
             sb.AppendLine();
             sb.AppendLine("- `baseColorTexture` 只来自安全的通用颜色槽。");
             sb.AppendLine("- `_Color` 接近白色且没有安全 base color 贴图时，预览使用中性灰，同时保留 `needsCustomizationTint=true`。");
+            sb.AppendLine("- 虹膜、眉毛 decal、皱纹等 shader 分层槽会标记 `needsCustomShaderLayer=true`；当前只保留证据，不猜合成方式。");
             sb.AppendLine("- ID、mask、SH、dir、LUT 等自定义 shader 数据只保留引用，不猜最终颜色。");
             File.WriteAllText(path, sb.ToString());
         }
@@ -1464,6 +1482,7 @@ namespace AnimeStudio.CLI
                         : MergeStringArray(reasons, "missing_skin_binding", "source_skin_unmapped");
             foreach (var reason in customReasons.Where(x =>
                 string.Equals(x, "needs_customization_tint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x, "needs_custom_shader_layer", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(x, "skin_data_present_unmapped", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(x, "selected_visual_cell_transform_nodes_insufficient", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(x, "selected_visual_cell_transform_nodes_missing", StringComparison.OrdinalIgnoreCase)))
@@ -2475,6 +2494,8 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            var customShaderLayerSlots = GetCustomShaderLayerSlots(textureSlots);
+            var needsCustomShaderLayer = customShaderLayerSlots.Length > 0;
             var result = new JObject
             {
                 ["name"] = materialName,
@@ -2488,10 +2509,18 @@ namespace AnimeStudio.CLI
                         ["materialJson"] = Path.GetFullPath(materialJsonPath),
                         ["textureSlots"] = textureSlots,
                         ["needsCustomizationTint"] = !usedBaseColor,
+                        ["needsCustomShaderLayer"] = needsCustomShaderLayer,
+                        ["customShaderLayerSlots"] = new JArray(customShaderLayerSlots.Select(x => new JValue(x))),
                         ["note"] = "只把通用 base color/normal 槽写入 glTF 预览；ID、mask、SH、dir、LUT 等自定义 shader 数据只保留引用，避免伪造材质。"
                     }
                 }
             };
+            if (needsCustomShaderLayer)
+            {
+                var anime = (JObject)result["extras"]["animeStudioMaterial"];
+                anime["customShaderLayerRule"] = "这些 Unity 材质槽需要 Naraka shader 分层合成，例如虹膜、眉毛 decal 或皱纹层。当前 glTF 只做保守预览并保留贴图引用，不能把它当作完整 shader 复刻。";
+                anime["note"] = "通用 base color/normal 已写入 glTF 预览；customShaderLayerSlots 仍需要后续 shader/烘焙管线处理，不能硬猜合成方式。";
+            }
             ProtectCustomizationTintPreviewBaseColor(result, color, usedBaseColor);
             if (normalTexture != null)
             {
@@ -2508,6 +2537,31 @@ namespace AnimeStudio.CLI
                 ((JObject)result["extras"]["animeStudioMaterial"])["previewAlpha"] = alphaDecision.Extras;
             }
             return result;
+        }
+
+        private static string[] GetCustomShaderLayerSlots(JArray textureSlots)
+        {
+            // 这些槽名来自 Unity 材质本身，说明 glTF 标准 PBR 预览还缺少 shader 分层。
+            // 这里只记录待处理原因，不把任何游戏私有 shader 合成方式写死。
+            return (textureSlots ?? new JArray())
+                .OfType<JObject>()
+                .Select(x => (string)x["slot"])
+                .Where(IsCustomShaderLayerSlot)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static bool IsCustomShaderLayerSlot(string slot)
+        {
+            if (string.IsNullOrWhiteSpace(slot))
+            {
+                return false;
+            }
+
+            return slot.IndexOf("Iris", StringComparison.OrdinalIgnoreCase) >= 0
+                || slot.IndexOf("Decal", StringComparison.OrdinalIgnoreCase) >= 0
+                || slot.IndexOf("Wrinkle", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string EnsurePreviewTextureInGltfFolder(string texturePath, string gltfFolder, long pathId, List<string> warnings)

@@ -603,6 +603,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 Naraka 部分材质会在 `_ReflectionTexture` 等槽里引用 `Cubemap`。这类对象如果已经能通过 Unity PPtr 解析，报告应写入 `modelConversionIssueTypes.unsupportedMaterialTexture`，但不应计入 `unresolvedModelDependencyCount`；它表示当前 glTF PBR 预览暂不消费反射 cubemap，不等于材质 CAB 或贴图依赖丢失。只有 `unresolvedMaterialTexture` 这类真正解析不到对象的记录，才作为模型依赖缺失继续追查。
 
+Naraka 自定义脸部/眼部材质若包含 `_Iris*`、`*Decal*`、`*Wrinkle*` 等 Unity 材质槽，诊断 glTF 会继续只写标准 base color / normal 预览，并在 glTF `extras.animeStudioMaterial`、`MATERIAL_REPORT.md`、`asset_catalog.jsonl` 和 `model_validation.json` 中标记 `needsCustomShaderLayer` / `needs_custom_shader_layer`。这表示贴图和材质引用已经被确定性记录，但虹膜、眉毛 decal、皱纹等 shader 分层合成尚未复刻；不要把它当作贴图丢失，也不要在未找到 shader/参数规则前硬烘焙。
+
 `assets/res/prefab/actor_visual_part/...` 这类 Naraka 模块化角色 body/base 可以导出为可用身体或服装部件，但如果当前 Library 没有同时导出可组装的 face/hair 模块，catalog 会标记 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，并在动画门禁中写入 `modular_character_incomplete`。这不是模型导出失败；它是在说明该 glTF 不能单独当完整角色或生产动画 smoke 样本。需要完整角色验收时，应继续通过 `character_assemblies.json` 或 Naraka 自定义 `ActorBodyVisualCell` / `AvatarPartDataAsset` 关系找到确定性 face、hair、accessory 组合。
 
 `--names` 也可以传纯数字 PathID 做精确查询，报告会写 `selectorQueryMode=targeted_exact_path_id` 和 `selectorExactPathId`。Endfield 这类游戏常有大量同名 `GameObject` 变体：有的是真实可见模型，有的只有 Animator/Avatar，有的只用于剧情或 UI。排查动画关系时应优先用 `source_model_candidates.json` 里通过模型门禁的具体 PathID，再用同一个 PathID 查询 `--list_source_model_animations`，避免同名变体把模型质量和动画关系混在一起。
