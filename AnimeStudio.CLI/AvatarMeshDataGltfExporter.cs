@@ -15,6 +15,20 @@ namespace AnimeStudio.CLI
 {
     internal static class AvatarMeshDataGltfExporter
     {
+        // Naraka 发型染色相关脚本目前只作为配置域线索，不能直接当作当前模型的颜色来源。
+        private static readonly string[] HairCustomizationScriptNames =
+        {
+            "HairCustomConfigAsset",
+            "SpecialHairCustomColorData",
+            "SpecialHairCustomPartDecorator",
+            "SpecialHairCustomPartDecoratorGroup",
+            "UIHairConfigCustomCellAdapter",
+            "UIHairConfigAdvCustomCellAdapter",
+            "UIHairConfigCustomCellHolderSerialize",
+            "UIHairConfigAdvCustomCellHolderSerialize",
+            "UIHairEffectCustomPanelSerialize",
+        };
+
         public static string Export(string jsonPath, string outputFolder, string sourceIndexPath = null, bool allowExternalSkeletonSkinDiagnostic = false)
         {
             if (!string.IsNullOrWhiteSpace(jsonPath) && Directory.Exists(jsonPath))
@@ -507,6 +521,7 @@ namespace AnimeStudio.CLI
             File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
             var materialRefCount = materialBindings.Values.Sum(x => x.Materials.Count);
             var materialTextureRefCount = materialBindings.Values.Sum(x => x.Materials.Sum(y => y.TextureRefCount));
+            var hairCustomizationTintEvidence = LoadHairCustomizationTintEvidence(sourceIndexPath, selectedVisualCell, warnings);
             var report = new JObject
             {
                 ["status"] = warnings.Count == 0 ? "ok" : "warning",
@@ -550,6 +565,9 @@ namespace AnimeStudio.CLI
                 ["triangleCount"] = parts.Sum(x => x.Mesh.Indices.Count / 3),
                 ["rendererMaterialRefCount"] = materialRefCount,
                 ["materialTextureRefCount"] = materialTextureRefCount,
+                ["hairCustomizationTintEvidenceStatus"] = hairCustomizationTintEvidence.Status,
+                ["hairCustomizationTintEvidence"] = hairCustomizationTintEvidence.ToJson(),
+                ["hairCustomizationTintRule"] = "这里只诊断 Naraka 发型 customization/tint 配置线索。只有找到和选中 VisualCell/GameObject 的确定性引用，并且字段里有可解释颜色参数时，才允许后续烘焙预览色；否则继续保持 needsCustomizationTint。",
                 ["rendererSkinBindingStatus"] = SummarizeRendererSkinBindingStatus(rendererSkinBindings.Values),
                 ["rendererSkinRendererRefCount"] = rendererSkinBindings.Values.Count(x => x.RendererObjectFound),
                 ["rendererSkinRendererWithoutSkinRefCount"] = rendererSkinBindings.Values.Count(x => x.RendererObjectFound && !x.HasAnyRelation),
@@ -827,6 +845,8 @@ namespace AnimeStudio.CLI
                 ["materialImageCount"] = gltfImages.Count,
                 ["rendererMaterialRefCount"] = report["rendererMaterialRefCount"],
                 ["materialTextureRefCount"] = report["materialTextureRefCount"],
+                ["hairCustomizationTintEvidenceStatus"] = report["hairCustomizationTintEvidenceStatus"]?.DeepClone(),
+                ["hairCustomizationTintEvidence"] = report["hairCustomizationTintEvidence"]?.DeepClone(),
                 ["animationCount"] = 0,
                 ["embeddedAnimationCount"] = 0,
                 ["importedAnimationListCount"] = 0,
@@ -992,6 +1012,7 @@ namespace AnimeStudio.CLI
             AppendKeyValue(sb, "Renderer 列表", ToText(report["visualCellRendererListStatus"]));
             AppendKeyValue(sb, "Renderer 材质引用", ToText(report["rendererMaterialRefCount"]));
             AppendKeyValue(sb, "材质贴图引用", ToText(report["materialTextureRefCount"]));
+            AppendKeyValue(sb, "发型 tint 证据", ToText(report["hairCustomizationTintEvidenceStatus"]));
             sb.AppendLine();
             sb.AppendLine("## 动画门禁");
             sb.AppendLine();
@@ -1030,6 +1051,13 @@ namespace AnimeStudio.CLI
             AppendKeyValue(sb, "有 baseColorTexture", ToText(catalogEntry["materialHasBaseColorTexture"]));
             AppendKeyValue(sb, "有 normalTexture", ToText(catalogEntry["materialHasNormalTexture"]));
             AppendKeyValue(sb, "glTF image 数", ToText(catalogEntry["materialImageCount"]));
+            AppendKeyValue(sb, "发型 tint 证据", ToText(catalogEntry["hairCustomizationTintEvidenceStatus"]));
+            var tintEvidence = catalogEntry["hairCustomizationTintEvidence"] as JObject;
+            if (tintEvidence != null)
+            {
+                AppendKeyValue(sb, "tint 脚本实例数", ToText(tintEvidence["totalScriptInstanceCount"]));
+                AppendKeyValue(sb, "和选中模型直接 PPtr", ToText(tintEvidence["directLinkCount"]));
+            }
             sb.AppendLine();
             sb.AppendLine("## glTF 材质");
             sb.AppendLine();
@@ -3517,6 +3545,218 @@ LIMIT 1;";
             return meshJson;
         }
 
+        private static HairCustomizationTintEvidence LoadHairCustomizationTintEvidence(
+            string sourceIndexPath,
+            SelectedVisualCellInfo selectedVisualCell,
+            List<string> warnings)
+        {
+            // 这里先只做保守诊断：有脚本、无直连、字段不完整时继续保留 needsCustomizationTint。
+            var evidence = new HairCustomizationTintEvidence
+            {
+                Status = string.IsNullOrWhiteSpace(sourceIndexPath) ? "sourceIndexNotProvided" : "noCustomizationScriptsFound",
+                SelectedVisualCellFile = selectedVisualCell?.SerializedFile,
+                SelectedVisualCellPathId = selectedVisualCell?.PathId,
+                SelectedGameObjectPathId = selectedVisualCell?.GameObjectPathId,
+            };
+            if (string.IsNullOrWhiteSpace(sourceIndexPath))
+            {
+                return evidence;
+            }
+            if (!File.Exists(sourceIndexPath))
+            {
+                evidence.Status = "sourceIndexMissing";
+                warnings?.Add($"missingSourceIndexForHairCustomizationTint:{sourceIndexPath}");
+                return evidence;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                LoadHairCustomizationScriptCounts(connection, evidence);
+                CountHairCustomizationDirectLinks(connection, evidence);
+                evidence.Status = evidence.TotalScriptInstanceCount <= 0
+                    ? "noCustomizationScriptsFound"
+                    : evidence.DirectLinkCount > 0
+                        ? "directCustomizationPPtrFound"
+                        : evidence.LightweightRawJsonCount >= evidence.TotalScriptInstanceCount
+                            ? "customizationScriptsPresentButRawJsonLightweight"
+                            : "customizationScriptsPresentNoDirectVisualCellLink";
+            }
+            catch (Exception ex)
+            {
+                evidence.Status = "sourceIndexQueryFailed";
+                warnings?.Add($"hairCustomizationTintQueryFailed:{ex.Message}");
+            }
+
+            return evidence;
+        }
+
+        private static void LoadHairCustomizationScriptCounts(SqliteConnection connection, HairCustomizationTintEvidence evidence)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name, serialized_file, path_id
+FROM source_objects
+WHERE type = 'MonoScript'
+  AND name IN (
+      'HairCustomConfigAsset',
+      'SpecialHairCustomColorData',
+      'SpecialHairCustomPartDecorator',
+      'SpecialHairCustomPartDecoratorGroup',
+      'UIHairConfigCustomCellAdapter',
+      'UIHairConfigAdvCustomCellAdapter',
+      'UIHairConfigCustomCellHolderSerialize',
+      'UIHairConfigAdvCustomCellHolderSerialize',
+      'UIHairEffectCustomPanelSerialize'
+  )
+ORDER BY name COLLATE NOCASE;";
+
+            var scripts = new List<SourceObjectRef>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    scripts.Add(new SourceObjectRef(ReadString(reader, 0), ReadString(reader, 1), ReadLong(reader, 2)));
+                }
+            }
+
+            foreach (var script in scripts)
+            {
+                var scriptName = script.Name;
+                var scriptFile = script.SerializedFile;
+                var scriptPathId = script.PathId;
+                var (instanceCount, maxRawJsonLength) = CountMonoBehavioursUsingScript(connection, scriptFile, scriptPathId);
+                var row = new HairCustomizationScriptCount
+                {
+                    ScriptName = scriptName,
+                    InstanceCount = instanceCount,
+                    MaxRawJsonLength = maxRawJsonLength,
+                };
+                evidence.ScriptCounts.Add(row);
+            }
+        }
+
+        private static (long InstanceCount, long MaxRawJsonLength) CountMonoBehavioursUsingScript(SqliteConnection connection, string scriptFile, long scriptPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(*) AS instance_count, COALESCE(MAX(LENGTH(obj.raw_json)), 0) AS max_raw_len
+FROM source_relations scriptRel INDEXED BY idx_source_relations_to
+JOIN source_objects obj
+  ON obj.serialized_file = scriptRel.from_file
+ AND obj.path_id = scriptRel.from_path_id
+ AND obj.type = 'MonoBehaviour'
+WHERE scriptRel.relation = 'monoBehaviour.script'
+  AND scriptRel.to_file = $scriptFile
+  AND scriptRel.to_path_id = $scriptPathId;";
+            command.Parameters.AddWithValue("$scriptFile", scriptFile ?? string.Empty);
+            command.Parameters.AddWithValue("$scriptPathId", scriptPathId);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? (ReadLong(reader, 0), ReadLong(reader, 1))
+                : (0, 0);
+        }
+
+        private static string ReadString(SqliteDataReader reader, int ordinal)
+        {
+            return reader.IsDBNull(ordinal) ? string.Empty : reader.GetString(ordinal);
+        }
+
+        private static long ReadLong(SqliteDataReader reader, int ordinal)
+        {
+            return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+        }
+
+        private static void CountHairCustomizationDirectLinks(SqliteConnection connection, HairCustomizationTintEvidence evidence)
+        {
+            var selectedFile = evidence.SelectedVisualCellFile ?? string.Empty;
+            var selectedPathIds = new[] { evidence.SelectedVisualCellPathId, evidence.SelectedGameObjectPathId }
+                .Where(x => x.HasValue)
+                .Select(x => x.Value)
+                .Distinct()
+                .ToArray();
+            if (string.IsNullOrWhiteSpace(selectedFile) || selectedPathIds.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var pathId in selectedPathIds)
+            {
+                evidence.DirectLinkCount += CountHairCustomizationDirectLinksForTarget(connection, selectedFile, pathId);
+            }
+        }
+
+        private static long CountHairCustomizationDirectLinksForTarget(SqliteConnection connection, string selectedFile, long selectedPathId)
+        {
+            return CountHairCustomizationIncomingLinks(connection, selectedFile, selectedPathId)
+                + CountHairCustomizationOutgoingLinks(connection, selectedFile, selectedPathId);
+        }
+
+        private static long CountHairCustomizationIncomingLinks(SqliteConnection connection, string selectedFile, long selectedPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.from_file, rel.from_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_to
+WHERE rel.relation = 'monoBehaviour.pptr'
+  AND rel.to_file = $selectedFile
+  AND rel.to_path_id = $selectedPathId;";
+            command.Parameters.AddWithValue("$selectedFile", selectedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$selectedPathId", selectedPathId);
+            var sources = new List<SourceObjectRef>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    sources.Add(new SourceObjectRef(string.Empty, ReadString(reader, 0), ReadLong(reader, 1)));
+                }
+            }
+            return sources.Count(x => IsHairCustomizationMonoBehaviour(connection, x.SerializedFile, x.PathId));
+        }
+
+        private static long CountHairCustomizationOutgoingLinks(SqliteConnection connection, string selectedFile, long selectedPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.to_file, rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+WHERE rel.relation = 'monoBehaviour.pptr'
+  AND rel.from_file = $selectedFile
+  AND rel.from_path_id = $selectedPathId;";
+            command.Parameters.AddWithValue("$selectedFile", selectedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$selectedPathId", selectedPathId);
+            var targets = new List<SourceObjectRef>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    targets.Add(new SourceObjectRef(string.Empty, ReadString(reader, 0), ReadLong(reader, 1)));
+                }
+            }
+            return targets.Count(x => IsHairCustomizationMonoBehaviour(connection, x.SerializedFile, x.PathId));
+        }
+
+        private static bool IsHairCustomizationMonoBehaviour(SqliteConnection connection, string serializedFile, long pathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT script.name
+FROM source_relations scriptRel INDEXED BY idx_source_relations_from
+JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE scriptRel.from_file = $file
+  AND scriptRel.from_path_id = $pathId
+  AND scriptRel.relation = 'monoBehaviour.script'
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            var scriptName = Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+            return HairCustomizationScriptNames.Any(x => string.Equals(x, scriptName, StringComparison.Ordinal));
+        }
+
         private static Dictionary<string, VisualCellMaterialBinding> LoadVisualCellMaterialBindings(
             string sourceIndexPath,
             IReadOnlyCollection<VisualCellPart> parts,
@@ -5703,6 +5943,52 @@ LIMIT 1;";
             int DirectChildCount,
             IReadOnlyList<string> DirectChildNames,
             int? TransformNodeCount);
+
+        private sealed class HairCustomizationTintEvidence
+        {
+            public string Status { get; set; }
+            public string SelectedVisualCellFile { get; set; }
+            public long? SelectedVisualCellPathId { get; set; }
+            public long? SelectedGameObjectPathId { get; set; }
+            public long DirectLinkCount { get; set; }
+            public List<HairCustomizationScriptCount> ScriptCounts { get; } = new();
+            public long TotalScriptInstanceCount => ScriptCounts.Sum(x => x.InstanceCount);
+            public long LightweightRawJsonCount => ScriptCounts.Where(x => x.RawJsonLooksLightweight).Sum(x => x.InstanceCount);
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["selectedVisualCellFile"] = SelectedVisualCellFile,
+                ["selectedVisualCellPathId"] = SelectedVisualCellPathId,
+                ["selectedGameObjectPathId"] = SelectedGameObjectPathId,
+                ["totalScriptInstanceCount"] = TotalScriptInstanceCount,
+                ["lightweightRawJsonCount"] = LightweightRawJsonCount,
+                ["directLinkCount"] = DirectLinkCount,
+                ["scriptCounts"] = new JArray(ScriptCounts.Select(x => x.ToJson())),
+                ["rule"] = "这些脚本名只证明 Naraka 存在发型 customization/tint 配置域；没有选中 VisualCell/GameObject 的直接 PPtr 和可解释颜色字段前，不能把它们应用到当前模型。"
+            };
+        }
+
+        private sealed class HairCustomizationScriptCount
+        {
+            public string ScriptName { get; set; }
+            public long InstanceCount { get; set; }
+            public long MaxRawJsonLength { get; set; }
+            public bool RawJsonLooksLightweight => MaxRawJsonLength > 0 && MaxRawJsonLength <= 600;
+
+            public JObject ToJson() => new()
+            {
+                ["scriptName"] = ScriptName,
+                ["instanceCount"] = InstanceCount,
+                ["maxRawJsonLength"] = MaxRawJsonLength,
+                ["rawJsonLooksLightweight"] = RawJsonLooksLightweight
+            };
+        }
+
+        private sealed record SourceObjectRef(
+            string Name,
+            string SerializedFile,
+            long PathId);
 
         private sealed class SelectedVisualCellChildComponentEvidence
         {
