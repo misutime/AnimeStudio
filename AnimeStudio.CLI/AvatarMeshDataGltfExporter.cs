@@ -495,7 +495,14 @@ namespace AnimeStudio.CLI
             var validationReasons = new JArray(
                 "diagnostic_custom_mesh",
                 "missing_skin_binding",
+                parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped") ? "skin_data_present_unmapped" : "skin_data_missing",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
+            var sourceSkinStatuses = parts
+                .Select(x => x.Mesh.Skin.Status)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
             var catalogEntry = new JObject
             {
@@ -536,6 +543,10 @@ namespace AnimeStudio.CLI
                 ["morphCount"] = 0,
                 ["boneCount"] = 0,
                 ["skinCount"] = 0,
+                ["sourceSkinDataStatus"] = sourceSkinStatuses.Length == 1 ? sourceSkinStatuses[0] : string.Join(",", sourceSkinStatuses),
+                ["sourceSkinBindPoseCount"] = parts.Sum(x => x.Mesh.Skin.BindPoseCount),
+                ["sourceSkinMappedJointCount"] = 0,
+                ["sourceSkinUnmapped"] = parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped"),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -546,7 +557,8 @@ namespace AnimeStudio.CLI
                     ["status"] = "deterministic",
                     ["basis"] = "ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset",
                     ["rendererMaterialBasis"] = "renderer.material / material.texture from unity_source_index.db",
-                    ["rule"] = "该记录只证明 Naraka 自定义网格和材质引用链路可追溯；没有 skin、shader tint 和完整角色装配前不进入动画验收。"
+                    ["skinDataBasis"] = "AvatarMeshDataAsset.m_AnimSkinData / m_AvatarBoneWeights / m_BindPoses",
+                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用和源 skin 字段可追溯；没有 joint 映射、shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
 
@@ -568,7 +580,7 @@ namespace AnimeStudio.CLI
             validation["customMeshValidationReasons"] = validationReasons.DeepClone();
             validation["Notes"] = MergeStringArray(
                 validation["Notes"] as JArray,
-                "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型：缺少 skin 绑定，hair tint/customization shader 未完全复原，禁止进入动画生产验收。");
+                "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型：源 skin 字段尚未映射到 glTF joints，hair tint/customization shader 未完全复原，禁止进入动画生产验收。");
 
             var body = validation["Body"] as JObject;
             if (body != null)
@@ -576,7 +588,7 @@ namespace AnimeStudio.CLI
                 body["ModelBodyStatus"] = "warning";
                 body["Evidence"] = MergeStringArray(
                     body["Evidence"] as JArray,
-                    "自定义网格没有 glTF skin；材质只做保守预览，未烘焙 Naraka customization tint。");
+                    "自定义网格源 JSON 可包含 skin 字段，但当前没有确定性 joint 映射，所以没有写 glTF skin；材质只做保守预览，未烘焙 Naraka customization tint。");
             }
 
             var validationPath = Path.Combine(outputFolder, "model_validation.json");
@@ -1104,6 +1116,7 @@ namespace AnimeStudio.CLI
                 ["hasUv0"] = mesh.Uvs.Count == mesh.Positions.Count,
                 ["bboxMin"] = new JArray(mesh.Min.X, mesh.Min.Y, mesh.Min.Z),
                 ["bboxMax"] = new JArray(mesh.Max.X, mesh.Max.Y, mesh.Max.Z),
+                ["skin"] = mesh.Skin.ToJson(),
                 ["warnings"] = new JArray(mesh.Warnings)
             };
         }
@@ -1423,6 +1436,7 @@ WHERE relation = 'material.texture'
             }
 
             result.Uvs.AddRange(ReadUv0(json, result.Positions.Count));
+            result.Skin = ReadSkinSummary(json, result.Positions.Count, result.Warnings);
             if (result.Uvs.Count != 0 && result.Uvs.Count != result.Positions.Count)
             {
                 result.Warnings.Add("uvCountMismatch");
@@ -1438,6 +1452,162 @@ WHERE relation = 'material.texture'
 
             result.CalculateBounds();
             return result;
+        }
+
+        private static SkinSummary ReadSkinSummary(JObject json, int vertexCount, List<string> warnings)
+        {
+            // Naraka 的 AvatarMeshDataAsset 里已经能看到权重和 bind pose，
+            // 但 joint 名称/骨骼路径还不在这些字段里，所以这里先只记录证据，不写 glTF skin。
+            var summary = new SkinSummary
+            {
+                AnimSkinDataCount = (json["m_AnimSkinData"] as JArray)?.Count ?? 0,
+                AvatarSkinDataCount = (json["m_AvatarSkinData"] as JArray)?.Count ?? 0,
+                AvatarBoneOffsetCount = (json["m_AvatarBoneOffsetCount"] as JArray)?.Count ?? 0,
+                AvatarBoneWeightsCount = (json["m_AvatarBoneWeights"] as JArray)?.Count ?? 0,
+                BindPoseCount = (json["m_BindPoses"] as JArray)?.Count ?? 0,
+            };
+
+            var animSkinData = json["m_AnimSkinData"] as JArray;
+            if (animSkinData != null)
+            {
+                if (animSkinData.Count != vertexCount)
+                {
+                    warnings.Add("animSkinDataCountMismatch");
+                    summary.LayoutWarnings.Add("animSkinDataCountMismatch");
+                }
+
+                var bones = new SortedSet<int>();
+                var weightedVertices = 0;
+                foreach (var item in animSkinData.OfType<JObject>())
+                {
+                    var weights = item["boneWeight"];
+                    var indices = item["boneIndex"];
+                    var hasWeight = false;
+                    for (var i = 0; i < 4; i++)
+                    {
+                        var weight = ReadOptionalVectorComponent(weights, i);
+                        if (weight <= 0)
+                        {
+                            continue;
+                        }
+
+                        hasWeight = true;
+                        var boneIndex = (int)Math.Round(ReadOptionalVectorComponent(indices, i));
+                        bones.Add(boneIndex);
+                    }
+
+                    if (hasWeight)
+                    {
+                        weightedVertices++;
+                    }
+                }
+
+                summary.AnimSkinWeightedVertexCount = weightedVertices;
+                summary.AnimSkinUniqueBoneCount = bones.Count;
+                summary.AnimSkinMinBoneIndex = bones.Count == 0 ? null : bones.Min;
+                summary.AnimSkinMaxBoneIndex = bones.Count == 0 ? null : bones.Max;
+            }
+
+            var offsets = json["m_AvatarBoneOffsetCount"] as JArray;
+            var avatarWeights = json["m_AvatarBoneWeights"] as JArray;
+            if (offsets != null || avatarWeights != null)
+            {
+                if (offsets == null || avatarWeights == null)
+                {
+                    warnings.Add("avatarBoneWeightLayoutIncomplete");
+                    summary.LayoutWarnings.Add("avatarBoneWeightLayoutIncomplete");
+                }
+                else if (offsets.Count != vertexCount * 2)
+                {
+                    warnings.Add("avatarBoneOffsetCountMismatch");
+                    summary.LayoutWarnings.Add("avatarBoneOffsetCountMismatch");
+                }
+                else
+                {
+                    var avatarBones = new SortedSet<int>();
+                    var negativeBoneRefs = 0;
+                    var maxInfluences = 0;
+                    var invalidRanges = 0;
+                    var weightedVertices = 0;
+                    for (var vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++)
+                    {
+                        var offset = offsets[vertexIndex * 2].Value<int>();
+                        var count = offsets[vertexIndex * 2 + 1].Value<int>();
+                        maxInfluences = Math.Max(maxInfluences, count);
+                        if (offset < 0 || count < 0 || offset + count > avatarWeights.Count)
+                        {
+                            invalidRanges++;
+                            continue;
+                        }
+
+                        var hasWeight = false;
+                        for (var i = 0; i < count; i++)
+                        {
+                            var weight = avatarWeights[offset + i] as JObject;
+                            if (weight == null)
+                            {
+                                continue;
+                            }
+
+                            var value = (float?)weight["m_Weight"] ?? 0f;
+                            var boneIndex = (int?)weight["m_BoneIndex"] ?? -1;
+                            if (value <= 0)
+                            {
+                                continue;
+                            }
+
+                            hasWeight = true;
+                            if (boneIndex < 0)
+                            {
+                                negativeBoneRefs++;
+                            }
+                            else
+                            {
+                                avatarBones.Add(boneIndex);
+                            }
+                        }
+
+                        if (hasWeight)
+                        {
+                            weightedVertices++;
+                        }
+                    }
+
+                    if (invalidRanges > 0)
+                    {
+                        warnings.Add("avatarBoneWeightRangeInvalid");
+                        summary.LayoutWarnings.Add("avatarBoneWeightRangeInvalid");
+                    }
+
+                    summary.AvatarWeightedVertexCount = weightedVertices;
+                    summary.AvatarUniqueBoneCount = avatarBones.Count;
+                    summary.AvatarMinBoneIndex = avatarBones.Count == 0 ? null : avatarBones.Min;
+                    summary.AvatarMaxBoneIndex = avatarBones.Count == 0 ? null : avatarBones.Max;
+                    summary.AvatarNegativeBoneRefCount = negativeBoneRefs;
+                    summary.AvatarMaxInfluenceCount = maxInfluences;
+                    summary.AvatarInvalidRangeCount = invalidRanges;
+                }
+            }
+
+            summary.Status = summary.HasAnySkinField
+                ? "presentUnmapped"
+                : "absent";
+            summary.BindingStatus = summary.HasAnySkinField
+                ? "missingJointMapping"
+                : "noSourceSkinData";
+            return summary;
+        }
+
+        private static float ReadOptionalVectorComponent(JToken token, int index)
+        {
+            var name = index switch
+            {
+                0 => "x",
+                1 => "y",
+                2 => "z",
+                _ => "w",
+            };
+            return token?[name]?.Value<float>() ?? 0f;
         }
 
         private static IEnumerable<Vector2Value> ReadUv0(JObject json, int vertexCount)
@@ -1646,6 +1816,7 @@ WHERE relation = 'material.texture'
             public List<Vector4Value> Tangents { get; } = new();
             public List<Vector2Value> Uvs { get; } = new();
             public List<string> Warnings { get; } = new();
+            public SkinSummary Skin { get; set; } = new();
             public Vector3Value Min { get; private set; }
             public Vector3Value Max { get; private set; }
 
@@ -1659,6 +1830,64 @@ WHERE relation = 'material.texture'
                     Positions.Max(x => x.X),
                     Positions.Max(x => x.Y),
                     Positions.Max(x => x.Z));
+            }
+        }
+
+        private sealed class SkinSummary
+        {
+            public string Status { get; set; } = "absent";
+            public string BindingStatus { get; set; } = "noSourceSkinData";
+            public int AnimSkinDataCount { get; set; }
+            public int AnimSkinWeightedVertexCount { get; set; }
+            public int AnimSkinUniqueBoneCount { get; set; }
+            public int? AnimSkinMinBoneIndex { get; set; }
+            public int? AnimSkinMaxBoneIndex { get; set; }
+            public int AvatarSkinDataCount { get; set; }
+            public int AvatarBoneOffsetCount { get; set; }
+            public int AvatarBoneWeightsCount { get; set; }
+            public int AvatarWeightedVertexCount { get; set; }
+            public int AvatarUniqueBoneCount { get; set; }
+            public int? AvatarMinBoneIndex { get; set; }
+            public int? AvatarMaxBoneIndex { get; set; }
+            public int AvatarNegativeBoneRefCount { get; set; }
+            public int AvatarMaxInfluenceCount { get; set; }
+            public int AvatarInvalidRangeCount { get; set; }
+            public int BindPoseCount { get; set; }
+            public List<string> LayoutWarnings { get; } = new();
+
+            public bool HasAnySkinField =>
+                AnimSkinDataCount > 0
+                || AvatarSkinDataCount > 0
+                || AvatarBoneOffsetCount > 0
+                || AvatarBoneWeightsCount > 0
+                || BindPoseCount > 0;
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["bindingStatus"] = BindingStatus,
+                    ["animSkinDataCount"] = AnimSkinDataCount,
+                    ["animSkinWeightedVertexCount"] = AnimSkinWeightedVertexCount,
+                    ["animSkinUniqueBoneCount"] = AnimSkinUniqueBoneCount,
+                    ["animSkinMinBoneIndex"] = AnimSkinMinBoneIndex,
+                    ["animSkinMaxBoneIndex"] = AnimSkinMaxBoneIndex,
+                    ["avatarSkinDataCount"] = AvatarSkinDataCount,
+                    ["avatarBoneOffsetCount"] = AvatarBoneOffsetCount,
+                    ["avatarBoneWeightsCount"] = AvatarBoneWeightsCount,
+                    ["avatarWeightedVertexCount"] = AvatarWeightedVertexCount,
+                    ["avatarUniqueBoneCount"] = AvatarUniqueBoneCount,
+                    ["avatarMinBoneIndex"] = AvatarMinBoneIndex,
+                    ["avatarMaxBoneIndex"] = AvatarMaxBoneIndex,
+                    ["avatarNegativeBoneRefCount"] = AvatarNegativeBoneRefCount,
+                    ["avatarMaxInfluenceCount"] = AvatarMaxInfluenceCount,
+                    ["avatarInvalidRangeCount"] = AvatarInvalidRangeCount,
+                    ["bindPoseCount"] = BindPoseCount,
+                    ["mappedJointCount"] = 0,
+                    ["layoutWarnings"] = new JArray(LayoutWarnings),
+                    ["rule"] = "只记录 AvatarMeshDataAsset 里的 skin 字段证据；缺少确定性 joint 名称/路径映射前不写 glTF skin。"
+                };
             }
         }
 
