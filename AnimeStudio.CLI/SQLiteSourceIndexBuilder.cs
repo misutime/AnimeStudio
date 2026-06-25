@@ -100,13 +100,16 @@ namespace AnimeStudio.CLI
             Func<string, bool> endfieldVfsInnerFileFilter = null,
             int endfieldVfsInnerFileLimit = 0,
             bool endfieldVfsKeepSameLengthSupplemental = false,
-            bool endfieldVfsIncludeAutoRootsWithExplicitFilter = false)
+            bool endfieldVfsIncludeAutoRootsWithExplicitFilter = false,
+            string[] sourceFileFilters = null)
         {
+            var hasExplicitSourceFileFilter = !sourceFileFilters.IsNullOrEmpty();
             using var totalProfile = ProfileLogger.Measure("source_index_total", new Dictionary<string, object>
             {
                 ["inputPath"] = inputPath,
                 ["outputPath"] = outputPath,
                 ["batchFiles"] = batchFiles,
+                ["explicitSourceFileFilter"] = hasExplicitSourceFileFilter,
             });
 
             if (game == null)
@@ -144,10 +147,22 @@ namespace AnimeStudio.CLI
                 sourceRoot = Directory.Exists(inputPath)
                     ? Path.GetFullPath(inputPath)
                     : Path.GetDirectoryName(Path.GetFullPath(inputPath));
-                sourceFiles = Directory.Exists(inputPath)
-                    ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
-                    : new[] { Path.GetFullPath(inputPath) };
-                sourceFiles = ExpandEndfieldVfsLayerSourceFiles(inputPath, game, ref sourceRoot, sourceFiles);
+                if (hasExplicitSourceFileFilter)
+                {
+                    sourceFiles = ResolveExplicitSourceFiles(inputPath, sourceRoot, sourceFileFilters);
+                    Logger.Info($"--source_files selected {sourceFiles.Length} explicit source file(s) for partial source-index diagnostics.");
+                    if (sourceFiles.Length == 0)
+                    {
+                        throw new InvalidOperationException("--source_files did not resolve to any existing source file.");
+                    }
+                }
+                else
+                {
+                    sourceFiles = Directory.Exists(inputPath)
+                        ? Directory.GetFiles(inputPath, "*.*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
+                        : new[] { Path.GetFullPath(inputPath) };
+                    sourceFiles = ExpandEndfieldVfsLayerSourceFiles(inputPath, game, ref sourceRoot, sourceFiles);
+                }
                 loadableFiles = sourceFiles
                     .Where(x => IsLikelyUnityLoadableFile(x, game))
                     .OrderBy(x => SafeFileLength(x))
@@ -214,6 +229,12 @@ namespace AnimeStudio.CLI
                 InsertMetadata(connection, transaction, "animationRelationFeatures", "animatorController.clip,animatorController.blendTreeParameter,animatorOverrideController.overrideSet,animatorOverrideController.originalClip,animatorOverrideController.overrideClip,animatorOverrideController.clipPair,animation.clip,monoBehaviour.script,monoBehaviour.pptr");
                 InsertMetadata(connection, transaction, "sourceRelationFeatures", SourceRelationFeatures);
                 InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。This database indexes Unity source files, SerializedFiles, objects, PPtr relations, and animation bindings without exporting assets.");
+                if (hasExplicitSourceFileFilter)
+                {
+                    InsertMetadata(connection, transaction, "sourceFilesPartialDiagnostic", "true");
+                    InsertMetadata(connection, transaction, "sourceFilesPartialDiagnosticRule", "--source_files 只用于定向诊断和烟测。该源索引不代表完整 Unity 依赖闭包，不能作为生产全量 Library 的依赖底座。");
+                    InsertMetadata(connection, transaction, "sourceFilesFilterCount", sourceFileFilters.Count(x => !string.IsNullOrWhiteSpace(x)).ToString(CultureInfo.InvariantCulture));
+                }
                 if (hasExplicitEndfieldVfsDiagnosticFilter)
                 {
                     InsertMetadata(connection, transaction, "endfieldVfsPartialDiagnostic", "true");
@@ -434,6 +455,59 @@ namespace AnimeStudio.CLI
             sourceRoot = endfieldDataRoot;
             Logger.Info($"Endfield VFS source scan includes Persistent/Streaming layers under {endfieldDataRoot}; files {sourceFiles.Length} -> {expandedFiles.Length}.");
             return expandedFiles;
+        }
+
+        private static string[] ResolveExplicitSourceFiles(string inputPath, string sourceRoot, string[] sourceFileFilters)
+        {
+            if (sourceFileFilters.IsNullOrEmpty())
+            {
+                return Array.Empty<string>();
+            }
+
+            var inputIsFile = File.Exists(inputPath);
+            var inputFile = inputIsFile ? Path.GetFullPath(inputPath) : null;
+            var result = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var filter in sourceFileFilters)
+            {
+                if (string.IsNullOrWhiteSpace(filter))
+                {
+                    continue;
+                }
+
+                var normalized = NormalizeSourceFilePath(filter);
+                var fullPath = Path.IsPathRooted(normalized)
+                    ? Path.GetFullPath(normalized)
+                    : Path.GetFullPath(Path.Combine(sourceRoot, normalized.Replace('/', Path.DirectorySeparatorChar)));
+                if (inputIsFile && !string.Equals(fullPath, inputFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Warning($"--source_files entry is outside the single-file input and will be ignored: {filter}");
+                    continue;
+                }
+
+                if (!File.Exists(fullPath))
+                {
+                    Logger.Warning($"--source_files entry does not exist and will be ignored: {filter}");
+                    continue;
+                }
+
+                if (seen.Add(fullPath))
+                {
+                    result.Add(fullPath);
+                }
+            }
+
+            return result
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static string NormalizeSourceFilePath(string path)
+        {
+            return path
+                .Trim()
+                .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/')
+                .Replace('\\', '/');
         }
 
         private static string TryGetEndfieldDataRootFromVfsPath(string path)
@@ -4438,6 +4512,11 @@ WHERE r.relation = $relation;";
             var extension = Path.GetExtension(path);
             if (string.IsNullOrEmpty(extension))
             {
+                if (IsLikelyNarakaBundleFile(path, game))
+                {
+                    return true;
+                }
+
                 return IsKnownUnityDataFile(path) || HasUnityBundleHeader(path);
             }
 
@@ -4477,7 +4556,41 @@ WHERE r.relation = $relation;";
                 case ".webm":
                     return false;
                 default:
-                    return HasUnityBundleHeader(path);
+                    return IsLikelyNarakaBundleFile(path, game) || HasUnityBundleHeader(path);
+            }
+        }
+
+        private static bool IsLikelyNarakaBundleFile(string path, Game game)
+        {
+            if (game == null || !game.Type.IsNaraka())
+            {
+                return false;
+            }
+
+            try
+            {
+                // 永劫无间把 UnityFS 文件头改成这个 7 字节标记。
+                // 后续 BundleFile 会按 Naraka profile 还原签名和块信息。
+                using var stream = File.OpenRead(path);
+                if (stream.Length < 7)
+                {
+                    return false;
+                }
+
+                Span<byte> buffer = stackalloc byte[7];
+                var read = stream.Read(buffer);
+                return read == 7
+                    && buffer[0] == 0x15
+                    && buffer[1] == 0x1E
+                    && buffer[2] == 0x1C
+                    && buffer[3] == 0x0D
+                    && buffer[4] == 0x0D
+                    && buffer[5] == 0x23
+                    && buffer[6] == 0x21;
+            }
+            catch
+            {
+                return false;
             }
         }
 

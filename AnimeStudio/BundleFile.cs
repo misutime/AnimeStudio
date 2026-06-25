@@ -371,8 +371,34 @@ namespace AnimeStudio
 
             if (Game.Type.IsNaraka())
             {
-                m_Header.compressedBlocksInfoSize -= 0xCA;
-                m_Header.uncompressedBlocksInfoSize -= 0xCA;
+                var sizeOffset = m_Header.size - reader.BaseStream.Length;
+                Logger.Verbose($"Naraka bundle header size offset: 0x{sizeOffset:X}");
+                switch (sizeOffset)
+                {
+                    case 0x16:
+                        m_Header.compressedBlocksInfoSize -= 0xCA;
+                        m_Header.uncompressedBlocksInfoSize -= 0xCA;
+                        break;
+                    case 0x1A:
+                        m_Header.compressedBlocksInfoSize -= 0xB4;
+                        m_Header.uncompressedBlocksInfoSize -= 0xAA;
+                        break;
+                    case 0x14:
+                        m_Header.compressedBlocksInfoSize -= 0xAA;
+                        m_Header.uncompressedBlocksInfoSize -= 0xBE;
+                        m_Header.flags -= 0x03;
+                        reader.ReadUInt16();
+                        break;
+                    case 0x1E:
+                        m_Header.compressedBlocksInfoSize -= 0x96;
+                        m_Header.uncompressedBlocksInfoSize -= 0x82;
+                        m_Header.flags -= 0x03;
+                        reader.ReadUInt16();
+                        break;
+                    default:
+                        Logger.Warning($"Unknown Naraka bundle header size offset: 0x{sizeOffset:X}. The file may need a new header fix rule.");
+                        break;
+                }
             }
 
             Logger.Verbose($"Bundle header Info: {m_Header}");
@@ -419,7 +445,7 @@ namespace AnimeStudio
             byte[] blocksInfoBytes;
             if (m_Header.version >= 7 && !Game.Type.IsSRGroup())
             {
-                reader.AlignStream(16);
+                AlignBundleInfoBoundary(reader);
             }
             if ((m_Header.flags & ArchiveFlags.BlocksInfoAtTheEnd) != 0) //kArchiveBlocksInfoAtTheEnd
             {
@@ -503,11 +529,20 @@ namespace AnimeStudio
                 Logger.Verbose($"Blocks count: {blocksInfoCount}");
                 for (int i = 0; i < blocksInfoCount; i++)
                 {
+                    var blockUncompressedSize = blocksInfoReader.ReadUInt32();
+                    var blockCompressedSize = blocksInfoReader.ReadUInt32();
+                    var blockFlags = blocksInfoReader.ReadUInt16();
+                    if (Game.Type.IsNaraka() && blockFlags == 0x06)
+                    {
+                        // Naraka 新格式会把 Lz4HC(0x03) 写成 0x06，这里只还原块表字段。
+                        blockFlags -= 0x03;
+                    }
+
                     m_BlocksInfo.Add(new StorageBlock
                     {
-                        uncompressedSize = blocksInfoReader.ReadUInt32(),
-                        compressedSize = blocksInfoReader.ReadUInt32(),
-                        flags = (StorageBlockFlags)blocksInfoReader.ReadUInt16()
+                        uncompressedSize = blockUncompressedSize,
+                        compressedSize = blockCompressedSize,
+                        flags = (StorageBlockFlags)blockFlags
                     });
 
                     Logger.Verbose($"Block {i} Info: {m_BlocksInfo[i]}");
@@ -531,8 +566,15 @@ namespace AnimeStudio
             }
             if (HasBlockInfoNeedPaddingAtStart && (m_Header.flags & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
             {
-                reader.AlignStream(16);
+                AlignBundleInfoBoundary(reader);
             }
+        }
+
+        private void AlignBundleInfoBoundary(FileReader reader)
+        {
+            // Naraka 新格式会把目录块和真实数据块放到 4KB 边界。
+            // 普通 UnityFS 仍保持 Unity 原本的 16 字节对齐。
+            reader.AlignStream(Game.Type.IsNaraka() ? 0x1000 : 16);
         }
 
         private void ReadBlocks(FileReader reader, Stream blocksStream)
@@ -546,6 +588,13 @@ namespace AnimeStudio
             {
                 Logger.Verbose($"Reading block {i}...");
                 var blockInfo = m_BlocksInfo[i];
+                if (Game.Type.IsNaraka())
+                {
+                    // Naraka 新格式的每个数据块也从 4KB 边界开始。
+                    // 块表里的 compressedSize 不包含这些 padding。
+                    reader.AlignStream(0x1000);
+                }
+
                 var compressionType = (CompressionType)(blockInfo.flags & StorageBlockFlags.CompressionTypeMask);
                 Logger.Verbose($"Block compression type {compressionType}");
                 switch (compressionType) //kStorageBlockCompressionTypeMask

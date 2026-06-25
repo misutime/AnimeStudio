@@ -1139,7 +1139,8 @@ namespace AnimeStudio.CLI
                         endfieldVfsInnerFileFilter,
                         endfieldVfsInnerFileLimit,
                         o.EndfieldVfsKeepSameLengthSupplemental,
-                        o.EndfieldSourceCabClosureIncludeAutoRoots
+                        o.EndfieldSourceCabClosureIncludeAutoRoots,
+                        o.SourceFileFilter
                     );
                     return;
                 }
@@ -1209,7 +1210,8 @@ namespace AnimeStudio.CLI
                         endfieldVfsInnerFileFilter,
                         endfieldVfsInnerFileLimit,
                         o.EndfieldVfsKeepSameLengthSupplemental,
-                        o.EndfieldSourceCabClosureIncludeAutoRoots
+                        o.EndfieldSourceCabClosureIncludeAutoRoots,
+                        o.SourceFileFilter
                     );
                 }
 
