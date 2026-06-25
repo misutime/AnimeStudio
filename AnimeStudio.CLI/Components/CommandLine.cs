@@ -708,7 +708,6 @@ namespace AnimeStudio.CLI
 
             LoggerFlags.AddValidator(FilterValidator);
             TypeFilter.AddValidator(FilterValidator);
-            SourceFileFilter.AddValidator(FilterValidator);
             EndfieldVfsFileFilter.AddValidator(FilterValidator);
             NameFilter.AddValidator(FilterValidator);
             ContainerFilter.AddValidator(FilterValidator);

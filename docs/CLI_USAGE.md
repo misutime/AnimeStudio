@@ -560,6 +560,8 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 如果同时传入 `--preview_source_root`，每个候选会额外写 `targetedLibraryExport`，包含机器可读 `arguments` 和 PowerShell 友好的 `powershellCommand`。命令会用 `&` 调用生成报告时正在运行的 CLI，避免带空格或带引号的 exe 路径在 PowerShell 里不能直接执行。这只是把候选行里的 `sourcePath + pathId` 组合成定向 Library 导出命令：输入仍必须是完整 Unity 源目录，依赖闭包仍来自完整 `unity_source_index.db`，本次加载只用 `--source_files + --path_ids` 收窄。这个命令只能作为模型第一阶段 smoke 起点，不能替代后续 `model_validation.json`、glTF validator 和清晰截图验收；候选本身带 `excludeHint` 时，报告会把 `readyForModelSmoke=false`。
 
+`--source_files` 是显式源文件路径，不是正则；Windows `4\2\420c7a76d4e7354a` 和索引报告里的 `4/2/420c7a76d4e7354a` 会归一化为同一个相对路径。`--names`、`--containers`、`--*_exclude` 仍然是正则筛选。
+
 Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `source_model_candidates.json` 里的 `targetedLibraryExport`，或手动传 `--source_files + --path_ids` 锁定本次加载闭包。只传 `--names` / `--containers` 虽然会过滤导出候选，但仍可能在永劫大源目录上加载过宽依赖，导致诊断样本耗时和内存失真。下面的 Hadi body smoke 示例使用完整源目录和完整源索引，但只加载源索引闭包选出的 5 个物理文件：
 
 截至 2026-06-26 本机 `C:\Game163\program` 安装形态，默认主输入应使用 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`。该目录下主体资源是大量无扩展 Unity bundle，已能通过 Naraka header/block 修正和完整 `unity_source_index.db` 建索引、定点导出模型；根目录内少量 `.pak` 体量很小，不是当前模型、贴图、材质、骨骼主资源入口。网上流传的 QuickBMS/AES key 只能作为其它发行包或旧版本解包线索，不能写入默认 `Library` 流程，也不能替代本项目的 Unity PPtr/source index 依赖闭包。若后续遇到只能从 `.pak` 进入的发行形态，应先用显式诊断命令记录包结构、UnityFS 命中率、解密参数和版本日期，再决定是否增加独立转换入口。
