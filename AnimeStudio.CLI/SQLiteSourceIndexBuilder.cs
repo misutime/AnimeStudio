@@ -94,8 +94,67 @@ ON source_objects(serialized_file COLLATE NOCASE, path_id);");
 CREATE INDEX idx_source_relations_container_relation
 ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
             EnsureIndex(connection, "idx_source_animation_bindings_clip", "source_animation_bindings", "animation_file, animation_path_id");
+            RefreshNarakaInputProbeForExistingIndex(connection, dbPath);
             CheckpointSourceIndex(connection, dbPath);
             Logger.Info($"SQLite source query indexes are ready: {dbPath}");
+        }
+
+        private static void RefreshNarakaInputProbeForExistingIndex(SqliteConnection connection, string dbPath)
+        {
+            var gameName = ScalarString(connection, "SELECT value FROM metadata WHERE key='game' LIMIT 1;");
+            var game = string.IsNullOrWhiteSpace(gameName) ? null : GameManager.GetGame(gameName);
+            if (game == null || !game.Type.IsNaraka())
+            {
+                return;
+            }
+
+            var sourceRoot = ScalarString(connection, "SELECT value FROM metadata WHERE key='sourceRoot' LIMIT 1;");
+            if (string.IsNullOrWhiteSpace(sourceRoot) || !Directory.Exists(sourceRoot))
+            {
+                Logger.Warning($"Unable to refresh Naraka input probe because sourceRoot is missing or does not exist: {sourceRoot}");
+                return;
+            }
+
+            string[] sourceFiles;
+            using (ProfileLogger.Measure("source_index_refresh_naraka_input_probe", new Dictionary<string, object>
+            {
+                ["sourceRoot"] = sourceRoot,
+                ["sourceIndex"] = dbPath,
+            }))
+            {
+                var indexedFiles = ReadIndexedSourceFiles(connection, sourceRoot);
+                sourceFiles = indexedFiles.Length > 0
+                    ? indexedFiles
+                    : Directory.GetFiles(sourceRoot, "*.*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+            }
+
+            var loadableFiles = sourceFiles
+                .Where(x => IsLikelyUnityLoadableFile(x, game))
+                .OrderBy(x => SafeFileLength(x))
+                .ThenBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var narakaInputProbe = AnalyzeNarakaInputFiles(sourceFiles, loadableFiles, game);
+            if (narakaInputProbe == null)
+            {
+                return;
+            }
+
+            using (var transaction = connection.BeginTransaction())
+            {
+                InsertMetadata(connection, transaction, "narakaInputProbe", narakaInputProbe.ToJson().ToString(Formatting.None));
+                InsertMetadata(connection, transaction, "narakaBundleHeaderCount", narakaInputProbe.NarakaHeaderFileCount.ToString(CultureInfo.InvariantCulture));
+                InsertMetadata(connection, transaction, "narakaPakFileCount", narakaInputProbe.PakFileCount.ToString(CultureInfo.InvariantCulture));
+                InsertMetadata(connection, transaction, "narakaBundleHeaderOffsetCounts", JObject.FromObject(narakaInputProbe.HeaderSizeOffsetCounts).ToString(Formatting.None));
+                transaction.Commit();
+            }
+
+            var outputRoot = Path.GetDirectoryName(dbPath) ?? Environment.CurrentDirectory;
+            var counts = ReadSourceIndexCountsForSummary(connection, outputRoot, dbPath);
+            counts["sourceFiles"] = sourceFiles.Length;
+            counts["loadableSourceFiles"] = loadableFiles.Length;
+            counts["skippedSidecarFiles"] = Math.Max(0, sourceFiles.Length - loadableFiles.Length);
+            WriteSummary(connection, outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts, narakaInputProbe);
+            Logger.Info($"Refreshed Naraka input probe metadata for SQLite source index: {dbPath}");
         }
 
         public static string Build(
@@ -3507,6 +3566,93 @@ WHERE r.relation = $relation;";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             return command.ExecuteScalar() as string;
+        }
+
+        private static string[] ReadIndexedSourceFiles(SqliteConnection connection, string sourceRoot)
+        {
+            if (!TableExists(connection, "source_files"))
+            {
+                return Array.Empty<string>();
+            }
+
+            var result = new List<string>();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT path FROM source_files ORDER BY path COLLATE NOCASE;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var path = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                var fullPath = Path.IsPathRooted(path)
+                    ? path
+                    : Path.Combine(sourceRoot, path.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(fullPath))
+                {
+                    result.Add(Path.GetFullPath(fullPath));
+                }
+            }
+
+            return result.ToArray();
+        }
+
+        private static Dictionary<string, long> ReadSourceIndexCountsForSummary(SqliteConnection connection, string outputRoot, string dbPath)
+        {
+            var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var summaryPath = GetSourceIndexSummaryPath(outputRoot, dbPath);
+            if (File.Exists(summaryPath))
+            {
+                try
+                {
+                    var summary = JObject.Parse(File.ReadAllText(summaryPath));
+                    if (summary["counts"] is JObject oldCounts)
+                    {
+                        foreach (var property in oldCounts.Properties())
+                        {
+                            if (property.Value.Type == JTokenType.Integer ||
+                                long.TryParse(property.Value.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                            {
+                                counts[property.Name] = property.Value.Value<long>();
+                            }
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    Logger.Warning($"Unable to reuse existing source index summary counts. {e.GetType().Name}: {e.Message}");
+                }
+            }
+
+            counts["sourceFiles"] = TableRowCount(connection, "source_files");
+            counts["serializedFiles"] = TableRowCount(connection, "serialized_files");
+            counts["sourceObjects"] = TableRowCount(connection, "source_objects");
+            counts["sourceExternals"] = TableRowCount(connection, "source_externals");
+            counts["sourceRelations"] = TableRowCount(connection, "source_relations");
+            counts["sourceAnimationBindings"] = TableRowCount(connection, "source_animation_bindings");
+            return counts;
+        }
+
+        private static long TableRowCount(SqliteConnection connection, string tableName)
+        {
+            if (!TableExists(connection, tableName))
+            {
+                return 0;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = $"SELECT COUNT(*) FROM {tableName};";
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static bool TableExists(SqliteConnection connection, string tableName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$name;";
+            command.Parameters.AddWithValue("$name", tableName);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture) > 0;
         }
 
         private static string GetSourceIndexSummaryPath(string outputRoot, string dbPath)

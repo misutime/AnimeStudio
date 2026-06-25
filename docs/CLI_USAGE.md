@@ -560,6 +560,8 @@ Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `s
 
 新建 Naraka `unity_source_index.db` 时会在 `metadata.narakaInputProbe` 和 `unity_source_index_summary.json.narakaInputProbe` 记录 `.pak` 数量、普通 `UnityFS` 头数量、Naraka 替代头数量和 header size offset 分布。这个字段只用于确认输入形态和 header/block 规则命中情况；它不会执行 `.pak` 解包，也不会把社区 AES key 写入默认素材库流程。
 
+如果旧 Naraka 源索引已经能正常查询但缺少 `narakaInputProbe`，不必重建几十 GB 的 `unity_source_index.db`。直接对现有 DB 运行 `--ensure_source_index_query_indexes`，工具会复用 `metadata.sourceRoot` 只读扫描源文件头，回填 `narakaInputProbe`、`narakaBundleHeaderCount`、`narakaPakFileCount` 和 `narakaBundleHeaderOffsetCounts`，并重写 `unity_source_index_summary.json`。
+
 ```powershell
 AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   "C:\Game163\program\NarakaBladepoint_Data\StreamingAssets" `
