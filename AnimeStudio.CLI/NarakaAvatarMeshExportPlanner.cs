@@ -49,6 +49,11 @@ namespace AnimeStudio.CLI
             }
 
             var boneDriverHints = LoadBoneDriverHints(connection, target.VisualCellFile).ToList();
+            var allTransformNodeEvidence = LoadActorBodyVisualCellTransformNodeEvidence(connection, target.VisualCellFile)
+                .OrderByDescending(x => x.TransformNodeCount)
+                .ThenBy(x => x.GameObjectName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var transformNodeEvidence = allTransformNodeEvidence.Take(24).ToList();
             var monoObjects = new List<SourceObjectRef>
             {
                 new(target.VisualCellName, target.VisualCellSourcePath, target.VisualCellFile, target.VisualCellPathId, "ActorBodyVisualCell")
@@ -87,6 +92,16 @@ namespace AnimeStudio.CLI
                     ["count"] = boneDriverHints.Count,
                     ["objects"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
                     ["rule"] = "BoneFollowDriver/BoneHairFollowDriver 只作为同一视觉包内的骨骼名称线索导出；不能作为 mesh joint 或 skin 绑定。"
+                },
+                ["actorBodyVisualCellTransformNodes"] = new JObject
+                {
+                    ["status"] = allTransformNodeEvidence.Count > 0 ? "sameSerializedFileTransformNodeEvidence" : "missing",
+                    ["sameSerializedFile"] = target.VisualCellFile,
+                    ["targetVisualCellHasTransformNodes"] = allTransformNodeEvidence.Any(x => x.VisualCellPathId == target.VisualCellPathId),
+                    ["count"] = allTransformNodeEvidence.Count,
+                    ["emittedCount"] = transformNodeEvidence.Count,
+                    ["objects"] = new JArray(transformNodeEvidence.Select(x => x.ToJson())),
+                    ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
                 },
             };
             plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, materialObjects);
@@ -382,6 +397,136 @@ ORDER BY script.name, obj.path_id;";
                     reader.GetInt64(3),
                     reader.IsDBNull(4) ? string.Empty : reader.GetString(4));
             }
+        }
+
+        private static IEnumerable<ActorBodyVisualCellTransformNodes> LoadActorBodyVisualCellTransformNodeEvidence(SqliteConnection connection, string serializedFile)
+        {
+            var file = NormalizeSerializedFileName(serializedFile);
+            if (string.IsNullOrWhiteSpace(file))
+            {
+                yield break;
+            }
+
+            foreach (var cell in LoadActorBodyVisualCells(connection, file))
+            {
+                var nodeCount = CountTransformNodes(connection, file, cell.PathId);
+                if (nodeCount <= 0)
+                {
+                    continue;
+                }
+
+                var gameObjectPathId = ResolveGameObjectForComponent(connection, file, cell.PathId);
+                var gameObjectName = ResolveSourceObject(connection, file, gameObjectPathId).Name;
+                var container = ResolveFirstContainer(connection, file, cell.PathId);
+                var sampleNodes = LoadTransformNodeSamples(connection, file, cell.PathId, 12).ToArray();
+                yield return new ActorBodyVisualCellTransformNodes
+                {
+                    VisualCellPathId = cell.PathId,
+                    VisualCellSourcePath = cell.SourcePath,
+                    GameObjectPathId = gameObjectPathId,
+                    GameObjectName = gameObjectName,
+                    Container = container,
+                    TransformNodeCount = nodeCount,
+                    SampleTransformNodes = sampleNodes,
+                };
+            }
+        }
+
+        private static IEnumerable<SourceObjectRef> LoadActorBodyVisualCells(SqliteConnection connection, string serializedFile)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name, source_path, serialized_file, path_id
+FROM source_objects INDEXED BY idx_source_objects_file_path
+WHERE serialized_file = $file
+  AND type = 'MonoBehaviour'
+  AND name = 'ActorBodyVisualCell'
+ORDER BY path_id;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                yield return new SourceObjectRef(
+                    reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    reader.GetInt64(3),
+                    "ActorBodyVisualCell");
+            }
+        }
+
+        private static int CountTransformNodes(SqliteConnection connection, string serializedFile, long visualCellPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT to_path_id)
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_path_id = $pathId
+  AND relation = 'monoBehaviour.pptr'
+  AND from_file = $file
+  AND json_extract(raw_json, '$.details.path') = 'transformNodes.data';";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", visualCellPathId);
+            return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+
+        private static IEnumerable<TransformNodeSample> LoadTransformNodeSamples(SqliteConnection connection, string serializedFile, long visualCellPathId, int limit)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT DISTINCT to_path_id
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_path_id = $pathId
+  AND relation = 'monoBehaviour.pptr'
+  AND from_file = $file
+  AND json_extract(raw_json, '$.details.path') = 'transformNodes.data'
+ORDER BY id
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", visualCellPathId);
+            command.Parameters.AddWithValue("$limit", Math.Max(1, limit));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var transformPathId = reader.GetInt64(0);
+                var gameObjectPathId = ResolveGameObjectForComponent(connection, serializedFile, transformPathId);
+                var gameObjectName = ResolveSourceObject(connection, serializedFile, gameObjectPathId).Name;
+                yield return new TransformNodeSample(transformPathId, gameObjectPathId, gameObjectName);
+            }
+        }
+
+        private static long ResolveGameObjectForComponent(SqliteConnection connection, string serializedFile, long componentPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT to_path_id
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_path_id = $pathId
+  AND relation = 'component.gameObject'
+  AND from_file = $file
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", componentPathId);
+            var value = command.ExecuteScalar();
+            return value == null || value == DBNull.Value
+                ? 0
+                : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+        }
+
+        private static string ResolveFirstContainer(SqliteConnection connection, string serializedFile, long pathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT json_extract(raw_json, '$.details.container')
+FROM source_relations INDEXED BY idx_source_relations_to
+WHERE to_path_id = $pathId
+  AND relation = 'assetBundle.containerPreload'
+  AND to_file = $file
+ORDER BY id
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            return command.ExecuteScalar() as string ?? string.Empty;
         }
 
         private static IEnumerable<TextureRef> LoadTextures(SqliteConnection connection, string materialFile, long materialPathId)
@@ -828,6 +973,39 @@ LIMIT 1;";
                 ["serializedFile"] = SerializedFile,
                 ["pathId"] = PathId,
                 ["scriptName"] = ScriptName,
+            };
+        }
+
+        private sealed class ActorBodyVisualCellTransformNodes
+        {
+            public long VisualCellPathId { get; init; }
+            public string VisualCellSourcePath { get; init; }
+            public long GameObjectPathId { get; init; }
+            public string GameObjectName { get; init; }
+            public string Container { get; init; }
+            public int TransformNodeCount { get; init; }
+            public IReadOnlyList<TransformNodeSample> SampleTransformNodes { get; init; } = Array.Empty<TransformNodeSample>();
+
+            public JObject ToJson() => new()
+            {
+                ["gameObjectName"] = GameObjectName,
+                ["gameObjectPathId"] = GameObjectPathId,
+                ["visualCellSourcePath"] = VisualCellSourcePath,
+                ["visualCellPathId"] = VisualCellPathId,
+                ["container"] = Container,
+                ["transformNodeCount"] = TransformNodeCount,
+                ["sampleTransformNodes"] = new JArray((SampleTransformNodes ?? Array.Empty<TransformNodeSample>()).Select(x => x.ToJson())),
+                ["meaning"] = "只表示 ActorBodyVisualCell.transformNodes.data 显式引用过这些 Transform；不能证明 AvatarMeshDataAsset 权重使用这些节点。",
+            };
+        }
+
+        private sealed record TransformNodeSample(long TransformPathId, long GameObjectPathId, string GameObjectName)
+        {
+            public JObject ToJson() => new()
+            {
+                ["gameObjectName"] = GameObjectName,
+                ["gameObjectPathId"] = GameObjectPathId,
+                ["transformPathId"] = TransformPathId,
             };
         }
 
