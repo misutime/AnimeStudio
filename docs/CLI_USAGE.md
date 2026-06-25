@@ -2423,6 +2423,8 @@ Humanoid/Muscle 预览会把 `RootT.*` / `RootQ.*` 作为 root motion 写到 glT
 - `materialNeedsCustomizationTint`：需要 ColorMask/Tint 或 customization 配色。
 - `materialMissingRendererBinding`：缺 Renderer 材质绑定、需要材质修补或后续关系索引增强。该字段会合并 `model_validation.json` 的 primitive 材质覆盖结果，不只看 glTF 材质 extras。
 - `materialMissingRendererPrimitiveCount` / `materialMissingRendererPrimitives`：缺材质 primitive 数量和名称样本，方便浏览器或批处理直接筛掉灰模/缺绑定模型。
+- `materialMissingRendererPrimitiveUnityEvidence`：当模型导出时已加载 `unity_source_index.db`，会尝试把缺材质 primitive 映射回 Unity Transform/GameObject，并记录组件类型、Renderer 数量和 `renderer.material` 关系数。
+- `materialProbableSimulationHelperPrimitiveCount` / `materialHiddenSimulationHelperPrimitiveCount`：如果源索引确认缺材质 primitive 来自 `Cloth + Renderer`，且 Unity 里没有 `renderer.material` 关系，导出器会把它视作布料模拟辅助网格，并在 glTF 里挂透明诊断材质 `AnimeStudio_NonRenderingSimulationHelper`，避免浏览器把它渲染成灰片。这个材质不是 Unity 原始材质绑定，原始证据仍以 `materialMissingRendererPrimitiveUnityEvidence` 为准。
 - `materialHasBaseColorTexture` / `materialHasNormalTexture` / `materialImageCount`：判断模型是否已有标准贴图显示能力。`materialImageCount` 会优先同步验证后的 glTF image 数量。
 - `modelValidationStatus` / `modelBodyStatus`：从 `model_validation.json` 回写到 catalog 的模型验收状态，SQLite `assets.validation_status` 也会同步该值。
 - `resourceKindEvidence`：当模型原本是 `Unknown`，但 Library 相对输出路径里存在 `actor_visual_part` 等通用角色素材语义时，会记录本次 `resourceKind` 补判依据。这个兜底只使用 Library 相对路径，不按游戏私有角色名前缀猜。

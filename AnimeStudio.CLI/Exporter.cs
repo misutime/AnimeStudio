@@ -2803,8 +2803,9 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             var avatarInfo = GetModelAvatarInfo(source);
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
             var skeletonValidation = BuildHumanoidSkeletonValidation(imported, avatarInfo);
-            var materialSummary = BuildExportedModelMaterialSummary(outputPath);
             var missingMaterialEvidence = BuildMissingMaterialUnityEvidence(outputPath, sourceInfo, meshPaths);
+            var hiddenSimulationHelperPrimitiveCount = ApplyNonRenderingSimulationHelperMaterial(outputPath, missingMaterialEvidence);
+            var materialSummary = BuildExportedModelMaterialSummary(outputPath);
             var embeddedAnimationCount = CountWrittenGltfAnimations(outputPath);
             var importedAnimationListCount = imported.AnimationList?.Count ?? 0;
             var conversionIssues = imported is ModelConverter modelConverter
@@ -2845,6 +2846,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialImageCount = materialSummary?.imageCount,
                 materialMissingRendererPrimitiveUnityEvidenceCount = missingMaterialEvidence?.Evidence.Length ?? 0,
                 materialProbableSimulationHelperPrimitiveCount = missingMaterialEvidence?.ProbableSimulationHelperCount ?? 0,
+                materialHiddenSimulationHelperPrimitiveCount = hiddenSimulationHelperPrimitiveCount,
                 materialMissingRendererPrimitiveUnityEvidence = missingMaterialEvidence?.Evidence,
                 unresolvedModelDependencyCount = conversionIssues.Count,
                 unresolvedModelDependencyTypes = conversionIssueTypes,
@@ -3102,6 +3104,138 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 .OrderBy(x => x.Primitive, StringComparer.Ordinal)
                 .ThenBy(x => x.SourcePath, StringComparer.Ordinal)
                 .ToList();
+        }
+
+        private static int ApplyNonRenderingSimulationHelperMaterial(string outputPath, MissingMaterialUnityEvidenceSummary evidenceSummary)
+        {
+            // 只处理 Unity 源索引已确认的 Cloth 模拟辅助网格；普通缺材质仍保持 warning，不能在这里被遮掉。
+            var helperLabels = evidenceSummary?.Evidence?
+                .Where(x => x.ProbableSimulationHelper)
+                .Select(x => x.Primitive)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>(StringComparer.Ordinal);
+            if (helperLabels.Count == 0
+                || string.IsNullOrWhiteSpace(outputPath)
+                || !string.Equals(Path.GetExtension(outputPath), ".gltf", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(outputPath))
+            {
+                return 0;
+            }
+
+            try
+            {
+                var gltf = JObject.Parse(File.ReadAllText(outputPath));
+                var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var meshes = gltf["meshes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                if (meshes.Length == 0)
+                {
+                    return 0;
+                }
+
+                var labels = BuildGltfMeshLabels(nodes, meshes);
+                var materials = gltf["materials"] as JArray;
+                if (materials == null)
+                {
+                    materials = new JArray();
+                    gltf["materials"] = materials;
+                }
+
+                var materialIndex = FindNonRenderingSimulationHelperMaterial(materials);
+                if (materialIndex < 0)
+                {
+                    materialIndex = materials.Count;
+                    materials.Add(BuildNonRenderingSimulationHelperMaterial());
+                }
+
+                var changedCount = 0;
+                for (var meshIndex = 0; meshIndex < meshes.Length; meshIndex++)
+                {
+                    var primitiveIndex = -1;
+                    foreach (var primitive in meshes[meshIndex]["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                    {
+                        primitiveIndex++;
+                        if ((int?)primitive["material"] != null)
+                        {
+                            continue;
+                        }
+
+                        var label = BuildGltfPrimitiveLabel(labels, meshIndex, primitiveIndex);
+                        if (!helperLabels.Contains(label))
+                        {
+                            continue;
+                        }
+
+                        primitive["material"] = materialIndex;
+                        var extras = primitive["extras"] as JObject ?? new JObject();
+                        primitive["extras"] = extras;
+                        extras["animeStudioPrimitive"] = JObject.FromObject(new
+                        {
+                            status = "nonRenderingUnitySimulationHelper",
+                            rule = "Unity 源索引确认该 primitive 来自 Cloth+Renderer，但 Renderer 没有 renderer.material 关系；用透明诊断材质避免 glTF 浏览器把模拟辅助网格显示成灰片，不伪造 Unity 材质绑定。"
+                        });
+                        changedCount++;
+                    }
+                }
+
+                if (changedCount > 0)
+                {
+                    File.WriteAllText(outputPath, gltf.ToString(Newtonsoft.Json.Formatting.Indented));
+                    Logger.Info($"Marked {changedCount} Unity Cloth simulation helper primitive(s) as non-rendering in glTF: {outputPath}");
+                }
+
+                return changedCount;
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Unable to mark Unity Cloth simulation helper primitives in glTF: {outputPath}. {ex.GetType().Name}: {ex.Message}");
+                return 0;
+            }
+        }
+
+        private static int FindNonRenderingSimulationHelperMaterial(JArray materials)
+        {
+            for (var i = 0; i < materials.Count; i++)
+            {
+                if (materials[i] is not JObject material)
+                {
+                    continue;
+                }
+
+                var status = (string)material["extras"]?["animeStudioMaterial"]?["status"];
+                if (string.Equals((string)material["name"], "AnimeStudio_NonRenderingSimulationHelper", StringComparison.Ordinal)
+                    && string.Equals(status, "nonRenderingUnitySimulationHelper", StringComparison.Ordinal))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static JObject BuildNonRenderingSimulationHelperMaterial()
+        {
+            return JObject.FromObject(new
+            {
+                name = "AnimeStudio_NonRenderingSimulationHelper",
+                alphaMode = "BLEND",
+                doubleSided = true,
+                pbrMetallicRoughness = new
+                {
+                    baseColorFactor = new[] { 1.0, 1.0, 1.0, 0.0 },
+                    metallicFactor = 0.0,
+                    roughnessFactor = 1.0,
+                },
+                extras = new
+                {
+                    animeStudioMaterial = new
+                    {
+                        status = "nonRenderingUnitySimulationHelper",
+                        source = "unityClothRendererWithoutMaterial",
+                        rule = "该材质只用于预览隐藏 Unity Cloth 模拟辅助 primitive；原始 Renderer 没有 renderer.material 关系，catalog 会保留 Unity 证据。"
+                    }
+                }
+            });
         }
 
         private static List<SourceTransformPathMatch> FindSourceTransformPathMatches(
