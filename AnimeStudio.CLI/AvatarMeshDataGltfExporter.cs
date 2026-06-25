@@ -412,7 +412,17 @@ namespace AnimeStudio.CLI
 
             var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
+            var selectedTransformNodeRequiredCount = GetSelectedVisualCellTransformNodeRequiredCount(transformNodeTableCandidates);
+            var selectedTransformNodeMissingCount = GetSelectedVisualCellTransformNodeMissingCount(transformNodeTableCandidates, selectedVisualCell);
+            var selectedTransformNodeCoverageStatus = SummarizeSelectedVisualCellTransformNodeCoverageStatus(
+                selectedTransformNodeTableStatus,
+                selectedTransformNodeRequiredCount,
+                selectedTransformNodeMissingCount);
+            var sourceSkinMappingStatus = SummarizeSourceSkinMappingStatus(
+                selectedTransformNodeTableStatus,
+                transformNodeTableCandidates);
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var rangeCoveringMappedNodeNames = GetTransformNodeTableRangeCoveringMappedNodeNames(parts).ToArray();
             var rangeCoveringEvidence = BuildTransformNodeTableRangeCoveringEvidence(parts);
@@ -551,11 +561,16 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellBoneDriverHintNames"] = new JArray(GetBoneDriverNames(selectedBoneDriverHints)),
                 ["selectedVisualCellBoneDriverHintPaths"] = new JArray(GetBoneDriverPaths(selectedBoneDriverHints)),
                 ["selectedVisualCellBoneDriverHints"] = new JArray(selectedBoneDriverHints.Select(x => x.ToJson())),
-                ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
+                ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
                 ["selectedVisualCellTransformNodeTableStatus"] = selectedTransformNodeTableStatus,
                 ["selectedVisualCellTransformNodeTableCandidateCount"] = transformNodeTableCandidates.Count(x => x.IsSelectedVisualCell),
+                ["selectedVisualCellTransformNodeRequiredCount"] = selectedTransformNodeRequiredCount,
+                ["selectedVisualCellTransformNodeMissingCount"] = selectedTransformNodeMissingCount,
+                ["selectedVisualCellTransformNodeCoverageStatus"] = selectedTransformNodeCoverageStatus,
+                ["sourceSkinMappingStatus"] = sourceSkinMappingStatus,
+                ["sourceSkinMappingRule"] = "只有选中 ActorBodyVisualCell 自己的 transformNodes.data 覆盖 AvatarBoneWeights 的最大 boneIndex，且 joint 名称/路径映射也能确定时，才允许写 glTF skin；同包其它 VisualCell 的覆盖表只能作为诊断线索。",
                 ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
                 ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
@@ -804,6 +819,10 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellTransformNodeCount"] = report["selectedVisualCellTransformNodeCount"]?.DeepClone(),
                 ["selectedVisualCellTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                 ["selectedVisualCellTransformNodeTableCandidateCount"] = report["selectedVisualCellTransformNodeTableCandidateCount"]?.DeepClone(),
+                ["selectedVisualCellTransformNodeRequiredCount"] = report["selectedVisualCellTransformNodeRequiredCount"]?.DeepClone(),
+                ["selectedVisualCellTransformNodeMissingCount"] = report["selectedVisualCellTransformNodeMissingCount"]?.DeepClone(),
+                ["selectedVisualCellTransformNodeCoverageStatus"] = report["selectedVisualCellTransformNodeCoverageStatus"]?.DeepClone(),
+                ["sourceSkinMappingStatus"] = report["sourceSkinMappingStatus"]?.DeepClone(),
                 ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
                 ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
@@ -838,6 +857,8 @@ namespace AnimeStudio.CLI
                     ["selectedTransformHierarchyBasis"] = "GameObject.component -> Transform / Transform.child / Transform.parent from unity_source_index.db",
                     ["selectedChildComponentBasis"] = "selected VisualCell Transform child -> GameObject.component -> Component/MonoBehaviour.script from unity_source_index.db",
                     ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
+                    ["selectedTransformNodeCoverageStatus"] = report["selectedVisualCellTransformNodeCoverageStatus"]?.DeepClone(),
+                    ["sourceSkinMappingStatus"] = report["sourceSkinMappingStatus"]?.DeepClone(),
                     ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；BoneDriver 会同时区分全目录线索和选中 VisualCell 作用域，Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
@@ -2046,6 +2067,88 @@ namespace AnimeStudio.CLI
             return selectedCandidates.Any(x => x.CoversAvatarBoneIndexRange)
                 ? "selectedVisualCellRangeCoveringCandidate"
                 : "selectedVisualCellPresentButInsufficientForAvatarBoneRange";
+        }
+
+        private static int? GetSelectedVisualCellTransformNodeRequiredCount(
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            var selected = (candidates ?? Array.Empty<TransformNodeTableCandidate>())
+                .Where(x => x.IsSelectedVisualCell && x.RequiredNodeCount.HasValue)
+                .Select(x => x.RequiredNodeCount.Value)
+                .ToArray();
+            return selected.Length == 0 ? null : selected.Max();
+        }
+
+        private static int? GetSelectedVisualCellTransformNodeMissingCount(
+            IEnumerable<TransformNodeTableCandidate> candidates,
+            SelectedVisualCellInfo selectedVisualCell)
+        {
+            var required = GetSelectedVisualCellTransformNodeRequiredCount(candidates);
+            if (!required.HasValue)
+            {
+                return null;
+            }
+
+            var selectedCounts = (candidates ?? Array.Empty<TransformNodeTableCandidate>())
+                .Where(x => x.IsSelectedVisualCell)
+                .Select(x => x.TransformNodeCount)
+                .ToArray();
+            var actual = selectedCounts.Length == 0
+                ? selectedVisualCell?.TransformNodeCount ?? 0
+                : selectedCounts.Max();
+            return Math.Max(0, required.Value - actual);
+        }
+
+        private static string SummarizeSelectedVisualCellTransformNodeCoverageStatus(
+            string selectedTransformNodeTableStatus,
+            int? requiredNodeCount,
+            int? missingNodeCount)
+        {
+            if (string.Equals(selectedTransformNodeTableStatus, "selectedVisualCellRangeCoveringCandidate", StringComparison.OrdinalIgnoreCase))
+            {
+                return "coversAvatarBoneIndexRange";
+            }
+
+            if (string.Equals(selectedTransformNodeTableStatus, "selectedVisualCellPresentButInsufficientForAvatarBoneRange", StringComparison.OrdinalIgnoreCase))
+            {
+                return missingNodeCount.HasValue && missingNodeCount.Value > 0
+                    ? "insufficientForAvatarBoneRange"
+                    : "insufficientForAvatarBoneRangeUnknownGap";
+            }
+
+            if (string.Equals(selectedTransformNodeTableStatus, "selectedVisualCellHasNoTransformNodes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(selectedTransformNodeTableStatus, "missingSelectedVisualCellTransformNodeCandidate", StringComparison.OrdinalIgnoreCase))
+            {
+                return "missingSelectedVisualCellTransformNodes";
+            }
+
+            return requiredNodeCount.HasValue ? "unverified" : "unknownRequiredNodeCount";
+        }
+
+        private static string SummarizeSourceSkinMappingStatus(
+            string selectedTransformNodeTableStatus,
+            IEnumerable<TransformNodeTableCandidate> candidates)
+        {
+            // 这里保持保守：节点数量覆盖也只是必要条件，不等于 joint 名称/路径映射已经确定。
+            if (string.Equals(selectedTransformNodeTableStatus, "selectedVisualCellPresentButInsufficientForAvatarBoneRange", StringComparison.OrdinalIgnoreCase))
+            {
+                return "blockedSelectedTransformNodesInsufficient";
+            }
+
+            if (string.Equals(selectedTransformNodeTableStatus, "selectedVisualCellHasNoTransformNodes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(selectedTransformNodeTableStatus, "missingSelectedVisualCellTransformNodeCandidate", StringComparison.OrdinalIgnoreCase))
+            {
+                return "blockedSelectedTransformNodesMissing";
+            }
+
+            if (string.Equals(selectedTransformNodeTableStatus, "selectedVisualCellRangeCoveringCandidate", StringComparison.OrdinalIgnoreCase))
+            {
+                return "blockedJointNamesUnverified";
+            }
+
+            return (candidates ?? Array.Empty<TransformNodeTableCandidate>()).Any(x => x.CoversAvatarBoneIndexRange)
+                ? "blockedRangeCoveringCandidatesNotSelected"
+                : "blockedNoDeterministicJointMapping";
         }
 
         private static string ResolveAnimSkinBindPoseSlotStatus(SkinSummary summary)
