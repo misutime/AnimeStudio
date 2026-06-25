@@ -1971,10 +1971,63 @@ namespace AnimeStudio.CLI
                 .ToArray();
         }
 
+        private static IReadOnlyList<float[]> BuildUnityInverseBindMatrices(
+            IReadOnlyList<long> jointPathIds,
+            IReadOnlyCollection<long> includedPathIds,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
+        {
+            var included = new HashSet<long>(includedPathIds ?? Array.Empty<long>());
+            var worldCache = new Dictionary<long, System.Numerics.Matrix4x4>();
+            System.Numerics.Matrix4x4 GetWorld(long pathId)
+            {
+                if (worldCache.TryGetValue(pathId, out var cached))
+                {
+                    return cached;
+                }
+
+                if (exportedTransformNodes == null
+                    || !exportedTransformNodes.TryGetValue(pathId, out var transform)
+                    || !transform.HasLocalTrs)
+                {
+                    return System.Numerics.Matrix4x4.Identity;
+                }
+
+                var local = ToUnityMatrix4x4(transform);
+                var world = transform.FatherPathId != 0 && included.Contains(transform.FatherPathId)
+                    ? local * GetWorld(transform.FatherPathId)
+                    : local;
+                worldCache[pathId] = world;
+                return world;
+            }
+
+            return (jointPathIds ?? Array.Empty<long>())
+                .Select(pathId =>
+                {
+                    var world = GetWorld(pathId);
+                    if (!System.Numerics.Matrix4x4.Invert(world, out var inverse))
+                    {
+                        inverse = System.Numerics.Matrix4x4.Identity;
+                    }
+                    return ToFloatArray(inverse).ToArray();
+                })
+                .ToArray();
+        }
+
         private static System.Numerics.Matrix4x4 ToMatrix4x4(ExportedTransformNode transform)
         {
             var t = ConvertUnityPositionToGltf(transform.LocalPosition.Value);
             var r = ConvertUnityRotationToGltf(transform.LocalRotation.Value);
+            var s = transform.LocalScale.Value;
+            var scale = System.Numerics.Matrix4x4.CreateScale(s.X, s.Y, s.Z);
+            var rotation = System.Numerics.Matrix4x4.CreateFromQuaternion(new System.Numerics.Quaternion(r.X, r.Y, r.Z, r.W));
+            var translation = System.Numerics.Matrix4x4.CreateTranslation(t.X, t.Y, t.Z);
+            return scale * rotation * translation;
+        }
+
+        private static System.Numerics.Matrix4x4 ToUnityMatrix4x4(ExportedTransformNode transform)
+        {
+            var t = transform.LocalPosition.Value;
+            var r = transform.LocalRotation.Value;
             var s = transform.LocalScale.Value;
             var scale = System.Numerics.Matrix4x4.CreateScale(s.X, s.Y, s.Z);
             var rotation = System.Numerics.Matrix4x4.CreateFromQuaternion(new System.Numerics.Quaternion(r.X, r.Y, r.Z, r.W));
@@ -3768,8 +3821,122 @@ LIMIT 1;";
                     SelectedVisualCellIndexOrderComparison = CompareWithSelectedTransformNodeTable(table, selectedTable, usedRefs),
                     BoneDriverNodeNameMatchCount = boneDriverMatches.Length,
                     BoneDriverNodeNameMatches = boneDriverMatches,
+                    BindPoseTransformMatrixMatch = BuildBindPoseTransformMatrixMatch(skin, table, exportedTransformNodes),
                 };
             }
+        }
+
+        private static BindPoseTransformMatrixMatchSummary BuildBindPoseTransformMatrixMatch(
+            SkinSummary skin,
+            TransformNodeTable table,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
+        {
+            var summary = new BindPoseTransformMatrixMatchSummary
+            {
+                Status = "missing",
+                Basis = "m_BindPoses matrix values compared with candidate transform inverse world matrices",
+                CandidateVisualCell = table?.VisualCellGameObjectName,
+            };
+            if (skin == null || table == null || skin.BindPoseMatrix?.Matrices.Count == 0)
+            {
+                return summary;
+            }
+
+            var nodes = (table.Nodes ?? Array.Empty<TransformNodeTableNode>())
+                .Where(x => exportedTransformNodes != null
+                    && exportedTransformNodes.TryGetValue(x.TransformPathId, out var transform)
+                    && transform.HasLocalTrs)
+                .ToArray();
+            if (nodes.Length == 0)
+            {
+                summary.Status = "missingReadableTransforms";
+                return summary;
+            }
+
+            var includedPathIds = (table.Nodes ?? Array.Empty<TransformNodeTableNode>())
+                .Select(x => x.TransformPathId)
+                .ToHashSet();
+            var unityInverseByPath = BuildUnityInverseBindMatrices(nodes.Select(x => x.TransformPathId).ToArray(), includedPathIds, exportedTransformNodes);
+            var gltfInverseByPath = BuildInverseBindMatrices(nodes.Select(x => x.TransformPathId).ToArray(), includedPathIds, exportedTransformNodes);
+            var nodeMatrices = nodes
+                .Select((node, index) => new TransformInverseMatrixCandidate(
+                    node,
+                    unityInverseByPath.Count > index ? unityInverseByPath[index] : Array.Empty<float>(),
+                    gltfInverseByPath.Count > index ? gltfInverseByPath[index] : Array.Empty<float>()))
+                .ToArray();
+
+            var usedSlots = skin.AnimSkinBoneRefs.Count == 0
+                ? Enumerable.Range(0, skin.BindPoseMatrix.Matrices.Count)
+                    .Select(x => new BoneRefCount(x, 0))
+                    .ToArray()
+                : skin.AnimSkinBoneRefs
+                    .Where(x => x.BoneIndex >= 0 && x.BoneIndex < skin.BindPoseMatrix.Matrices.Count)
+                    .OrderBy(x => x.BoneIndex)
+                    .ToArray();
+            if (usedSlots.Length == 0)
+            {
+                summary.Status = "missingUsedBindPoseSlots";
+                return summary;
+            }
+
+            var matches = new List<BindPoseTransformMatrixMatch>();
+            foreach (var slot in usedSlots.Take(32))
+            {
+                var raw = skin.BindPoseMatrix.Matrices[slot.BoneIndex];
+                var transposed = TransposeMatrix4x4(raw);
+                BindPoseTransformMatrixMatch best = null;
+                foreach (var node in nodeMatrices)
+                {
+                    Consider("rawBindPose", "unityInverseWorld", raw, node.UnityInverse, node);
+                    Consider("transposedBindPose", "unityInverseWorld", transposed, node.UnityInverse, node);
+                    Consider("rawBindPose", "gltfInverseWorld", raw, node.GltfInverse, node);
+                    Consider("transposedBindPose", "gltfInverseWorld", transposed, node.GltfInverse, node);
+                }
+
+                if (best != null)
+                {
+                    matches.Add(best);
+                }
+
+                void Consider(string bindPoseInterpretation, string transformMatrixSpace, IReadOnlyList<float> left, IReadOnlyList<float> right, TransformInverseMatrixCandidate node)
+                {
+                    if (left == null || right == null || left.Count != 16 || right.Count != 16)
+                    {
+                        return;
+                    }
+
+                    var error = CalculateMatrixRmsError(left, right);
+                    if (best == null || error < best.RmsError)
+                    {
+                        best = new BindPoseTransformMatrixMatch
+                        {
+                            BindPoseSlot = slot.BoneIndex,
+                            WeightedRefCount = slot.WeightedRefCount,
+                            CandidateNodeIndex = node.Node.Index,
+                            CandidateGameObjectName = node.Node.GameObjectName,
+                            CandidateGameObjectPathId = node.Node.GameObjectPathId,
+                            CandidateTransformPathId = node.Node.TransformPathId,
+                            BindPoseInterpretation = bindPoseInterpretation,
+                            TransformMatrixSpace = transformMatrixSpace,
+                            RmsError = error,
+                        };
+                    }
+                }
+            }
+
+            summary.Status = matches.Count == 0
+                ? "noMatrixMatches"
+                : matches.Any(x => x.RmsError <= 0.001f)
+                    ? "hasCloseMatrixMatches"
+                    : "noCloseMatrixMatches";
+            summary.ComparedBindPoseSlotCount = usedSlots.Length;
+            summary.ComparedTransformNodeCount = nodeMatrices.Length;
+            summary.CloseMatchCount = matches.Count(x => x.RmsError <= 0.001f);
+            summary.Matches.AddRange(matches
+                .OrderBy(x => x.BindPoseSlot)
+                .ThenBy(x => x.RmsError)
+                .Take(32));
+            return summary;
         }
 
         private static SelectedTransformNodeTableComparison CompareWithSelectedTransformNodeTable(
@@ -6131,6 +6298,7 @@ LIMIT 1;";
                 }
 
                 var bones = new SortedSet<int>();
+                var boneRefCounts = new Dictionary<int, int>();
                 var weightedVertices = 0;
                 foreach (var item in animSkinData.OfType<JObject>())
                 {
@@ -6148,6 +6316,9 @@ LIMIT 1;";
                         hasWeight = true;
                         var boneIndex = (int)Math.Round(ReadOptionalVectorComponent(indices, i));
                         bones.Add(boneIndex);
+                        boneRefCounts[boneIndex] = boneRefCounts.TryGetValue(boneIndex, out var oldCount)
+                            ? oldCount + 1
+                            : 1;
                     }
 
                     if (hasWeight)
@@ -6160,6 +6331,9 @@ LIMIT 1;";
                 summary.AnimSkinUniqueBoneCount = bones.Count;
                 summary.AnimSkinMinBoneIndex = bones.Count == 0 ? null : bones.Min;
                 summary.AnimSkinMaxBoneIndex = bones.Count == 0 ? null : bones.Max;
+                summary.AnimSkinBoneRefs.AddRange(boneRefCounts
+                    .OrderBy(x => x.Key)
+                    .Select(x => new BoneRefCount(x.Key, x.Value)));
             }
 
             var offsets = json["m_AvatarBoneOffsetCount"] as JArray;
@@ -6335,6 +6509,7 @@ LIMIT 1;";
                     }
                     continue;
                 }
+                summary.Matrices.Add(values);
 
                 var finite = values.All(float.IsFinite);
                 if (!finite)
@@ -6421,6 +6596,40 @@ LIMIT 1;";
             return values[0] * (values[5] * values[10] - values[6] * values[9])
                 - values[1] * (values[4] * values[10] - values[6] * values[8])
                 + values[2] * (values[4] * values[9] - values[5] * values[8]);
+        }
+
+        private static float[] TransposeMatrix4x4(IReadOnlyList<float> values)
+        {
+            if (values == null || values.Count != 16)
+            {
+                return Array.Empty<float>();
+            }
+
+            var result = new float[16];
+            for (var row = 0; row < 4; row++)
+            {
+                for (var column = 0; column < 4; column++)
+                {
+                    result[row * 4 + column] = values[column * 4 + row];
+                }
+            }
+            return result;
+        }
+
+        private static float CalculateMatrixRmsError(IReadOnlyList<float> left, IReadOnlyList<float> right)
+        {
+            if (left == null || right == null || left.Count != 16 || right.Count != 16)
+            {
+                return float.PositiveInfinity;
+            }
+
+            double sum = 0;
+            for (var i = 0; i < 16; i++)
+            {
+                var delta = left[i] - right[i];
+                sum += delta * delta;
+            }
+            return (float)Math.Sqrt(sum / 16.0);
         }
 
         private static HairDeformSummary ReadHairDeformSummary(JObject json, int vertexCount, List<string> warnings)
@@ -7385,6 +7594,7 @@ LIMIT 1;";
             public SelectedTransformNodeTableComparison SelectedVisualCellIndexOrderComparison { get; init; }
             public int BoneDriverNodeNameMatchCount { get; init; }
             public IReadOnlyList<string> BoneDriverNodeNameMatches { get; init; } = Array.Empty<string>();
+            public BindPoseTransformMatrixMatchSummary BindPoseTransformMatrixMatch { get; init; }
 
             public JObject ToJson() => new()
             {
@@ -7412,10 +7622,65 @@ LIMIT 1;";
                 ["selectedVisualCellIndexOrderComparison"] = SelectedVisualCellIndexOrderComparison?.ToJson(),
                 ["boneDriverNodeNameMatchCount"] = BoneDriverNodeNameMatchCount,
                 ["boneDriverNodeNameMatches"] = new JArray((BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
+                ["bindPoseTransformMatrixMatch"] = BindPoseTransformMatrixMatch?.ToJson(),
                 ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
                 ["rule"] = "只把 AvatarBoneWeights 的 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；covered/missing usedBoneRefs 只说明实际权重索引是否落在候选表内，selectedVisualCellIndexOrderComparison 用来防止把同 index 但节点名冲突的其它 VisualCell 表误当成可拼接 skin，仍不能写入 glTF skin。"
             };
         }
+
+        private sealed class BindPoseTransformMatrixMatchSummary
+        {
+            public string Status { get; set; } = "missing";
+            public string Basis { get; set; }
+            public string CandidateVisualCell { get; set; }
+            public int ComparedBindPoseSlotCount { get; set; }
+            public int ComparedTransformNodeCount { get; set; }
+            public int CloseMatchCount { get; set; }
+            public List<BindPoseTransformMatrixMatch> Matches { get; } = new();
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["basis"] = Basis,
+                ["candidateVisualCell"] = CandidateVisualCell,
+                ["comparedBindPoseSlotCount"] = ComparedBindPoseSlotCount,
+                ["comparedTransformNodeCount"] = ComparedTransformNodeCount,
+                ["closeMatchCount"] = CloseMatchCount,
+                ["matches"] = new JArray(Matches.Select(x => x.ToJson())),
+                ["rule"] = "该诊断只比较 m_BindPoses 矩阵和候选 Transform 逆世界矩阵的数值接近度；矩阵接近不等于 boneIndex 到 joint 的 Unity 关系已经确定，不能单独放行 glTF skin。"
+            };
+        }
+
+        private sealed class BindPoseTransformMatrixMatch
+        {
+            public int BindPoseSlot { get; init; }
+            public int WeightedRefCount { get; init; }
+            public int CandidateNodeIndex { get; init; }
+            public string CandidateGameObjectName { get; init; }
+            public long CandidateGameObjectPathId { get; init; }
+            public long CandidateTransformPathId { get; init; }
+            public string BindPoseInterpretation { get; init; }
+            public string TransformMatrixSpace { get; init; }
+            public float RmsError { get; init; }
+
+            public JObject ToJson() => new()
+            {
+                ["bindPoseSlot"] = BindPoseSlot,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["candidateNodeIndex"] = CandidateNodeIndex,
+                ["candidateGameObjectName"] = CandidateGameObjectName,
+                ["candidateGameObjectPathId"] = CandidateGameObjectPathId,
+                ["candidateTransformPathId"] = CandidateTransformPathId,
+                ["bindPoseInterpretation"] = BindPoseInterpretation,
+                ["transformMatrixSpace"] = TransformMatrixSpace,
+                ["rmsError"] = RoundFloat(RmsError),
+            };
+        }
+
+        private sealed record TransformInverseMatrixCandidate(
+            TransformNodeTableNode Node,
+            IReadOnlyList<float> UnityInverse,
+            IReadOnlyList<float> GltfInverse);
 
         private sealed class SelectedTransformNodeTableComparison
         {
@@ -7703,6 +7968,7 @@ LIMIT 1;";
             public int AvatarInvalidRangeCount { get; set; }
             public int BindPoseCount { get; set; }
             public BindPoseMatrixSummary BindPoseMatrix { get; set; } = new();
+            public List<BoneRefCount> AnimSkinBoneRefs { get; } = new();
             public List<BoneRefCount> AvatarBoneRefs { get; } = new();
             public List<BoneRefCount> AvatarTopBoneRefs { get; } = new();
             public List<IReadOnlyList<VertexSkinInfluence>> VertexAvatarInfluences { get; } = new();
@@ -7729,6 +7995,7 @@ LIMIT 1;";
                     ["animSkinMaxBoneIndex"] = AnimSkinMaxBoneIndex,
                     ["animSkinBindPoseSlotStatus"] = AnimSkinBindPoseSlotStatus,
                     ["animSkinIndicesFitBindPoseSlots"] = AnimSkinIndicesFitBindPoseSlots,
+                    ["animSkinBoneRefs"] = new JArray(AnimSkinBoneRefs.Select(x => x.ToJson())),
                     ["avatarSkinDataCount"] = AvatarSkinDataCount,
                     ["avatarBoneOffsetCount"] = AvatarBoneOffsetCount,
                     ["avatarBoneWeightsCount"] = AvatarBoneWeightsCount,
@@ -7801,6 +8068,7 @@ LIMIT 1;";
             public float MaxDeterminant { get; set; }
             public float MinTranslationLength { get; set; }
             public float MaxTranslationLength { get; set; }
+            public List<float[]> Matrices { get; } = new();
             public List<BindPoseMatrixSample> Samples { get; } = new();
 
             public JObject ToJson() => new()
