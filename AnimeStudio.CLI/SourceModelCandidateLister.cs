@@ -588,6 +588,7 @@ LIMIT 1;";
                 }
 
                 var materials = LoadContainerMaterialCounts(connection, containerPath, availableIndexes);
+                var selectorMatchedNames = LoadContainerSelectorMatchedNames(connection, containerPath, selectorQuery, availableIndexes);
                 foreach (var root in LoadContainerRoots(connection, containerPath, availableIndexes))
                 {
                     result.Add(new CandidateRow(
@@ -609,7 +610,7 @@ LIMIT 1;";
                         0,
                         counts.OptimizedAnimatorWithoutAvatarCount,
                         string.Empty,
-                        string.Empty,
+                        selectorMatchedNames,
                         0));
                 }
             }
@@ -677,6 +678,46 @@ LIMIT $limit;";
             }
 
             return result.Take(limit).ToList();
+        }
+
+        private static string LoadContainerSelectorMatchedNames(SqliteConnection connection, string containerPath, SelectorQuery selectorQuery, HashSet<string> availableIndexes)
+        {
+            if (selectorQuery == null || !selectorQuery.IsTargeted)
+            {
+                return string.Empty;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT DISTINCT obj.name
+FROM source_objects obj
+JOIN source_relations rel INDEXED BY idx_source_relations_to
+  ON rel.to_file = obj.serialized_file
+ AND rel.to_path_id = obj.path_id
+ AND rel.relation IN ('assetBundle.containerAsset', 'assetBundle.containerPreload', 'resourceManager.container')
+WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') = $container
+  AND __OBJ_FILTER__
+ORDER BY obj.name COLLATE NOCASE
+LIMIT 16;";
+            command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
+            command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+            AddTargetObjectParameters(command, selectorQuery);
+            command.Parameters.AddWithValue("$container", containerPath ?? string.Empty);
+
+            var names = new List<string>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = ReadString(reader, 0);
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    names.Add(name);
+                }
+            }
+
+            // targeted 报告最后还会按 selector 过滤。容器主根的名字可能不等于命中的子节点，
+            // 把同容器命中的对象名带出去，避免完整 prefab root 被误删。
+            return string.Join(",", names.Distinct(StringComparer.OrdinalIgnoreCase));
         }
 
         private static List<ContainerRootRow> LoadContainerRoots(SqliteConnection connection, string containerPath, HashSet<string> availableIndexes)
