@@ -4253,6 +4253,8 @@ LIMIT 1;";
                 }
 
                 var nodeIndexByPath = new Dictionary<long, int>();
+                var restMatrices = new List<float[]>();
+                var restMatrixInvertFailureCount = 0;
                 var rootNode = new JObject
                 {
                     ["name"] = "NarakaRendererBonesDiagnosticRoot_" + FixFileName(part.GameObjectName ?? part.Mesh?.MeshName ?? "part"),
@@ -4270,9 +4272,13 @@ LIMIT 1;";
                 {
                     var target = boneTargets[slot];
                     var inverseBind = inverseBindMatrices[slot];
-                    var restMatrix = TryInvertMatrix4x4(inverseBind, out var inverted)
-                        ? inverted
-                        : IdentityMatrix4x4Array();
+                    var invertOk = TryInvertMatrix4x4(inverseBind, out var inverted);
+                    var restMatrix = invertOk ? inverted : IdentityMatrix4x4Array();
+                    if (!invertOk)
+                    {
+                        restMatrixInvertFailureCount++;
+                    }
+                    restMatrices.Add(restMatrix);
                     exported.TryGetValue(target.PathId, out var exportedTransform);
                     var node = new JObject
                     {
@@ -4312,7 +4318,8 @@ LIMIT 1;";
                     rootNodeIndices,
                     boneIndexToJointSlot,
                     inverseBindMatrices,
-                    nodeIndexByPath.Count);
+                    nodeIndexByPath.Count,
+                    BuildRendererBonesDiagnosticRestCheck(part, restMatrices, inverseBindMatrices, restMatrixInvertFailureCount));
             }
 
             if (result.Count == 0)
@@ -4320,6 +4327,56 @@ LIMIT 1;";
                 warnings?.Add("rendererBonesDiagnosticSkinSkipped:noEligibleParts");
             }
             return result;
+        }
+
+        private static RendererBonesDiagnosticRestCheck BuildRendererBonesDiagnosticRestCheck(
+            VisualCellPart part,
+            IReadOnlyList<float[]> restMatrices,
+            IReadOnlyList<float[]> inverseBindMatrices,
+            int restMatrixInvertFailureCount)
+        {
+            var check = new RendererBonesDiagnosticRestCheck
+            {
+                Part = part?.GameObjectName,
+                MeshName = part?.Mesh?.MeshName,
+                RestMatrixSource = "inverse(AvatarMeshDataAsset.m_BindPoses transposed)",
+                InverseBindMatrixSource = "AvatarMeshDataAsset.m_BindPoses transposed diagnostic",
+                JointCount = Math.Min(restMatrices?.Count ?? 0, inverseBindMatrices?.Count ?? 0),
+                RestMatrixInvertFailureCount = Math.Max(0, restMatrixInvertFailureCount),
+            };
+
+            if (restMatrices == null || inverseBindMatrices == null || restMatrices.Count != inverseBindMatrices.Count)
+            {
+                check.Status = "matrixCountMismatch";
+                return check;
+            }
+
+            var identity = IdentityMatrix4x4Array();
+            var maxRmsError = 0f;
+            var maxAbsError = 0f;
+            var checkedJointCount = 0;
+            for (var i = 0; i < restMatrices.Count; i++)
+            {
+                if (!TryMultiplyMatrix4x4(restMatrices[i], inverseBindMatrices[i], out var restTimesInverseBind))
+                {
+                    check.InvalidMatrixCount++;
+                    continue;
+                }
+
+                checkedJointCount++;
+                maxRmsError = Math.Max(maxRmsError, CalculateMatrixRmsError(restTimesInverseBind, identity));
+                maxAbsError = Math.Max(maxAbsError, CalculateMatrixMaxAbsError(restTimesInverseBind, identity));
+            }
+
+            check.CheckedJointCount = checkedJointCount;
+            check.MaxRmsError = maxRmsError;
+            check.MaxAbsError = maxAbsError;
+            check.Status = restMatrixInvertFailureCount > 0 || check.InvalidMatrixCount > 0
+                ? "restCheckHasFallbackOrInvalidMatrix"
+                : maxRmsError <= 0.0001f && maxAbsError <= 0.0001f
+                    ? "bindPoseDerivedRestSelfConsistent"
+                    : "bindPoseDerivedRestMismatch";
+            return check;
         }
 
         private static HairCustomizationTintEvidence LoadHairCustomizationTintEvidence(
@@ -6951,6 +7008,28 @@ LIMIT 1;";
             return true;
         }
 
+        private static bool TryMultiplyMatrix4x4(IReadOnlyList<float> left, IReadOnlyList<float> right, out float[] result)
+        {
+            result = Array.Empty<float>();
+            if (left == null || right == null || left.Count != 16 || right.Count != 16)
+            {
+                return false;
+            }
+
+            var leftMatrix = new System.Numerics.Matrix4x4(
+                left[0], left[1], left[2], left[3],
+                left[4], left[5], left[6], left[7],
+                left[8], left[9], left[10], left[11],
+                left[12], left[13], left[14], left[15]);
+            var rightMatrix = new System.Numerics.Matrix4x4(
+                right[0], right[1], right[2], right[3],
+                right[4], right[5], right[6], right[7],
+                right[8], right[9], right[10], right[11],
+                right[12], right[13], right[14], right[15]);
+            result = ToFloatArray(leftMatrix * rightMatrix).ToArray();
+            return true;
+        }
+
         private static float[] IdentityMatrix4x4Array() => new[]
         {
             1f, 0f, 0f, 0f,
@@ -6973,6 +7052,21 @@ LIMIT 1;";
                 sum += delta * delta;
             }
             return (float)Math.Sqrt(sum / 16.0);
+        }
+
+        private static float CalculateMatrixMaxAbsError(IReadOnlyList<float> left, IReadOnlyList<float> right)
+        {
+            if (left == null || right == null || left.Count != 16 || right.Count != 16)
+            {
+                return float.PositiveInfinity;
+            }
+
+            var max = 0f;
+            for (var i = 0; i < 16; i++)
+            {
+                max = Math.Max(max, Math.Abs(left[i] - right[i]));
+            }
+            return max;
         }
 
         private static HairDeformSummary ReadHairDeformSummary(JObject json, int vertexCount, List<string> warnings)
@@ -7795,7 +7889,8 @@ LIMIT 1;";
                 IReadOnlyList<int> rootNodeIndices,
                 IReadOnlyDictionary<int, int> boneIndexToJointSlot,
                 IReadOnlyList<float[]> inverseBindMatrices,
-                int nodeCount)
+                int nodeCount,
+                RendererBonesDiagnosticRestCheck restCheck)
             {
                 Part = part;
                 _evidence = evidence;
@@ -7804,6 +7899,7 @@ LIMIT 1;";
                 BoneIndexToJointSlot = boneIndexToJointSlot ?? new Dictionary<int, int>();
                 InverseBindMatrices = inverseBindMatrices ?? Array.Empty<float[]>();
                 NodeCount = Math.Max(0, nodeCount);
+                RestCheck = restCheck;
             }
 
             public VisualCellPart Part { get; }
@@ -7814,6 +7910,7 @@ LIMIT 1;";
             public IReadOnlyList<float[]> InverseBindMatrices { get; }
             public int NodeCount { get; }
             public int JointCount => JointNodeIndices.Count;
+            public RendererBonesDiagnosticRestCheck RestCheck { get; }
 
             public JObject BuildSkinJson(Stream stream, JArray bufferViews, JArray accessors)
             {
@@ -7867,6 +7964,7 @@ LIMIT 1;";
                     : "identityDiagnosticFallback",
                 ["weightSource"] = "AvatarMeshDataAsset.m_AnimSkinData",
                 ["jointSource"] = "SkinnedMeshRenderer.m_Bones explicit PPtr order",
+                ["restSelfCheck"] = RestCheck?.ToJson(),
                 ["evidence"] = _evidence?.ToJson(),
                 ["rule"] = "该 skin 只在显式诊断开关下写出。Renderer.m_Bones 是 Unity 显式关系，m_AnimSkinData 是当前网格局部权重，m_BindPoses 仍需确认矩阵空间和静态视觉效果；通过前不能进入生产 skin、正式模型验收或动画 smoke。"
             };
@@ -7878,6 +7976,38 @@ LIMIT 1;";
                 yield return 0f; yield return 0f; yield return 1f; yield return 0f;
                 yield return 0f; yield return 0f; yield return 0f; yield return 1f;
             }
+        }
+
+        private sealed class RendererBonesDiagnosticRestCheck
+        {
+            public string Status { get; set; }
+            public string Part { get; init; }
+            public string MeshName { get; init; }
+            public string RestMatrixSource { get; init; }
+            public string InverseBindMatrixSource { get; init; }
+            public int JointCount { get; init; }
+            public int CheckedJointCount { get; set; }
+            public int InvalidMatrixCount { get; set; }
+            public int RestMatrixInvertFailureCount { get; init; }
+            public float MaxRmsError { get; set; }
+            public float MaxAbsError { get; set; }
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = Status,
+                ["part"] = Part,
+                ["meshName"] = MeshName,
+                ["jointCount"] = JointCount,
+                ["checkedJointCount"] = CheckedJointCount,
+                ["invalidMatrixCount"] = InvalidMatrixCount,
+                ["restMatrixInvertFailureCount"] = RestMatrixInvertFailureCount,
+                ["maxRmsError"] = RoundFloat(MaxRmsError),
+                ["maxAbsError"] = RoundFloat(MaxAbsError),
+                ["restMatrixSource"] = RestMatrixSource,
+                ["inverseBindMatrixSource"] = InverseBindMatrixSource,
+                ["check"] = "jointRestMatrix * inverseBindMatrix ~= identity",
+                ["rule"] = "该检查只证明诊断节点的静态 rest 与写出的 inverse bind matrix 自洽，不能证明 Unity 原始 Transform 层级、完整角色装配或动画绑定已经成立。"
+            };
         }
 
         private sealed class AvatarMeshDataRelationEvidence
