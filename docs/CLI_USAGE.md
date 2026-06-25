@@ -552,6 +552,27 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 如果同时传入 `--preview_source_root`，每个候选会额外写 `targetedLibraryExport`，包含机器可读 `arguments` 和 PowerShell 友好的 `powershellCommand`。命令会用 `&` 调用生成报告时正在运行的 CLI，避免带空格或带引号的 exe 路径在 PowerShell 里不能直接执行。这只是把候选行里的 `sourcePath + pathId` 组合成定向 Library 导出命令：输入仍必须是完整 Unity 源目录，依赖闭包仍来自完整 `unity_source_index.db`，本次加载只用 `--source_files + --path_ids` 收窄。这个命令只能作为模型第一阶段 smoke 起点，不能替代后续 `model_validation.json`、glTF validator 和清晰截图验收；候选本身带 `excludeHint` 时，报告会把 `readyForModelSmoke=false`。
 
+Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `source_model_candidates.json` 里的 `targetedLibraryExport`，或手动传 `--source_files + --path_ids` 锁定本次加载闭包。只传 `--names` / `--containers` 虽然会过滤导出候选，但仍可能在永劫大源目录上加载过宽依赖，导致诊断样本耗时和内存失真。下面的 Hadi body smoke 示例使用完整源目录和完整源索引，但只加载源索引闭包选出的 5 个物理文件：
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  "C:\Game163\program\NarakaBladepoint_Data\StreamingAssets" `
+  "D:\Assets\Naraka\HadiBody_s9_MaterialEvidence_SourceFiles" `
+  --game Naraka `
+  --mode Library `
+  --group_assets ByLibrary `
+  --profile_3d Core `
+  --model_format Gltf `
+  --texture_mode Png `
+  --animation_package Separate `
+  --fbx_animation Skip `
+  --source_index "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db" `
+  --source_files "4\c\4c08b7069a411750" `
+  --path_ids -6619473669887381141
+```
+
+这个样本用于验证标准模型链路：`model_validation.json` 应显示 `Status=ok`、`HasCompleteSkinBinding=true`、`PrimitivesWithMaterial=PrimitiveCount`，`asset_library.json` 应声明 `sourceGame=Naraka` 且 `capabilities.models=true`。glTF validator 仍可能输出 `UNUSED_MESH_TANGENT`、`NODE_EMPTY` 或未使用 texture 这类 info；它们不是 error/warning，但如果截图里出现白模、缺件、破面或材质错绑，仍必须按模型阶段失败继续追源关系。
+
 `--names` 也可以传纯数字 PathID 做精确查询，报告会写 `selectorQueryMode=targeted_exact_path_id` 和 `selectorExactPathId`。Endfield 这类游戏常有大量同名 `GameObject` 变体：有的是真实可见模型，有的只有 Animator/Avatar，有的只用于剧情或 UI。排查动画关系时应优先用 `source_model_candidates.json` 里通过模型门禁的具体 PathID，再用同一个 PathID 查询 `--list_source_model_animations`，避免同名变体把模型质量和动画关系混在一起。
 
 `selectorQueryMode=targeted_exact_name` / `targeted_exact_path_id` 默认不再沿 `Transform.child` 子树做深层递归。Endfield 大源索引里同名 actor 变体很多，某些根节点层级很深或只是配置/场景实例，默认递归会让交互式候选查询卡住。候选报告现在优先快速返回 Animator、Avatar、Controller 和直接 SkinnedRenderer 线索；是否真的有完整 Mesh/Material/Texture/skin，必须通过实际 Library 导出、`model_validation.json`、glTF validator 和清晰截图确认。
