@@ -396,32 +396,71 @@ namespace AnimeStudio
                 switch (sizeOffset)
                 {
                     case 0x16:
-                        m_Header.compressedBlocksInfoSize -= 0xCA;
-                        m_Header.uncompressedBlocksInfoSize -= 0xCA;
+                        ApplyNarakaHeaderFix(0xCA, 0xCA, 0, reader);
                         break;
                     case 0x1A:
-                        m_Header.compressedBlocksInfoSize -= 0xB4;
-                        m_Header.uncompressedBlocksInfoSize -= 0xAA;
+                        ApplyNarakaHeaderFix(0xB4, 0xAA, 0, reader);
                         break;
                     case 0x14:
-                        m_Header.compressedBlocksInfoSize -= 0xAA;
-                        m_Header.uncompressedBlocksInfoSize -= 0xBE;
-                        m_Header.flags -= 0x03;
-                        reader.ReadUInt16();
+                        ApplyNarakaHeaderFix(0xAA, 0xBE, 0x03, reader, skipBytes: 2);
                         break;
                     case 0x1E:
-                        m_Header.compressedBlocksInfoSize -= 0x96;
-                        m_Header.uncompressedBlocksInfoSize -= 0x82;
-                        m_Header.flags -= 0x03;
-                        reader.ReadUInt16();
+                        ApplyNarakaHeaderFix(0x96, 0x82, 0x03, reader, skipBytes: 2);
                         break;
                     default:
+                        if (TryApplyNarakaTrailingDataHeaderFix(sizeOffset, reader))
+                        {
+                            break;
+                        }
                         Logger.Warning($"Unknown Naraka bundle header size offset: 0x{sizeOffset:X}. The file may need a new header fix rule.");
                         break;
                 }
             }
 
             Logger.Verbose($"Bundle header Info: {m_Header}");
+        }
+
+        private bool TryApplyNarakaTrailingDataHeaderFix(long sizeOffset, FileReader reader)
+        {
+            // 部分永劫包的 header.size 小于真实文件长度，尾部像是补丁/附加数据。
+            // 块表字段仍然是 0x1E 变体，只能按字段特征确认后复用修正。
+            if (sizeOffset >= 0)
+            {
+                return false;
+            }
+
+            var compressionType = (uint)m_Header.flags & (uint)ArchiveFlags.CompressionTypeMask;
+            if (compressionType != 0x06)
+            {
+                return false;
+            }
+
+            if (m_Header.compressedBlocksInfoSize <= 0x96 ||
+                m_Header.uncompressedBlocksInfoSize <= 0x82)
+            {
+                return false;
+            }
+
+            var fixedUncompressedSize = m_Header.uncompressedBlocksInfoSize - 0x82;
+            if (fixedUncompressedSize == 0 || fixedUncompressedSize % 0x1000 != 0)
+            {
+                return false;
+            }
+
+            ApplyNarakaHeaderFix(0x96, 0x82, 0x03, reader, skipBytes: 2);
+            Logger.Verbose($"Applied Naraka trailing-data header fix for size offset 0x{sizeOffset:X}.");
+            return true;
+        }
+
+        private void ApplyNarakaHeaderFix(uint compressedDelta, uint uncompressedDelta, uint flagsDelta, FileReader reader, int skipBytes = 0)
+        {
+            m_Header.compressedBlocksInfoSize -= compressedDelta;
+            m_Header.uncompressedBlocksInfoSize -= uncompressedDelta;
+            m_Header.flags = (ArchiveFlags)((uint)m_Header.flags - flagsDelta);
+            if (skipBytes > 0)
+            {
+                reader.Position += skipBytes;
+            }
         }
 
         private void ReadUnityCN(FileReader reader)
