@@ -957,6 +957,8 @@ namespace AnimeStudio.CLI
                     "自定义网格源 JSON 可包含 skin 字段，但当前没有确定性 joint 映射，所以没有写 glTF skin；材质只做保守预览，未烘焙 Naraka customization tint。");
             }
 
+            validation["animationGate"] = BuildBlockedCustomMeshAnimationGate(validation, validationReasons);
+
             var validationPath = Path.Combine(outputFolder, "model_validation.json");
             var root = File.Exists(validationPath)
                 ? JObject.Parse(File.ReadAllText(validationPath).TrimStart('\uFEFF'))
@@ -1006,14 +1008,52 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static JArray MergeStringArray(JArray existing, string value)
+        private static JObject BuildBlockedCustomMeshAnimationGate(JObject validation, JArray validationReasons)
+        {
+            var customReasons = (validationReasons ?? new JArray())
+                .Values<string>()
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            var reasons = MergeStringArray(
+                validation?["animationGate"]?["reasons"] as JArray,
+                "model_validation_not_ok",
+                "model_body_not_ok",
+                "diagnostic_custom_mesh",
+                "missing_skin_binding",
+                "source_skin_unmapped");
+            foreach (var reason in customReasons.Where(x =>
+                string.Equals(x, "needs_customization_tint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x, "skin_data_present_unmapped", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x, "selected_visual_cell_transform_nodes_insufficient", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x, "selected_visual_cell_transform_nodes_missing", StringComparison.OrdinalIgnoreCase)))
+            {
+                reasons = MergeStringArray(reasons, reason);
+            }
+
+            return new JObject
+            {
+                ["ready"] = false,
+                ["status"] = "blocked",
+                ["reasons"] = reasons,
+                ["rule"] = "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型；缺少确定性 glTF skin/joint 映射或 customization tint 时，禁止进入动画导出、合成或生产 smoke。"
+            };
+        }
+
+        private static JArray MergeStringArray(JArray existing, params string[] values)
         {
             var result = existing != null
                 ? new JArray(existing.Values<string>().Where(x => !string.IsNullOrWhiteSpace(x)))
                 : new JArray();
-            if (!result.Values<string>().Any(x => string.Equals(x, value, StringComparison.Ordinal)))
+            foreach (var value in values ?? Array.Empty<string>())
             {
-                result.Add(value);
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+                if (!result.Values<string>().Any(x => string.Equals(x, value, StringComparison.Ordinal)))
+                {
+                    result.Add(value);
+                }
             }
             return result;
         }
