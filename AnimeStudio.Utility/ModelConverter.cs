@@ -398,6 +398,27 @@ namespace AnimeStudio
         private void ConvertMeshRenderer(Renderer meshR)
         {
             meshR.m_GameObject.TryGet(out var m_GameObject2);
+            if (!meshR.m_Enabled)
+            {
+                RecordConversionIssue(
+                    "skippedDisabledRenderer",
+                    m_GameObject2?.m_Name,
+                    meshR.assetsFile?.originalPath ?? meshR.assetsFile?.fileName,
+                    null,
+                    meshR.m_PathID,
+                    $"path={GetTransformPath(m_GameObject2?.m_Transform)}");
+                using (Measure("model_mesh_skipped", new Dictionary<string, object>
+                {
+                    ["reason"] = "disabled_renderer",
+                    ["renderer"] = m_GameObject2?.m_Name,
+                    ["source"] = meshR.assetsFile?.fullName,
+                    ["rendererPathId"] = meshR.m_PathID,
+                }))
+                {
+                }
+                return;
+            }
+
             if (skippedLowerLodRenderers.Contains(meshR))
             {
                 RecordConversionIssue(

@@ -19,6 +19,7 @@ namespace AnimeStudio
 
     public abstract class Renderer : Component
     {
+        public bool m_Enabled = true;
         public List<PPtr<Material>> m_Materials;
         public StaticBatchInfo m_StaticBatchInfo;
         public uint[] m_SubsetIndices;
@@ -32,7 +33,7 @@ namespace AnimeStudio
         {
             if (version[0] < 5) //5.0 down
             {
-                var m_Enabled = reader.ReadBoolean();
+                m_Enabled = reader.ReadBoolean();
                 var m_CastShadows = reader.ReadBoolean();
                 var m_ReceiveShadows = reader.ReadBoolean();
                 var m_LightmapIndex = reader.ReadByte();
@@ -49,7 +50,7 @@ namespace AnimeStudio
                     {
                         CheckHeader(reader, 0x12);
                     }
-                    var m_Enabled = reader.ReadBoolean();
+                    m_Enabled = reader.ReadBoolean();
                     var m_CastShadows = reader.ReadByte();
                     var m_ReceiveShadows = reader.ReadByte();
                     if (version[0] > 2017 || (version[0] == 2017 && version[1] >= 2)) //2017.2 and up
@@ -143,7 +144,7 @@ namespace AnimeStudio
                 }
                 else
                 {
-                    var m_Enabled = reader.ReadBoolean();
+                    m_Enabled = reader.ReadBoolean();
                     reader.AlignStream();
                     var m_CastShadows = reader.ReadByte();
                     var m_ReceiveShadows = reader.ReadBoolean();

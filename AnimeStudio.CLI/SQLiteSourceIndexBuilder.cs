@@ -932,6 +932,13 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         ["enabled"] = monoBehaviour.m_Enabled != 0,
                     };
                     break;
+                case Renderer renderer:
+                    raw["renderer"] = new JObject
+                    {
+                        ["enabled"] = renderer.m_Enabled,
+                        ["materialSlotCount"] = renderer.m_Materials?.Count ?? 0,
+                    };
+                    break;
                 case MonoScript monoScript:
                     raw["monoScript"] = new JObject
                     {
