@@ -1244,6 +1244,12 @@ namespace AnimeStudio.CLI
                         assetsManager.ResolveDependencies = true;
                     }
                     TryApplyEndfieldVfsSourceIndexInnerFilter(o, game, inputBaseFolder, sourceIndexPath, files, assetsManager);
+                    if (TryApplyTargetedSourceIndexSourceFileClosure(o, game, inputBaseFolder, sourceIndexPath, ref files))
+                    {
+                        // 已经用完整源索引算出本次目标需要的物理 source file。
+                        // 再跑通用 CAB external 闭包会把共享 common 包全部拖进来，定向烟测会退化成大范围加载。
+                        assetsManager.ResolveDependencies = false;
+                    }
                 }
                 else if (o.WorkMode == WorkMode.Library || o.WorkMode == WorkMode.AudioLibrary)
                 {
@@ -1882,6 +1888,399 @@ WHERE relation='animatorController.clip'
             {
                 Logger.Warning($"Unable to write path_id_dependency_expansion.json: {e.GetType().Name}: {e.Message}");
             }
+        }
+
+        private readonly record struct SourceObjectKey(string File, long PathId);
+
+        private static bool TryApplyTargetedSourceIndexSourceFileClosure(
+            Options o,
+            Game game,
+            string inputBaseFolder,
+            string sourceIndexPath,
+            ref string[] files)
+        {
+            if (o == null
+                || o.WorkMode != WorkMode.Library
+                || o.SourceFileFilter.IsNullOrEmpty()
+                || string.IsNullOrWhiteSpace(sourceIndexPath)
+                || !File.Exists(sourceIndexPath)
+                || files.IsNullOrEmpty()
+                || game?.Type.IsArknightsEndfieldGroup() == true
+                || (o.NameFilter.IsNullOrEmpty() && o.ContainerFilter.IsNullOrEmpty() && o.PathIdFilter.IsNullOrEmpty()))
+            {
+                return false;
+            }
+
+            var inputRoot = Path.GetFullPath(inputBaseFolder ?? string.Empty).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+            var selectedSources = files
+                .Select(path => NormalizeSourceFileForMatch(path, inputRoot))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (selectedSources.Count == 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                var closure = ResolveTargetedSourceFileClosureFromSourceIndex(
+                    sourceIndexPath,
+                    selectedSources,
+                    o.NameFilter,
+                    o.ContainerFilter,
+                    o.PathIdFilter);
+                if (closure.Count == 0)
+                {
+                    return false;
+                }
+
+                foreach (var source in selectedSources)
+                {
+                    closure.Add(source);
+                }
+
+                var resolvedFiles = closure
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .Select(path => Path.GetFullPath(Path.Combine(inputRoot, path.Replace('/', Path.DirectorySeparatorChar))))
+                    .Where(File.Exists)
+                    .ToArray();
+                if (resolvedFiles.Length != closure.Count)
+                {
+                    Logger.Warning($"Targeted source-index source file closure resolved {closure.Count} source path(s), but only {resolvedFiles.Length} file(s) exist on disk. Falling back to normal CAB dependency closure.");
+                    return false;
+                }
+
+                files = resolvedFiles;
+                Logger.Info($"Source-index targeted source file closure selected {files.Length} physical source file(s) from {selectedSources.Count} explicit --source_files entry(ies). Broad CAB external closure is skipped for this targeted export.");
+                ProfileLogger.Event("source_index_targeted_source_file_closure", new Dictionary<string, object>
+                {
+                    ["explicitSourceFileCount"] = selectedSources.Count,
+                    ["resolvedSourceFileCount"] = files.Length,
+                    ["sourceIndex"] = sourceIndexPath,
+                });
+                return true;
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to derive targeted source file closure from source index; falling back to normal CAB dependency closure. {e.GetType().Name}: {e.Message}");
+                return false;
+            }
+        }
+
+        private static HashSet<string> ResolveTargetedSourceFileClosureFromSourceIndex(
+            string sourceIndexPath,
+            HashSet<string> selectedSources,
+            Regex[] nameFilters,
+            Regex[] containerFilters,
+            long[] pathIdFilters)
+        {
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
+            connection.Open();
+
+            var cabToSource = LoadCabPhysicalSourceMap(connection);
+            var sourceToCabs = cabToSource
+                .GroupBy(pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(pair => pair.Key).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
+            var seedCabs = selectedSources
+                .Where(sourceToCabs.ContainsKey)
+                .SelectMany(source => sourceToCabs[source])
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (seedCabs.Count == 0)
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var selectedObjects = SelectTargetObjectsFromSourceIndex(
+                connection,
+                seedCabs,
+                nameFilters,
+                pathIdFilters);
+            var selectedContainers = SelectTargetContainersFromSourceIndex(
+                connection,
+                seedCabs,
+                selectedObjects,
+                containerFilters);
+            var objectClosure = SelectObjectsFromContainers(connection, selectedContainers);
+            foreach (var obj in selectedObjects)
+            {
+                objectClosure.Add(obj);
+            }
+
+            var cabClosure = objectClosure
+                .Select(x => x.File)
+                .Where(IsLikelyCabName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            ExpandObjectRelationClosure(connection, objectClosure, cabClosure);
+
+            var missingCabs = cabClosure
+                .Where(IsLikelyCabName)
+                .Where(cab => !cabToSource.ContainsKey(cab))
+                .Take(16)
+                .ToArray();
+            if (missingCabs.Length > 0)
+            {
+                throw new InvalidDataException($"source index CAB closure has target CAB(s) without physical source mapping: {string.Join(", ", missingCabs)}");
+            }
+
+            return cabClosure
+                .Where(cabToSource.ContainsKey)
+                .Select(cab => cabToSource[cab])
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static Dictionary<string, string> LoadCabPhysicalSourceMap(SqliteConnection connection)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT file_name, source_path
+FROM serialized_files
+WHERE file_name IS NOT NULL AND file_name <> ''
+  AND source_path IS NOT NULL AND source_path <> '';";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var cab = reader.GetString(0);
+                if (result.ContainsKey(cab))
+                {
+                    continue;
+                }
+
+                result[cab] = NormalizeIndexedPhysicalSourcePath(reader.GetString(1));
+            }
+
+            return result;
+        }
+
+        private static HashSet<SourceObjectKey> SelectTargetObjectsFromSourceIndex(
+            SqliteConnection connection,
+            HashSet<string> seedCabs,
+            Regex[] nameFilters,
+            long[] pathIdFilters)
+        {
+            var result = new HashSet<SourceObjectKey>();
+            var pathIds = (pathIdFilters ?? Array.Empty<long>()).ToHashSet();
+            if (nameFilters.IsNullOrEmpty() && pathIds.Count == 0)
+            {
+                return result;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT path_id, name
+FROM source_objects
+WHERE serialized_file=$cab COLLATE NOCASE
+  AND type <> 'AssetBundle';";
+            var cabParam = command.Parameters.Add("$cab", SqliteType.Text);
+            foreach (var cab in seedCabs)
+            {
+                cabParam.Value = cab;
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var pathId = reader.IsDBNull(0) ? 0 : reader.GetInt64(0);
+                    var name = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                    var nameMatched = !nameFilters.IsNullOrEmpty() && nameFilters.Any(filter => filter.IsMatch(name ?? string.Empty));
+                    var pathIdMatched = pathIds.Count > 0 && pathIds.Contains(pathId);
+                    if (nameMatched || pathIdMatched)
+                    {
+                        result.Add(new SourceObjectKey(cab, pathId));
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static HashSet<string> SelectTargetContainersFromSourceIndex(
+            SqliteConnection connection,
+            HashSet<string> seedCabs,
+            HashSet<SourceObjectKey> selectedObjects,
+            Regex[] containerFilters)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (!containerFilters.IsNullOrEmpty())
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT raw_json
+FROM source_relations
+WHERE relation='assetBundle.containerPreload'
+  AND from_file=$cab COLLATE NOCASE;";
+                var cabParam = command.Parameters.Add("$cab", SqliteType.Text);
+                foreach (var cab in seedCabs)
+                {
+                    cabParam.Value = cab;
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var container = ExtractContainerPath(reader.IsDBNull(0) ? null : reader.GetString(0));
+                        if (!string.IsNullOrWhiteSpace(container)
+                            && containerFilters.Any(filter => filter.IsMatch(container)))
+                        {
+                            result.Add(container);
+                        }
+                    }
+                }
+            }
+
+            if (selectedObjects.Count > 0)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT raw_json
+FROM source_relations
+WHERE to_path_id=$pathId
+  AND relation='assetBundle.containerPreload'
+  AND to_file=$file COLLATE NOCASE;";
+                var pathParam = command.Parameters.Add("$pathId", SqliteType.Integer);
+                var fileParam = command.Parameters.Add("$file", SqliteType.Text);
+                foreach (var obj in selectedObjects)
+                {
+                    pathParam.Value = obj.PathId;
+                    fileParam.Value = obj.File;
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var container = ExtractContainerPath(reader.IsDBNull(0) ? null : reader.GetString(0));
+                        if (!string.IsNullOrWhiteSpace(container))
+                        {
+                            result.Add(container);
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static HashSet<SourceObjectKey> SelectObjectsFromContainers(
+            SqliteConnection connection,
+            HashSet<string> containers)
+        {
+            var result = new HashSet<SourceObjectKey>();
+            if (containers.Count == 0)
+            {
+                return result;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT to_file, to_path_id
+FROM source_relations
+WHERE json_extract(raw_json, '$.details.container')=$container
+  AND relation='assetBundle.containerPreload';";
+            var containerParam = command.Parameters.Add("$container", SqliteType.Text);
+            foreach (var container in containers)
+            {
+                containerParam.Value = container;
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var file = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var pathId = reader.IsDBNull(1) ? 0 : reader.GetInt64(1);
+                    if (!string.IsNullOrWhiteSpace(file) && pathId != 0)
+                    {
+                        result.Add(new SourceObjectKey(file, pathId));
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static void ExpandObjectRelationClosure(
+            SqliteConnection connection,
+            HashSet<SourceObjectKey> objectClosure,
+            HashSet<string> cabClosure)
+        {
+            const int maxObjects = 50000;
+            var queue = new Queue<SourceObjectKey>(objectClosure);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT to_file, to_path_id
+FROM source_relations
+WHERE from_path_id=$pathId
+  AND from_file=$file COLLATE NOCASE
+  AND to_file <> '';";
+            var pathParam = command.Parameters.Add("$pathId", SqliteType.Integer);
+            var fileParam = command.Parameters.Add("$file", SqliteType.Text);
+
+            while (queue.Count > 0)
+            {
+                if (objectClosure.Count > maxObjects)
+                {
+                    throw new InvalidDataException($"targeted source file closure exceeded {maxObjects} related objects; falling back to broad dependency closure.");
+                }
+
+                var current = queue.Dequeue();
+                cabClosure.Add(current.File);
+                pathParam.Value = current.PathId;
+                fileParam.Value = current.File;
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var toFile = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var toPathId = reader.IsDBNull(1) ? 0 : reader.GetInt64(1);
+                    if (string.IsNullOrWhiteSpace(toFile))
+                    {
+                        continue;
+                    }
+
+                    if (IsLikelyCabName(toFile))
+                    {
+                        cabClosure.Add(toFile);
+                    }
+                    if (toPathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var next = new SourceObjectKey(toFile, toPathId);
+                    if (objectClosure.Add(next))
+                    {
+                        queue.Enqueue(next);
+                    }
+                }
+            }
+        }
+
+        private static string ExtractContainerPath(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return (string)JObject.Parse(rawJson)["details"]?["container"] ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static bool IsLikelyCabName(string fileName)
+        {
+            return !string.IsNullOrWhiteSpace(fileName)
+                && fileName.StartsWith("cab-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeIndexedPhysicalSourcePath(string sourcePath)
+        {
+            var normalized = NormalizeSourceFileFilter(sourcePath ?? string.Empty);
+            var separator = normalized.IndexOf('|');
+            return separator >= 0 ? normalized[..separator] : normalized;
         }
 
         private static void TryApplyEndfieldVfsSourceIndexInnerFilter(
