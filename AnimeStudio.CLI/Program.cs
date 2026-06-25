@@ -1276,7 +1276,7 @@ namespace AnimeStudio.CLI
                     else if (ShouldSkipDependencyClosureForTargetedIndependentExport(o))
                     {
                         // JSON/Raw/Dump 只读目标对象本体；定向诊断时继续解析外部 CAB 会把 Naraka 这类大包拖成全依赖加载。
-                        // Convert 只对明确的 MonoBehaviour 诊断走这里，模型/材质/贴图仍保持原依赖逻辑。
+                        // Convert 只允许材质、贴图、脚本等可独立导出的类型走这里；模型类仍保持完整依赖逻辑。
                         assetsManager.ResolveDependencies = false;
                         Logger.Info("Targeted independent Export detected; skipping broad CAB dependency closure for standalone diagnostic assets.");
                         ProfileLogger.Event("targeted_independent_export_skip_dependency_closure", new Dictionary<string, object>
@@ -1948,10 +1948,10 @@ WHERE relation='animatorController.clip'
             }
 
             return o.AssetExportType is ExportType.JSON or ExportType.Raw or ExportType.Dump
-                || IsTargetedMonoBehaviourConvertExport(o);
+                || IsTargetedIndependentConvertExport(o);
         }
 
-        private static bool IsTargetedMonoBehaviourConvertExport(Options o)
+        private static bool IsTargetedIndependentConvertExport(Options o)
         {
             if (o?.AssetExportType != ExportType.Convert || o.TypeFilter.IsNullOrEmpty())
             {
@@ -1961,7 +1961,25 @@ WHERE relation='animatorController.clip'
             return o.TypeFilter.All(x =>
             {
                 var typeName = (x ?? string.Empty).Split(':')[0].Trim();
-                return string.Equals(typeName, nameof(ClassIDType.MonoBehaviour), StringComparison.OrdinalIgnoreCase);
+                if (!Enum.TryParse<ClassIDType>(typeName, ignoreCase: true, out var type))
+                {
+                    return false;
+                }
+
+                // 这些类型的 Convert 写出不需要同时加载模型层级。
+                // 如果材质引用了外部贴图，贴图对象必须像 Naraka 计划那样用显式 path_id 单独导出。
+                return type is ClassIDType.Texture2D
+                    or ClassIDType.Texture2DArray
+                    or ClassIDType.AudioClip
+                    or ClassIDType.Shader
+                    or ClassIDType.TextAsset
+                    or ClassIDType.MonoBehaviour
+                    or ClassIDType.Material
+                    or ClassIDType.MiHoYoBinData
+                    or ClassIDType.Font
+                    or ClassIDType.MovieTexture
+                    or ClassIDType.VideoClip
+                    or ClassIDType.Sprite;
             });
         }
 
