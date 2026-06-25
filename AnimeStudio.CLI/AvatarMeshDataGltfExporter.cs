@@ -1209,11 +1209,16 @@ namespace AnimeStudio.CLI
                         if (!string.IsNullOrWhiteSpace(texturePath))
                         {
                             var relativeTexturePath = Path.GetRelativePath(gltfFolder, texturePath).Replace('\\', '/');
+                            var effectiveTextureName = GetPreviewTextureName(textureName, textureAsset.Name, texturePath);
                             slot["uri"] = relativeTexturePath;
-
-                            if (!usedBaseColor && IsSafePreviewBaseColorSlot(property.Name, textureName))
+                            if (!string.Equals(textureName, effectiveTextureName, StringComparison.Ordinal))
                             {
-                                var textureIndex = AddGltfTexture(images, textures, textureAsset.Name, relativeTexturePath);
+                                slot["resolvedTextureName"] = effectiveTextureName;
+                            }
+
+                            if (!usedBaseColor && IsSafePreviewBaseColorSlot(property.Name, effectiveTextureName))
+                            {
+                                var textureIndex = AddGltfTexture(images, textures, effectiveTextureName, relativeTexturePath);
                                 pbr["baseColorTexture"] = new JObject { ["index"] = textureIndex };
                                 slot["gltfTextureIndex"] = textureIndex;
                                 slot["previewUsage"] = "baseColorTexture";
@@ -1223,9 +1228,9 @@ namespace AnimeStudio.CLI
                                     alphaDecision = decision;
                                 }
                             }
-                            else if (normalTexture == null && IsNormalSlot(property.Name, textureName))
+                            else if (normalTexture == null && IsNormalSlot(property.Name, effectiveTextureName))
                             {
-                                var textureIndex = AddGltfTexture(images, textures, textureAsset.Name, relativeTexturePath);
+                                var textureIndex = AddGltfTexture(images, textures, effectiveTextureName, relativeTexturePath);
                                 normalTexture = new JObject { ["index"] = textureIndex };
                                 slot["gltfTextureIndex"] = textureIndex;
                                 slot["previewUsage"] = "normalTexture";
@@ -1290,6 +1295,21 @@ namespace AnimeStudio.CLI
                 ["name"] = name,
             });
             return textureIndex;
+        }
+
+        private static string GetPreviewTextureName(string materialTextureName, string exportedTextureName, string texturePath)
+        {
+            // Naraka 的部分材质 PPtr 只有 PathID，m_Texture.Name 为空。
+            // 这里仍然只沿同一个已导出的 Texture2D 取名字，不按目录或角色名猜贴图用途。
+            if (!string.IsNullOrWhiteSpace(materialTextureName))
+            {
+                return materialTextureName;
+            }
+            if (!string.IsNullOrWhiteSpace(exportedTextureName))
+            {
+                return exportedTextureName;
+            }
+            return Path.GetFileNameWithoutExtension(texturePath) ?? string.Empty;
         }
 
         private static JArray ReadColorFactor(JToken color)
