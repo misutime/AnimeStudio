@@ -145,7 +145,7 @@ namespace AnimeStudio.CLI
             var reason = canAutoAssemble
                 ? "All module skin/bone joints can be remapped to the base skeleton by exact Unity joint names."
                 : diagnosticOnly
-                    ? "Module is diagnosticOnly; keep it as a manual preview candidate even if joint names look compatible."
+                    ? "Module is diagnosticOnly or candidateOnly; keep it as a manual preview candidate even if joint names look compatible."
                 : !hasSkinJoints
                     ? "Module has no skin/bone joints in the catalog; it needs an explicit Unity attachment transform before auto assembly."
                     : "Module has independent or missing joints; keep it modular until attachment/simulation relations are parsed.";
@@ -174,8 +174,12 @@ namespace AnimeStudio.CLI
 
         private static bool IsDiagnosticModule(JObject model)
         {
-            // 诊断模型可以帮助人工看坐标、贴图和骨骼线索，但不能进入默认自动装配推荐。
+            // 诊断/候选-only 模型可以帮助人工看坐标、贴图和骨骼线索，但不能进入默认自动装配推荐。
             if ((bool?)model["diagnosticOnly"] == true)
+            {
+                return true;
+            }
+            if ((bool?)model["characterAssemblyCandidateOnly"] == true)
             {
                 return true;
             }
