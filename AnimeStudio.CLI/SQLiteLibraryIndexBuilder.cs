@@ -101,7 +101,7 @@ namespace AnimeStudio.CLI
             InsertMetadata(connection, transaction, "libraryKind", "AssetLibrary");
             InsertMetadata(connection, transaction, "sourceTool", "AnimeStudio");
             InsertMetadata(connection, transaction, "sourceGame", resolvedSourceGame);
-            InsertMetadata(connection, transaction, "capabilities", "{\"models\":false,\"animations\":false}");
+            InsertMetadata(connection, transaction, "capabilities", "{\"models\":false,\"animations\":false,\"animationPreviewComposer\":null}");
             InsertMetadata(connection, transaction, "root", root);
             InsertMetadata(connection, transaction, "createdUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
             InsertMetadata(connection, transaction, "rule", "索引要全，导出要精。SQLite v1 indexes exported Library/AudioLibrary artifacts; raw Unity source graph indexing will extend this schema later.");
@@ -3378,6 +3378,9 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
             {
                 ["models"] = modelAssets > 0,
                 ["animations"] = animationAssets > 0 && usableRelationAnimations > 0,
+                // AssetLibrary v1 要求这个字段始终存在。
+                // 没有可用动画时明确写 null，避免浏览器或验收脚本靠缺字段猜语义。
+                ["animationPreviewComposer"] = null,
             };
             if (capabilities.Value<bool>("animations"))
             {
