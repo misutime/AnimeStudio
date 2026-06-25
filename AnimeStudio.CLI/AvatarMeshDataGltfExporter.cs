@@ -1300,8 +1300,7 @@ namespace AnimeStudio.CLI
             var textureText = (textureName ?? string.Empty).ToLowerInvariant();
             if (textureText.Contains("_id")
                 || textureText.Contains("mask")
-                || textureText.Contains("_n")
-                || textureText.Contains("normal")
+                || LooksLikeNormalTextureName(textureText)
                 || textureText.Contains("_dir")
                 || textureText.Contains("_sh")
                 || textureText.Contains("lut"))
@@ -1317,7 +1316,24 @@ namespace AnimeStudio.CLI
         {
             var slotText = (slot ?? string.Empty).ToLowerInvariant();
             var textureText = (textureName ?? string.Empty).ToLowerInvariant();
-            return slotText.Contains("bump") || slotText.Contains("normal") || textureText.EndsWith("_n") || textureText.Contains("normal");
+            return slotText.Contains("bump") || slotText.Contains("normal") || LooksLikeNormalTextureName(textureText);
+        }
+
+        private static bool LooksLikeNormalTextureName(string textureText)
+        {
+            if (string.IsNullOrWhiteSpace(textureText))
+            {
+                return false;
+            }
+
+            // 只能把明确的 normal 语义或结尾 token 当法线。
+            // 不能用 Contains("_n")，Naraka 的 female_face01_nielian_d 会被误伤。
+            var text = textureText.ToLowerInvariant();
+            return text.Contains("normal")
+                || text.EndsWith("_n")
+                || text.EndsWith("_nx")
+                || text.EndsWith("_normal")
+                || text.EndsWith("_norm");
         }
 
         private static int GetVisualCellMaterialIndex(
