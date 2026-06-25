@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -11,11 +12,11 @@ namespace AnimeStudio.CLI
 {
     internal static class AvatarMeshDataGltfExporter
     {
-        public static string Export(string jsonPath, string outputFolder)
+        public static string Export(string jsonPath, string outputFolder, string sourceIndexPath = null)
         {
             if (!string.IsNullOrWhiteSpace(jsonPath) && Directory.Exists(jsonPath))
             {
-                return ExportDirectory(jsonPath, outputFolder);
+                return ExportDirectory(jsonPath, outputFolder, sourceIndexPath);
             }
 
             if (string.IsNullOrWhiteSpace(jsonPath) || !File.Exists(jsonPath))
@@ -178,7 +179,7 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static string ExportDirectory(string jsonFolder, string outputFolder)
+        private static string ExportDirectory(string jsonFolder, string outputFolder, string sourceIndexPath)
         {
             var jsonFiles = Directory.GetFiles(jsonFolder, "*.json", SearchOption.TopDirectoryOnly)
                 .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
@@ -191,7 +192,7 @@ namespace AnimeStudio.CLI
             var visualCell = TryLoadVisualCell(jsonFiles);
             if (visualCell != null)
             {
-                return ExportVisualCellDirectory(jsonFolder, outputFolder, visualCell);
+                return ExportVisualCellDirectory(jsonFolder, outputFolder, visualCell, sourceIndexPath);
             }
 
             outputFolder = string.IsNullOrWhiteSpace(outputFolder)
@@ -278,7 +279,7 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, JObject visualCell)
+        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, JObject visualCell, string sourceIndexPath)
         {
             var manifest = LoadManifest(jsonFolder);
             if (manifest.Count == 0)
@@ -296,33 +297,35 @@ namespace AnimeStudio.CLI
             var warnings = new List<string>();
             foreach (var assistantPathId in selectedAssistants)
             {
-                if (!manifest.TryGetValue(assistantPathId, out var assistantJsonPath) || !File.Exists(assistantJsonPath))
+                if (!manifest.TryGetValue(assistantPathId, out var assistantEntry) || !File.Exists(assistantEntry.JsonPath))
                 {
                     warnings.Add($"missingAssistantJson:{assistantPathId}");
                     continue;
                 }
 
-                var assistant = JObject.Parse(File.ReadAllText(assistantJsonPath));
+                var assistant = JObject.Parse(File.ReadAllText(assistantEntry.JsonPath));
                 var avatarMeshPathId = ReadPPtrPathId(assistant["avatarMeshAsset"]);
                 if (avatarMeshPathId == 0)
                 {
                     warnings.Add($"assistantWithoutAvatarMesh:{assistantPathId}");
                     continue;
                 }
-                if (!manifest.TryGetValue(avatarMeshPathId, out var meshJsonPath) || !File.Exists(meshJsonPath))
+                if (!manifest.TryGetValue(avatarMeshPathId, out var meshEntry) || !File.Exists(meshEntry.JsonPath))
                 {
                     warnings.Add($"missingAvatarMeshJson:{avatarMeshPathId}");
                     continue;
                 }
 
-                var mesh = ReadMesh(JObject.Parse(File.ReadAllText(meshJsonPath)), meshJsonPath);
+                var mesh = ReadMesh(JObject.Parse(File.ReadAllText(meshEntry.JsonPath)), meshEntry.JsonPath);
+                var rendererPathId = ReadPPtrPathId(assistant["_renderer"]);
                 parts.Add(new VisualCellPart(
                     assistantPathId,
                     (string)assistant["gameObjectName"] ?? mesh.MeshName,
-                    ReadPPtrPathId(assistant["_renderer"]),
+                    assistantEntry.SerializedFile,
+                    rendererPathId,
                     avatarMeshPathId,
-                    assistantJsonPath,
-                    meshJsonPath,
+                    assistantEntry.JsonPath,
+                    meshEntry.JsonPath,
                     mesh));
             }
 
@@ -348,10 +351,12 @@ namespace AnimeStudio.CLI
             var accessors = new JArray();
             var gltfMeshes = new JArray();
             var nodes = new JArray();
+            var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
             using var stream = File.Create(binPath);
             for (var i = 0; i < parts.Count; i++)
             {
                 var part = parts[i];
+                materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
                 gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath)));
                 nodes.Add(new JObject
                 {
@@ -360,8 +365,10 @@ namespace AnimeStudio.CLI
                     ["extras"] = new JObject
                     {
                         ["assistantPathId"] = part.AssistantPathId,
+                        ["rendererFile"] = part.RendererFile,
                         ["rendererPathId"] = part.RendererPathId,
-                        ["avatarMeshPathId"] = part.AvatarMeshPathId
+                        ["avatarMeshPathId"] = part.AvatarMeshPathId,
+                        ["materialBinding"] = materialBinding?.ToJson()
                     }
                 });
             }
@@ -392,12 +399,15 @@ namespace AnimeStudio.CLI
                     ["sourceType"] = "ActorBodyVisualCell",
                     ["selectedLodGroup"] = "lod0RendererAssistants",
                     ["diagnosticOnly"] = true,
+                    ["materialBindingSourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
                     ["unityCoordinateSystemPreserved"] = true,
-                    ["note"] = "Naraka ActorBodyVisualCell LOD0 自定义网格诊断导出；按 Unity PPtr 选择 avatarMeshAsset，尚未绑定 Renderer 材质槽或骨骼 skin。"
+                    ["note"] = "Naraka ActorBodyVisualCell LOD0 自定义网格诊断导出；按 Unity PPtr 选择 avatarMeshAsset，可记录 Renderer 材质引用，但尚未烘焙材质或绑定骨骼 skin。"
                 }
             };
 
             File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
+            var materialRefCount = materialBindings.Values.Sum(x => x.Materials.Count);
+            var materialTextureRefCount = materialBindings.Values.Sum(x => x.Materials.Sum(y => y.TextureRefCount));
             var report = new JObject
             {
                 ["status"] = warnings.Count == 0 ? "ok" : "warning",
@@ -405,17 +415,24 @@ namespace AnimeStudio.CLI
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["output"] = gltfPath,
                 ["selectedLodGroup"] = "lod0RendererAssistants",
+                ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
                 ["assistantCount"] = selectedAssistants.Count,
                 ["resolvedPartCount"] = parts.Count,
                 ["meshCount"] = parts.Count,
                 ["vertexCount"] = parts.Sum(x => x.Mesh.Positions.Count),
                 ["indexCount"] = parts.Sum(x => x.Mesh.Indices.Count),
                 ["triangleCount"] = parts.Sum(x => x.Mesh.Indices.Count / 3),
+                ["rendererMaterialRefCount"] = materialRefCount,
+                ["materialTextureRefCount"] = materialTextureRefCount,
                 ["bboxMin"] = new JArray(totalBounds.Min.X, totalBounds.Min.Y, totalBounds.Min.Z),
                 ["bboxMax"] = new JArray(totalBounds.Max.X, totalBounds.Max.Y, totalBounds.Max.Z),
                 ["warnings"] = new JArray(warnings),
-                ["parts"] = new JArray(parts.Select(ToReportJson)),
-                ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；不猜 LOD、材质槽、骨骼或 skin。"
+                ["parts"] = new JArray(parts.Select(part =>
+                {
+                    materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
+                    return ToReportJson(part, materialBinding);
+                })),
+                ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系，不猜 LOD、材质槽、骨骼或 skin。"
             };
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
             Logger.Info($"Exported Naraka ActorBodyVisualCell LOD0 diagnostic glTF: {gltfPath}");
@@ -541,15 +558,121 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static JObject ToReportJson(VisualCellPart part)
+        private static JObject ToReportJson(VisualCellPart part, VisualCellMaterialBinding materialBinding)
         {
             var meshJson = ToReportJson(part.Mesh, part.MeshJsonPath);
             meshJson["assistantPathId"] = part.AssistantPathId;
             meshJson["gameObjectName"] = part.GameObjectName;
+            meshJson["rendererFile"] = part.RendererFile;
             meshJson["rendererPathId"] = part.RendererPathId;
             meshJson["avatarMeshPathId"] = part.AvatarMeshPathId;
             meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
+            meshJson["materialBinding"] = materialBinding?.ToJson();
             return meshJson;
+        }
+
+        private static Dictionary<string, VisualCellMaterialBinding> LoadVisualCellMaterialBindings(
+            string sourceIndexPath,
+            IReadOnlyCollection<VisualCellPart> parts,
+            List<string> warnings)
+        {
+            var result = parts.ToDictionary(
+                x => GetRendererKey(x.RendererFile, x.RendererPathId),
+                x => new VisualCellMaterialBinding
+                {
+                    Status = string.IsNullOrWhiteSpace(sourceIndexPath) ? "sourceIndexNotProvided" : "missingRendererMaterial",
+                    RendererFile = x.RendererFile,
+                    RendererPathId = x.RendererPathId,
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+            if (string.IsNullOrWhiteSpace(sourceIndexPath))
+            {
+                return result;
+            }
+            if (!File.Exists(sourceIndexPath))
+            {
+                warnings.Add($"missingSourceIndex:{sourceIndexPath}");
+                foreach (var binding in result.Values)
+                {
+                    binding.Status = "sourceIndexMissing";
+                }
+                return result;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                foreach (var part in parts)
+                {
+                    var key = GetRendererKey(part.RendererFile, part.RendererPathId);
+                    if (!result.TryGetValue(key, out var binding))
+                    {
+                        continue;
+                    }
+
+                    using var command = connection.CreateCommand();
+                    command.CommandText = @"
+SELECT mat.id,
+       mat.to_file,
+       mat.to_path_id
+FROM source_relations mat
+WHERE mat.relation = 'renderer.material'
+  AND mat.from_file = $rendererFile COLLATE NOCASE
+  AND mat.from_path_id = $rendererPathId
+ORDER BY mat.id;";
+                    command.Parameters.AddWithValue("$rendererFile", part.RendererFile ?? string.Empty);
+                    command.Parameters.AddWithValue("$rendererPathId", part.RendererPathId);
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var materialFile = reader.GetString(1);
+                        var materialPathId = reader.GetInt64(2);
+                        binding.Materials.Add(new VisualCellMaterialRef
+                        {
+                            RelationId = reader.GetInt64(0),
+                            MaterialFile = materialFile,
+                            MaterialPathId = materialPathId,
+                            TextureRefCount = CountMaterialTextureRefs(connection, materialFile, materialPathId),
+                        });
+                    }
+
+                    binding.Status = binding.Materials.Count > 0
+                        ? "sourceIndexRendererMaterial"
+                        : "missingRendererMaterial";
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
+            {
+                warnings.Add($"sourceIndexMaterialQueryFailed:{ex.Message}");
+                foreach (var binding in result.Values)
+                {
+                    binding.Status = "sourceIndexQueryFailed";
+                }
+            }
+
+            return result;
+        }
+
+        private static int CountMaterialTextureRefs(SqliteConnection connection, string materialFile, long materialPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(*)
+FROM source_relations
+WHERE relation = 'material.texture'
+  AND from_file = $materialFile COLLATE NOCASE
+  AND from_path_id = $materialPathId;";
+            command.Parameters.AddWithValue("$materialFile", materialFile ?? string.Empty);
+            command.Parameters.AddWithValue("$materialPathId", materialPathId);
+            return Convert.ToInt32(command.ExecuteScalar() ?? 0);
+        }
+
+        private static string GetRendererKey(string rendererFile, long rendererPathId)
+        {
+            return $"{rendererFile ?? string.Empty}#{rendererPathId}";
         }
 
         private static JObject TryLoadVisualCell(IEnumerable<string> jsonFiles)
@@ -573,9 +696,9 @@ namespace AnimeStudio.CLI
             return null;
         }
 
-        private static Dictionary<long, string> LoadManifest(string jsonFolder)
+        private static Dictionary<long, ManifestEntry> LoadManifest(string jsonFolder)
         {
-            var result = new Dictionary<long, string>();
+            var result = new Dictionary<long, ManifestEntry>();
             var manifestPath = Path.Combine(jsonFolder, "export_manifest.jsonl");
             if (!File.Exists(manifestPath))
             {
@@ -616,10 +739,25 @@ namespace AnimeStudio.CLI
                     }
                 }
 
-                result[pathId] = jsonPath;
+                result[pathId] = new ManifestEntry(
+                    jsonPath,
+                    ExtractSerializedFile((string)item["source"]));
             }
 
             return result;
+        }
+
+        private static string ExtractSerializedFile(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return string.Empty;
+            }
+
+            var separator = source.LastIndexOf('|');
+            return separator >= 0 && separator + 1 < source.Length
+                ? source.Substring(separator + 1)
+                : Path.GetFileName(source);
         }
 
         private static string ToExportedJsonFileName(string name)
@@ -877,14 +1015,62 @@ namespace AnimeStudio.CLI
             return value.Length == 0 ? "avatar_mesh_data" : value;
         }
 
+        private sealed record ManifestEntry(
+            string JsonPath,
+            string SerializedFile);
+
         private sealed record VisualCellPart(
             long AssistantPathId,
             string GameObjectName,
+            string RendererFile,
             long RendererPathId,
             long AvatarMeshPathId,
             string AssistantJsonPath,
             string MeshJsonPath,
             AvatarMeshData Mesh);
+
+        private sealed class VisualCellMaterialBinding
+        {
+            public string Status { get; set; }
+            public string RendererFile { get; set; }
+            public long RendererPathId { get; set; }
+            public List<VisualCellMaterialRef> Materials { get; } = new List<VisualCellMaterialRef>();
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["rendererFile"] = RendererFile,
+                    ["rendererPathId"] = RendererPathId,
+                    ["materials"] = new JArray(Materials.Select(x => x.ToJson())),
+                    ["rule"] = "材质证据只来自 SQLite 源索引里的 renderer.material / material.texture 关系；这里不烘焙 shader，也不猜贴图用途。"
+                };
+            }
+        }
+
+        private sealed class VisualCellMaterialRef
+        {
+            public long RelationId { get; init; }
+            public string MaterialFile { get; init; }
+            public long MaterialPathId { get; init; }
+            public string MaterialType { get; init; }
+            public string MaterialName { get; init; }
+            public int TextureRefCount { get; init; }
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["relationId"] = RelationId,
+                    ["materialFile"] = MaterialFile,
+                    ["materialPathId"] = MaterialPathId,
+                    ["materialType"] = MaterialType,
+                    ["materialName"] = MaterialName,
+                    ["textureRefCount"] = TextureRefCount
+                };
+            }
+        }
 
         private sealed class AvatarMeshData
         {

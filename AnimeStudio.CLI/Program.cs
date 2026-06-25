@@ -663,7 +663,8 @@ namespace AnimeStudio.CLI
                 {
                     AvatarMeshDataGltfExporter.Export(
                         o.ExportAvatarMeshDataGltf.FullName,
-                        o.PreviewOutput?.FullName);
+                        o.PreviewOutput?.FullName,
+                        o.SourceIndex?.FullName);
                     return;
                 }
 
