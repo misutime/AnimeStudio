@@ -85,6 +85,11 @@ namespace AnimeStudio.CLI
             EnsureIndex(connection, "idx_source_relations_from", "source_relations", "from_path_id, relation, from_file");
             EnsureIndex(connection, "idx_source_relations_to", "source_relations", "to_path_id, relation, to_file");
             EnsureIndex(connection, "idx_source_relations_relation", "source_relations", "relation");
+            // 候选报告经常按 AssetBundle container 路径反查 preload/material。
+            // Naraka 这类大库没有这个表达式索引时，定向候选也会退化成全表扫描。
+            EnsureExpressionIndex(connection, "idx_source_relations_container_relation", @"
+CREATE INDEX idx_source_relations_container_relation
+ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
             EnsureIndex(connection, "idx_source_animation_bindings_clip", "source_animation_bindings", "animation_file, animation_path_id");
             CheckpointSourceIndex(connection, dbPath);
             Logger.Info($"SQLite source query indexes are ready: {dbPath}");
@@ -645,7 +650,24 @@ CREATE INDEX idx_source_externals_file ON source_externals(serialized_file, file
 CREATE INDEX idx_source_relations_from ON source_relations(from_path_id, relation, from_file);
 CREATE INDEX idx_source_relations_to ON source_relations(to_path_id, relation, to_file);
 CREATE INDEX idx_source_relations_relation ON source_relations(relation);
+CREATE INDEX idx_source_relations_container_relation ON source_relations(json_extract(raw_json, '$.details.container'), relation);
 CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(animation_file, animation_path_id);");
+        }
+
+        private static void EnsureExpressionIndex(SqliteConnection connection, string indexName, string createSql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT sql FROM sqlite_master WHERE type='index' AND name=$name;";
+            command.Parameters.AddWithValue("$name", indexName);
+            var existingSql = Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(existingSql))
+            {
+                Logger.Info($"SQLite source expression index exists: {indexName}");
+                return;
+            }
+
+            Logger.Info($"Creating SQLite source expression index {indexName}.");
+            Execute(connection, createSql);
         }
 
         private static void EnsureIndex(SqliteConnection connection, string indexName, string tableName, string columnsSql)
