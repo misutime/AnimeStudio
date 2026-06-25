@@ -48,6 +48,9 @@ namespace AnimeStudio.CLI
             var materialHealth = report["materialRelationHealth"] as JObject;
             var materialStatus = materialHealth?["status"]?.ToString() ?? "unknown";
             Logger.Info($"Unity source material relation health status: {materialStatus}");
+            var pathHashHealth = report["animationPathHashHealth"] as JObject;
+            var pathHashStatus = pathHashHealth?["status"]?.ToString() ?? "unknown";
+            Logger.Info($"Unity source animation pathHash health status: {pathHashStatus}");
             if (requireHealthy && !string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase))
             {
                 var note = health?["note"]?.ToString() ?? "Source index animation relation health is not ok.";
@@ -2784,6 +2787,7 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
                 ["modelDependencyHealth"] = BuildModelDependencyHealth(connection),
                 ["materialRelationHealth"] = BuildMaterialRelationHealth(connection),
                 ["avatarOracleHealth"] = BuildAvatarOracleHealth(connection),
+                ["animationPathHashHealth"] = BuildAnimationPathHashHealth(connection),
             };
         }
 
@@ -3479,6 +3483,416 @@ WHERE type='Avatar';");
                     ? "源索引包含 AvatarConstant oracle 元数据。Avatar.m_TOS 可作为 AnimationClip pathHash 解析证据，但结构兼容仍不能单独升级成生产动画关系。"
                     : "源索引缺少完整 AvatarConstant oracle 元数据；Humanoid/Muscle bake 只能依赖完整 HumanDescription 或 Unity 工程内真实 prefab。"
             };
+        }
+
+        // 只做路径解析诊断：确认 hash-only binding 是否能被 Unity Avatar.m_TOS 还原成骨骼路径。
+        private static JObject BuildAnimationPathHashHealth(SqliteConnection connection)
+        {
+            if (!TableExists(connection, "source_animation_bindings") || !TableExists(connection, "source_objects"))
+            {
+                return new JObject
+                {
+                    ["status"] = "empty",
+                    ["note"] = "源索引缺少 source_animation_bindings 或 source_objects，无法检查 AnimationClip pathHash。"
+                };
+            }
+
+            var avatarTos = ReadAvatarTosIndexes(connection);
+            var allAvatarHashes = new HashSet<uint>();
+            foreach (var avatar in avatarTos)
+            {
+                foreach (var hash in avatar.Hashes)
+                {
+                    allAvatarHashes.Add(hash);
+                }
+            }
+
+            var sourceAnimationBindingRows = TableRowCount(connection, "source_animation_bindings");
+            if (sourceAnimationBindingRows == 0)
+            {
+                return new JObject
+                {
+                    ["status"] = "empty",
+                    ["sourceAnimationBindingRows"] = 0,
+                    ["avatarTosAvatars"] = avatarTos.Count,
+                    ["avatarTosHashCount"] = allAvatarHashes.Count,
+                    ["note"] = "源索引没有 source_animation_bindings，无法检查 AnimationClip pathHash。"
+                };
+            }
+
+            if (allAvatarHashes.Count == 0)
+            {
+                return new JObject
+                {
+                    ["status"] = "warning",
+                    ["sourceAnimationBindingRows"] = sourceAnimationBindingRows,
+                    ["avatarTosAvatars"] = avatarTos.Count,
+                    ["avatarTosHashCount"] = 0,
+                    ["hashOnlyClipCount"] = 0,
+                    ["hashOnlyUniquePathHashTotal"] = 0,
+                    ["hashOnlyResolvedByAnyAvatarTosTotal"] = 0,
+                    ["hashOnlyAnyAvatarTosCoverage"] = 0.0,
+                    ["fullyResolvedByAnyAvatarTosClipCount"] = 0,
+                    ["zeroPathHashBindingCount"] = 0,
+                    ["rawJsonParseErrorCount"] = 0,
+                    ["clipSamples"] = new JArray(),
+                    ["rule"] = "只检查 AnimationClip binding 的 pathHash 能否被 Avatar.m_TOS 解析。它是 Naraka hash-only 动画路径恢复证据，不会生成默认模型-动画关系，也不代表 glTF TRS 动画已通过视觉验收。",
+                    ["note"] = "源索引包含动画 binding，但没有可用 Avatar.m_TOS hash -> path 查表。请先用新版工具重建 unity_source_index.db。"
+                };
+            }
+
+            long hashOnlyClipCount = 0;
+            long fullyResolvedByAnyAvatarTosClipCount = 0;
+            long hashOnlyUniquePathHashTotal = 0;
+            long hashOnlyResolvedByAnyAvatarTosTotal = 0;
+            long zeroPathHashBindingCount = 0;
+            long rawJsonParseErrorCount = 0;
+            var parseErrorSamples = new JArray();
+            var clipSamples = new List<AnimationPathHashClipSample>();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT animation_name, animation_source, animation_file, animation_path_id, binding_count, raw_json
+FROM source_animation_bindings
+ORDER BY COALESCE(binding_count, 0) DESC, animation_name COLLATE NOCASE;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var animationName = ReadString(reader, "animation_name");
+                var animationSource = ReadString(reader, "animation_source");
+                var animationFile = ReadString(reader, "animation_file");
+                var animationPathId = ReadInt64(reader, "animation_path_id");
+                var bindingCount = ReadInt64(reader, "binding_count");
+                var rawJson = ReadString(reader, "raw_json");
+                HashSet<uint> hashOnlyPathHashes;
+                long clipZeroPathHashes;
+                try
+                {
+                    hashOnlyPathHashes = ExtractHashOnlyBindingPathHashes(rawJson, out clipZeroPathHashes);
+                }
+                catch (JsonException e)
+                {
+                    rawJsonParseErrorCount++;
+                    if (parseErrorSamples.Count < 8)
+                    {
+                        parseErrorSamples.Add(new JObject
+                        {
+                            ["animation"] = animationName,
+                            ["animationFile"] = animationFile,
+                            ["animationPathId"] = animationPathId,
+                            ["error"] = e.GetType().Name + ": " + e.Message,
+                        });
+                    }
+                    continue;
+                }
+
+                zeroPathHashBindingCount += clipZeroPathHashes;
+                if (hashOnlyPathHashes.Count == 0)
+                {
+                    continue;
+                }
+
+                hashOnlyClipCount++;
+                var resolvedByAnyAvatar = hashOnlyPathHashes.Count(hash => allAvatarHashes.Contains(hash));
+                hashOnlyUniquePathHashTotal += hashOnlyPathHashes.Count;
+                hashOnlyResolvedByAnyAvatarTosTotal += resolvedByAnyAvatar;
+                if (resolvedByAnyAvatar == hashOnlyPathHashes.Count)
+                {
+                    fullyResolvedByAnyAvatarTosClipCount++;
+                }
+
+                if (clipSamples.Count < 24)
+                {
+                    clipSamples.Add(BuildAnimationPathHashClipSample(
+                        animationName,
+                        animationSource,
+                        animationFile,
+                        animationPathId,
+                        bindingCount,
+                        hashOnlyPathHashes,
+                        resolvedByAnyAvatar,
+                        avatarTos));
+                }
+            }
+
+            var status = rawJsonParseErrorCount > 0
+                ? "warning"
+                : hashOnlyClipCount == 0
+                    ? "empty"
+                    : Ratio(hashOnlyResolvedByAnyAvatarTosTotal, hashOnlyUniquePathHashTotal) >= 0.9
+                        ? "ok"
+                        : "warning";
+
+            return new JObject
+            {
+                ["status"] = status,
+                ["sourceAnimationBindingRows"] = sourceAnimationBindingRows,
+                ["avatarTosAvatars"] = avatarTos.Count,
+                ["avatarTosHashCount"] = allAvatarHashes.Count,
+                ["hashOnlyClipCount"] = hashOnlyClipCount,
+                ["hashOnlyUniquePathHashTotal"] = hashOnlyUniquePathHashTotal,
+                ["hashOnlyResolvedByAnyAvatarTosTotal"] = hashOnlyResolvedByAnyAvatarTosTotal,
+                ["hashOnlyAnyAvatarTosCoverage"] = Ratio(hashOnlyResolvedByAnyAvatarTosTotal, hashOnlyUniquePathHashTotal),
+                ["fullyResolvedByAnyAvatarTosClipCount"] = fullyResolvedByAnyAvatarTosClipCount,
+                ["zeroPathHashBindingCount"] = zeroPathHashBindingCount,
+                ["rawJsonParseErrorCount"] = rawJsonParseErrorCount,
+                ["rawJsonParseErrorSamples"] = parseErrorSamples,
+                ["clipSamples"] = new JArray(clipSamples.Select(x => x.ToJson())),
+                ["rule"] = "只检查 AnimationClip binding 的 pathHash 能否被 Avatar.m_TOS 解析。它是 Naraka hash-only 动画路径恢复证据，不会生成默认模型-动画关系，也不代表 glTF TRS 动画已通过视觉验收。",
+                ["note"] = hashOnlyClipCount > 0
+                    ? "如果 bestAvatarTosCoverage 接近 1，可以作为后续定向模型+动画预览的结构证据；仍需 Animator/Prefab/Controller 显式关系、模型材质验收和动画截帧验收。"
+                    : "当前源索引没有发现需要 Avatar.m_TOS 辅助解析的 hash-only AnimationClip binding。"
+            };
+        }
+
+        private static List<AvatarTosIndex> ReadAvatarTosIndexes(SqliteConnection connection)
+        {
+            var result = new List<AvatarTosIndex>();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name, source_path, serialized_file, path_id, raw_json
+FROM source_objects
+WHERE type='Avatar'
+  AND COALESCE(json_array_length(json_extract(raw_json, '$.avatar.tos')), 0) > 0;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var rawJson = ReadString(reader, "raw_json");
+                JObject raw;
+                try
+                {
+                    raw = JObject.Parse(rawJson);
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+
+                var paths = new Dictionary<uint, string>();
+                foreach (var item in raw.SelectToken("avatar.tos") as JArray ?? new JArray())
+                {
+                    if (!TryReadUInt32(item["pathHash"], out var hash) || hash == 0)
+                    {
+                        continue;
+                    }
+
+                    var path = item["path"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        continue;
+                    }
+
+                    paths.TryAdd(hash, path);
+                }
+
+                if (paths.Count == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new AvatarTosIndex(
+                    ReadString(reader, "name"),
+                    ReadString(reader, "source_path"),
+                    ReadString(reader, "serialized_file"),
+                    ReadInt64(reader, "path_id"),
+                    paths));
+            }
+
+            return result;
+        }
+
+        private static HashSet<uint> ExtractHashOnlyBindingPathHashes(string rawJson, out long zeroPathHashBindingCount)
+        {
+            zeroPathHashBindingCount = 0;
+            var result = new HashSet<uint>();
+            var raw = JObject.Parse(rawJson);
+            foreach (var binding in raw["bindings"] as JArray ?? new JArray())
+            {
+                var path = binding["path"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                if (!TryReadUInt32(binding["pathHash"], out var hash) || hash == 0)
+                {
+                    zeroPathHashBindingCount++;
+                    continue;
+                }
+
+                result.Add(hash);
+            }
+
+            return result;
+        }
+
+        private static AnimationPathHashClipSample BuildAnimationPathHashClipSample(
+            string animationName,
+            string animationSource,
+            string animationFile,
+            long animationPathId,
+            long bindingCount,
+            HashSet<uint> hashOnlyPathHashes,
+            int resolvedByAnyAvatar,
+            IReadOnlyList<AvatarTosIndex> avatarTos)
+        {
+            AvatarTosIndex bestAvatar = null;
+            var bestResolved = 0;
+            foreach (var avatar in avatarTos)
+            {
+                var resolved = hashOnlyPathHashes.Count(hash => avatar.Hashes.Contains(hash));
+                if (resolved > bestResolved)
+                {
+                    bestResolved = resolved;
+                    bestAvatar = avatar;
+                    if (bestResolved == hashOnlyPathHashes.Count)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var resolvedSamples = new JArray();
+            var unresolvedSamples = new JArray();
+            if (bestAvatar != null)
+            {
+                foreach (var hash in hashOnlyPathHashes.OrderBy(x => x).Take(512))
+                {
+                    if (bestAvatar.HashToPath.TryGetValue(hash, out var path))
+                    {
+                        if (resolvedSamples.Count < 8)
+                        {
+                            resolvedSamples.Add(new JObject
+                            {
+                                ["pathHash"] = hash,
+                                ["pathHashHex"] = $"0x{hash:X8}",
+                                ["path"] = path,
+                            });
+                        }
+                    }
+                    else if (unresolvedSamples.Count < 8)
+                    {
+                        unresolvedSamples.Add(new JObject
+                        {
+                            ["pathHash"] = hash,
+                            ["pathHashHex"] = $"0x{hash:X8}",
+                        });
+                    }
+
+                    if (resolvedSamples.Count >= 8 && unresolvedSamples.Count >= 8)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return new AnimationPathHashClipSample
+            {
+                AnimationName = animationName,
+                AnimationSource = animationSource,
+                AnimationFile = animationFile,
+                AnimationPathId = animationPathId,
+                BindingCount = bindingCount,
+                UniqueHashOnlyPathHashCount = hashOnlyPathHashes.Count,
+                ResolvedByAnyAvatarTos = resolvedByAnyAvatar,
+                BestAvatar = bestAvatar,
+                BestAvatarResolved = bestResolved,
+                ResolvedPathSamples = resolvedSamples,
+                UnresolvedHashSamples = unresolvedSamples,
+            };
+        }
+
+        private static bool TryReadUInt32(JToken token, out uint value)
+        {
+            value = 0;
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return false;
+            }
+
+            if (token.Type == JTokenType.Integer)
+            {
+                var number = token.Value<long>();
+                if (number < 0 || number > uint.MaxValue)
+                {
+                    return false;
+                }
+
+                value = (uint)number;
+                return true;
+            }
+
+            var text = token.ToString().Trim();
+            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                text = text.Substring(2);
+                return uint.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
+            }
+
+            return uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+        }
+
+        private sealed class AvatarTosIndex
+        {
+            public AvatarTosIndex(string name, string sourcePath, string serializedFile, long pathId, Dictionary<uint, string> hashToPath)
+            {
+                Name = name;
+                SourcePath = sourcePath;
+                SerializedFile = serializedFile;
+                PathId = pathId;
+                HashToPath = hashToPath;
+                Hashes = hashToPath.Keys.ToHashSet();
+            }
+
+            public string Name { get; }
+            public string SourcePath { get; }
+            public string SerializedFile { get; }
+            public long PathId { get; }
+            public Dictionary<uint, string> HashToPath { get; }
+            public HashSet<uint> Hashes { get; }
+        }
+
+        private sealed class AnimationPathHashClipSample
+        {
+            public string AnimationName { get; set; }
+            public string AnimationSource { get; set; }
+            public string AnimationFile { get; set; }
+            public long AnimationPathId { get; set; }
+            public long BindingCount { get; set; }
+            public int UniqueHashOnlyPathHashCount { get; set; }
+            public int ResolvedByAnyAvatarTos { get; set; }
+            public AvatarTosIndex BestAvatar { get; set; }
+            public int BestAvatarResolved { get; set; }
+            public JArray ResolvedPathSamples { get; set; }
+            public JArray UnresolvedHashSamples { get; set; }
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["animationName"] = AnimationName,
+                    ["animationSource"] = AnimationSource,
+                    ["animationFile"] = AnimationFile,
+                    ["animationPathId"] = AnimationPathId,
+                    ["bindingCount"] = BindingCount,
+                    ["uniqueHashOnlyPathHashCount"] = UniqueHashOnlyPathHashCount,
+                    ["resolvedByAnyAvatarTos"] = ResolvedByAnyAvatarTos,
+                    ["anyAvatarTosCoverage"] = Ratio(ResolvedByAnyAvatarTos, UniqueHashOnlyPathHashCount),
+                    ["bestAvatar"] = BestAvatar == null
+                        ? null
+                        : new JObject
+                        {
+                            ["name"] = BestAvatar.Name,
+                            ["sourcePath"] = BestAvatar.SourcePath,
+                            ["serializedFile"] = BestAvatar.SerializedFile,
+                            ["pathId"] = BestAvatar.PathId,
+                        },
+                    ["bestAvatarResolvedPathHashCount"] = BestAvatarResolved,
+                    ["bestAvatarTosCoverage"] = Ratio(BestAvatarResolved, UniqueHashOnlyPathHashCount),
+                    ["resolvedPathSamples"] = ResolvedPathSamples ?? new JArray(),
+                    ["unresolvedHashSamples"] = UnresolvedHashSamples ?? new JArray(),
+                };
+            }
         }
 
         private static double Ratio(long part, long total)

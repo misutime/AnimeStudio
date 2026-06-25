@@ -516,6 +516,8 @@ source_index_profile.jsonl
 - `resolvedTargetCounts` / `missingTargetCounts`：统计 `animatorController.clip`、legacy `animation.clip`、`animatorOverrideController.originalClip`、`animatorOverrideController.overrideClip` 是否能解析到真实 `AnimationClip`。只要存在缺失目标，当前源索引就不能作为动画 smoke 的完整依赖底座。
 
 `avatarOracleHealth` 还会统计 `avatarTosAvatars`、`avatarTosEntryCount` 和 `avatarTosCoverage`。`Avatar.m_TOS` 是 Unity 自带的 `pathHash -> path` 查表，Naraka 这类项目的 `AnimationClip` binding 经常只有 hash；保留 TOS 是后续解析 hash-only binding 的必要证据，但它只能证明结构解析条件更充分，不能单独生成默认模型-动画关系。
+
+`--verify_source_index` 额外输出 `animationPathHashHealth`，统计 hash-only `AnimationClip` binding 的唯一 `pathHash` 有多少能被任意 `Avatar.m_TOS` 解析，并列出高 binding 数 clip 的最佳 Avatar 覆盖样本。这个报告只用于确认“路径可解析、可继续做定向预览”，不能替代 Animator/Prefab/Controller 显式关系、模型材质验收或动画 glTF 截帧验收。
 - `staleOverridePairIndex`：如果源目录存在 `AnimatorOverrideController`，但源索引既没有 `overrideSet`，或存在非空替换表却没有 `clipPair`，会标为 `true`，说明这是旧版或不完整源索引，应该先重建源索引，再重建 Library SQLite。
 
 源索引还会记录 `MonoBehaviour` 的轻量确定性引用：
