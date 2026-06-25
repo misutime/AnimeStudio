@@ -53,6 +53,7 @@ namespace AnimeStudio.CLI
                 // 避免为了找一个真实主模型先扫描全库候选。
                 AddStageRows(rows, "targeted_animator", () => LoadTargetedAnimatorCandidates(connection, scanLimit, selectorQuery, availableIndexes));
                 AddStageRows(rows, "targeted_skinned_renderer", () => LoadTargetedSkinnedRendererCandidates(connection, scanLimit, selectorQuery, availableIndexes));
+                AddStageRows(rows, "targeted_avatar_mesh_data", () => LoadTargetedAvatarMeshDataCandidates(connection, scanLimit, selectorQuery, availableIndexes));
                 if (shouldLoadTargetedContainers)
                 {
                     // 很多 Unity 导入模型的可读名字只出现在 AssetBundle container 路径，
@@ -77,6 +78,10 @@ namespace AnimeStudio.CLI
                 }
             }
             rows = RunStage("fill_container_paths", () => FillContainerPaths(connection, rows, availableIndexes));
+            if (selectorQuery.IsTargeted)
+            {
+                rows = RunStage("fill_custom_avatar_mesh_counts", () => FillCustomAvatarMeshCounts(connection, rows, availableIndexes));
+            }
 
             var filtered = rows
                 .Where(x => MatchesSelector(selector, x))
@@ -149,7 +154,10 @@ namespace AnimeStudio.CLI
             foreach (var row in filtered.Take(12))
             {
                 var hint = string.IsNullOrWhiteSpace(row.ExcludeHint) ? string.Empty : $" [{row.ExcludeHint}]";
-                Logger.Info($"- {row.Kind}: {row.Name} mesh={row.MeshCount} material={row.ResolvedMaterialCount}/{row.MaterialCount} textured={row.TexturedMaterialCount} texRefs={row.MaterialTextureRefCount} score={row.Score}{hint}");
+                var customMesh = row.CustomAvatarMeshCount > 0
+                    ? $" customAvatarMesh={row.CustomAvatarMeshCount}"
+                    : string.Empty;
+                Logger.Info($"- {row.Kind}: {row.Name} mesh={row.MeshCount}{customMesh} material={row.ResolvedMaterialCount}/{row.MaterialCount} textured={row.TexturedMaterialCount} texRefs={row.MaterialTextureRefCount} score={row.Score}{hint}");
             }
 
             return jsonPath;
@@ -1233,6 +1241,140 @@ LIMIT $limit;";
             return result;
         }
 
+        private static List<CandidateRow> LoadTargetedAvatarMeshDataCandidates(SqliteConnection connection, int limit, SelectorQuery selectorQuery, HashSet<string> availableIndexes)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+WITH matched_go AS (
+    SELECT go.name, go.source_path, go.serialized_file, go.path_id
+    FROM source_objects go
+    WHERE go.type = 'GameObject'
+      AND __GO_FILTER__
+    LIMIT $limit
+),
+actor_cells AS (
+    SELECT go.name,
+           go.source_path,
+           go.serialized_file,
+           go.path_id,
+           cell.serialized_file AS cell_file,
+           cell.path_id AS cell_path_id
+    FROM matched_go go
+    JOIN source_relations componentRel INDEXED BY idx_source_relations_to
+      ON componentRel.to_file = go.serialized_file
+     AND componentRel.to_path_id = go.path_id
+     AND componentRel.relation = 'component.gameObject'
+    JOIN source_objects cell
+      ON cell.serialized_file = componentRel.from_file
+     AND cell.path_id = componentRel.from_path_id
+     AND cell.type = 'MonoBehaviour'
+),
+assistants AS (
+    SELECT actor.name,
+           actor.source_path,
+           actor.serialized_file,
+           actor.path_id,
+           assistantRel.to_file AS assistant_file,
+           assistantRel.to_path_id AS assistant_path_id
+    FROM actor_cells actor
+    JOIN source_relations assistantRel INDEXED BY idx_source_relations_from
+      ON assistantRel.from_file = actor.cell_file
+     AND assistantRel.from_path_id = actor.cell_path_id
+     AND assistantRel.relation = 'monoBehaviour.pptr'
+     AND json_extract(assistantRel.raw_json, '$.details.path') IN (
+         'rendererAssistants.data',
+         'avatarRenderers.data',
+         'lod0RendererAssistants.data',
+         'lod1RendererAssistants.data',
+         'lod2RendererAssistants.data',
+         'lod3RendererAssistants.data'
+     )
+    JOIN source_objects assistant
+      ON assistant.serialized_file = assistantRel.to_file
+     AND assistant.path_id = assistantRel.to_path_id
+     AND assistant.type = 'MonoBehaviour'
+)
+SELECT assistants.name,
+       assistants.source_path,
+       assistants.serialized_file,
+       assistants.path_id,
+       '' AS container_path,
+       COUNT(DISTINCT renderer.to_file || ':' || renderer.to_path_id) AS renderer_count,
+       COUNT(DISTINCT avatarMesh.to_file || ':' || avatarMesh.to_path_id) AS custom_avatar_mesh_count,
+       COUNT(DISTINCT material.to_file || ':' || material.to_path_id) AS material_count,
+       COUNT(DISTINCT resolvedMaterial.serialized_file || ':' || resolvedMaterial.path_id) AS resolved_material_count,
+       COUNT(DISTINCT CASE
+         WHEN textureRel.to_path_id IS NOT NULL
+         THEN resolvedMaterial.serialized_file || ':' || resolvedMaterial.path_id END) AS textured_material_count,
+       COUNT(DISTINCT CASE
+         WHEN textureRel.to_path_id IS NOT NULL
+         THEN textureRel.to_file || ':' || textureRel.to_path_id END) AS material_texture_ref_count,
+       COALESCE(GROUP_CONCAT(DISTINCT avatarMeshObject.name), '') AS sample_names
+FROM assistants
+JOIN source_relations avatarMesh INDEXED BY idx_source_relations_from
+  ON avatarMesh.from_file = assistants.assistant_file
+ AND avatarMesh.from_path_id = assistants.assistant_path_id
+ AND avatarMesh.relation = 'monoBehaviour.pptr'
+ AND json_extract(avatarMesh.raw_json, '$.details.path') = 'avatarMeshAsset'
+LEFT JOIN source_objects avatarMeshObject
+  ON avatarMeshObject.serialized_file = avatarMesh.to_file
+ AND avatarMeshObject.path_id = avatarMesh.to_path_id
+LEFT JOIN source_relations renderer INDEXED BY idx_source_relations_from
+  ON renderer.from_file = assistants.assistant_file
+ AND renderer.from_path_id = assistants.assistant_path_id
+ AND renderer.relation = 'monoBehaviour.pptr'
+ AND json_extract(renderer.raw_json, '$.details.path') = '_renderer'
+LEFT JOIN source_relations material INDEXED BY idx_source_relations_from
+  ON material.from_file = renderer.to_file
+ AND material.from_path_id = renderer.to_path_id
+ AND material.relation = 'renderer.material'
+LEFT JOIN source_objects resolvedMaterial
+  ON resolvedMaterial.serialized_file = material.to_file
+ AND resolvedMaterial.path_id = material.to_path_id
+ AND resolvedMaterial.type = 'Material'
+LEFT JOIN source_relations textureRel INDEXED BY idx_source_relations_from
+  ON textureRel.from_file = resolvedMaterial.serialized_file
+ AND textureRel.from_path_id = resolvedMaterial.path_id
+ AND textureRel.relation = 'material.texture'
+GROUP BY assistants.serialized_file, assistants.path_id
+HAVING custom_avatar_mesh_count > 0
+ORDER BY custom_avatar_mesh_count DESC, material_count DESC, assistants.name COLLATE NOCASE
+LIMIT $limit;";
+            command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
+            command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+            AddTargetObjectParameters(command, selectorQuery);
+            command.Parameters.AddWithValue("$limit", limit);
+            var result = new List<CandidateRow>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new CandidateRow(
+                    "NarakaAvatarMeshDataModel",
+                    ReadString(reader, 0),
+                    ReadString(reader, 1),
+                    ReadString(reader, 2),
+                    ReadLong(reader, 3),
+                    ReadString(reader, 4),
+                    0,
+                    ReadLong(reader, 5),
+                    0,
+                    ReadLong(reader, 7),
+                    ReadLong(reader, 8),
+                    ReadLong(reader, 9),
+                    ReadLong(reader, 10),
+                    0,
+                    0,
+                    0,
+                    0,
+                    string.Empty,
+                    ReadString(reader, 11),
+                    0,
+                    ReadLong(reader, 6)));
+            }
+
+            return result;
+        }
+
         private static List<CandidateRow> LoadTargetedSkinnedRendererHierarchyCandidates(SqliteConnection connection, int limit, SelectorQuery selectorQuery, HashSet<string> availableIndexes)
         {
             using var command = connection.CreateCommand();
@@ -1563,6 +1705,7 @@ GROUP BY material.from_file, material.from_path_id;";
             score += row.ControllerCount * 100;
             score += row.AvatarCount * 60;
             score += row.MeshCount * 20;
+            score += row.CustomAvatarMeshCount * 20;
             score += row.TexturedMaterialCount * 35;
             score += row.MaterialTextureRefCount * 8;
             score += row.ResolvedMaterialCount * 15;
@@ -1601,6 +1744,10 @@ GROUP BY material.from_file, material.from_path_id;";
             else if (row.Kind == "StaticRendererModel")
             {
                 score += 10;
+            }
+            else if (row.Kind == "NarakaAvatarMeshDataModel")
+            {
+                score += 90;
             }
 
             return score;
@@ -1655,6 +1802,10 @@ GROUP BY material.from_file, material.from_path_id;";
             if (row.Kind == "StaticRendererModel" && string.IsNullOrWhiteSpace(row.ContainerPath))
             {
                 hits.Add("staticRendererNeedsContainerReview");
+            }
+            if (row.CustomAvatarMeshCount > 0)
+            {
+                hits.Add("customAvatarMeshNeedsExporterBinding");
             }
             if (row.MeshCount <= 0 && row.RendererCount <= 0)
             {
@@ -1719,6 +1870,96 @@ GROUP BY material.from_file, material.from_path_id;";
                 row.PathId.ToString(CultureInfo.InvariantCulture),
                 row.ContainerPath ?? string.Empty,
                 row.Name ?? string.Empty);
+        }
+
+        private static List<CandidateRow> FillCustomAvatarMeshCounts(SqliteConnection connection, List<CandidateRow> rows, HashSet<string> availableIndexes)
+        {
+            if (rows.Count == 0)
+            {
+                return rows;
+            }
+
+            var cache = new Dictionary<string, (long Count, string SampleNames)>(StringComparer.Ordinal);
+            var result = new List<CandidateRow>(rows.Count);
+            foreach (var row in rows)
+            {
+                var key = BuildObjectKey(row.SerializedFile, row.PathId);
+                if (!cache.TryGetValue(key, out var customMesh))
+                {
+                    customMesh = LoadCustomAvatarMeshCount(connection, row.SerializedFile, row.PathId, availableIndexes);
+                    cache[key] = customMesh;
+                }
+
+                if (customMesh.Count <= 0)
+                {
+                    result.Add(row);
+                    continue;
+                }
+
+                var sampleNames = string.IsNullOrWhiteSpace(row.SampleNames)
+                    ? customMesh.SampleNames
+                    : row.SampleNames;
+                result.Add(row with
+                {
+                    CustomAvatarMeshCount = customMesh.Count,
+                    SampleNames = sampleNames,
+                });
+            }
+
+            return result;
+        }
+
+        private static (long Count, string SampleNames) LoadCustomAvatarMeshCount(SqliteConnection connection, string serializedFile, long pathId, HashSet<string> availableIndexes)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+WITH actor_cells AS (
+    SELECT cell.serialized_file AS cell_file,
+           cell.path_id AS cell_path_id
+    FROM source_relations componentRel INDEXED BY idx_source_relations_to
+    JOIN source_objects cell
+      ON cell.serialized_file = componentRel.from_file
+     AND cell.path_id = componentRel.from_path_id
+     AND cell.type = 'MonoBehaviour'
+    WHERE componentRel.to_file = $file
+      AND componentRel.to_path_id = $pathId
+      AND componentRel.relation = 'component.gameObject'
+),
+assistants AS (
+    SELECT assistantRel.to_file AS assistant_file,
+           assistantRel.to_path_id AS assistant_path_id
+    FROM actor_cells actor
+    JOIN source_relations assistantRel INDEXED BY idx_source_relations_from
+      ON assistantRel.from_file = actor.cell_file
+     AND assistantRel.from_path_id = actor.cell_path_id
+     AND assistantRel.relation = 'monoBehaviour.pptr'
+     AND json_extract(assistantRel.raw_json, '$.details.path') IN (
+         'rendererAssistants.data',
+         'avatarRenderers.data',
+         'lod0RendererAssistants.data',
+         'lod1RendererAssistants.data',
+         'lod2RendererAssistants.data',
+         'lod3RendererAssistants.data'
+     )
+)
+SELECT COUNT(DISTINCT avatarMesh.to_file || ':' || avatarMesh.to_path_id) AS custom_avatar_mesh_count,
+       COALESCE(GROUP_CONCAT(DISTINCT avatarMeshObject.name), '') AS sample_names
+FROM assistants
+JOIN source_relations avatarMesh INDEXED BY idx_source_relations_from
+  ON avatarMesh.from_file = assistants.assistant_file
+ AND avatarMesh.from_path_id = assistants.assistant_path_id
+ AND avatarMesh.relation = 'monoBehaviour.pptr'
+ AND json_extract(avatarMesh.raw_json, '$.details.path') = 'avatarMeshAsset'
+LEFT JOIN source_objects avatarMeshObject
+  ON avatarMeshObject.serialized_file = avatarMesh.to_file
+ AND avatarMeshObject.path_id = avatarMesh.to_path_id;";
+            command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? (ReadLong(reader, 0), ReadString(reader, 1))
+                : (0, string.Empty);
         }
 
         private static string LoadContainerPath(SqliteConnection connection, string serializedFile, long pathId, HashSet<string> availableIndexes)
@@ -1882,6 +2123,7 @@ WHERE to_file = $file
                 ["animatorCount"] = row.AnimatorCount,
                 ["rendererCount"] = row.RendererCount,
                 ["meshCount"] = row.MeshCount,
+                ["customAvatarMeshCount"] = row.CustomAvatarMeshCount,
                 ["materialCount"] = row.MaterialCount,
                 ["resolvedMaterialCount"] = row.ResolvedMaterialCount,
                 ["texturedMaterialCount"] = row.TexturedMaterialCount,
@@ -1897,7 +2139,7 @@ WHERE to_file = $file
         private static string ToCsv(List<CandidateRow> rows)
         {
             var builder = new StringBuilder();
-            builder.AppendLine("kind,name,sourcePath,serializedFile,containerPath,pathId,score,excludeHint,animatorCount,rendererCount,meshCount,materialCount,resolvedMaterialCount,texturedMaterialCount,materialTextureRefCount,optimizedAnimatorWithoutAvatarCount,avatarCount,controllerCount,rootBoneCount,sampleNames");
+            builder.AppendLine("kind,name,sourcePath,serializedFile,containerPath,pathId,score,excludeHint,animatorCount,rendererCount,meshCount,customAvatarMeshCount,materialCount,resolvedMaterialCount,texturedMaterialCount,materialTextureRefCount,optimizedAnimatorWithoutAvatarCount,avatarCount,controllerCount,rootBoneCount,sampleNames");
             foreach (var row in rows)
             {
                 builder.AppendLine(string.Join(",",
@@ -1912,6 +2154,7 @@ WHERE to_file = $file
                     row.AnimatorCount.ToString(CultureInfo.InvariantCulture),
                     row.RendererCount.ToString(CultureInfo.InvariantCulture),
                     row.MeshCount.ToString(CultureInfo.InvariantCulture),
+                    row.CustomAvatarMeshCount.ToString(CultureInfo.InvariantCulture),
                     row.MaterialCount.ToString(CultureInfo.InvariantCulture),
                     row.ResolvedMaterialCount.ToString(CultureInfo.InvariantCulture),
                     row.TexturedMaterialCount.ToString(CultureInfo.InvariantCulture),
@@ -2032,6 +2275,7 @@ WHERE to_file = $file
             long OptimizedAnimatorWithoutAvatarCount,
             string ExcludeHint,
             string SampleNames,
-            long Score);
+            long Score,
+            long CustomAvatarMeshCount = 0);
     }
 }
