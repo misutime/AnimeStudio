@@ -2431,6 +2431,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 var changed = false;
 
                 changed |= NormalizeGltfBufferUris(gltfPath, gltf);
+                changed |= NormalizeStaticSkinnedMeshRootNodes(gltf);
                 changed |= ProtectGltfPreviewMaterials(gltf);
 
                 if (changed)
@@ -2495,6 +2496,165 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             }
 
             return changed;
+        }
+
+        private static bool NormalizeStaticSkinnedMeshRootNodes(JObject gltf)
+        {
+            // glTF 的 skinned mesh 节点本地 TRS 和父节点变换不会按普通节点层级生效。
+            // 静态素材库模型里保留这种层级会让 validator 报警，也容易误导后续查看器。
+            // 带动画的 glTF 先不动，避免破坏根节点动画或动画合成诊断。
+            if (gltf["animations"] is JArray animations && animations.Count > 0)
+            {
+                return false;
+            }
+
+            var nodes = gltf["nodes"] as JArray;
+            var scenes = gltf["scenes"] as JArray;
+            if (nodes == null || nodes.Count == 0 || scenes == null || scenes.Count == 0)
+            {
+                return false;
+            }
+
+            var changed = false;
+            for (var nodeIndex = 0; nodeIndex < nodes.Count; nodeIndex++)
+            {
+                if (nodes[nodeIndex] is not JObject node
+                    || node["mesh"] == null
+                    || node["skin"] == null)
+                {
+                    continue;
+                }
+
+                if (node["children"] is JArray nodeChildren && nodeChildren.Count > 0)
+                {
+                    continue;
+                }
+
+                var hasLocalTransform = node["translation"] != null
+                    || node["rotation"] != null
+                    || node["scale"] != null
+                    || node["matrix"] != null;
+                var parentIndices = FindGltfParentNodes(nodes, nodeIndex);
+                var isSceneRoot = IsGltfSceneRoot(scenes, nodeIndex);
+                if (!hasLocalTransform && parentIndices.Count == 0 && isSceneRoot)
+                {
+                    continue;
+                }
+
+                PreserveSkinnedMeshNormalizeEvidence(node, nodes, nodeIndex, parentIndices, hasLocalTransform);
+                foreach (var parentIndex in parentIndices)
+                {
+                    RemoveChildNode(nodes[parentIndex] as JObject, nodeIndex);
+                }
+
+                AddNodeToAllScenes(scenes, nodeIndex);
+                node.Remove("translation");
+                node.Remove("rotation");
+                node.Remove("scale");
+                node.Remove("matrix");
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static List<int> FindGltfParentNodes(JArray nodes, int childIndex)
+        {
+            var result = new List<int>();
+            for (var i = 0; i < nodes.Count; i++)
+            {
+                if (nodes[i] is not JObject node || node["children"] is not JArray children)
+                {
+                    continue;
+                }
+
+                if (children.Any(x => (int?)x == childIndex))
+                {
+                    result.Add(i);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool IsGltfSceneRoot(JArray scenes, int nodeIndex)
+        {
+            return scenes
+                .OfType<JObject>()
+                .Any(scene => scene["nodes"] is JArray roots && roots.Any(x => (int?)x == nodeIndex));
+        }
+
+        private static void AddNodeToAllScenes(JArray scenes, int nodeIndex)
+        {
+            foreach (var scene in scenes.OfType<JObject>())
+            {
+                if (scene["nodes"] is not JArray roots)
+                {
+                    roots = new JArray();
+                    scene["nodes"] = roots;
+                }
+
+                if (!roots.Any(x => (int?)x == nodeIndex))
+                {
+                    roots.Add(nodeIndex);
+                }
+            }
+        }
+
+        private static void RemoveChildNode(JObject parent, int childIndex)
+        {
+            if (parent == null || parent["children"] is not JArray children)
+            {
+                return;
+            }
+
+            for (var i = children.Count - 1; i >= 0; i--)
+            {
+                if ((int?)children[i] == childIndex)
+                {
+                    children.RemoveAt(i);
+                }
+            }
+
+            if (children.Count == 0)
+            {
+                parent.Remove("children");
+            }
+        }
+
+        private static void PreserveSkinnedMeshNormalizeEvidence(
+            JObject node,
+            JArray nodes,
+            int nodeIndex,
+            IReadOnlyCollection<int> parentIndices,
+            bool hadLocalTransform)
+        {
+            var extras = node["extras"] as JObject;
+            if (extras == null)
+            {
+                extras = new JObject();
+                node["extras"] = extras;
+            }
+
+            extras["animeStudioSkinnedMeshRootNormalize"] = new JObject
+            {
+                ["rule"] = "静态 glTF 中带 skin 的 mesh 节点提升为 scene root，并清掉本地 TRS；带动画或有子节点时不会自动改层级。",
+                ["nodeIndex"] = nodeIndex,
+                ["nodeName"] = (string)node["name"],
+                ["hadLocalTransform"] = hadLocalTransform,
+                ["originalParents"] = new JArray(parentIndices.Select(parentIndex => new JObject
+                {
+                    ["nodeIndex"] = parentIndex,
+                    ["nodeName"] = nodes[parentIndex]?["name"]?.DeepClone()
+                })),
+                ["originalTransform"] = new JObject
+                {
+                    ["translation"] = node["translation"]?.DeepClone(),
+                    ["rotation"] = node["rotation"]?.DeepClone(),
+                    ["scale"] = node["scale"]?.DeepClone(),
+                    ["matrix"] = node["matrix"]?.DeepClone()
+                }
+            };
         }
 
         private static bool ProtectGltfPreviewMaterials(JObject gltf)
