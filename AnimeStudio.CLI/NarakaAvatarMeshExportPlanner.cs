@@ -40,6 +40,7 @@ namespace AnimeStudio.CLI
 
             foreach (var part in parts)
             {
+                part.AvatarPartDataEvidence.AddRange(LoadAvatarPartDataEvidence(connection, part.AvatarMeshFile, part.AvatarMeshPathId));
                 part.Materials.AddRange(LoadMaterials(connection, part.RendererFile, part.RendererPathId));
                 foreach (var material in part.Materials)
                 {
@@ -53,6 +54,7 @@ namespace AnimeStudio.CLI
             };
             monoObjects.AddRange(parts.Select(x => new SourceObjectRef(x.AssistantName, x.AssistantSourcePath, x.AssistantFile, x.AssistantPathId, "LXRendererAssistant")));
             monoObjects.AddRange(parts.Select(x => new SourceObjectRef(x.AvatarMeshName, x.AvatarMeshSourcePath, x.AvatarMeshFile, x.AvatarMeshPathId, "AvatarMeshDataAsset")));
+            monoObjects.AddRange(parts.SelectMany(x => x.AvatarPartDataEvidence.Select(y => new SourceObjectRef(y.AssetName, y.AssetSourcePath, y.AssetFile, y.AssetPathId, "AvatarPartDataAsset"))));
             monoObjects = DistinctObjects(monoObjects).ToList();
 
             var materialObjects = parts
@@ -72,7 +74,7 @@ namespace AnimeStudio.CLI
                 ["selector"] = selector,
                 ["outputFolder"] = Path.GetFullPath(outputFolder),
                 ["typeTreeDump"] = dumpRoot,
-                ["rule"] = "只根据 unity_source_index.db 中的 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset、_renderer、renderer.material、material.texture 确定导出闭包；不按名字猜部件、材质或贴图。",
+                ["rule"] = "只根据 unity_source_index.db 中的 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset、_renderer、renderer.material、material.texture 确定导出闭包；AvatarPartDataAsset.m_MeshData 只作为部件/LOD 顺序证据，不当作骨骼或 skin 绑定；不按名字猜部件、材质或贴图。",
                 ["target"] = target.ToJson(),
                 ["monoBehaviourExport"] = BuildExportBlock(monoObjects, sourceRoot),
                 ["materialTextureExport"] = BuildExportBlock(materialObjects, sourceRoot),
@@ -240,6 +242,97 @@ ORDER BY material.id;";
                     MaterialName = materialObject.Name,
                     MaterialSourcePath = materialObject.SourcePath,
                 };
+            }
+        }
+
+        // AvatarPartDataAsset 这里只能说明 mesh 在部件数据里的顺序，不能拿来推骨骼绑定。
+        private static IEnumerable<AvatarPartDataEvidence> LoadAvatarPartDataEvidence(SqliteConnection connection, string avatarMeshFile, long avatarMeshPathId)
+        {
+            if (string.IsNullOrWhiteSpace(avatarMeshFile) || avatarMeshPathId == 0)
+            {
+                yield break;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT meshRel.id,
+       asset.name,
+       asset.source_path,
+       asset.serialized_file,
+       asset.path_id,
+       script.name
+FROM source_relations meshRel INDEXED BY idx_source_relations_to
+JOIN source_objects asset
+  ON asset.serialized_file = meshRel.from_file
+ AND asset.path_id = meshRel.from_path_id
+ AND asset.type = 'MonoBehaviour'
+LEFT JOIN source_relations scriptRel INDEXED BY idx_source_relations_from
+  ON scriptRel.from_file = asset.serialized_file
+ AND scriptRel.from_path_id = asset.path_id
+ AND scriptRel.relation = 'monoBehaviour.script'
+LEFT JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE meshRel.to_file = $avatarMeshFile COLLATE NOCASE
+  AND meshRel.to_path_id = $avatarMeshPathId
+  AND meshRel.relation = 'monoBehaviour.pptr'
+  AND json_extract(meshRel.raw_json, '$.details.path') = 'm_MeshData.data'
+ORDER BY meshRel.id;";
+            command.Parameters.AddWithValue("$avatarMeshFile", NormalizeSerializedFileName(avatarMeshFile));
+            command.Parameters.AddWithValue("$avatarMeshPathId", avatarMeshPathId);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var scriptName = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+                if (!string.Equals(scriptName, "AvatarPartDataAsset", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var assetFile = reader.GetString(3);
+                var assetPathId = reader.GetInt64(4);
+                var meshRefs = LoadAvatarPartMeshRefs(connection, assetFile, assetPathId).ToList();
+                var relationId = reader.GetInt64(0);
+                var meshDataIndex = meshRefs.FindIndex(x => x.RelationId == relationId);
+                if (meshDataIndex < 0)
+                {
+                    continue;
+                }
+
+                yield return new AvatarPartDataEvidence
+                {
+                    RelationId = relationId,
+                    AssetName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    AssetSourcePath = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    AssetFile = assetFile,
+                    AssetPathId = assetPathId,
+                    MeshDataIndex = meshDataIndex,
+                    MeshDataCount = meshRefs.Count,
+                };
+            }
+        }
+
+        private static IEnumerable<AvatarPartMeshRef> LoadAvatarPartMeshRefs(SqliteConnection connection, string assetFile, long assetPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT id, to_file, to_path_id
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_file = $assetFile
+  AND from_path_id = $assetPathId
+  AND relation = 'monoBehaviour.pptr'
+  AND json_extract(raw_json, '$.details.path') = 'm_MeshData.data'
+ORDER BY id;";
+            command.Parameters.AddWithValue("$assetFile", NormalizeSerializedFileName(assetFile));
+            command.Parameters.AddWithValue("$assetPathId", assetPathId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                yield return new AvatarPartMeshRef(
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetInt64(2));
             }
         }
 
@@ -576,6 +669,7 @@ LIMIT 1;";
             public long AvatarMeshPathId { get; init; }
             public string RendererFile { get; init; }
             public long RendererPathId { get; init; }
+            public List<AvatarPartDataEvidence> AvatarPartDataEvidence { get; } = new();
             public List<MaterialRef> Materials { get; } = new();
 
             public JObject ToJson() => new()
@@ -591,7 +685,32 @@ LIMIT 1;";
                 ["avatarMeshPathId"] = AvatarMeshPathId,
                 ["rendererFile"] = RendererFile,
                 ["rendererPathId"] = RendererPathId,
+                ["avatarPartDataEvidenceCount"] = AvatarPartDataEvidence.Count,
+                ["avatarPartDataEvidence"] = new JArray(AvatarPartDataEvidence.Select(x => x.ToJson())),
                 ["materials"] = new JArray(Materials.Select(x => x.ToJson())),
+            };
+        }
+
+        private sealed class AvatarPartDataEvidence
+        {
+            public long RelationId { get; init; }
+            public string AssetName { get; init; }
+            public string AssetSourcePath { get; init; }
+            public string AssetFile { get; init; }
+            public long AssetPathId { get; init; }
+            public int MeshDataIndex { get; init; }
+            public int MeshDataCount { get; init; }
+
+            public JObject ToJson() => new()
+            {
+                ["relationId"] = RelationId,
+                ["assetName"] = AssetName,
+                ["assetSourcePath"] = AssetSourcePath,
+                ["assetFile"] = AssetFile,
+                ["assetPathId"] = AssetPathId,
+                ["meshDataIndex"] = MeshDataIndex,
+                ["meshDataCount"] = MeshDataCount,
+                ["meaning"] = "只表示 AvatarPartDataAsset.m_MeshData 中的显式顺序；不能证明骨骼、joint 或 skin 绑定。",
             };
         }
 
@@ -649,6 +768,8 @@ LIMIT 1;";
         }
 
         private sealed record SourceObjectLite(string Name, string SourcePath);
+
+        private sealed record AvatarPartMeshRef(long RelationId, string MeshFile, long MeshPathId);
 
         private sealed record PlanStep(string Name, string Command, string SourceFile, IReadOnlyCollection<long> PathIds)
         {
