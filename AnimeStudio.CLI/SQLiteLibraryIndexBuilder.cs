@@ -562,9 +562,9 @@ VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bak
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, raw_json)
-VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $rawJson);";
-            var p = AddParameters(command, "$kind", "$resourceKind", "$name", "$sourceType", "$container", "$source", "$pathId", "$output", "$audioKind", "$animationType", "$skeletonHash", "$rawJson");
+INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, raw_json)
+VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $rawJson);";
+            var p = AddParameters(command, "$kind", "$resourceKind", "$name", "$sourceType", "$container", "$source", "$pathId", "$output", "$audioKind", "$animationType", "$skeletonHash", "$validationStatus", "$rawJson");
 
             var rows = ReadJsonLines(path).ToList();
             AttachModelValidation(root, rows);
@@ -584,6 +584,7 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 Set(p, "$audioKind", S(obj, "audioKind"));
                 Set(p, "$animationType", S(obj, "animationType"));
                 Set(p, "$skeletonHash", S(obj, "skeletonHash"));
+                Set(p, "$validationStatus", S(obj, "modelValidationStatus") ?? S(obj["modelValidation"] as JObject, "Status"));
                 Set(p, "$rawJson", obj.ToString(Formatting.None));
                 command.ExecuteNonQuery();
                 count++;

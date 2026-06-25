@@ -2379,8 +2379,10 @@ Humanoid/Muscle 预览会把 `RootT.*` / `RootQ.*` 作为 root motion 写到 glT
 
 - `materialStatus` / `materialStatusCounts`：模型 glTF 中材质状态汇总。
 - `materialNeedsCustomizationTint`：需要 ColorMask/Tint 或 customization 配色。
-- `materialMissingRendererBinding`：缺 Renderer 材质绑定、需要材质修补或后续关系索引增强。
-- `materialHasBaseColorTexture` / `materialHasNormalTexture` / `materialImageCount`：判断模型是否已有标准贴图显示能力。
+- `materialMissingRendererBinding`：缺 Renderer 材质绑定、需要材质修补或后续关系索引增强。该字段会合并 `model_validation.json` 的 primitive 材质覆盖结果，不只看 glTF 材质 extras。
+- `materialMissingRendererPrimitiveCount` / `materialMissingRendererPrimitives`：缺材质 primitive 数量和名称样本，方便浏览器或批处理直接筛掉灰模/缺绑定模型。
+- `materialHasBaseColorTexture` / `materialHasNormalTexture` / `materialImageCount`：判断模型是否已有标准贴图显示能力。`materialImageCount` 会优先同步验证后的 glTF image 数量。
+- `modelValidationStatus` / `modelBodyStatus`：从 `model_validation.json` 回写到 catalog 的模型验收状态，SQLite `assets.validation_status` 也会同步该值。
 
 AnimationClip 条目会记录 `animationType`、`hasMuscleClip`、`coreTransformBindingCount`、`humanoidBindingCount`、`blendShapeBindingCount`、`trueBlendShapeBindingCount`、`rendererMaterialBindingCount`、`rendererPropertyBindingCount`、`activeStateBindingCount`、`auxiliaryBindingCount` 和 `classificationNotes`。这些字段用于判断动画是普通骨骼 TRS 曲线、Humanoid/Muscle 动画、真正的 BlendShape 动画、材质/Renderer/显隐动画，还是只作用在 socket/helper 上的辅助动画。`blendShapeBindingCount` 是兼容旧索引的粗略 SkinnedMeshRenderer 计数，默认能力判断应优先看 `trueBlendShapeBindingCount`。
 

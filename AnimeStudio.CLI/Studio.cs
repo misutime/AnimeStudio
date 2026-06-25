@@ -3523,7 +3523,11 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 }
 
                 var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
-                AttachModelValidationForAnimationGate(savePath, models);
+                if (ApplyModelValidationSummaryToCatalogEntries(savePath, catalogPath, entries, models))
+                {
+                    entries = LoadCatalogEntries(catalogPath);
+                    models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+                }
                 var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
                 ExplicitAnimationLinks structuralLinks;
                 using (ProfileLogger.Measure("library_index_build_animation_links", new Dictionary<string, object>
@@ -3583,7 +3587,11 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             ModelLibraryValidator.Generate(savePath);
 
             var models = entries.Where(x => (string)x["kind"] == "Model").ToList();
-            AttachModelValidationForAnimationGate(savePath, models);
+            if (ApplyModelValidationSummaryToCatalogEntries(savePath, catalogPath, entries, models))
+            {
+                entries = LoadCatalogEntries(catalogPath);
+                models = entries.Where(x => (string)x["kind"] == "Model").ToList();
+            }
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
             var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
             WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
@@ -4015,22 +4023,118 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             }
         }
 
-        private static void AttachModelValidationForAnimationGate(string savePath, IReadOnlyList<JObject> models)
+        private static bool ApplyModelValidationSummaryToCatalogEntries(string savePath, string catalogPath, IReadOnlyList<JObject> entries, IReadOnlyList<JObject> models)
         {
             var validationByOutput = ReadModelValidationByOutputForAnimationGate(savePath);
             if (validationByOutput.Count == 0)
             {
-                return;
+                return false;
             }
 
+            var changed = false;
             foreach (var model in models)
             {
                 var output = NormalizeLibraryOutputForAnimationGate(savePath, JsonText(model, "output"));
                 if (validationByOutput.TryGetValue(output, out var validation))
                 {
-                    model["modelValidation"] = validation.DeepClone();
+                    changed |= SetCatalogValue(model, "modelValidation", validation.DeepClone());
+                    changed |= ApplyModelValidationMaterialSummary(model, validation);
                 }
             }
+
+            if (!changed)
+            {
+                return false;
+            }
+
+            RewriteCatalogEntries(catalogPath, entries);
+            Logger.Info($"Updated asset_catalog.jsonl with model validation summary for {models.Count} model row(s).");
+            return true;
+        }
+
+        private static bool ApplyModelValidationMaterialSummary(JObject model, JObject validation)
+        {
+            var changed = false;
+            var body = validation?["Body"] as JObject;
+            var missingPrimitives = body?["MissingMaterialPrimitives"]?
+                .Values<string>()
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
+            var primitiveCount = JsonLong(body, "PrimitiveCount") ?? 0;
+            var primitivesWithMaterial = JsonLong(body, "PrimitivesWithMaterial") ?? primitiveCount;
+            var primitivesWithBaseColorTexture = JsonLong(body, "PrimitivesWithBaseColorTexture") ?? 0;
+            var missingMaterialCount = missingPrimitives.Length > 0
+                ? missingPrimitives.Length
+                : Math.Max(0, primitiveCount - primitivesWithMaterial);
+
+            changed |= SetCatalogValue(model, "modelValidationStatus", JsonText(validation, "Status"));
+            changed |= SetCatalogValue(model, "modelBodyStatus", JsonText(body, "ModelBodyStatus"));
+            changed |= SetCatalogValue(model, "materialPrimitiveCount", primitiveCount);
+            changed |= SetCatalogValue(model, "materialPrimitivesWithMaterial", primitivesWithMaterial);
+            changed |= SetCatalogValue(model, "materialPrimitivesWithBaseColorTexture", primitivesWithBaseColorTexture);
+            changed |= SetCatalogValue(model, "materialMissingRendererBinding", missingMaterialCount > 0 || CatalogMaterialStatusImpliesMissingRendererBinding(model));
+            changed |= SetCatalogValue(model, "materialMissingRendererPrimitiveCount", missingMaterialCount);
+            changed |= SetCatalogValue(model, "materialMissingRendererPrimitives", new JArray(missingPrimitives.Take(64)));
+            changed |= SetCatalogValue(model, "materialMissingRendererPrimitivesTruncated", missingPrimitives.Length > 64);
+            if (JsonLong(body, "ImageCount") is long imageCount)
+            {
+                changed |= SetCatalogValue(model, "materialImageCount", imageCount);
+            }
+
+            return changed;
+        }
+
+        private static bool CatalogMaterialStatusImpliesMissingRendererBinding(JObject model)
+        {
+            static bool IsMissingStatus(string status)
+            {
+                return string.Equals(status, "missingRendererMaterial", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "needsRendererBinding", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "rendererMaterialUnresolved", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (IsMissingStatus(JsonText(model, "materialStatus")))
+            {
+                return true;
+            }
+
+            var counts = model?["materialStatusCounts"] as JObject;
+            return counts?.Properties().Any(x => IsMissingStatus(x.Name) && x.Value.Value<int>() > 0) == true;
+        }
+
+        private static bool SetCatalogValue(JObject obj, string name, object value)
+        {
+            var token = value switch
+            {
+                null => JValue.CreateNull(),
+                JToken existingToken => existingToken,
+                _ => JToken.FromObject(value),
+            };
+
+            if (JToken.DeepEquals(obj[name], token))
+            {
+                return false;
+            }
+
+            obj[name] = token;
+            return true;
+        }
+
+        private static void RewriteCatalogEntries(string catalogPath, IEnumerable<JObject> entries)
+        {
+            var tempPath = catalogPath + ".validation.tmp";
+            using (var writer = new StreamWriter(tempPath, false, Encoding.UTF8))
+            {
+                foreach (var entry in entries)
+                {
+                    writer.WriteLine(entry.ToString(Newtonsoft.Json.Formatting.None));
+                }
+            }
+
+            File.Copy(tempPath, catalogPath, true);
+            File.Delete(tempPath);
         }
 
         private static Dictionary<string, JObject> ReadModelValidationByOutputForAnimationGate(string savePath)
