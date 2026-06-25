@@ -414,6 +414,8 @@ namespace AnimeStudio.CLI
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
+            var usedBoneCoverageCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices);
+            var usedBoneCoverageWithTrsCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices && x.AllCoveredUsedBoneTransformsExported);
             var sourceSkinAvatarMaxBoneIndex = GetAvatarBoneMaxIndex(parts);
             var sourceSkinAvatarRequiredNodeCount = GetAvatarBoneRequiredNodeCount(parts);
             var selectedTransformNodeRequiredCount = GetSelectedVisualCellTransformNodeRequiredCount(parts, transformNodeTableCandidates);
@@ -566,6 +568,10 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["transformNodeTableUsedBoneCoverageCandidateCount"] = usedBoneCoverageCandidateCount,
+                ["transformNodeTableUsedBoneCoverageWithTrsCandidateCount"] = usedBoneCoverageWithTrsCandidateCount,
+                ["selectedVisualCellUsedBoneCoverageCandidateCount"] = transformNodeTableCandidates.Count(x => x.IsSelectedVisualCell && x.CoversAllUsedBoneIndices),
+                ["selectedVisualCellUsedBoneCoverageWithTrsCandidateCount"] = transformNodeTableCandidates.Count(x => x.IsSelectedVisualCell && x.CoversAllUsedBoneIndices && x.AllCoveredUsedBoneTransformsExported),
                 ["selectedVisualCellTransformNodeTableStatus"] = selectedTransformNodeTableStatus,
                 ["selectedVisualCellTransformNodeTableCandidateCount"] = transformNodeTableCandidates.Count(x => x.IsSelectedVisualCell),
                 ["sourceSkinAvatarMaxBoneIndex"] = sourceSkinAvatarMaxBoneIndex,
@@ -585,7 +591,7 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableRangeCoveringMappedNodeNames"] = new JArray(rangeCoveringMappedNodeNames.Select(x => new JValue(x))),
                 ["transformNodeTableRangeCoveringEvidenceCount"] = rangeCoveringEvidence.Count,
                 ["transformNodeTableRangeCoveringEvidence"] = rangeCoveringEvidence,
-                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；selectedVisualCellTransformNodeTableStatus 会单独说明本次选中 VisualCell 自身是否有节点表。同 SerializedFile 内其它节点表只能诊断，不能作为 skin joint 映射。",
+                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；usedBoneCoverage 只说明实际用到的 boneIndex 是否落在候选表范围内，withTrs 只说明对应 Transform JSON 已导出且可读。同 SerializedFile 内其它节点表只能诊断，不能作为 skin joint 映射。",
                 ["hairDeformDataStatus"] = SummarizeHairDeformDataStatus(hairDeformSummaries),
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
                 ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
@@ -649,6 +655,8 @@ namespace AnimeStudio.CLI
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = (string)report["selectedVisualCellTransformNodeTableStatus"];
+            var usedBoneCoverageCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices);
+            var usedBoneCoverageWithTrsCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices && x.AllCoveredUsedBoneTransformsExported);
             var selectedBoneDriverHintCount = report["selectedVisualCellBoneDriverHintCount"]?.Value<int?>() ?? 0;
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, new List<string>());
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
@@ -822,6 +830,10 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["transformNodeTableUsedBoneCoverageCandidateCount"] = usedBoneCoverageCandidateCount,
+                ["transformNodeTableUsedBoneCoverageWithTrsCandidateCount"] = usedBoneCoverageWithTrsCandidateCount,
+                ["selectedVisualCellUsedBoneCoverageCandidateCount"] = report["selectedVisualCellUsedBoneCoverageCandidateCount"]?.DeepClone(),
+                ["selectedVisualCellUsedBoneCoverageWithTrsCandidateCount"] = report["selectedVisualCellUsedBoneCoverageWithTrsCandidateCount"]?.DeepClone(),
                 ["selectedVisualCellTransformNodeCount"] = report["selectedVisualCellTransformNodeCount"]?.DeepClone(),
                 ["selectedVisualCellTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                 ["selectedVisualCellTransformNodeTableCandidateCount"] = report["selectedVisualCellTransformNodeTableCandidateCount"]?.DeepClone(),
@@ -2326,6 +2338,11 @@ namespace AnimeStudio.CLI
                     ["isSelectedVisualCell"] = first.IsSelectedVisualCell,
                     ["transformNodeCount"] = first.TransformNodeCount,
                     ["requiredNodeCountMax"] = group.Max(x => x.Candidate.RequiredNodeCount),
+                    ["usedBoneIndexCountMax"] = group.Max(x => x.Candidate.UsedBoneIndexCount),
+                    ["coveredUsedBoneIndexCountMax"] = group.Max(x => x.Candidate.CoveredUsedBoneIndexCount),
+                    ["missingUsedBoneIndexCountMin"] = group.Min(x => x.Candidate.MissingUsedBoneIndexCount),
+                    ["coversAllUsedBoneIndices"] = group.Any(x => x.Candidate.CoversAllUsedBoneIndices),
+                    ["allCoveredUsedBoneTransformsExported"] = group.Any(x => x.Candidate.CoversAllUsedBoneIndices && x.Candidate.AllCoveredUsedBoneTransformsExported),
                     ["matchedTopBoneIndexCountMax"] = group.Max(x => x.Candidate.MatchedTopBoneIndexCount),
                     ["missingTopBoneIndexCountMin"] = group.Min(x => x.Candidate.MissingTopBoneIndexCount),
                     ["boneDriverNodeNameMatchCount"] = first.BoneDriverNodeNameMatchCount,
@@ -2537,11 +2554,15 @@ LIMIT 1;";
             }
 
             var file = NormalizeSerializedFileName(serializedFile);
+            var usedRefs = skin.AvatarBoneRefs
+                .Where(x => x.BoneIndex >= 0)
+                .OrderBy(x => x.BoneIndex)
+                .ToArray();
             var topRefs = skin.AvatarTopBoneRefs
                 .Where(x => x.BoneIndex >= 0)
                 .Take(12)
                 .ToArray();
-            if (topRefs.Length == 0)
+            if (usedRefs.Length == 0 && topRefs.Length == 0)
             {
                 yield break;
             }
@@ -2552,6 +2573,16 @@ LIMIT 1;";
             var driverNames = boneDriverNodeNames ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var table in tables.Where(x => string.Equals(x.SerializedFile, file, StringComparison.OrdinalIgnoreCase)))
             {
+                var coveredUsedRefs = usedRefs
+                    .Where(x => x.BoneIndex < table.Nodes.Count)
+                    .ToArray();
+                var exportedCoveredUsedBoneTransformCount = coveredUsedRefs.Count(x =>
+                {
+                    var node = table.Nodes[x.BoneIndex];
+                    return exportedTransformNodes != null
+                        && exportedTransformNodes.TryGetValue(node.TransformPathId, out var exportedTransform)
+                        && exportedTransform.HasLocalTrs;
+                });
                 var mapped = topRefs
                     .Where(x => x.BoneIndex >= 0 && x.BoneIndex < table.Nodes.Count)
                     .Select(x =>
@@ -2563,7 +2594,7 @@ LIMIT 1;";
                     })
                     .Where(x => !string.IsNullOrWhiteSpace(x.GameObjectName))
                     .ToArray();
-                if (mapped.Length == 0)
+                if (mapped.Length == 0 && coveredUsedRefs.Length == 0)
                 {
                     continue;
                 }
@@ -2589,6 +2620,14 @@ LIMIT 1;";
                     MatchedTopBoneIndexCount = mapped.Length,
                     MissingTopBoneIndexCount = topRefs.Length - mapped.Length,
                     MappedTopBoneRefs = mapped,
+                    UsedBoneIndexCount = usedRefs.Length,
+                    CoveredUsedBoneIndexCount = coveredUsedRefs.Length,
+                    MissingUsedBoneIndexCount = Math.Max(0, usedRefs.Length - coveredUsedRefs.Length),
+                    CoversAllUsedBoneIndices = usedRefs.Length > 0 && coveredUsedRefs.Length == usedRefs.Length,
+                    UsedBoneIndexMax = usedRefs.Length == 0 ? null : usedRefs.Max(x => x.BoneIndex),
+                    ExportedCoveredUsedBoneTransformCount = exportedCoveredUsedBoneTransformCount,
+                    MissingExportedCoveredUsedBoneTransformCount = Math.Max(0, coveredUsedRefs.Length - exportedCoveredUsedBoneTransformCount),
+                    AllCoveredUsedBoneTransformsExported = coveredUsedRefs.Length > 0 && exportedCoveredUsedBoneTransformCount == coveredUsedRefs.Length,
                     BoneDriverNodeNameMatchCount = boneDriverMatches.Length,
                     BoneDriverNodeNameMatches = boneDriverMatches,
                 };
@@ -4450,6 +4489,10 @@ LIMIT 1;";
                             : expectedOffset == avatarWeights.Count
                                 ? "continuousCoversWeights"
                                 : "continuousDoesNotCoverAllWeights";
+                    summary.AvatarBoneRefs.AddRange(avatarBoneRefCounts
+                        .Where(x => x.Key >= 0)
+                        .OrderBy(x => x.Key)
+                        .Select(x => new BoneRefCount(x.Key, x.Value)));
                     summary.AvatarTopBoneRefs.AddRange(avatarBoneRefCounts
                         .OrderByDescending(x => x.Value)
                         .ThenBy(x => x.Key)
@@ -5199,6 +5242,14 @@ LIMIT 1;";
             public int MatchedTopBoneIndexCount { get; init; }
             public int MissingTopBoneIndexCount { get; init; }
             public IReadOnlyList<TransformNodeTableCandidateRef> MappedTopBoneRefs { get; init; } = Array.Empty<TransformNodeTableCandidateRef>();
+            public int UsedBoneIndexCount { get; init; }
+            public int CoveredUsedBoneIndexCount { get; init; }
+            public int MissingUsedBoneIndexCount { get; init; }
+            public bool CoversAllUsedBoneIndices { get; init; }
+            public int? UsedBoneIndexMax { get; init; }
+            public int ExportedCoveredUsedBoneTransformCount { get; init; }
+            public int MissingExportedCoveredUsedBoneTransformCount { get; init; }
+            public bool AllCoveredUsedBoneTransformsExported { get; init; }
             public int BoneDriverNodeNameMatchCount { get; init; }
             public IReadOnlyList<string> BoneDriverNodeNameMatches { get; init; } = Array.Empty<string>();
 
@@ -5215,10 +5266,18 @@ LIMIT 1;";
                 ["coversAvatarBoneIndexRange"] = CoversAvatarBoneIndexRange,
                 ["matchedTopBoneIndexCount"] = MatchedTopBoneIndexCount,
                 ["missingTopBoneIndexCount"] = MissingTopBoneIndexCount,
+                ["usedBoneIndexCount"] = UsedBoneIndexCount,
+                ["coveredUsedBoneIndexCount"] = CoveredUsedBoneIndexCount,
+                ["missingUsedBoneIndexCount"] = MissingUsedBoneIndexCount,
+                ["coversAllUsedBoneIndices"] = CoversAllUsedBoneIndices,
+                ["usedBoneIndexMax"] = UsedBoneIndexMax,
+                ["exportedCoveredUsedBoneTransformCount"] = ExportedCoveredUsedBoneTransformCount,
+                ["missingExportedCoveredUsedBoneTransformCount"] = MissingExportedCoveredUsedBoneTransformCount,
+                ["allCoveredUsedBoneTransformsExported"] = AllCoveredUsedBoneTransformsExported,
                 ["boneDriverNodeNameMatchCount"] = BoneDriverNodeNameMatchCount,
                 ["boneDriverNodeNameMatches"] = new JArray((BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
                 ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
-                ["rule"] = "只把 AvatarBoneWeights 的高频 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；boneDriverNodeNameMatchCount 只说明 BoneFollowDriver 所在节点名与该节点表重合，不能单独证明 joint 映射，不能写入 glTF skin。"
+                ["rule"] = "只把 AvatarBoneWeights 的 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；usedBoneIndex 覆盖只说明实际权重索引落在候选表内，allCoveredUsedBoneTransformsExported 只说明候选 Transform JSON 可读，仍不能单独证明 joint 映射，不能写入 glTF skin。"
             };
         }
 
@@ -5440,6 +5499,7 @@ LIMIT 1;";
             public int AvatarMaxInfluenceCount { get; set; }
             public int AvatarInvalidRangeCount { get; set; }
             public int BindPoseCount { get; set; }
+            public List<BoneRefCount> AvatarBoneRefs { get; } = new();
             public List<BoneRefCount> AvatarTopBoneRefs { get; } = new();
             public List<TransformNodeTableCandidate> TransformNodeTableCandidates { get; } = new();
             public List<string> LayoutWarnings { get; } = new();
@@ -5481,10 +5541,14 @@ LIMIT 1;";
                     ["avatarVerticesWithNegativeBoneRefCount"] = AvatarVerticesWithNegativeBoneRefCount,
                     ["avatarMaxInfluenceCount"] = AvatarMaxInfluenceCount,
                     ["avatarInvalidRangeCount"] = AvatarInvalidRangeCount,
+                    ["avatarBoneRefCount"] = AvatarBoneRefs.Count,
+                    ["avatarBoneRefs"] = new JArray(AvatarBoneRefs.Select(x => x.ToJson())),
                     ["avatarTopBoneRefs"] = new JArray(AvatarTopBoneRefs.Select(x => x.ToJson())),
                     ["transformNodeTableCandidateCount"] = TransformNodeTableCandidates.Count,
                     ["transformNodeTableCandidates"] = new JArray(TransformNodeTableCandidates
-                        .OrderByDescending(x => x.MatchedTopBoneIndexCount)
+                        .OrderByDescending(x => x.CoversAllUsedBoneIndices)
+                        .ThenByDescending(x => x.AllCoveredUsedBoneTransformsExported)
+                        .ThenByDescending(x => x.MatchedTopBoneIndexCount)
                         .ThenByDescending(x => x.TransformNodeCount)
                         .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
                         .Take(8)
@@ -5492,7 +5556,7 @@ LIMIT 1;";
                     ["bindPoseCount"] = BindPoseCount,
                     ["mappedJointCount"] = 0,
                     ["layoutWarnings"] = new JArray(LayoutWarnings),
-                    ["rule"] = "m_AnimSkinData 的 boneIndex 只先按 m_BindPoses 槽位做自洽检查；m_AvatarBoneWeights 是另一套 avatar boneIndex 证据，缺少确定性 joint 名称/路径映射前不写 glTF skin。"
+                    ["rule"] = "m_AnimSkinData 的 boneIndex 只先按 m_BindPoses 槽位做自洽检查；m_AvatarBoneWeights 是另一套 avatar boneIndex 证据，avatarBoneRefs 只列出实际参与权重的非负 boneIndex，缺少确定性 joint 名称/路径映射前不写 glTF skin。"
                 };
             }
         }
