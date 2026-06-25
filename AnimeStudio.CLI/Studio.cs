@@ -1059,6 +1059,7 @@ namespace AnimeStudio.CLI
             var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
+            models = FilterOptimizedAnimatorMissingAvatarModels(models);
             models.AddRange(staticMeshes);
             models = FilterDeprecatedLibraryAssets(models, "model");
             models = FilterLowValueBrowsableModels(models, sourcePartModels);
@@ -1080,6 +1081,77 @@ namespace AnimeStudio.CLI
             {
                 ExportAssets(savePath, shaders, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
+        }
+
+        private static List<AssetItem> FilterOptimizedAnimatorMissingAvatarModels(List<AssetItem> models)
+        {
+            var kept = new List<AssetItem>(models.Count);
+            var skipped = 0;
+            var samples = new List<string>();
+            foreach (var model in models)
+            {
+                if (!IsOptimizedAnimatorMissingAvatarModel(model))
+                {
+                    kept.Add(model);
+                    continue;
+                }
+
+                skipped++;
+                if (samples.Count < 8)
+                {
+                    samples.Add(model.Text);
+                }
+            }
+
+            if (skipped > 0)
+            {
+                Logger.Warning(
+                    $"Library skipped {skipped} optimized Animator model root(s) without Avatar; these roots cannot restore the Unity transform hierarchy and stay diagnostic only. Samples: {string.Join(", ", samples)}"
+                );
+                ProfileLogger.Event("library_skip_optimized_animator_missing_avatar", new Dictionary<string, object>
+                {
+                    ["skippedCount"] = skipped,
+                    ["samples"] = samples,
+                    ["rule"] = "hasTransformHierarchy=false but Animator.m_Avatar is null. Do not guess bones or Avatar; keep renderer/static mesh children eligible through explicit mesh paths.",
+                });
+            }
+
+            return kept;
+        }
+
+        private static bool IsOptimizedAnimatorMissingAvatarModel(AssetItem model)
+        {
+            return TryGetOptimizedAnimatorAvatarBlockReason(model, out var reason)
+                && reason == "optimizedAnimatorMissingAvatar";
+        }
+
+        private static bool TryGetOptimizedAnimatorAvatarBlockReason(AssetItem model, out string reason)
+        {
+            reason = null;
+            var animator = model?.Asset switch
+            {
+                Animator directAnimator => directAnimator,
+                GameObject gameObject => gameObject.m_Animator,
+                _ => null,
+            };
+            if (animator == null || animator.m_HasTransformHierarchy)
+            {
+                return false;
+            }
+
+            // Unity 优化层级需要 Avatar 才能还原骨骼树。空引用不能硬猜；未解析引用通常说明局部样本没带完整 CAB 依赖。
+            if (animator.m_Avatar == null || animator.m_Avatar.IsNull)
+            {
+                reason = "optimizedAnimatorMissingAvatar";
+                return true;
+            }
+            if (!animator.m_Avatar.TryGet(out _))
+            {
+                reason = "optimizedAnimatorAvatarUnresolved";
+                return true;
+            }
+
+            return false;
         }
 
         private static List<AssetItem> FilterDeprecatedLibraryAssets(List<AssetItem> assets, string label)
@@ -5936,6 +6008,22 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             List<AssetItem> animations)
         {
             Logger.Verbose($"Exporting {asset.TypeString}: {asset.Text}");
+            if (TryGetOptimizedAnimatorAvatarBlockReason(asset, out var avatarBlockReason))
+            {
+                Logger.Warning(
+                    $"Skipping {asset.TypeString}:{asset.Text}: {avatarBlockReason}. Optimized Unity transform hierarchy cannot be restored without a resolved Avatar; keep static mesh children as diagnostics or load the full source dependency set."
+                );
+                ProfileLogger.Event("library_skip_optimized_animator_avatar_block", new Dictionary<string, object>
+                {
+                    ["name"] = asset.Text,
+                    ["type"] = asset.TypeString,
+                    ["reason"] = avatarBlockReason,
+                    ["source"] = asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName,
+                    ["pathId"] = asset.m_PathID,
+                });
+                return new ModelExportResult(asset, exportPath, false, null);
+            }
+
             try
             {
                 var exported = asset.Asset switch
