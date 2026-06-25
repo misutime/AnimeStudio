@@ -21,7 +21,7 @@ namespace AnimeStudio.CLI
         private const int EndfieldVfsInnerBatchMinFileCount = 2048;
         private const int SourceIndexWriteCommitInterval = 10_000;
         private const int SourceIndexMaxLightweightArrayCount = 100_000;
-        private const string SourceRelationFeatures = "assetBundle.preload,assetBundle.containerAsset,assetBundle.containerPreload,resourceManager.container";
+        private const string SourceRelationFeatures = "assetBundle.preload,assetBundle.containerAsset,assetBundle.containerPreload,resourceManager.container,monoBehaviour.script,monoBehaviour.pptr";
         private static readonly TimeSpan SourceIndexHeartbeatInterval = TimeSpan.FromSeconds(30);
 
         public static string WriteAnimationRelationHealthReport(string sourceIndexPath, string outputPath = null, bool requireHealthy = false)
@@ -2580,12 +2580,21 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
         {
             var assetBundleObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='AssetBundle';");
             var resourceManagerObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='ResourceManager';");
+            // MonoBehaviour 字段引用只作为来源诊断，不能直接升级成默认模型/动画绑定。
+            var monoBehaviourObjects = ScalarLong(connection, "SELECT COUNT(*) FROM source_objects WHERE type='MonoBehaviour';");
+            var monoBehaviourPPtrRelations = SourceRelationCount(connection, "monoBehaviour.pptr");
+            var monoBehaviourScriptRelations = SourceRelationCount(connection, "monoBehaviour.script");
+            var monoBehaviourPPtrDistinctEdges = DistinctRelationEdgeCount(connection, "monoBehaviour.pptr");
+            var monoBehaviourPPtrResolvedTargets = SourceRelationDistinctResolvedAnyTargetCount(connection, "monoBehaviour.pptr");
+            var monoBehaviourPPtrMissingTargets = Math.Max(0, monoBehaviourPPtrDistinctEdges - monoBehaviourPPtrResolvedTargets);
             var relationCounts = new JObject
             {
                 ["assetBundle.preload"] = SourceRelationCount(connection, "assetBundle.preload"),
                 ["assetBundle.containerAsset"] = SourceRelationCount(connection, "assetBundle.containerAsset"),
                 ["assetBundle.containerPreload"] = SourceRelationCount(connection, "assetBundle.containerPreload"),
                 ["resourceManager.container"] = SourceRelationCount(connection, "resourceManager.container"),
+                ["monoBehaviour.script"] = monoBehaviourScriptRelations,
+                ["monoBehaviour.pptr"] = monoBehaviourPPtrRelations,
             };
             var assetBundleRelationCount = (long)relationCounts["assetBundle.preload"]
                 + (long)relationCounts["assetBundle.containerAsset"]
@@ -2593,6 +2602,8 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             var resourceManagerRelationCount = (long)relationCounts["resourceManager.container"];
             var missingAssetBundleContainerIndex = assetBundleObjects > 0 && assetBundleRelationCount == 0;
             var missingResourceManagerContainerIndex = resourceManagerObjects > 0 && resourceManagerRelationCount == 0;
+            var missingMonoBehaviourPPtrIndex = monoBehaviourObjects > 0 && monoBehaviourPPtrRelations == 0;
+            var missingMonoBehaviourPPtrTargets = monoBehaviourPPtrDistinctEdges > 0 && monoBehaviourPPtrMissingTargets > 0;
             var issues = new JArray();
             if (missingAssetBundleContainerIndex)
             {
@@ -2602,23 +2613,50 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
             {
                 issues.Add("missingResourceManagerContainerIndex");
             }
+            if (missingMonoBehaviourPPtrIndex)
+            {
+                issues.Add("missingMonoBehaviourPPtrIndex");
+            }
+            if (missingMonoBehaviourPPtrTargets)
+            {
+                issues.Add("missingMonoBehaviourPPtrTargets");
+            }
 
             return new JObject
             {
-                ["status"] = missingAssetBundleContainerIndex || missingResourceManagerContainerIndex ? "warning" : "ok",
+                ["status"] = missingAssetBundleContainerIndex || missingResourceManagerContainerIndex || missingMonoBehaviourPPtrIndex || missingMonoBehaviourPPtrTargets ? "warning" : "ok",
                 ["features"] = SourceRelationFeatures,
                 ["objectCounts"] = new JObject
                 {
                     ["AssetBundle"] = assetBundleObjects,
                     ["ResourceManager"] = resourceManagerObjects,
+                    ["MonoBehaviour"] = monoBehaviourObjects,
                 },
                 ["relationCounts"] = relationCounts,
+                ["monoBehaviourPPtrHealth"] = new JObject
+                {
+                    ["scriptRelations"] = monoBehaviourScriptRelations,
+                    ["pptrRelations"] = monoBehaviourPPtrRelations,
+                    ["distinctEdges"] = monoBehaviourPPtrDistinctEdges,
+                    ["resolvedTargets"] = monoBehaviourPPtrResolvedTargets,
+                    ["missingTargets"] = monoBehaviourPPtrMissingTargets,
+                    ["resolvedTargetCoverage"] = Ratio(monoBehaviourPPtrResolvedTargets, monoBehaviourPPtrDistinctEdges),
+                    ["targetTypes"] = BuildMonoBehaviourPPtrTargetTypeBreakdown(connection),
+                    ["topScripts"] = BuildMonoBehaviourPPtrScriptBreakdown(connection, 24),
+                    ["missingTargetSamples"] = BuildMissingRelationTargetSamples(connection, "monoBehaviour.pptr", null, 16),
+                },
                 ["missingAssetBundleContainerIndex"] = missingAssetBundleContainerIndex,
                 ["missingResourceManagerContainerIndex"] = missingResourceManagerContainerIndex,
+                ["missingMonoBehaviourPPtrIndex"] = missingMonoBehaviourPPtrIndex,
+                ["missingMonoBehaviourPPtrTargets"] = missingMonoBehaviourPPtrTargets,
                 ["issues"] = issues,
                 ["note"] = missingAssetBundleContainerIndex || missingResourceManagerContainerIndex
                     ? "源索引包含 AssetBundle/ResourceManager 对象，但缺少当前工具写入的 container/preload 关系。需要用当前工具重建源索引，才能可靠追踪容器来源、依赖闭包、静态 Mesh 主资源和缺件问题。"
-                    : "源索引包含当前工具可检查的 Unity 容器/preload 关系。它们是来源和依赖证据，不能单独作为模型-动画默认绑定。"
+                    : missingMonoBehaviourPPtrIndex
+                        ? "源索引包含 MonoBehaviour 对象，但缺少脚本字段 PPtr 关系。Naraka 这类游戏可能把脸部、换装、材质或控制器关系藏在脚本配置里；请用当前工具重建源索引后再判断资源闭包。"
+                        : missingMonoBehaviourPPtrTargets
+                            ? "源索引记录了 MonoBehaviour 字段 PPtr，但部分目标未解析到 source_objects。请检查完整源目录/CAB 依赖闭包，避免把缺脸、缺附件或缺配置的模型误判为可用。"
+                            : "源索引包含当前工具可检查的 Unity 容器/preload 和 MonoBehaviour PPtr 关系。它们是来源和依赖证据，不能单独作为模型-动画默认绑定。"
             };
         }
 
@@ -2889,9 +2927,11 @@ LIMIT $limit;";
 
         private static JArray BuildMissingRelationTargetSamples(SqliteConnection connection, string relation, string targetType, int limit)
         {
-            var targetTypeFilter = targetType == "Texture2D"
-                ? "target.type IN ('Texture2D', 'Texture2DArray')"
-                : "target.type = $targetType";
+            var targetTypeFilter = string.IsNullOrWhiteSpace(targetType)
+                ? "1 = 1"
+                : targetType == "Texture2D"
+                    ? "target.type IN ('Texture2D', 'Texture2DArray')"
+                    : "target.type = $targetType";
             using var command = connection.CreateCommand();
             command.CommandText = $@"
 SELECT
@@ -2923,7 +2963,10 @@ GROUP BY r.to_file, r.to_path_id, r.to_type_hint
 ORDER BY relation_count DESC, distinct_referrer_count DESC
 LIMIT $limit;";
             command.Parameters.AddWithValue("$relation", relation);
-            command.Parameters.AddWithValue("$targetType", targetType);
+            if (!string.IsNullOrWhiteSpace(targetType) && targetType != "Texture2D")
+            {
+                command.Parameters.AddWithValue("$targetType", targetType);
+            }
             command.Parameters.AddWithValue("$limit", limit);
             var samples = new JArray();
             using var reader = command.ExecuteReader();
@@ -2955,6 +2998,90 @@ LIMIT $limit;";
             }
 
             return samples;
+        }
+
+        private static JArray BuildMonoBehaviourPPtrTargetTypeBreakdown(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT
+    COALESCE(target.type, '(missing)') AS target_type,
+    COUNT(*) AS relation_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id) AS edge_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS referrer_count
+FROM source_relations r
+LEFT JOIN source_objects target
+  ON target.serialized_file = r.to_file
+ AND target.path_id = r.to_path_id
+WHERE r.relation = 'monoBehaviour.pptr'
+GROUP BY COALESCE(target.type, '(missing)')
+ORDER BY relation_count DESC, edge_count DESC
+LIMIT 64;";
+            var result = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new JObject
+                {
+                    ["targetType"] = ReadString(reader, "target_type"),
+                    ["relationCount"] = ReadInt64(reader, "relation_count"),
+                    ["edgeCount"] = ReadInt64(reader, "edge_count"),
+                    ["referrerCount"] = ReadInt64(reader, "referrer_count"),
+                });
+            }
+
+            return result;
+        }
+
+        private static JArray BuildMonoBehaviourPPtrScriptBreakdown(SqliteConnection connection, int limit)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '') AS script_name,
+    COUNT(*) AS relation_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
+    COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_target_count,
+    MIN(r.from_source) AS sample_source,
+    MIN(r.from_file) AS sample_file,
+    MIN(r.from_path_id) AS sample_path_id,
+    MIN(target.type) AS sample_target_type,
+    MIN(target.name) AS sample_target_name
+FROM source_relations r
+LEFT JOIN source_objects mono
+  ON mono.serialized_file = r.from_file
+ AND mono.path_id = r.from_path_id
+ AND mono.type = 'MonoBehaviour'
+LEFT JOIN source_objects target
+  ON target.serialized_file = r.to_file
+ AND target.path_id = r.to_path_id
+WHERE r.relation = 'monoBehaviour.pptr'
+GROUP BY COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '')
+ORDER BY relation_count DESC, object_count DESC
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$limit", limit);
+            var result = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new JObject
+                {
+                    ["scriptName"] = ReadString(reader, "script_name"),
+                    ["relationCount"] = ReadInt64(reader, "relation_count"),
+                    ["objectCount"] = ReadInt64(reader, "object_count"),
+                    ["distinctTargetCount"] = ReadInt64(reader, "distinct_target_count"),
+                    ["sample"] = new JObject
+                    {
+                        ["source"] = ReadString(reader, "sample_source"),
+                        ["serializedFile"] = ReadString(reader, "sample_file"),
+                        ["pathId"] = ReadInt64(reader, "sample_path_id"),
+                        ["targetType"] = ReadString(reader, "sample_target_type"),
+                        ["targetName"] = ReadString(reader, "sample_target_name"),
+                    },
+                });
+            }
+
+            return result;
         }
 
         private static JObject BuildAvatarOracleHealth(SqliteConnection connection)
@@ -3059,6 +3186,20 @@ JOIN source_objects o
 WHERE r.relation = $relation;";
             command.Parameters.AddWithValue("$relation", relation);
             command.Parameters.AddWithValue("$targetType", targetType);
+            return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
+        }
+
+        private static long SourceRelationDistinctResolvedAnyTargetCount(SqliteConnection connection, string relation)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT r.from_file || ':' || r.from_path_id || '>' || r.to_file || ':' || r.to_path_id)
+FROM source_relations r
+JOIN source_objects o
+  ON o.serialized_file = r.to_file
+ AND o.path_id = r.to_path_id
+WHERE r.relation = $relation;";
+            command.Parameters.AddWithValue("$relation", relation);
             return Convert.ToInt64(command.ExecuteScalar() ?? 0, CultureInfo.InvariantCulture);
         }
 
