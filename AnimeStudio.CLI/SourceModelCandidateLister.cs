@@ -3,6 +3,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -27,6 +28,7 @@ namespace AnimeStudio.CLI
                 : Path.GetFullPath(outputDirectory);
             Directory.CreateDirectory(outputRoot);
 
+            var totalStopwatch = Stopwatch.StartNew();
             SQLitePCL.Batteries_V2.Init();
             using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
             connection.Open();
@@ -35,6 +37,7 @@ namespace AnimeStudio.CLI
 
             var rows = new List<CandidateRow>();
             var selectorQuery = BuildSelectorQuery(selector);
+            Logger.Info($"Source model candidate selector raw='{selector ?? string.Empty}', mode={selectorQuery.Mode}, exactName={selectorQuery.ExactName}, exactPathId={selectorQuery.ExactPathId}.");
             var scanLimit = selectorQuery.IsTargeted
                 // 精确模型诊断要保持轻量。大游戏里同名 GameObject 可能有几百个变体，
                 // 但用户传了具体名字或 PathID 时，不能再按全库扫描的倍率扩张。
@@ -42,32 +45,38 @@ namespace AnimeStudio.CLI
                 : Math.Clamp(limit * 20, 500, 5000);
             if (selectorQuery.IsTargeted)
             {
-                var includePathContainerScan = !HasTargetedObjectMatch(connection, selectorQuery);
+                var hasTargetedObject = HasTargetedObjectMatch(connection, selectorQuery);
+                var includePathContainerScan = !hasTargetedObject;
+                var shouldLoadTargetedContainers = includePathContainerScan || HasTargetedContainerMatch(connection, selectorQuery);
+                Logger.Info($"Source model candidate selector mode={selectorQuery.Mode}, exactName={selectorQuery.ExactName}, exactPathId={selectorQuery.ExactPathId}, includePathContainerScan={includePathContainerScan}, shouldLoadTargetedContainers={shouldLoadTargetedContainers}.");
                 // 显式名字查询用于大源索引诊断。只查可能命中的 Animator/SkinnedRenderer，
                 // 避免为了找一个真实主模型先扫描全库候选。
-                rows.AddRange(LoadTargetedAnimatorCandidates(connection, scanLimit, selectorQuery, availableIndexes));
-                rows.AddRange(LoadTargetedSkinnedRendererCandidates(connection, scanLimit, selectorQuery, availableIndexes));
-                // 很多 Unity 导入模型的可读名字只出现在 AssetBundle container 路径，
-                // 根 GameObject 未必直接挂 Renderer。定向报告要补这一层，避免真实可导出的
-                // prefab/raw fbx 在候选报告里显示为 0。
-                rows.AddRange(LoadTargetedContainerPrimaryCandidates(connection, scanLimit, selectorQuery, includePathContainerScan, availableIndexes));
-                rows.AddRange(LoadTargetedRawContainerMeshCandidates(connection, scanLimit, selectorQuery, includePathContainerScan, availableIndexes));
+                AddStageRows(rows, "targeted_animator", () => LoadTargetedAnimatorCandidates(connection, scanLimit, selectorQuery, availableIndexes));
+                AddStageRows(rows, "targeted_skinned_renderer", () => LoadTargetedSkinnedRendererCandidates(connection, scanLimit, selectorQuery, availableIndexes));
+                if (shouldLoadTargetedContainers)
+                {
+                    // 很多 Unity 导入模型的可读名字只出现在 AssetBundle container 路径，
+                    // 根 GameObject 未必直接挂 Renderer。定向报告要补这一层，避免真实可导出的
+                    // prefab/raw fbx 在候选报告里显示为 0。
+                    AddStageRows(rows, "targeted_container_primary", () => LoadTargetedContainerPrimaryCandidates(connection, scanLimit, selectorQuery, includePathContainerScan, availableIndexes));
+                    AddStageRows(rows, "targeted_raw_container", () => LoadTargetedRawContainerMeshCandidates(connection, scanLimit, selectorQuery, includePathContainerScan, availableIndexes));
+                }
             }
             else
             {
-                rows.AddRange(LoadContainerPrimaryCandidates(connection, scanLimit, availableIndexes));
-                rows.AddRange(LoadRawContainerMeshCandidates(connection, scanLimit));
-                rows.AddRange(LoadTexturedRendererContainerCandidates(connection, scanLimit, availableIndexes));
-                rows.AddRange(LoadAnimatorCandidates(connection, scanLimit, availableIndexes));
-                rows.AddRange(LoadSkinnedRendererCandidates(connection, scanLimit, availableIndexes));
+                AddStageRows(rows, "container_primary", () => LoadContainerPrimaryCandidates(connection, scanLimit, availableIndexes));
+                AddStageRows(rows, "raw_container", () => LoadRawContainerMeshCandidates(connection, scanLimit));
+                AddStageRows(rows, "textured_renderer_container", () => LoadTexturedRendererContainerCandidates(connection, scanLimit, availableIndexes));
+                AddStageRows(rows, "animator", () => LoadAnimatorCandidates(connection, scanLimit, availableIndexes));
+                AddStageRows(rows, "skinned_renderer", () => LoadSkinnedRendererCandidates(connection, scanLimit, availableIndexes));
                 // 静态 Renderer 全库 join 比角色/prefab 线索重，只有显式打开静态模型扩展时才扫描。
                 // 这样既能找场景/道具第一阶段样本，又不会让默认角色诊断变慢。
                 if (includeStaticRendererCandidates)
                 {
-                    rows.AddRange(LoadStaticRendererCandidates(connection, scanLimit, availableIndexes));
+                    AddStageRows(rows, "static_renderer", () => LoadStaticRendererCandidates(connection, scanLimit, availableIndexes));
                 }
             }
-            rows = FillContainerPaths(connection, rows, availableIndexes);
+            rows = RunStage("fill_container_paths", () => FillContainerPaths(connection, rows, availableIndexes));
 
             var filtered = rows
                 .Where(x => MatchesSelector(selector, x))
@@ -131,6 +140,7 @@ namespace AnimeStudio.CLI
             Logger.Info($"Source model candidate report: {jsonPath}");
             Logger.Info($"Source model candidate CSV: {csvPath}");
             Logger.Info($"Usable model-smoke candidates without source excludeHint: {usableForModelSmokeCount}/{filtered.Count}");
+            Logger.Info($"Source model candidate listing finished in {totalStopwatch.Elapsed.TotalSeconds:F2}s.");
             if (usableForModelSmokeCount == 0)
             {
                 Logger.Warning("No listed source candidate is ready for model smoke. Keep these samples as diagnostics; do not use them as animation smoke evidence.");
@@ -142,6 +152,23 @@ namespace AnimeStudio.CLI
             }
 
             return jsonPath;
+        }
+
+        private static void AddStageRows(List<CandidateRow> rows, string stageName, Func<List<CandidateRow>> load)
+        {
+            var loaded = RunStage(stageName, load);
+            rows.AddRange(loaded);
+        }
+
+        private static T RunStage<T>(string stageName, Func<T> load)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var result = load();
+            var count = result is ICollection<CandidateRow> candidates
+                ? candidates.Count.ToString(CultureInfo.InvariantCulture)
+                : "-";
+            Logger.Info($"Source model candidate stage {stageName} finished in {stopwatch.Elapsed.TotalSeconds:F2}s, rows={count}.");
+            return result;
         }
 
         private static HashSet<string> LoadAvailableIndexNames(SqliteConnection connection)
@@ -207,6 +234,16 @@ namespace AnimeStudio.CLI
             }
 
             return sql;
+        }
+
+        private static string BuildTargetObjectFilter(string alias, SelectorQuery selectorQuery)
+        {
+            var prefix = string.IsNullOrWhiteSpace(alias) ? string.Empty : alias + ".";
+            // 定向查询必须让 SQLite 看到单一索引条件。参数化 OR 在 Naraka 这类大库上
+            // 容易退化成全表扫描，导致一个精确名字也要跑很久。
+            return selectorQuery.ExactPathId != 0
+                ? prefix + "path_id = $exactPathId"
+                : prefix + "name = $exactName";
         }
 
         private static List<CandidateRow> LoadAnimatorCandidates(SqliteConnection connection, int limit, HashSet<string> availableIndexes)
@@ -279,8 +316,7 @@ WITH matched_go AS (
     SELECT go.name, go.source_path, go.serialized_file, go.path_id
     FROM source_objects go
     WHERE go.type = 'GameObject'
-      AND (($exactPathId != 0 AND go.path_id = $exactPathId)
-           OR ($exactPathId = 0 AND go.name = $exactName))
+      AND __GO_FILTER__
     LIMIT $limit
 )
 SELECT go.name, go.source_path, go.serialized_file, go.path_id,
@@ -309,6 +345,7 @@ GROUP BY go.serialized_file, go.path_id
 HAVING avatar_count > 0 OR controller_count > 0
 ORDER BY controller_count DESC, avatar_count DESC, go.name COLLATE NOCASE
 LIMIT $limit;";
+            command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
             command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
             command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
@@ -469,10 +506,29 @@ LIMIT $limit;";
             using var command = connection.CreateCommand();
             command.CommandText = @"
 SELECT 1
-FROM source_objects
-WHERE (($exactPathId != 0 AND path_id = $exactPathId)
-       OR ($exactPathId = 0 AND name = $exactName))
+FROM source_objects obj
+WHERE __OBJ_FILTER__
 LIMIT 1;";
+            command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
+            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
+            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+            return command.ExecuteScalar() != null;
+        }
+
+        private static bool HasTargetedContainerMatch(SqliteConnection connection, SelectorQuery selectorQuery)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT 1
+FROM source_objects obj
+JOIN source_relations rel INDEXED BY idx_source_relations_to
+  ON rel.to_file = obj.serialized_file
+ AND rel.to_path_id = obj.path_id
+ AND rel.relation IN ('assetBundle.containerAsset', 'assetBundle.containerPreload', 'resourceManager.container')
+WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') <> ''
+  AND __OBJ_FILTER__
+LIMIT 1;";
+            command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
             command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
             command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
             return command.ExecuteScalar() != null;
@@ -480,151 +536,212 @@ LIMIT 1;";
 
         private static List<CandidateRow> LoadTargetedContainerPrimaryCandidates(SqliteConnection connection, int limit, SelectorQuery selectorQuery, bool includePathContainerScan, HashSet<string> availableIndexes)
         {
+            var result = new List<CandidateRow>();
+            var containers = LoadTargetedContainerPaths(connection, selectorQuery, includePathContainerScan, Math.Max(limit * 4, 20), availableIndexes);
+            foreach (var containerPath in containers)
+            {
+                var counts = LoadContainerObjectCounts(connection, containerPath, availableIndexes);
+                if (counts.RendererCount <= 0 && counts.AnimatorCount <= 0 && counts.MeshCount <= 0)
+                {
+                    continue;
+                }
+
+                var materials = LoadContainerMaterialCounts(connection, containerPath, availableIndexes);
+                foreach (var root in LoadContainerRoots(connection, containerPath, availableIndexes))
+                {
+                    result.Add(new CandidateRow(
+                        "ContainerPrimaryModel",
+                        root.Name,
+                        root.SourcePath,
+                        root.SerializedFile,
+                        root.PathId,
+                        containerPath,
+                        counts.AnimatorCount,
+                        counts.RendererCount,
+                        counts.MeshCount,
+                        materials.MaterialCount,
+                        materials.ResolvedMaterialCount,
+                        materials.TexturedMaterialCount,
+                        materials.MaterialTextureRefCount,
+                        counts.AvatarCount,
+                        counts.ControllerCount,
+                        0,
+                        counts.OptimizedAnimatorWithoutAvatarCount,
+                        string.Empty,
+                        string.Empty,
+                        0));
+                }
+            }
+
+            return result
+                .OrderByDescending(x => x.RendererCount)
+                .ThenByDescending(x => x.MeshCount)
+                .ThenByDescending(x => x.AnimatorCount)
+                .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(limit)
+                .ToList();
+        }
+
+        private static List<string> LoadTargetedContainerPaths(SqliteConnection connection, SelectorQuery selectorQuery, bool includePathContainerScan, int limit, HashSet<string> availableIndexes)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = @"
+SELECT DISTINCT json_extract(rel.raw_json, '$.details.container') AS container_path
+FROM source_objects obj
+JOIN source_relations rel INDEXED BY idx_source_relations_to
+  ON rel.to_file = obj.serialized_file
+ AND rel.to_path_id = obj.path_id
+ AND rel.relation IN ('assetBundle.containerAsset', 'assetBundle.containerPreload', 'resourceManager.container')
+WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') <> ''
+  AND __OBJ_FILTER__
+LIMIT $limit;";
+                command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
+                command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+                command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
+                command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
+                command.Parameters.AddWithValue("$limit", limit);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var containerPath = ReadString(reader, 0);
+                    if (!string.IsNullOrWhiteSpace(containerPath))
+                    {
+                        result.Add(containerPath);
+                    }
+                }
+            }
+
+            if (includePathContainerScan && !string.IsNullOrWhiteSpace(selectorQuery.ExactName))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT DISTINCT json_extract(rel.raw_json, '$.details.container') AS container_path
+FROM source_relations rel INDEXED BY idx_source_relations_relation
+WHERE rel.relation IN ('assetBundle.containerAsset', 'assetBundle.containerPreload', 'resourceManager.container')
+  AND COALESCE(json_extract(rel.raw_json, '$.details.container'), '') LIKE '%' || $exactName || '%'
+LIMIT $limit;";
+                command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+                command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
+                command.Parameters.AddWithValue("$limit", limit);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var containerPath = ReadString(reader, 0);
+                    if (!string.IsNullOrWhiteSpace(containerPath))
+                    {
+                        result.Add(containerPath);
+                    }
+                }
+            }
+
+            return result.Take(limit).ToList();
+        }
+
+        private static List<ContainerRootRow> LoadContainerRoots(SqliteConnection connection, string containerPath, HashSet<string> availableIndexes)
+        {
             using var command = connection.CreateCommand();
             command.CommandText = @"
-WITH matched_containers AS (
-    SELECT DISTINCT json_extract(rel.raw_json, '$.details.container') AS container_path
-    FROM source_objects obj
-    JOIN source_relations rel INDEXED BY idx_source_relations_to
-      ON rel.to_file = obj.serialized_file
-     AND rel.to_path_id = obj.path_id
-     AND rel.relation IN ('assetBundle.containerAsset', 'assetBundle.containerPreload', 'resourceManager.container')
-    WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') <> ''
-      AND (($exactPathId != 0 AND obj.path_id = $exactPathId)
-           OR ($exactPathId = 0 AND obj.name = $exactName))
-    LIMIT $containerLimit
-),
-__PATH_CONTAINER_CTE__,
-selected_containers AS (
-    SELECT container_path FROM matched_containers
-    UNION
-    SELECT container_path FROM path_containers
-),
-container_roots AS (
-    SELECT DISTINCT
-           json_extract(rootRel.raw_json, '$.details.container') AS container_path,
-           go.name,
-           go.source_path,
-           go.serialized_file,
-           go.path_id
-    FROM selected_containers selected
-    JOIN source_relations rootRel INDEXED BY idx_source_relations_container_relation
-      ON rootRel.relation IN ('assetBundle.containerAsset', 'resourceManager.container')
-     AND json_extract(rootRel.raw_json, '$.details.container') = selected.container_path
-    JOIN source_objects go
-      ON go.serialized_file = rootRel.to_file
-     AND go.path_id = rootRel.to_path_id
-    WHERE go.type = 'GameObject'
-),
-preload_counts AS (
-    SELECT selected.container_path,
-           COUNT(DISTINCT CASE WHEN obj.type = 'Animator' THEN obj.serialized_file || ':' || obj.path_id END) AS animator_count,
-           COUNT(DISTINCT CASE
-             WHEN obj.type = 'Animator'
-              AND COALESCE(json_extract(obj.raw_json, '$.animator.hasTransformHierarchy'), 1) = 0
-              AND COALESCE(json_extract(obj.raw_json, '$.animator.avatar.isNull'), 1) = 1
-             THEN obj.serialized_file || ':' || obj.path_id END) AS optimized_animator_without_avatar_count,
-           COUNT(DISTINCT CASE WHEN obj.type = 'SkinnedMeshRenderer' THEN obj.serialized_file || ':' || obj.path_id END) AS renderer_count,
-           COUNT(DISTINCT CASE WHEN obj.type = 'Mesh' THEN obj.serialized_file || ':' || obj.path_id END) AS mesh_count,
-           COUNT(DISTINCT CASE WHEN obj.type = 'Avatar' THEN obj.serialized_file || ':' || obj.path_id END) AS avatar_count,
-           COUNT(DISTINCT CASE WHEN obj.type = 'AnimatorController' THEN obj.serialized_file || ':' || obj.path_id END) AS controller_count
-    FROM selected_containers selected
-    JOIN source_relations preload INDEXED BY idx_source_relations_container_relation
-      ON preload.relation = 'assetBundle.containerPreload'
-     AND json_extract(preload.raw_json, '$.details.container') = selected.container_path
-    LEFT JOIN source_objects obj
-      ON obj.serialized_file = preload.to_file
-     AND obj.path_id = preload.to_path_id
-    GROUP BY selected.container_path
-),
-renderer_material_counts AS (
-    SELECT selected.container_path,
-           COUNT(DISTINCT material.to_file || ':' || material.to_path_id) AS material_count,
-           COUNT(DISTINCT resolvedMaterial.serialized_file || ':' || resolvedMaterial.path_id) AS resolved_material_count,
-           COUNT(DISTINCT CASE
-             WHEN textureRel.to_path_id IS NOT NULL
-             THEN resolvedMaterial.serialized_file || ':' || resolvedMaterial.path_id END) AS textured_material_count,
-           COUNT(DISTINCT CASE
-             WHEN textureRel.to_path_id IS NOT NULL
-             THEN textureRel.to_file || ':' || textureRel.to_path_id END) AS material_texture_ref_count
-    FROM selected_containers selected
-    JOIN source_relations preload INDEXED BY idx_source_relations_container_relation
-      ON preload.relation = 'assetBundle.containerPreload'
-     AND json_extract(preload.raw_json, '$.details.container') = selected.container_path
-    JOIN source_objects renderer
-      ON renderer.serialized_file = preload.to_file
-     AND renderer.path_id = preload.to_path_id
-     AND renderer.type = 'SkinnedMeshRenderer'
-    LEFT JOIN source_relations material INDEXED BY idx_source_relations_from
-      ON material.from_file = renderer.serialized_file
-     AND material.from_path_id = renderer.path_id
-     AND material.relation = 'renderer.material'
-    LEFT JOIN source_objects resolvedMaterial
-      ON resolvedMaterial.serialized_file = material.to_file
-     AND resolvedMaterial.path_id = material.to_path_id
-     AND resolvedMaterial.type = 'Material'
-    LEFT JOIN source_relations textureRel INDEXED BY idx_source_relations_from
-      ON textureRel.from_file = resolvedMaterial.serialized_file
-     AND textureRel.from_path_id = resolvedMaterial.path_id
-     AND textureRel.relation = 'material.texture'
-    GROUP BY selected.container_path
-)
-SELECT root.name, root.source_path, root.serialized_file, root.path_id, root.container_path,
-       COALESCE(counts.animator_count, 0) AS animator_count,
-       COALESCE(counts.renderer_count, 0) AS renderer_count,
-       COALESCE(counts.mesh_count, 0) AS mesh_count,
-       COALESCE(materials.material_count, 0) AS material_count,
-       COALESCE(materials.resolved_material_count, 0) AS resolved_material_count,
-       COALESCE(materials.textured_material_count, 0) AS textured_material_count,
-       COALESCE(materials.material_texture_ref_count, 0) AS material_texture_ref_count,
-       COALESCE(counts.avatar_count, 0) AS avatar_count,
-       COALESCE(counts.controller_count, 0) AS controller_count,
-       COALESCE(counts.optimized_animator_without_avatar_count, 0) AS optimized_animator_without_avatar_count
-FROM container_roots root
-LEFT JOIN preload_counts counts
-  ON counts.container_path = root.container_path
-LEFT JOIN renderer_material_counts materials
-  ON materials.container_path = root.container_path
-WHERE COALESCE(counts.renderer_count, 0) > 0
-   OR COALESCE(counts.animator_count, 0) > 0
-   OR COALESCE(counts.mesh_count, 0) > 0
-ORDER BY counts.renderer_count DESC, counts.mesh_count DESC, counts.animator_count DESC, root.name COLLATE NOCASE
-LIMIT $limit;";
-            command.CommandText = command.CommandText.Replace("__PATH_CONTAINER_CTE__", BuildPathContainerCte(includePathContainerScan), StringComparison.Ordinal);
+SELECT DISTINCT go.name, go.source_path, go.serialized_file, go.path_id
+FROM source_relations rootRel INDEXED BY idx_source_relations_container_relation
+JOIN source_objects go
+  ON go.serialized_file = rootRel.to_file
+ AND go.path_id = rootRel.to_path_id
+WHERE rootRel.relation IN ('assetBundle.containerAsset', 'resourceManager.container')
+  AND json_extract(rootRel.raw_json, '$.details.container') = $container
+  AND go.type = 'GameObject';";
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
-            command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
-            command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
-            command.Parameters.AddWithValue("$includePathContainers", includePathContainerScan ? 1 : 0);
-            command.Parameters.AddWithValue("$containerLimit", Math.Max(limit * 4, 20));
-            command.Parameters.AddWithValue("$limit", limit);
-            var result = new List<CandidateRow>();
+            command.Parameters.AddWithValue("$container", containerPath ?? string.Empty);
+            var result = new List<ContainerRootRow>();
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                result.Add(new CandidateRow(
-                    "ContainerPrimaryModel",
+                result.Add(new ContainerRootRow(
                     ReadString(reader, 0),
                     ReadString(reader, 1),
                     ReadString(reader, 2),
-                    ReadLong(reader, 3),
-                    ReadString(reader, 4),
-                    ReadLong(reader, 5),
-                    ReadLong(reader, 6),
-                    ReadLong(reader, 7),
-                    ReadLong(reader, 8),
-                    ReadLong(reader, 9),
-                    ReadLong(reader, 10),
-                    ReadLong(reader, 11),
-                    ReadLong(reader, 12),
-                    ReadLong(reader, 13),
-                    0,
-                    ReadLong(reader, 14),
-                    string.Empty,
-                    string.Empty,
-                    0));
+                    ReadLong(reader, 3)));
             }
 
             return result;
+        }
+
+        private static ContainerObjectCounts LoadContainerObjectCounts(SqliteConnection connection, string containerPath, HashSet<string> availableIndexes)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT CASE WHEN obj.type = 'Animator' THEN obj.serialized_file || ':' || obj.path_id END) AS animator_count,
+       COUNT(DISTINCT CASE
+         WHEN obj.type = 'Animator'
+          AND COALESCE(json_extract(obj.raw_json, '$.animator.hasTransformHierarchy'), 1) = 0
+          AND COALESCE(json_extract(obj.raw_json, '$.animator.avatar.isNull'), 1) = 1
+         THEN obj.serialized_file || ':' || obj.path_id END) AS optimized_animator_without_avatar_count,
+       COUNT(DISTINCT CASE WHEN obj.type = 'SkinnedMeshRenderer' THEN obj.serialized_file || ':' || obj.path_id END) AS renderer_count,
+       COUNT(DISTINCT CASE WHEN obj.type = 'Mesh' THEN obj.serialized_file || ':' || obj.path_id END) AS mesh_count,
+       COUNT(DISTINCT CASE WHEN obj.type = 'Avatar' THEN obj.serialized_file || ':' || obj.path_id END) AS avatar_count,
+       COUNT(DISTINCT CASE WHEN obj.type = 'AnimatorController' THEN obj.serialized_file || ':' || obj.path_id END) AS controller_count
+FROM source_relations preload INDEXED BY idx_source_relations_container_relation
+LEFT JOIN source_objects obj
+  ON obj.serialized_file = preload.to_file
+ AND obj.path_id = preload.to_path_id
+WHERE preload.relation = 'assetBundle.containerPreload'
+  AND json_extract(preload.raw_json, '$.details.container') = $container;";
+            command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+            command.Parameters.AddWithValue("$container", containerPath ?? string.Empty);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new ContainerObjectCounts(
+                    ReadLong(reader, 0),
+                    ReadLong(reader, 1),
+                    ReadLong(reader, 2),
+                    ReadLong(reader, 3),
+                    ReadLong(reader, 4),
+                    ReadLong(reader, 5))
+                : new ContainerObjectCounts(0, 0, 0, 0, 0, 0);
+        }
+
+        private static ContainerMaterialCounts LoadContainerMaterialCounts(SqliteConnection connection, string containerPath, HashSet<string> availableIndexes)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT COUNT(DISTINCT material.to_file || ':' || material.to_path_id) AS material_count,
+       COUNT(DISTINCT resolvedMaterial.serialized_file || ':' || resolvedMaterial.path_id) AS resolved_material_count,
+       COUNT(DISTINCT CASE
+         WHEN textureRel.to_path_id IS NOT NULL
+         THEN resolvedMaterial.serialized_file || ':' || resolvedMaterial.path_id END) AS textured_material_count,
+       COUNT(DISTINCT CASE
+         WHEN textureRel.to_path_id IS NOT NULL
+         THEN textureRel.to_file || ':' || textureRel.to_path_id END) AS material_texture_ref_count
+FROM source_relations preload INDEXED BY idx_source_relations_container_relation
+JOIN source_objects renderer
+  ON renderer.serialized_file = preload.to_file
+ AND renderer.path_id = preload.to_path_id
+ AND renderer.type = 'SkinnedMeshRenderer'
+LEFT JOIN source_relations material INDEXED BY idx_source_relations_from
+  ON material.from_file = renderer.serialized_file
+ AND material.from_path_id = renderer.path_id
+ AND material.relation = 'renderer.material'
+LEFT JOIN source_objects resolvedMaterial
+  ON resolvedMaterial.serialized_file = material.to_file
+ AND resolvedMaterial.path_id = material.to_path_id
+ AND resolvedMaterial.type = 'Material'
+LEFT JOIN source_relations textureRel INDEXED BY idx_source_relations_from
+  ON textureRel.from_file = resolvedMaterial.serialized_file
+ AND textureRel.from_path_id = resolvedMaterial.path_id
+ AND textureRel.relation = 'material.texture'
+WHERE preload.relation = 'assetBundle.containerPreload'
+  AND json_extract(preload.raw_json, '$.details.container') = $container;";
+            command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
+            command.Parameters.AddWithValue("$container", containerPath ?? string.Empty);
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new ContainerMaterialCounts(
+                    ReadLong(reader, 0),
+                    ReadLong(reader, 1),
+                    ReadLong(reader, 2),
+                    ReadLong(reader, 3))
+                : new ContainerMaterialCounts(0, 0, 0, 0);
         }
 
         private static string BuildPathContainerCte(bool includePathContainerScan)
@@ -729,8 +846,7 @@ WITH matched_containers AS (
      AND rel.to_path_id = obj.path_id
      AND rel.relation IN ('assetBundle.containerAsset', 'assetBundle.containerPreload', 'resourceManager.container')
     WHERE COALESCE(json_extract(rel.raw_json, '$.details.container'), '') <> ''
-      AND (($exactPathId != 0 AND obj.path_id = $exactPathId)
-           OR ($exactPathId = 0 AND obj.name = $exactName))
+      AND __OBJ_FILTER__
     LIMIT $containerLimit
 ),
 __PATH_CONTAINER_CTE__,
@@ -779,6 +895,7 @@ WHERE mesh_count > 0
 ORDER BY avatar_count DESC, mesh_count DESC, container_path COLLATE NOCASE
 LIMIT $limit;";
             command.CommandText = command.CommandText.Replace("__PATH_CONTAINER_CTE__", BuildPathContainerCte(includePathContainerScan), StringComparison.Ordinal);
+            command.CommandText = command.CommandText.Replace("__OBJ_FILTER__", BuildTargetObjectFilter("obj", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
             command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
             command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
@@ -1017,8 +1134,7 @@ WITH matched_go AS (
     SELECT go.name, go.source_path, go.serialized_file, go.path_id
     FROM source_objects go
     WHERE go.type = 'GameObject'
-      AND (($exactPathId != 0 AND go.path_id = $exactPathId)
-           OR ($exactPathId = 0 AND go.name = $exactName))
+      AND __GO_FILTER__
     LIMIT $limit
 )
 SELECT go.name, go.source_path, go.serialized_file, go.path_id,
@@ -1067,6 +1183,7 @@ GROUP BY go.serialized_file, go.path_id
 HAVING mesh_count > 0
 ORDER BY material_count DESC, renderer_count DESC, go.name COLLATE NOCASE
 LIMIT $limit;";
+            command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
             command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
             command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
@@ -1109,8 +1226,7 @@ WITH RECURSIVE matched_go AS (
     SELECT go.name, go.source_path, go.serialized_file, go.path_id
     FROM source_objects go
     WHERE go.type = 'GameObject'
-      AND (($exactPathId != 0 AND go.path_id = $exactPathId)
-           OR ($exactPathId = 0 AND go.name = $exactName))
+      AND __GO_FILTER__
     LIMIT $rootLimit
 ),
 root_transform AS (
@@ -1214,6 +1330,7 @@ GROUP BY child_go.root_file, child_go.root_path_id
 HAVING mesh_count > 0
 ORDER BY material_count DESC, renderer_count DESC, child_go.root_name COLLATE NOCASE
 LIMIT $limit;";
+            command.CommandText = command.CommandText.Replace("__GO_FILTER__", BuildTargetObjectFilter("go", selectorQuery), StringComparison.Ordinal);
             command.CommandText = ApplyOptionalIndexHints(command.CommandText, availableIndexes);
             command.Parameters.AddWithValue("$exactName", selectorQuery.ExactName ?? string.Empty);
             command.Parameters.AddWithValue("$exactPathId", selectorQuery.ExactPathId);
@@ -1626,6 +1743,12 @@ WHERE to_file = $file
                 return new SelectorQuery(true, "targeted_exact_path_id", trimmed, string.Empty, exactPathId);
             }
 
+            var anchoredLiteral = TryGetAnchoredLiteralName(trimmed);
+            if (!string.IsNullOrWhiteSpace(anchoredLiteral))
+            {
+                return new SelectorQuery(true, "targeted_anchored_exact_name", anchoredLiteral, anchoredLiteral, 0);
+            }
+
             var likeToken = ExtractLongestLiteralToken(selector);
             if (likeToken.Length < 4)
             {
@@ -1638,6 +1761,22 @@ WHERE to_file = $file
             return simpleLiteral
                 ? new SelectorQuery(true, "targeted_exact_name", likeToken, trimmed, 0)
                 : new SelectorQuery(false, "broad_regex", string.Empty, string.Empty, 0);
+        }
+
+        private static string TryGetAnchoredLiteralName(string selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector)
+                || selector.Length < 3
+                || selector[0] != '^'
+                || selector[^1] != '$')
+            {
+                return string.Empty;
+            }
+
+            var literal = selector[1..^1];
+            return Regex.IsMatch(literal, @"^[A-Za-z0-9_.-]+$")
+                ? literal
+                : string.Empty;
         }
 
         private static string ExtractLongestLiteralToken(string selector)
@@ -1763,6 +1902,26 @@ WHERE to_file = $file
             string GameObjectSourcePath);
 
         private sealed record StaticRendererMaterialStats(
+            long MaterialCount,
+            long ResolvedMaterialCount,
+            long TexturedMaterialCount,
+            long MaterialTextureRefCount);
+
+        private sealed record ContainerRootRow(
+            string Name,
+            string SourcePath,
+            string SerializedFile,
+            long PathId);
+
+        private sealed record ContainerObjectCounts(
+            long AnimatorCount,
+            long OptimizedAnimatorWithoutAvatarCount,
+            long RendererCount,
+            long MeshCount,
+            long AvatarCount,
+            long ControllerCount);
+
+        private sealed record ContainerMaterialCounts(
             long MaterialCount,
             long ResolvedMaterialCount,
             long TexturedMaterialCount,
