@@ -768,6 +768,7 @@ namespace AnimeStudio
                             ClassIDType.GameObject when ClassIDType.GameObject.CanParse() => new GameObject(objectReader),
                             ClassIDType.IndexObject when ClassIDType.IndexObject.CanParse() => new IndexObject(objectReader),
                             ClassIDType.Material when ClassIDType.Material.CanParse() => new Material(objectReader),
+                            ClassIDType.LODGroup when ClassIDType.LODGroup.CanParse() => new LODGroup(objectReader),
                             ClassIDType.Mesh when ClassIDType.Mesh.CanParse() => new Mesh(objectReader),
                             ClassIDType.MeshFilter when ClassIDType.MeshFilter.CanParse() => new MeshFilter(objectReader),
                             ClassIDType.MeshRenderer when ClassIDType.MeshRenderer.CanParse() => new MeshRenderer(objectReader),
@@ -946,6 +947,10 @@ namespace AnimeStudio
                                     case SkinnedMeshRenderer m_SkinnedMeshRenderer:
                                         Logger.Verbose($"Fetched SkinnedMeshRenderer component with {m_SkinnedMeshRenderer.m_PathID} in file {m_SkinnedMeshRenderer.assetsFile.fileName}, assigning to GameObject components...");
                                         m_GameObject.m_SkinnedMeshRenderer = m_SkinnedMeshRenderer;
+                                            break;
+                                    case LODGroup m_LODGroup:
+                                        Logger.Verbose($"Fetched LODGroup component with {m_LODGroup.m_PathID} in file {m_LODGroup.assetsFile.fileName}, assigning to GameObject components...");
+                                        m_GameObject.m_LODGroup = m_LODGroup;
                                             break;
                                     case Animator m_Animator:
                                         Logger.Verbose($"Fetched Animator component with {m_Animator.m_PathID} in file {m_Animator.assetsFile.fileName}, assigning to GameObject components...");

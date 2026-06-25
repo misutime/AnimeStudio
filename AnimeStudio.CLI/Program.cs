@@ -3506,6 +3506,7 @@ WHERE from_file=$cab
             TypeFlags.SetType(ClassIDType.MeshFilter, true, false);
             TypeFlags.SetType(ClassIDType.MeshRenderer, true, false);
             TypeFlags.SetType(ClassIDType.SkinnedMeshRenderer, true, false);
+            TypeFlags.SetType(ClassIDType.LODGroup, true, false);
             TypeFlags.SetType(ClassIDType.Mesh, true, workMode == WorkMode.Library && Studio.IncludeStaticMeshes);
             TypeFlags.SetType(ClassIDType.Material, true, false);
             TypeFlags.SetType(ClassIDType.Texture2D, true, workMode == WorkMode.Library);
@@ -3555,6 +3556,7 @@ WHERE from_file=$cab
                 ClassIDType.Avatar,
                 ClassIDType.GameObject,
                 ClassIDType.IndexObject,
+                ClassIDType.LODGroup,
                 ClassIDType.Material,
                 ClassIDType.Mesh,
                 ClassIDType.MeshFilter,

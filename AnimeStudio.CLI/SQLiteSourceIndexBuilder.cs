@@ -939,6 +939,15 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         ["materialSlotCount"] = renderer.m_Materials?.Count ?? 0,
                     };
                     break;
+                case LODGroup lodGroup:
+                    raw["lodGroup"] = new JObject
+                    {
+                        ["lodCount"] = lodGroup.m_LODs?.Count ?? 0,
+                        ["rendererCount"] = lodGroup.m_LODs?.Sum(x => x.Renderers?.Count ?? 0) ?? 0,
+                        ["lodRendererCounts"] = new JArray((lodGroup.m_LODs ?? new List<LODLevel>())
+                            .Select(x => x.Renderers?.Count ?? 0)),
+                    };
+                    break;
                 case MonoScript monoScript:
                     raw["monoScript"] = new JObject
                     {
@@ -1167,6 +1176,21 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     {
                         scriptName = monoBehaviour.m_Script.Name,
                     });
+                    break;
+                case LODGroup lodGroup:
+                    WriteComponentGameObject(connection, transaction, lodGroup, counts);
+                    var lodIndex = -1;
+                    foreach (var lod in lodGroup.m_LODs ?? Enumerable.Empty<LODLevel>())
+                    {
+                        lodIndex++;
+                        foreach (var ptr in lod.Renderers ?? Enumerable.Empty<PPtr<Renderer>>())
+                        {
+                            AddPPtrRelation(connection, transaction, counts, "lodGroup.renderer", lodGroup, ptr.m_FileID, ptr.m_PathID, "Renderer", new
+                            {
+                                lodIndex,
+                            });
+                        }
+                    }
                     break;
                 case AssetBundle assetBundle:
                     WriteAssetBundleRelations(connection, transaction, assetBundle, counts);
@@ -3859,6 +3883,7 @@ WHERE r.relation = $relation;";
                 or ClassIDType.Animation
                 or ClassIDType.AnimatorController
                 or ClassIDType.AnimatorOverrideController
+                or ClassIDType.LODGroup
                 or ClassIDType.MeshFilter
                 or ClassIDType.AnimationClip
                 or ClassIDType.Avatar

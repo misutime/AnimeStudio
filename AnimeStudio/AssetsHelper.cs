@@ -488,6 +488,11 @@ namespace AnimeStudio
                                 asset.Name = gameObject.m_Name;
                                 exportable = ClassIDType.GameObject.CanExport();
                                 break;
+                            case ClassIDType.LODGroup when ClassIDType.LODGroup.CanParse():
+                                obj = new LODGroup(objectReader);
+                                asset.Name = objectReader.type.ToString();
+                                exportable = ClassIDType.LODGroup.CanExport();
+                                break;
                             case ClassIDType.Shader when ClassIDType.Shader.CanParse():
                                 asset.Name = objectReader.ReadAlignedString();
                                 if (string.IsNullOrEmpty(asset.Name))

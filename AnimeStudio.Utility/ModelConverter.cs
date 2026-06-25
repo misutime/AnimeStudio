@@ -41,6 +41,7 @@ namespace AnimeStudio
         private Dictionary<AnimationClip, Dictionary<uint, string>> animationTosCache = new Dictionary<AnimationClip, Dictionary<uint, string>>();
         private Dictionary<Texture2D, string> textureNameDictionary = new Dictionary<Texture2D, string>();
         private Dictionary<Transform, ImportedFrame> transformDictionary = new Dictionary<Transform, ImportedFrame>();
+        private readonly HashSet<Renderer> skippedLodGroupRenderers = new HashSet<Renderer>();
         private readonly HashSet<Renderer> skippedLowerLodRenderers = new HashSet<Renderer>();
         private bool hasExplicitAnimationList;
         Dictionary<uint, string> morphChannelNames = new Dictionary<uint, string>();
@@ -91,6 +92,7 @@ namespace AnimeStudio
             }
             foreach (var m_GameObject in m_GameObjects)
             {
+                MarkLodGroupRenderersForExportRoot(m_GameObject.m_Transform);
                 MarkLowerLodRenderers(m_GameObject.m_Transform);
             }
             foreach (var m_GameObject in m_GameObjects)
@@ -176,6 +178,7 @@ namespace AnimeStudio
                 CreateBonePathHash(m_Transform);
             }
 
+            MarkLodGroupRenderersForExportRoot(m_Transform);
             MarkLowerLodRenderers(m_Transform);
             ConvertMeshRenderer(m_Transform);
         }
@@ -214,6 +217,82 @@ namespace AnimeStudio
                 if (pptr.TryGet(out var child))
                     ConvertMeshRenderer(child);
             }
+        }
+
+        private void MarkLodGroupRenderersForExportRoot(Transform transform)
+        {
+            MarkLodGroupRenderers(transform);
+            MarkAncestorLodGroupRenderers(transform);
+        }
+
+        private void MarkLodGroupRenderers(Transform transform)
+        {
+            if (transform == null)
+            {
+                return;
+            }
+
+            transform.m_GameObject.TryGet(out var gameObject);
+            if (gameObject?.m_LODGroup?.m_LODs?.Count > 1)
+            {
+                // 标准 Unity LODGroup 是显式组件关系；默认素材库只保留 LOD0，
+                // 其他级别保留在源索引关系中，避免 glTF 里多个 LOD 同时可见。
+                foreach (var rendererPtr in gameObject.m_LODGroup.GetRenderersAfterFirstLod())
+                {
+                    if (rendererPtr.TryGet(out var renderer))
+                    {
+                        skippedLodGroupRenderers.Add(renderer);
+                    }
+                }
+            }
+
+            foreach (var childPtr in transform.m_Children)
+            {
+                if (childPtr.TryGet(out var child))
+                {
+                    MarkLodGroupRenderers(child);
+                }
+            }
+        }
+
+        private void MarkAncestorLodGroupRenderers(Transform exportRoot)
+        {
+            var current = exportRoot;
+            while (current?.m_Father != null && current.m_Father.TryGet(out var parent))
+            {
+                parent.m_GameObject.TryGet(out var parentGameObject);
+                var lodGroup = parentGameObject?.m_LODGroup;
+                if (lodGroup?.m_LODs?.Count > 1)
+                {
+                    foreach (var rendererPtr in lodGroup.GetRenderersAfterFirstLod())
+                    {
+                        if (rendererPtr.TryGet(out var renderer)
+                            && renderer.m_GameObject.TryGet(out var rendererGameObject)
+                            && IsInTransformSubtree(rendererGameObject.m_Transform, exportRoot))
+                        {
+                            skippedLodGroupRenderers.Add(renderer);
+                        }
+                    }
+                }
+
+                current = parent;
+            }
+        }
+
+        private static bool IsInTransformSubtree(Transform transform, Transform root)
+        {
+            var current = transform;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, root))
+                {
+                    return true;
+                }
+
+                current = current.m_Father != null && current.m_Father.TryGet(out var parent) ? parent : null;
+            }
+
+            return false;
         }
 
         private void MarkLowerLodRenderers(Transform parent)
@@ -410,6 +489,27 @@ namespace AnimeStudio
                 using (Measure("model_mesh_skipped", new Dictionary<string, object>
                 {
                     ["reason"] = "disabled_renderer",
+                    ["renderer"] = m_GameObject2?.m_Name,
+                    ["source"] = meshR.assetsFile?.fullName,
+                    ["rendererPathId"] = meshR.m_PathID,
+                }))
+                {
+                }
+                return;
+            }
+
+            if (skippedLodGroupRenderers.Contains(meshR))
+            {
+                RecordConversionIssue(
+                    "skippedLodGroupRenderer",
+                    m_GameObject2?.m_Name,
+                    meshR.assetsFile?.originalPath ?? meshR.assetsFile?.fileName,
+                    null,
+                    meshR.m_PathID,
+                    $"path={GetTransformPath(m_GameObject2?.m_Transform)}");
+                using (Measure("model_mesh_skipped", new Dictionary<string, object>
+                {
+                    ["reason"] = "lod_group_non_primary_renderer",
                     ["renderer"] = m_GameObject2?.m_Name,
                     ["source"] = meshR.assetsFile?.fullName,
                     ["rendererPathId"] = meshR.m_PathID,
