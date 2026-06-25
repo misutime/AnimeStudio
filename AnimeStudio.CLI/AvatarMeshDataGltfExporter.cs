@@ -336,6 +336,7 @@ namespace AnimeStudio.CLI
             {
                 throw new InvalidDataException("ActorBodyVisualCell LOD0 has no resolved AvatarMeshDataAsset JSON.");
             }
+            var headCollisionEvidence = LoadAssistantHeadCollisionEvidence(sourceIndexPath, parts, warnings);
 
             outputFolder = string.IsNullOrWhiteSpace(outputFolder)
                 ? Path.Combine(Path.GetFullPath(jsonFolder), "AvatarMeshDataGltf")
@@ -506,10 +507,17 @@ namespace AnimeStudio.CLI
                     rendererSkinBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var rendererSkinBinding);
                     avatarMeshRelationEvidence.TryGetValue(part.AvatarMeshPathId, out var avatarMeshRelations);
                     avatarPartDataEvidence.TryGetValue(part.AvatarMeshPathId, out var partData);
-                    return ToReportJson(part, materialBinding, rendererSkinBinding, avatarMeshRelations, partData);
+                    headCollisionEvidence.TryGetValue(part.AssistantPathId, out var headCollision);
+                    return ToReportJson(part, materialBinding, rendererSkinBinding, avatarMeshRelations, partData, headCollision);
                 })),
                 ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence.Values.SelectMany(x => x)),
                 ["avatarPartDataEvidenceCount"] = avatarPartDataEvidence.Values.Sum(x => x.Count),
+                ["headCollisionDataStatus"] = SummarizeHeadCollisionDataStatus(headCollisionEvidence.Values),
+                ["headCollisionDataRefCount"] = headCollisionEvidence.Values.Count(x => x.HasReference),
+                ["headCollisionDataMissingRefCount"] = headCollisionEvidence.Values.Count(x => !x.HasReference),
+                ["headCollisionDataSharedTargetCount"] = CountDistinctHeadCollisionTargets(headCollisionEvidence.Values),
+                ["headCollisionDataResolvedTargetCount"] = headCollisionEvidence.Values.Count(x => x.TargetObjectFound),
+                ["headCollisionDataEvidence"] = new JArray(headCollisionEvidence.Values.Select(x => x.ToJson())),
                 ["boneDriverHintStatus"] = SummarizeBoneDriverHintStatus(boneDriverHints),
                 ["boneDriverHintCount"] = boneDriverHints.Count,
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
@@ -545,6 +553,7 @@ namespace AnimeStudio.CLI
                 materialBindings,
                 rendererSkinBindings,
                 avatarPartDataEvidence,
+                headCollisionEvidence,
                 boneDriverHints,
                 rendererListEvidence,
                 gltfMaterials,
@@ -565,6 +574,7 @@ namespace AnimeStudio.CLI
             IReadOnlyDictionary<string, VisualCellMaterialBinding> materialBindings,
             IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings,
             IReadOnlyDictionary<long, List<AvatarPartDataEvidence>> avatarPartDataEvidence,
+            IReadOnlyDictionary<long, AssistantHeadCollisionEvidence> headCollisionEvidence,
             IReadOnlyList<BoneDriverHint> boneDriverHints,
             VisualCellRendererListEvidence rendererListEvidence,
             JArray gltfMaterials,
@@ -613,6 +623,9 @@ namespace AnimeStudio.CLI
                 avatarPartDataEvidence.Values.Any(x => x.Count > 0)
                     ? "avatar_part_data_mesh_order_present"
                     : "avatar_part_data_mesh_order_missing",
+                headCollisionEvidence.Values.Any(x => x.HasReference)
+                    ? "head_collision_data_refs_present"
+                    : "head_collision_data_refs_missing",
                 boneDriverHints.Count > 0 ? "bone_driver_hints_present" : "bone_driver_hints_missing",
                 string.Equals(rendererListEvidence?.Status, "assistantMeshRendererGameObjectsAligned", StringComparison.OrdinalIgnoreCase)
                     ? "visual_cell_renderer_lists_aligned"
@@ -724,6 +737,11 @@ namespace AnimeStudio.CLI
                 ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartEvidenceItems),
                 ["avatarPartDataEvidenceCount"] = avatarPartEvidenceItems.Length,
                 ["avatarPartDataMeshDataIndexes"] = new JArray(avatarPartEvidenceItems.Select(x => x.MeshDataIndex).OrderBy(x => x)),
+                ["headCollisionDataStatus"] = report["headCollisionDataStatus"]?.DeepClone(),
+                ["headCollisionDataRefCount"] = report["headCollisionDataRefCount"]?.DeepClone(),
+                ["headCollisionDataMissingRefCount"] = report["headCollisionDataMissingRefCount"]?.DeepClone(),
+                ["headCollisionDataSharedTargetCount"] = report["headCollisionDataSharedTargetCount"]?.DeepClone(),
+                ["headCollisionDataResolvedTargetCount"] = report["headCollisionDataResolvedTargetCount"]?.DeepClone(),
                 ["boneDriverHintStatus"] = SummarizeBoneDriverHintStatus(boneDriverHints),
                 ["boneDriverHintCount"] = boneDriverHints.Count,
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
@@ -757,6 +775,7 @@ namespace AnimeStudio.CLI
                     ["skinDataBasis"] = "AvatarMeshDataAsset.m_AnimSkinData / m_AvatarBoneWeights / m_BindPoses",
                     ["rendererSkinBasis"] = "SkinnedMeshRenderer object / component.gameObject / renderer.material / skinnedMeshRenderer.mesh/rootBone/bones from unity_source_index.db",
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
+                    ["headCollisionDataBasis"] = "LXRendererAssistant.headCollisionData PPtr",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
                     ["rendererListBasis"] = "ActorBodyVisualCell.rendererAssistants/avatarRenderers/meshRenderer/lod*RendererAssistants",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
@@ -1481,6 +1500,33 @@ namespace AnimeStudio.CLI
             return "unknown";
         }
 
+        private static string SummarizeHeadCollisionDataStatus(IEnumerable<AssistantHeadCollisionEvidence> evidences)
+        {
+            var list = evidences?.ToArray() ?? Array.Empty<AssistantHeadCollisionEvidence>();
+            if (list.Length == 0 || list.All(x => !x.HasReference))
+            {
+                return "missing";
+            }
+
+            if (list.Any(x => x.TargetObjectFound))
+            {
+                return "targetObjectResolved";
+            }
+
+            return CountDistinctHeadCollisionTargets(list) == 1
+                ? "sharedExternalPPtrUnresolved"
+                : "externalPPtrUnresolved";
+        }
+
+        private static int CountDistinctHeadCollisionTargets(IEnumerable<AssistantHeadCollisionEvidence> evidences)
+        {
+            return (evidences ?? Array.Empty<AssistantHeadCollisionEvidence>())
+                .Where(x => x.HasReference)
+                .Select(x => $"{NormalizeSerializedFileName(x.TargetFile)}:{x.TargetPathId}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+        }
+
         private static string SummarizeBoneDriverHintStatus(IEnumerable<BoneDriverHint> hints)
         {
             return hints != null && hints.Any()
@@ -1917,7 +1963,8 @@ LIMIT 1;";
             VisualCellMaterialBinding materialBinding,
             VisualCellRendererSkinBinding rendererSkinBinding,
             AvatarMeshDataRelationEvidence avatarMeshRelations,
-            IReadOnlyCollection<AvatarPartDataEvidence> avatarPartDataEvidence)
+            IReadOnlyCollection<AvatarPartDataEvidence> avatarPartDataEvidence,
+            AssistantHeadCollisionEvidence headCollisionEvidence)
         {
             var meshJson = ToReportJson(part.Mesh, part.MeshJsonPath);
             meshJson["assistantPathId"] = part.AssistantPathId;
@@ -1932,6 +1979,7 @@ LIMIT 1;";
             meshJson["avatarMeshDataRelations"] = avatarMeshRelations?.ToJson();
             meshJson["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence);
             meshJson["avatarPartDataEvidence"] = new JArray((avatarPartDataEvidence ?? Array.Empty<AvatarPartDataEvidence>()).Select(x => x.ToJson()));
+            meshJson["headCollisionData"] = headCollisionEvidence?.ToJson();
             return meshJson;
         }
 
@@ -2363,6 +2411,126 @@ ORDER BY id;";
             }
 
             return result;
+        }
+
+        private static Dictionary<long, AssistantHeadCollisionEvidence> LoadAssistantHeadCollisionEvidence(
+            string sourceIndexPath,
+            IReadOnlyCollection<VisualCellPart> parts,
+            List<string> warnings)
+        {
+            var result = new Dictionary<long, AssistantHeadCollisionEvidence>();
+            foreach (var part in parts ?? Array.Empty<VisualCellPart>())
+            {
+                var evidence = new AssistantHeadCollisionEvidence
+                {
+                    Status = "missingReference",
+                    AssistantPathId = part.AssistantPathId,
+                    GameObjectName = part.GameObjectName,
+                    AssistantFile = NormalizeSerializedFileName(part.RendererFile),
+                    AssistantJsonPath = part.AssistantJsonPath,
+                };
+
+                try
+                {
+                    var assistantJson = JObject.Parse(File.ReadAllText(part.AssistantJsonPath));
+                    var token = assistantJson["headCollisionData"];
+                    evidence.PPtrFileId = ReadPPtrFileId(token);
+                    evidence.PPtrPathId = ReadPPtrPathId(token);
+                    evidence.Status = evidence.HasReference ? "pptrOnly" : "missingReference";
+                }
+                catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+                {
+                    warnings?.Add($"headCollisionDataJsonReadFailed:{part.AssistantPathId}:{ex.Message}");
+                    evidence.Status = "assistantJsonReadFailed";
+                }
+
+                result[part.AssistantPathId] = evidence;
+            }
+
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                return result;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                foreach (var part in parts ?? Array.Empty<VisualCellPart>())
+                {
+                    if (!result.TryGetValue(part.AssistantPathId, out var evidence) || !evidence.HasReference)
+                    {
+                        continue;
+                    }
+
+                    using var command = connection.CreateCommand();
+                    command.CommandText = @"
+SELECT id, to_file, to_path_id
+FROM source_relations
+WHERE from_file = $file COLLATE NOCASE
+  AND from_path_id = $pathId
+  AND relation = 'monoBehaviour.pptr'
+  AND json_extract(raw_json, '$.details.path') = 'headCollisionData'
+ORDER BY id
+LIMIT 1;";
+                    command.Parameters.AddWithValue("$file", part.RendererFile ?? string.Empty);
+                    command.Parameters.AddWithValue("$pathId", part.AssistantPathId);
+                    using var reader = command.ExecuteReader();
+                    if (reader.Read())
+                    {
+                        evidence.RelationId = reader.GetInt64(0);
+                        evidence.TargetFile = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                        evidence.TargetPathId = reader.IsDBNull(2) ? evidence.PPtrPathId : reader.GetInt64(2);
+                        LoadHeadCollisionTargetObject(connection, evidence);
+                        evidence.Status = evidence.TargetObjectFound
+                            ? "targetObjectResolved"
+                            : "externalPPtrUnresolved";
+                    }
+                    else
+                    {
+                        evidence.Status = "sourceRelationMissing";
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
+            {
+                warnings?.Add($"headCollisionDataQueryFailed:{ex.Message}");
+                foreach (var evidence in result.Values.Where(x => x.HasReference))
+                {
+                    evidence.Status = "sourceIndexQueryFailed";
+                }
+            }
+
+            return result;
+        }
+
+        private static void LoadHeadCollisionTargetObject(SqliteConnection connection, AssistantHeadCollisionEvidence evidence)
+        {
+            if (connection == null || evidence == null || string.IsNullOrWhiteSpace(evidence.TargetFile) || evidence.TargetPathId == 0)
+            {
+                return;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT type, class_id, name
+FROM source_objects INDEXED BY idx_source_objects_file_path
+WHERE serialized_file = $file
+  AND path_id = $pathId
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(evidence.TargetFile));
+            command.Parameters.AddWithValue("$pathId", evidence.TargetPathId);
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return;
+            }
+
+            evidence.TargetObjectFound = true;
+            evidence.TargetType = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+            evidence.TargetClassId = reader.IsDBNull(1) ? (int?)null : Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture);
+            evidence.TargetName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
         }
 
         private static Dictionary<long, List<AvatarPartDataEvidence>> LoadAvatarPartDataEvidence(
@@ -3156,6 +3324,18 @@ LIMIT 1;";
                 ?? 0;
         }
 
+        private static int ReadPPtrFileId(JToken token)
+        {
+            if (token == null)
+            {
+                return 0;
+            }
+
+            return token["m_FileID"]?.Value<int>()
+                ?? token["fileId"]?.Value<int>()
+                ?? 0;
+        }
+
         private static (Vector3Value Min, Vector3Value Max) CalculateBounds(IEnumerable<AvatarMeshData> meshes)
         {
             var list = meshes.ToList();
@@ -3912,6 +4092,48 @@ LIMIT 1;";
                     ["meshDataCount"] = MeshDataCount,
                     ["meshDataPathId"] = MeshDataPathId,
                     ["rule"] = "只表示 AvatarPartDataAsset.m_MeshData 的显式 PPtr 顺序；不能证明骨骼、joint 或 skin 绑定。"
+                };
+            }
+        }
+
+        private sealed class AssistantHeadCollisionEvidence
+        {
+            public string Status { get; set; }
+            public long AssistantPathId { get; init; }
+            public string GameObjectName { get; init; }
+            public string AssistantFile { get; init; }
+            public string AssistantJsonPath { get; init; }
+            public int PPtrFileId { get; set; }
+            public long PPtrPathId { get; set; }
+            public long? RelationId { get; set; }
+            public string TargetFile { get; set; }
+            public long TargetPathId { get; set; }
+            public bool TargetObjectFound { get; set; }
+            public string TargetType { get; set; }
+            public int? TargetClassId { get; set; }
+            public string TargetName { get; set; }
+
+            public bool HasReference => PPtrFileId != 0 || PPtrPathId != 0 || !string.IsNullOrWhiteSpace(TargetFile) || TargetPathId != 0;
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["assistantPathId"] = AssistantPathId,
+                    ["gameObjectName"] = GameObjectName,
+                    ["assistantFile"] = AssistantFile,
+                    ["assistantJson"] = string.IsNullOrWhiteSpace(AssistantJsonPath) ? null : Path.GetFullPath(AssistantJsonPath),
+                    ["pptrFileId"] = PPtrFileId,
+                    ["pptrPathId"] = PPtrPathId,
+                    ["relationId"] = RelationId,
+                    ["targetFile"] = TargetFile,
+                    ["targetPathId"] = TargetPathId,
+                    ["targetObjectFound"] = TargetObjectFound,
+                    ["targetType"] = TargetType,
+                    ["targetClassId"] = TargetClassId,
+                    ["targetName"] = TargetName,
+                    ["rule"] = "只记录 LXRendererAssistant.headCollisionData 的外部 PPtr 线索；它表示碰撞/辅助数据引用，当前没有骨骼名、Transform PathID 或 joint 映射证据，不能用于 glTF skin。"
                 };
             }
         }
