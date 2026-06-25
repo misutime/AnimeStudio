@@ -217,7 +217,10 @@ ORDER BY id;";
 
                     entries[fileName] = new AssetsHelper.Entry
                     {
-                        Path = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                        // serialized_files.source_path 记录的是“物理源文件|SerializedFile”。
+                        // 运行时依赖加载只需要真实磁盘文件；保留 CAB 后缀会让 --source_files
+                        // 无法反查起始 CAB，进而丢掉 Material/Texture 等外部闭包。
+                        Path = NormalizePhysicalSourcePath(reader.IsDBNull(1) ? string.Empty : reader.GetString(1)),
                         Offset = reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
                         Dependencies = new List<string>(),
                     };
@@ -278,6 +281,19 @@ ORDER BY id;";
         {
             return (path ?? string.Empty)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private static string NormalizePhysicalSourcePath(string sourcePath)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                return string.Empty;
+            }
+
+            var separator = sourcePath.IndexOf('|');
+            return separator >= 0
+                ? sourcePath[..separator]
+                : sourcePath;
         }
     }
 }
