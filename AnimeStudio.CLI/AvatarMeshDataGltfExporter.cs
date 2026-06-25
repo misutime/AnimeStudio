@@ -406,6 +406,8 @@ namespace AnimeStudio.CLI
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
+            var rangeCoveringMappedNodeNames = GetTransformNodeTableRangeCoveringMappedNodeNames(parts).ToArray();
+            var rangeCoveringEvidence = BuildTransformNodeTableRangeCoveringEvidence(parts);
             var gltf = new JObject
             {
                 ["asset"] = new JObject
@@ -552,6 +554,9 @@ namespace AnimeStudio.CLI
                 ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
+                ["transformNodeTableRangeCoveringMappedNodeNames"] = new JArray(rangeCoveringMappedNodeNames.Select(x => new JValue(x))),
+                ["transformNodeTableRangeCoveringEvidenceCount"] = rangeCoveringEvidence.Count,
+                ["transformNodeTableRangeCoveringEvidence"] = rangeCoveringEvidence,
                 ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；selectedVisualCellTransformNodeTableStatus 会单独说明本次选中 VisualCell 自身是否有节点表。同 SerializedFile 内其它节点表只能诊断，不能作为 skin joint 映射。",
                 ["hairDeformDataStatus"] = SummarizeHairDeformDataStatus(hairDeformSummaries),
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
@@ -797,6 +802,8 @@ namespace AnimeStudio.CLI
                 ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
+                ["transformNodeTableRangeCoveringMappedNodeNames"] = report["transformNodeTableRangeCoveringMappedNodeNames"]?.DeepClone(),
+                ["transformNodeTableRangeCoveringEvidenceCount"] = report["transformNodeTableRangeCoveringEvidenceCount"]?.DeepClone(),
                 ["hairDeformDataStatus"] = hairDeformDataStatus,
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
                 ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
@@ -1832,6 +1839,92 @@ namespace AnimeStudio.CLI
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> GetTransformNodeTableRangeCoveringMappedNodeNames(
+            IEnumerable<VisualCellPart> parts)
+        {
+            return GetTransformNodeTableRangeCoveringRefs(parts)
+                .Select(x => x.Ref.GameObjectName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Take(64);
+        }
+
+        private static JArray BuildTransformNodeTableRangeCoveringEvidence(
+            IEnumerable<VisualCellPart> parts)
+        {
+            var refs = GetTransformNodeTableRangeCoveringRefs(parts).ToArray();
+            var groups = refs
+                .GroupBy(
+                    x => $"{NormalizeSerializedFileName(x.Candidate.SerializedFile)}:{x.Candidate.VisualCellPathId}",
+                    StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(x => x.Max(y => y.Candidate.MatchedTopBoneIndexCount))
+                .ThenByDescending(x => x.Max(y => y.Candidate.TransformNodeCount))
+                .ThenBy(x => x.First().Candidate.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase);
+
+            var result = new JArray();
+            foreach (var group in groups.Take(8))
+            {
+                var first = group.First().Candidate;
+                var mappedRefs = group
+                    .OrderByDescending(x => x.Ref.WeightedRefCount)
+                    .ThenBy(x => x.PartName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(x => x.Ref.BoneIndex)
+                    .Take(24)
+                    .Select(x => new JObject
+                    {
+                        ["partName"] = x.PartName,
+                        ["boneIndex"] = x.Ref.BoneIndex,
+                        ["weightedRefCount"] = x.Ref.WeightedRefCount,
+                        ["candidateGameObjectName"] = x.Ref.GameObjectName,
+                        ["candidateGameObjectPathId"] = x.Ref.GameObjectPathId,
+                        ["candidateTransformPathId"] = x.Ref.TransformPathId,
+                    });
+
+                result.Add(new JObject
+                {
+                    ["status"] = first.Status,
+                    ["serializedFile"] = first.SerializedFile,
+                    ["visualCellPathId"] = first.VisualCellPathId,
+                    ["visualCellGameObjectName"] = first.VisualCellGameObjectName,
+                    ["isSelectedVisualCell"] = first.IsSelectedVisualCell,
+                    ["transformNodeCount"] = first.TransformNodeCount,
+                    ["requiredNodeCountMax"] = group.Max(x => x.Candidate.RequiredNodeCount),
+                    ["matchedTopBoneIndexCountMax"] = group.Max(x => x.Candidate.MatchedTopBoneIndexCount),
+                    ["missingTopBoneIndexCountMin"] = group.Min(x => x.Candidate.MissingTopBoneIndexCount),
+                    ["boneDriverNodeNameMatchCount"] = first.BoneDriverNodeNameMatchCount,
+                    ["boneDriverNodeNameMatches"] = new JArray((first.BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
+                    ["partNames"] = new JArray(group.Select(x => x.PartName).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+                    ["mappedNodeNames"] = new JArray(group.Select(x => x.Ref.GameObjectName).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).Take(64)),
+                    ["mappedTopBoneRefs"] = new JArray(mappedRefs),
+                    ["rule"] = "这些是 range-covering transformNodes 候选按 AvatarBoneWeights 高频 boneIndex 得到的节点名样本；候选不属于选中 VisualCell 或节点名语义不一致时，只能诊断，不能写 glTF skin。"
+                });
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<(string PartName, TransformNodeTableCandidate Candidate, TransformNodeTableCandidateRef Ref)> GetTransformNodeTableRangeCoveringRefs(
+            IEnumerable<VisualCellPart> parts)
+        {
+            foreach (var part in parts ?? Array.Empty<VisualCellPart>())
+            {
+                var candidates = part.Mesh?.Skin?.TransformNodeTableCandidates ?? Enumerable.Empty<TransformNodeTableCandidate>();
+                foreach (var candidate in candidates.Where(x => x.CoversAvatarBoneIndexRange))
+                {
+                    foreach (var mappedRef in candidate.MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>())
+                    {
+                        if (string.IsNullOrWhiteSpace(mappedRef.GameObjectName))
+                        {
+                            continue;
+                        }
+
+                        yield return (part.GameObjectName, candidate, mappedRef);
+                    }
+                }
+            }
         }
 
         private static string SummarizeHairDeformDataStatus(IEnumerable<HairDeformSummary> summaries)
