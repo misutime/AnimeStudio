@@ -108,12 +108,14 @@ namespace AnimeStudio.CLI
                 + unityRawHeaderFileCount
                 + narakaLoadableCandidateCount;
 
-            var recommendation = BuildRecommendation(game, pakFileCount, narakaHeaderFileCount, narakaLoadableCandidateCount, loadableHeaderFileCount);
+            var recommendedSourceRoot = FindRecommendedSourceRoot(sourceRoot, game, narakaHeaderFileCount, loadableHeaderFileCount);
+            var recommendation = BuildRecommendation(game, sourceRoot, recommendedSourceRoot, pakFileCount, narakaHeaderFileCount, narakaLoadableCandidateCount, loadableHeaderFileCount);
 
             return new JObject
             {
                 ["kind"] = "UnitySourceInputProbe",
                 ["sourceRoot"] = sourceRoot,
+                ["recommendedSourceRoot"] = recommendedSourceRoot,
                 ["game"] = game?.Name,
                 ["sourceFileCount"] = sourceFileCount,
                 ["totalBytes"] = totalBytes,
@@ -139,7 +141,7 @@ namespace AnimeStudio.CLI
             };
         }
 
-        private static JObject BuildRecommendation(Game game, int pakFileCount, int narakaHeaderFileCount, int narakaLoadableCandidateCount, int loadableHeaderFileCount)
+        private static JObject BuildRecommendation(Game game, string sourceRoot, string recommendedSourceRoot, int pakFileCount, int narakaHeaderFileCount, int narakaLoadableCandidateCount, int loadableHeaderFileCount)
         {
             var status = "unknown";
             var nextStep = "Build unity_source_index.db with --build_source_sqlite_index after confirming --game.";
@@ -148,8 +150,14 @@ namespace AnimeStudio.CLI
             if (game?.Type.IsNaraka() == true && narakaHeaderFileCount > 0)
             {
                 status = "naraka_streaming_assets_loadable";
-                nextStep = "Use the current StreamingAssets folder with --game Naraka; QuickBMS/AES is not part of this input path.";
+                nextStep = string.Equals(sourceRoot, recommendedSourceRoot, StringComparison.OrdinalIgnoreCase)
+                    ? "Use this StreamingAssets folder with --game Naraka; QuickBMS/AES is not part of this input path."
+                    : $"Use the nested StreamingAssets folder with --game Naraka: {recommendedSourceRoot}. QuickBMS/AES is not part of this input path.";
                 notes.Add("检测到 Naraka 替代 UnityFS 文件头，当前工具会在 BundleFile 中按 Naraka profile 修正 header 和 4KB block 对齐。");
+                if (pakFileCount > 0)
+                {
+                    notes.Add("当前输入同时发现 .pak，但已经存在可加载 Naraka bundle；这些 .pak 只能作为独立诊断线索，不能替代 StreamingAssets 主资源入口。");
+                }
                 if (narakaLoadableCandidateCount < narakaHeaderFileCount)
                 {
                     notes.Add("部分 Naraka header offset 不在已知快速规则内；若后续加载失败，应补 header fix 规则，而不是先套 .pak AES。");
@@ -173,6 +181,28 @@ namespace AnimeStudio.CLI
                 ["nextStep"] = nextStep,
                 ["notes"] = notes,
             };
+        }
+
+        private static string FindRecommendedSourceRoot(string sourceRoot, Game game, int narakaHeaderFileCount, int loadableHeaderFileCount)
+        {
+            if (game?.Type.IsNaraka() != true || narakaHeaderFileCount <= 0 || loadableHeaderFileCount <= 0)
+            {
+                return sourceRoot;
+            }
+
+            var directStreamingAssets = Path.Combine(sourceRoot, "StreamingAssets");
+            if (Directory.Exists(directStreamingAssets))
+            {
+                return directStreamingAssets;
+            }
+
+            var nested = Path.Combine(sourceRoot, "NarakaBladepoint_Data", "StreamingAssets");
+            if (Directory.Exists(nested))
+            {
+                return nested;
+            }
+
+            return sourceRoot;
         }
 
         private static bool TryReadHeader(string path, out byte[] header)

@@ -564,7 +564,7 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `source_model_candidates.json` 里的 `targetedLibraryExport`，或手动传 `--source_files + --path_ids` 锁定本次加载闭包。只传 `--names` / `--containers` 虽然会过滤导出候选，但仍可能在永劫大源目录上加载过宽依赖，导致诊断样本耗时和内存失真。下面的 Hadi body smoke 示例使用完整源目录和完整源索引，但只加载源索引闭包选出的 5 个物理文件：
 
-截至 2026-06-26 本机 `C:\Game163\program` 安装形态，默认主输入应使用 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`。该目录下主体资源是大量无扩展 Unity bundle，已能通过 Naraka header/block 修正和完整 `unity_source_index.db` 建索引、定点导出模型；根目录内少量 `.pak` 体量很小，不是当前模型、贴图、材质、骨骼主资源入口。网上流传的 QuickBMS/AES key 只能作为其它发行包或旧版本解包线索，不能写入默认 `Library` 流程，也不能替代本项目的 Unity PPtr/source index 依赖闭包。若后续遇到只能从 `.pak` 进入的发行形态，应先用显式诊断命令记录包结构、UnityFS 命中率、解密参数和版本日期，再决定是否增加独立转换入口。
+截至 2026-06-26 本机 `C:\Game163\program` 安装形态，默认主输入应使用 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`。该目录下主体资源是大量无扩展 Unity bundle，已能通过 Naraka header/block 修正和完整 `unity_source_index.db` 建索引、定点导出模型；2026-06-26 探针复查 `StreamingAssets` 有 14,352 个文件、78.62 GB，其中 13,684 个 Naraka 替代 UnityFS header 可加载候选、`.pak` 为 0。完整游戏根目录虽然有 58 个 `.pak`、38.32 MB，但样本位于 `webviewsupport.cef904430` / CEF locale 目录，不是当前模型、贴图、材质、骨骼主资源入口。网上流传的 QuickBMS/AES key 只能作为其它发行包或旧版本解包线索，不能写入默认 `Library` 流程，也不能替代本项目的 Unity PPtr/source index 依赖闭包。若后续遇到只能从 `.pak` 进入的发行形态，应先用显式诊断命令记录包结构、UnityFS 命中率、解密参数和版本日期，再决定是否增加独立转换入口。
 
 初次接手一个 Naraka 安装目录时，可以先用轻量探针确认输入形态。它只扫描文件头并写 `source_input_probe.json`，不会导出素材、不会建 `unity_source_index.db`，也不会验证或保存社区 AES key：
 
@@ -576,7 +576,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --probe_source_input
 ```
 
-如果报告显示 `recommendation.status=naraka_streaming_assets_loadable`、`pakFileCount=0`、`narakaHeaderFileCount` 约等于 `loadableHeaderFileCount`，说明当前输入应直接走 `--game Naraka --build_source_sqlite_index` 和后续定向 Library 导出；QuickBMS/AES 不是这条输入路径的必要步骤。只有报告显示主要输入是 `.pak` 且没有可识别 Unity/Naraka bundle 头时，才把外部 `.pak` 解包当作独立预处理诊断。
+如果报告显示 `recommendation.status=naraka_streaming_assets_loadable`、`recommendedSourceRoot` 指向 `NarakaBladepoint_Data/StreamingAssets`，且 `narakaHeaderFileCount` 约等于 `loadableHeaderFileCount`，说明当前输入应直接走 `--game Naraka --build_source_sqlite_index` 和后续定向 Library 导出；QuickBMS/AES 不是这条输入路径的必要步骤。完整游戏根目录扫描到少量 webview/CEF `.pak` 时也不应切换到 `.pak` 解包。只有报告显示主要输入是 `.pak` 且没有可识别 Unity/Naraka bundle 头时，才把外部 `.pak` 解包当作独立预处理诊断。
 
 新建 Naraka `unity_source_index.db` 时会在 `metadata.narakaInputProbe` 和 `unity_source_index_summary.json.narakaInputProbe` 记录 `.pak` 数量、普通 `UnityFS` 头数量、Naraka 替代头数量和 header size offset 分布。这个字段只用于确认输入形态和 header/block 规则命中情况；它不会执行 `.pak` 解包，也不会把社区 AES key 写入默认素材库流程。
 
