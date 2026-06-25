@@ -394,6 +394,7 @@ namespace AnimeStudio.CLI
 
             var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var gltf = new JObject
             {
                 ["asset"] = new JObject
@@ -474,6 +475,10 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；同 SerializedFile 内存在多套节点表时不能作为 skin joint 映射。",
+                ["hairDeformDataStatus"] = SummarizeHairDeformDataStatus(hairDeformSummaries),
+                ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
+                ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
+                ["hairDeformDataRule"] = "m_HairDeformData 当前按每顶点两个 uint32 / 四个 half-float 诊断记录；它更像头发变形/插值参数，不能作为 joint 索引或 skin 映射。",
                 ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系；AvatarPartDataAsset.m_MeshData 只记录部件/LOD 顺序，不猜材质槽、骨骼或 skin。"
             };
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
@@ -528,6 +533,8 @@ namespace AnimeStudio.CLI
                 : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
+            var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
+            var hairDeformDataStatus = SummarizeHairDeformDataStatus(hairDeformSummaries);
             var validationReasons = new JArray(
                 "diagnostic_custom_mesh",
                 "missing_skin_binding",
@@ -544,6 +551,11 @@ namespace AnimeStudio.CLI
                     : transformNodeTableCandidateStatus == "indexOrderCandidatesAmbiguous"
                         ? "transform_node_table_candidates_ambiguous"
                         : "transform_node_table_candidate_present",
+                hairDeformDataStatus == "missing"
+                    ? "hair_deform_data_missing"
+                    : hairDeformDataStatus == "countMismatch"
+                        ? "hair_deform_data_count_mismatch"
+                        : "hair_deform_data_packed_half4_diagnostic",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
             var sourceSkinStatuses = parts
                 .Select(x => x.Mesh.Skin.Status)
@@ -610,6 +622,9 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
+                ["hairDeformDataStatus"] = hairDeformDataStatus,
+                ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
+                ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -625,6 +640,7 @@ namespace AnimeStudio.CLI
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
+                    ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver 目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
@@ -1184,6 +1200,7 @@ namespace AnimeStudio.CLI
                 ["bboxMin"] = new JArray(mesh.Min.X, mesh.Min.Y, mesh.Min.Z),
                 ["bboxMax"] = new JArray(mesh.Max.X, mesh.Max.Y, mesh.Max.Z),
                 ["skin"] = mesh.Skin.ToJson(),
+                ["hairDeformData"] = mesh.HairDeform.ToJson(),
                 ["warnings"] = new JArray(mesh.Warnings)
             };
         }
@@ -1305,6 +1322,20 @@ namespace AnimeStudio.CLI
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string SummarizeHairDeformDataStatus(IEnumerable<HairDeformSummary> summaries)
+        {
+            var list = summaries?.ToArray() ?? Array.Empty<HairDeformSummary>();
+            if (list.Length == 0 || list.All(x => x.Count == 0))
+            {
+                return "missing";
+            }
+            if (list.Any(x => x.Status == "countMismatch"))
+            {
+                return "countMismatch";
+            }
+            return "packedHalf4Diagnostic";
         }
 
         private static IReadOnlyList<TransformNodeTable> LoadTransformNodeTableCandidates(
@@ -2309,6 +2340,7 @@ WHERE relation = 'material.texture'
 
             result.Uvs.AddRange(ReadUv0(json, result.Positions.Count));
             result.Skin = ReadSkinSummary(json, result.Positions.Count, result.Warnings);
+            result.HairDeform = ReadHairDeformSummary(json, result.Positions.Count, result.Warnings);
             if (result.Uvs.Count != 0 && result.Uvs.Count != result.Positions.Count)
             {
                 result.Warnings.Add("uvCountMismatch");
@@ -2485,6 +2517,84 @@ WHERE relation = 'material.texture'
                 ? "missingJointMapping"
                 : "noSourceSkinData";
             return summary;
+        }
+
+        private static HairDeformSummary ReadHairDeformSummary(JObject json, int vertexCount, List<string> warnings)
+        {
+            var data = json["m_HairDeformData"] as JArray;
+            var summary = new HairDeformSummary
+            {
+                Count = data?.Count ?? 0,
+                VertexCount = vertexCount,
+            };
+            if (data == null || data.Count == 0)
+            {
+                summary.Status = "missing";
+                return summary;
+            }
+
+            summary.Status = data.Count == vertexCount
+                ? "packedHalf4Diagnostic"
+                : "countMismatch";
+            if (data.Count != vertexCount)
+            {
+                warnings.Add("hairDeformDataCountMismatch");
+            }
+
+            foreach (var item in data.OfType<JObject>())
+            {
+                var x = ReadPackedUInt32(item["x"]);
+                var y = ReadPackedUInt32(item["y"]);
+                var halfBits = new[]
+                {
+                    (ushort)(x & 0xffff),
+                    (ushort)((x >> 16) & 0xffff),
+                    (ushort)(y & 0xffff),
+                    (ushort)((y >> 16) & 0xffff),
+                };
+
+                var values = halfBits.Select(ReadHalfFloat).ToArray();
+                for (var i = 0; i < values.Length; i++)
+                {
+                    summary.Components[i].Add(values[i]);
+                }
+
+                if (summary.Samples.Count < 4)
+                {
+                    summary.Samples.Add(new HairDeformSample(x, y, values));
+                }
+            }
+
+            return summary;
+        }
+
+        private static uint ReadPackedUInt32(JToken token)
+        {
+            if (token == null)
+            {
+                return 0;
+            }
+
+            return unchecked((uint)token.Value<long>());
+        }
+
+        private static float ReadHalfFloat(ushort bits)
+        {
+            var sign = (bits & 0x8000) != 0 ? -1f : 1f;
+            var exponent = (bits >> 10) & 0x1f;
+            var fraction = bits & 0x03ff;
+            if (exponent == 0)
+            {
+                return sign * (float)Math.Pow(2, -14) * (fraction / 1024f);
+            }
+            if (exponent == 0x1f)
+            {
+                return fraction == 0
+                    ? sign * float.PositiveInfinity
+                    : float.NaN;
+            }
+
+            return sign * (float)Math.Pow(2, exponent - 15) * (1f + fraction / 1024f);
         }
 
         private static float ReadOptionalVectorComponent(JToken token, int index)
@@ -2872,6 +2982,7 @@ WHERE relation = 'material.texture'
             public List<Vector2Value> Uvs { get; } = new();
             public List<string> Warnings { get; } = new();
             public SkinSummary Skin { get; set; } = new();
+            public HairDeformSummary HairDeform { get; set; } = new();
             public Vector3Value Min { get; private set; }
             public Vector3Value Max { get; private set; }
 
@@ -2886,6 +2997,97 @@ WHERE relation = 'material.texture'
                     Positions.Max(x => x.Y),
                     Positions.Max(x => x.Z));
             }
+        }
+
+        private sealed class HairDeformSummary
+        {
+            public string Status { get; set; } = "missing";
+            public int Count { get; set; }
+            public int VertexCount { get; set; }
+            public HairDeformComponentSummary[] Components { get; } =
+            {
+                new(),
+                new(),
+                new(),
+                new(),
+            };
+            public List<HairDeformSample> Samples { get; } = new();
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["count"] = Count,
+                    ["vertexCount"] = VertexCount,
+                    ["matchesVertexCount"] = Count == VertexCount,
+                    ["packing"] = Count > 0 ? "twoUInt32AsHalf4" : "missing",
+                    ["componentRanges"] = new JArray(Components.Select(x => x.ToJson())),
+                    ["samples"] = new JArray(Samples.Select(x => x.ToJson())),
+                    ["rule"] = "只把 m_HairDeformData 作为每顶点 packed half4 诊断值记录；当前没有节点名、PathID 或离散 joint 索引证据，不能用于 glTF skin。"
+                };
+            }
+        }
+
+        private sealed class HairDeformComponentSummary
+        {
+            private readonly HashSet<string> _roundedValues = new(StringComparer.Ordinal);
+
+            public int Count { get; private set; }
+            public int FiniteCount { get; private set; }
+            public int ZeroCount { get; private set; }
+            public int OneCount { get; private set; }
+            public int NegativeCount { get; private set; }
+            public float Min { get; private set; } = float.PositiveInfinity;
+            public float Max { get; private set; } = float.NegativeInfinity;
+
+            public void Add(float value)
+            {
+                Count++;
+                if (!float.IsFinite(value))
+                {
+                    return;
+                }
+
+                FiniteCount++;
+                Min = Math.Min(Min, value);
+                Max = Math.Max(Max, value);
+                if (Math.Abs(value) < 0.000001f)
+                {
+                    ZeroCount++;
+                }
+                if (Math.Abs(value - 1f) < 0.000001f)
+                {
+                    OneCount++;
+                }
+                if (value < 0f)
+                {
+                    NegativeCount++;
+                }
+                _roundedValues.Add(value.ToString("G6", CultureInfo.InvariantCulture));
+            }
+
+            public JObject ToJson() => new()
+            {
+                ["count"] = Count,
+                ["finiteCount"] = FiniteCount,
+                ["min"] = FiniteCount == 0 ? JValue.CreateNull() : new JValue(Min),
+                ["max"] = FiniteCount == 0 ? JValue.CreateNull() : new JValue(Max),
+                ["zeroCount"] = ZeroCount,
+                ["oneCount"] = OneCount,
+                ["negativeCount"] = NegativeCount,
+                ["roundedUniqueCount"] = _roundedValues.Count,
+            };
+        }
+
+        private sealed record HairDeformSample(uint X, uint Y, IReadOnlyList<float> Half4)
+        {
+            public JObject ToJson() => new()
+            {
+                ["rawX"] = "0x" + X.ToString("x8", CultureInfo.InvariantCulture),
+                ["rawY"] = "0x" + Y.ToString("x8", CultureInfo.InvariantCulture),
+                ["half4"] = new JArray((Half4 ?? Array.Empty<float>()).Select(x => Math.Round(x, 6))),
+            };
         }
 
         private sealed class SkinSummary
