@@ -461,6 +461,7 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintStatus"] = SummarizeBoneDriverHintStatus(boneDriverHints),
                 ["boneDriverHintCount"] = boneDriverHints.Count,
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
+                ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
                 ["boneDriverHints"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
                 ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系；AvatarPartDataAsset.m_MeshData 只记录部件/LOD 顺序，不猜材质槽、骨骼或 skin。"
             };
@@ -587,6 +588,7 @@ namespace AnimeStudio.CLI
                 ["boneDriverHintStatus"] = SummarizeBoneDriverHintStatus(boneDriverHints),
                 ["boneDriverHintCount"] = boneDriverHints.Count,
                 ["boneDriverHintNames"] = new JArray(GetBoneDriverNames(boneDriverHints)),
+                ["boneDriverHintPaths"] = new JArray(GetBoneDriverPaths(boneDriverHints)),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -1230,6 +1232,15 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
         }
 
+        private static IEnumerable<string> GetBoneDriverPaths(IEnumerable<BoneDriverHint> hints)
+        {
+            return (hints ?? Array.Empty<BoneDriverHint>())
+                .Select(x => x.TransformPath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        }
+
         private static JObject ToReportJson(
             VisualCellPart part,
             VisualCellMaterialBinding materialBinding,
@@ -1605,6 +1616,11 @@ LIMIT 1;";
                     connection.Open();
                 }
 
+                var pathIdByJsonPath = manifest
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Value.JsonPath))
+                    .GroupBy(x => Path.GetFullPath(x.Value.JsonPath), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.First().Key, StringComparer.OrdinalIgnoreCase);
+
                 foreach (var jsonPath in Directory.GetFiles(jsonFolder, "*.json", SearchOption.TopDirectoryOnly))
                 {
                     JObject json;
@@ -1629,12 +1645,21 @@ LIMIT 1;";
                         continue;
                     }
 
-                    manifestByJsonPath.TryGetValue(Path.GetFullPath(jsonPath), out var entry);
-                    var pathId = manifest.FirstOrDefault(x => string.Equals(Path.GetFullPath(x.Value.JsonPath), Path.GetFullPath(jsonPath), StringComparison.OrdinalIgnoreCase)).Key;
+                    var fullJsonPath = Path.GetFullPath(jsonPath);
+                    manifestByJsonPath.TryGetValue(fullJsonPath, out var entry);
+                    pathIdByJsonPath.TryGetValue(fullJsonPath, out var pathId);
                     var scriptName = string.Empty;
+                    var gameObjectPathId = ReadPPtrPathId(json["m_GameObject"]);
+                    var gameObjectName = string.Empty;
+                    var transformPath = string.Empty;
+                    var transformPathStatus = "sourceIndexNotProvided";
                     if (connection != null && entry != null && pathId != 0)
                     {
                         scriptName = ResolveMonoScriptName(connection, entry.SerializedFile, pathId);
+                        var gameObjectPath = ResolveGameObjectTransformPath(connection, entry.SerializedFile, gameObjectPathId);
+                        gameObjectName = gameObjectPath.GameObjectName;
+                        transformPath = gameObjectPath.TransformPath;
+                        transformPathStatus = gameObjectPath.Status;
                     }
                     if (string.IsNullOrWhiteSpace(scriptName))
                     {
@@ -1648,7 +1673,10 @@ LIMIT 1;";
                         SourceJson = jsonPath,
                         SerializedFile = entry?.SerializedFile ?? string.Empty,
                         PathId = pathId,
-                        GameObjectPathId = ReadPPtrPathId(json["m_GameObject"]),
+                        GameObjectPathId = gameObjectPathId,
+                        GameObjectName = gameObjectName,
+                        TransformPath = transformPath,
+                        TransformPathStatus = transformPathStatus,
                         DriverSerializeName = driverName ?? string.Empty,
                         AimSerializeName = aimName ?? string.Empty,
                         Aim1SerializeName = aim1Name ?? string.Empty,
@@ -1669,6 +1697,121 @@ LIMIT 1;";
                 .OrderBy(x => x.ScriptName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.PathId)
                 .ToArray();
+        }
+
+        private static GameObjectTransformPath ResolveGameObjectTransformPath(SqliteConnection connection, string serializedFile, long gameObjectPathId)
+        {
+            if (connection == null || string.IsNullOrWhiteSpace(serializedFile) || gameObjectPathId == 0)
+            {
+                return new GameObjectTransformPath(string.Empty, string.Empty, "missingGameObject");
+            }
+
+            var file = NormalizeSerializedFileName(serializedFile);
+            var gameObjectName = ResolveObjectName(connection, file, gameObjectPathId);
+            var transformPathId = ResolveTransformForGameObject(connection, file, gameObjectPathId);
+            if (transformPathId == 0)
+            {
+                return new GameObjectTransformPath(gameObjectName, gameObjectName, "missingTransform");
+            }
+
+            var names = new List<string>();
+            var visited = new HashSet<long>();
+            var current = transformPathId;
+            for (var depth = 0; depth < 64 && current != 0 && visited.Add(current); depth++)
+            {
+                var currentGameObjectId = ResolveGameObjectForComponent(connection, file, current);
+                var currentName = ResolveObjectName(connection, file, currentGameObjectId);
+                if (!string.IsNullOrWhiteSpace(currentName))
+                {
+                    names.Add(currentName);
+                }
+
+                current = ResolveParentTransform(connection, file, current);
+            }
+
+            names.Reverse();
+            return new GameObjectTransformPath(
+                gameObjectName,
+                names.Count > 0 ? string.Join("/", names) : gameObjectName,
+                names.Count > 0 ? "resolved" : "missingTransformPath");
+        }
+
+        private static long ResolveTransformForGameObject(SqliteConnection connection, string serializedFile, long gameObjectPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects obj INDEXED BY idx_source_objects_file_path
+  ON obj.serialized_file = rel.to_file
+ AND obj.path_id = rel.to_path_id
+WHERE rel.from_path_id = $pathId
+  AND rel.relation = 'gameObject.component'
+  AND rel.from_file = $file
+  AND obj.type = 'Transform'
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", gameObjectPathId);
+            return ToInt64(command.ExecuteScalar());
+        }
+
+        private static long ResolveGameObjectForComponent(SqliteConnection connection, string serializedFile, long componentPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+WHERE rel.from_path_id = $pathId
+  AND rel.relation = 'component.gameObject'
+  AND rel.from_file = $file
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", componentPathId);
+            return ToInt64(command.ExecuteScalar());
+        }
+
+        private static long ResolveParentTransform(SqliteConnection connection, string serializedFile, long transformPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+WHERE rel.from_path_id = $pathId
+  AND rel.relation = 'transform.parent'
+  AND rel.from_file = $file
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", transformPathId);
+            return ToInt64(command.ExecuteScalar());
+        }
+
+        private static string ResolveObjectName(SqliteConnection connection, string serializedFile, long pathId)
+        {
+            if (pathId == 0)
+            {
+                return string.Empty;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name
+FROM source_objects INDEXED BY idx_source_objects_file_path
+WHERE serialized_file = $file
+  AND path_id = $pathId
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", serializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            return command.ExecuteScalar() as string ?? string.Empty;
+        }
+
+        private static long ToInt64(object value)
+        {
+            if (value == null || value == DBNull.Value)
+            {
+                return 0;
+            }
+
+            return Convert.ToInt64(value, CultureInfo.InvariantCulture);
         }
 
         private static int CountMaterialTextureRefs(SqliteConnection connection, string materialFile, long materialPathId)
@@ -2333,6 +2476,9 @@ WHERE relation = 'material.texture'
             public string SerializedFile { get; init; }
             public long PathId { get; init; }
             public long GameObjectPathId { get; init; }
+            public string GameObjectName { get; init; }
+            public string TransformPath { get; init; }
+            public string TransformPathStatus { get; init; }
             public string DriverSerializeName { get; init; }
             public string AimSerializeName { get; init; }
             public string Aim1SerializeName { get; init; }
@@ -2348,14 +2494,19 @@ WHERE relation = 'material.texture'
                     ["serializedFile"] = SerializedFile,
                     ["pathId"] = PathId,
                     ["gameObjectPathId"] = GameObjectPathId,
+                    ["gameObjectName"] = GameObjectName,
+                    ["transformPath"] = TransformPath,
+                    ["transformPathStatus"] = TransformPathStatus,
                     ["driverSerializeName"] = DriverSerializeName,
                     ["aimSerializeName"] = AimSerializeName,
                     ["aim1SerializeName"] = Aim1SerializeName,
                     ["aim2SerializeName"] = Aim2SerializeName,
-                    ["rule"] = "只记录 BoneFollowDriver/BoneHairFollowDriver 暴露的骨骼名称线索；这些字段不能单独作为 AvatarMeshDataAsset 的 joint 映射。"
+                    ["rule"] = "只记录 BoneFollowDriver/BoneHairFollowDriver 暴露的骨骼名称和所在 Transform 路径线索；这些字段不能单独作为 AvatarMeshDataAsset 的 joint 映射。"
                 };
             }
         }
+
+        private sealed record GameObjectTransformPath(string GameObjectName, string TransformPath, string Status);
 
         private sealed record ExportedAssetInfo(
             string Type,
