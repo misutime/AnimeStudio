@@ -724,6 +724,7 @@ namespace AnimeStudio
             var skippedNormalTextures = new List<Dictionary<string, object>>();
             var unityTextures = new List<Dictionary<string, object>>();
             var baseColorTextureIndex = -1;
+            string baseColorTextureSlot = null;
             var colorMaskTextureIndex = -1;
             var maskTextureIndex = -1;
             var maskTextureSlot = "_MaskMap";
@@ -743,8 +744,12 @@ namespace AnimeStudio
                 }
                 if (textureRef.Dest == 0)
                 {
-                    pbr["baseColorTexture"] = new Dictionary<string, object> { ["index"] = textureIndex };
-                    baseColorTextureIndex = textureIndex;
+                    if (baseColorTextureIndex < 0 || IsBetterBaseColorSlot(textureRef.Slot, baseColorTextureSlot))
+                    {
+                        pbr["baseColorTexture"] = new Dictionary<string, object> { ["index"] = textureIndex };
+                        baseColorTextureIndex = textureIndex;
+                        baseColorTextureSlot = textureRef.Slot;
+                    }
                 }
                 else if (textureRef.Dest == 1 || textureRef.Dest == 3)
                 {
@@ -1120,7 +1125,9 @@ namespace AnimeStudio
 
             foreach (var color in material.UnityColors)
             {
-                if (!IsTintColorName(color.Key) || IsNeutralTint(color.Value))
+                if (!IsTintColorName(color.Key)
+                    || IsNonTintVectorParameterName(color.Key)
+                    || IsNeutralTint(color.Value))
                 {
                     continue;
                 }
@@ -1137,6 +1144,62 @@ namespace AnimeStudio
                     || name.IndexOf("Secondary", StringComparison.OrdinalIgnoreCase) >= 0
                     || name.IndexOf("Cloth", StringComparison.OrdinalIgnoreCase) >= 0
                     || name.IndexOf("Dye", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool IsNonTintVectorParameterName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            // Unity 材质里很多 Vector4 用 Color 类型保存，但名字里带 Param/Wind/Tile 时通常是 shader 控制参数。
+            // 这类值不能当作可烘焙配色，否则会把 `_PrimaryWindParam` 误判成染色颜色。
+            return name.IndexOf("Param", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("Wind", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("Tile", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("Offset", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("Fresnel", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsBetterBaseColorSlot(string candidateSlot, string currentSlot)
+        {
+            return GetBaseColorSlotPriority(candidateSlot) > GetBaseColorSlotPriority(currentSlot);
+        }
+
+        private static int GetBaseColorSlotPriority(string slot)
+        {
+            if (string.IsNullOrWhiteSpace(slot))
+            {
+                return 0;
+            }
+
+            if (slot.IndexOf("Outline", StringComparison.OrdinalIgnoreCase) >= 0
+                || slot.IndexOf("Detail", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return 10;
+            }
+
+            if (string.Equals(slot, "_MainTex", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_MainTexture", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_BaseMap", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(slot, "_BaseColorMap", StringComparison.OrdinalIgnoreCase))
+            {
+                return 100;
+            }
+
+            if (string.Equals(slot, "_BaseTexture", StringComparison.OrdinalIgnoreCase))
+            {
+                return 95;
+            }
+
+            return slot switch
+            {
+                _ when slot.IndexOf("BaseColor", StringComparison.OrdinalIgnoreCase) >= 0 => 90,
+                _ when slot.IndexOf("Albedo", StringComparison.OrdinalIgnoreCase) >= 0 => 85,
+                _ when slot.IndexOf("Diffuse", StringComparison.OrdinalIgnoreCase) >= 0 => 80,
+                _ => 50,
+            };
         }
 
         private static bool IsNeutralTint(Color color)
