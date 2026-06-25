@@ -228,7 +228,9 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
-            var role = NormalizeRole(Path.GetFileNameWithoutExtension(path));
+            // Naraka 诊断模块常统一叫 MonoBehaviour_lod0.gltf。
+            // 显式路径要连父目录一起看，避免 face/hair 都落到 Unknown 前缀后互相覆盖贴图或 buffer。
+            var role = NormalizeRole($"{request.Selector} {Path.GetFileName(path)} {Path.GetDirectoryName(path)}");
             var compatibility = AnalyzeCompatibility(baseNodeNames, path, allowUnskinnedDiagnostic: true);
             if (!compatibility.CanAssemble)
             {
