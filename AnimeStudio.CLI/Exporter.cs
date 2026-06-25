@@ -2642,6 +2642,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             var skeletonInfo = BuildSkeletonInfo(imported, bonePaths, avatarInfo);
             var skeletonValidation = BuildHumanoidSkeletonValidation(imported, avatarInfo);
             var materialSummary = BuildExportedModelMaterialSummary(outputPath);
+            var missingMaterialEvidence = BuildMissingMaterialUnityEvidence(outputPath, sourceInfo, meshPaths);
             var embeddedAnimationCount = CountWrittenGltfAnimations(outputPath);
             var importedAnimationListCount = imported.AnimationList?.Count ?? 0;
             var conversionIssues = imported is ModelConverter modelConverter
@@ -2680,6 +2681,9 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture,
                 materialHasNormalTexture = materialSummary?.hasNormalTexture,
                 materialImageCount = materialSummary?.imageCount,
+                materialMissingRendererPrimitiveUnityEvidenceCount = missingMaterialEvidence?.Evidence.Length ?? 0,
+                materialProbableSimulationHelperPrimitiveCount = missingMaterialEvidence?.ProbableSimulationHelperCount ?? 0,
+                materialMissingRendererPrimitiveUnityEvidence = missingMaterialEvidence?.Evidence,
                 unresolvedModelDependencyCount = conversionIssues.Count,
                 unresolvedModelDependencyTypes = conversionIssueTypes,
                 unresolvedModelDependencies = conversionIssues.Take(64).ToArray(),
@@ -2701,6 +2705,507 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
+        }
+
+        private static MissingMaterialUnityEvidenceSummary BuildMissingMaterialUnityEvidence(
+            string outputPath,
+            (string type, string name, string container, string source, long pathId) sourceInfo,
+            string[] meshPaths)
+        {
+            var missingLabels = CollectMissingMaterialPrimitiveLabels(outputPath);
+            if (missingLabels.Length == 0 || sourceInfo.pathId == 0)
+            {
+                return null;
+            }
+
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                return new MissingMaterialUnityEvidenceSummary
+                {
+                    Evidence = missingLabels.Take(64)
+                        .Select(label => new MissingMaterialUnityEvidence
+                        {
+                            Primitive = label,
+                            Status = "sourceIndexNotAvailable",
+                        })
+                        .ToArray(),
+                };
+            }
+
+            var targets = ResolveMissingMaterialPrimitivePaths(missingLabels, meshPaths, sourceInfo.name)
+                .Take(64)
+                .ToArray();
+            if (targets.Length == 0)
+            {
+                return null;
+            }
+
+            var evidence = QueryMissingMaterialUnityEvidence(indexPath, sourceInfo, targets);
+            return new MissingMaterialUnityEvidenceSummary
+            {
+                Evidence = evidence.ToArray(),
+                ProbableSimulationHelperCount = evidence.Count(x => x.ProbableSimulationHelper),
+            };
+        }
+
+        private static string[] CollectMissingMaterialPrimitiveLabels(string outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)
+                || !string.Equals(Path.GetExtension(outputPath), ".gltf", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(outputPath))
+            {
+                return Array.Empty<string>();
+            }
+
+            try
+            {
+                var gltf = JObject.Parse(File.ReadAllText(outputPath));
+                var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var meshes = gltf["meshes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var labels = BuildGltfMeshLabels(nodes, meshes);
+                var missing = new List<string>();
+
+                for (var meshIndex = 0; meshIndex < meshes.Length; meshIndex++)
+                {
+                    var primitiveIndex = -1;
+                    foreach (var primitive in meshes[meshIndex]["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                    {
+                        primitiveIndex++;
+                        if ((int?)primitive["material"] == null)
+                        {
+                            missing.Add(BuildGltfPrimitiveLabel(labels, meshIndex, primitiveIndex));
+                        }
+                    }
+                }
+
+                return missing
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .ToArray();
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Verbose($"Unable to read missing-material primitive labels from glTF: {outputPath}. {e.Message}");
+                return Array.Empty<string>();
+            }
+        }
+
+        private static string[] BuildGltfMeshLabels(JObject[] nodes, JObject[] meshes)
+        {
+            var labels = new string[meshes.Length];
+            for (var nodeIndex = 0; nodeIndex < nodes.Length; nodeIndex++)
+            {
+                var meshIndex = (int?)nodes[nodeIndex]["mesh"];
+                if (meshIndex.HasValue
+                    && meshIndex.Value >= 0
+                    && meshIndex.Value < labels.Length
+                    && string.IsNullOrWhiteSpace(labels[meshIndex.Value]))
+                {
+                    labels[meshIndex.Value] = (string)nodes[nodeIndex]["name"];
+                }
+            }
+
+            for (var meshIndex = 0; meshIndex < meshes.Length; meshIndex++)
+            {
+                if (string.IsNullOrWhiteSpace(labels[meshIndex]))
+                {
+                    labels[meshIndex] = (string)meshes[meshIndex]["name"] ?? $"mesh[{meshIndex}]";
+                }
+            }
+
+            return labels;
+        }
+
+        private static string BuildGltfPrimitiveLabel(string[] meshLabels, int meshIndex, int primitiveIndex)
+        {
+            var label = meshIndex >= 0 && meshIndex < meshLabels.Length
+                ? meshLabels[meshIndex]
+                : $"mesh[{meshIndex}]";
+            return primitiveIndex == 0 ? label : $"{label}#{primitiveIndex}";
+        }
+
+        private static List<MissingMaterialPrimitiveTarget> ResolveMissingMaterialPrimitivePaths(
+            string[] missingLabels,
+            string[] meshPaths,
+            string rootName)
+        {
+            var result = new List<MissingMaterialPrimitiveTarget>();
+            var paths = meshPaths?
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray() ?? Array.Empty<string>();
+
+            foreach (var label in missingLabels)
+            {
+                var plainLabel = StripPrimitiveSuffix(label);
+                var matches = paths
+                    .Where(path => string.Equals(PathLeaf(path), plainLabel, StringComparison.Ordinal)
+                        || string.Equals(path, plainLabel, StringComparison.Ordinal))
+                    .OrderBy(path => path, StringComparer.Ordinal)
+                    .ToArray();
+                if (matches.Length == 0)
+                {
+                    var fallbackPath = plainLabel.Contains("/")
+                        ? plainLabel
+                        : string.IsNullOrWhiteSpace(rootName) ? plainLabel : $"{rootName}/{plainLabel}";
+                    result.Add(new MissingMaterialPrimitiveTarget(label, fallbackPath, 0));
+                    continue;
+                }
+
+                foreach (var path in matches)
+                {
+                    result.Add(new MissingMaterialPrimitiveTarget(label, path, matches.Length));
+                }
+            }
+
+            return result;
+        }
+
+        private static string StripPrimitiveSuffix(string label)
+        {
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                return label;
+            }
+
+            var hashIndex = label.LastIndexOf('#');
+            return hashIndex > 0 ? label.Substring(0, hashIndex) : label;
+        }
+
+        private static string PathLeaf(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+
+            var normalized = path.Replace('\\', '/').TrimEnd('/');
+            var slash = normalized.LastIndexOf('/');
+            return slash >= 0 ? normalized.Substring(slash + 1) : normalized;
+        }
+
+        private static List<MissingMaterialUnityEvidence> QueryMissingMaterialUnityEvidence(
+            string indexPath,
+            (string type, string name, string container, string source, long pathId) sourceInfo,
+            MissingMaterialPrimitiveTarget[] targets)
+        {
+            var rows = new List<MissingMaterialUnityEvidence>();
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+
+                foreach (var target in targets)
+                {
+                    var matches = FindSourceTransformPathMatches(connection, sourceInfo, target.SourcePath);
+                    if (matches.Count == 0)
+                    {
+                        rows.Add(BuildMissingMaterialUnityEvidence(
+                            target,
+                            0,
+                            string.Empty,
+                            string.Empty,
+                            0,
+                            Array.Empty<string>(),
+                            0,
+                            0));
+                        continue;
+                    }
+
+                    foreach (var match in matches)
+                    {
+                        var components = QueryGameObjectComponentSummary(connection, match.GameObjectFile, match.GameObjectPathId);
+                        rows.Add(BuildMissingMaterialUnityEvidence(
+                            target,
+                            matches.Count,
+                            match.Path,
+                            match.GameObjectFile,
+                            match.GameObjectPathId,
+                            components.ComponentTypes,
+                            components.RendererCount,
+                            components.RendererMaterialRelationCount));
+                    }
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to query missing-material Unity evidence from SQLite source index: {e.Message}");
+            }
+
+            return rows
+                .OrderBy(x => x.Primitive, StringComparer.Ordinal)
+                .ThenBy(x => x.SourcePath, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        private static List<SourceTransformPathMatch> FindSourceTransformPathMatches(
+            SqliteConnection connection,
+            (string type, string name, string container, string source, long pathId) sourceInfo,
+            string sourcePath)
+        {
+            var rootFile = ExtractSourceIndexSerializedFile(sourceInfo.source);
+            var roots = QueryRootTransformCandidates(connection, sourceInfo.pathId, rootFile);
+            var segments = (sourcePath ?? string.Empty)
+                .Replace('\\', '/')
+                .Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0)
+            {
+                return Array.Empty<SourceTransformPathMatch>().ToList();
+            }
+
+            var candidates = new List<SourceTransformPathMatch>();
+            foreach (var root in roots)
+            {
+                var startIndex = string.Equals(segments[0], PathLeaf(root.Path), StringComparison.Ordinal)
+                    ? 1
+                    : 0;
+                var current = new List<SourceTransformPathMatch> { root };
+                for (var i = startIndex; i < segments.Length && current.Count > 0; i++)
+                {
+                    var next = new List<SourceTransformPathMatch>();
+                    foreach (var candidate in current)
+                    {
+                        next.AddRange(QueryChildTransformCandidates(connection, candidate, segments[i]));
+                        if (next.Count >= 64)
+                        {
+                            break;
+                        }
+                    }
+                    current = next.Take(64).ToList();
+                }
+
+                candidates.AddRange(current);
+            }
+
+            return candidates
+                .GroupBy(x => $"{x.Path}\n{x.GameObjectFile}\n{x.GameObjectPathId}", StringComparer.Ordinal)
+                .Select(x => x.First())
+                .OrderBy(x => x.Path, StringComparer.Ordinal)
+                .Take(64)
+                .ToList();
+        }
+
+        private static List<SourceTransformPathMatch> QueryRootTransformCandidates(
+            SqliteConnection connection,
+            long rootPathId,
+            string rootFile)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT root.name,
+       tr.serialized_file,
+       tr.path_id,
+       root.serialized_file,
+       root.path_id
+FROM source_objects root
+JOIN source_relations comp
+  ON comp.to_file = root.serialized_file
+ AND comp.to_path_id = root.path_id
+ AND comp.relation = 'component.gameObject'
+JOIN source_objects tr
+  ON tr.serialized_file = comp.from_file
+ AND tr.path_id = comp.from_path_id
+ AND tr.type = 'Transform'
+WHERE root.type = 'GameObject'
+  AND root.path_id = $rootPathId
+  AND ($rootFile = '' OR root.serialized_file = $rootFile)
+ORDER BY root.serialized_file, root.path_id
+LIMIT 8;";
+            command.Parameters.AddWithValue("$rootPathId", rootPathId);
+            command.Parameters.AddWithValue("$rootFile", rootFile ?? string.Empty);
+
+            var result = new List<SourceTransformPathMatch>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new SourceTransformPathMatch
+                {
+                    Path = reader.GetString(0),
+                    TransformFile = reader.GetString(1),
+                    TransformPathId = reader.GetInt64(2),
+                    GameObjectFile = reader.GetString(3),
+                    GameObjectPathId = reader.GetInt64(4),
+                });
+            }
+            return result;
+        }
+
+        private static List<SourceTransformPathMatch> QueryChildTransformCandidates(
+            SqliteConnection connection,
+            SourceTransformPathMatch parent,
+            string childName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT go.name,
+       child.to_file,
+       child.to_path_id,
+       go.serialized_file,
+       go.path_id
+FROM source_relations child
+JOIN source_relations goRel
+  ON goRel.from_file = child.to_file
+ AND goRel.from_path_id = child.to_path_id
+ AND goRel.relation = 'component.gameObject'
+JOIN source_objects go
+  ON go.serialized_file = goRel.to_file
+ AND go.path_id = goRel.to_path_id
+ AND go.type = 'GameObject'
+WHERE child.relation = 'transform.child'
+  AND child.from_file = $parentFile
+  AND child.from_path_id = $parentPathId
+  AND go.name = $childName
+ORDER BY go.serialized_file, go.path_id
+LIMIT 64;";
+            command.Parameters.AddWithValue("$parentFile", parent.TransformFile ?? string.Empty);
+            command.Parameters.AddWithValue("$parentPathId", parent.TransformPathId);
+            command.Parameters.AddWithValue("$childName", childName ?? string.Empty);
+
+            var result = new List<SourceTransformPathMatch>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.GetString(0);
+                result.Add(new SourceTransformPathMatch
+                {
+                    Path = $"{parent.Path}/{name}",
+                    TransformFile = reader.GetString(1),
+                    TransformPathId = reader.GetInt64(2),
+                    GameObjectFile = reader.GetString(3),
+                    GameObjectPathId = reader.GetInt64(4),
+                });
+            }
+            return result;
+        }
+
+        private static GameObjectComponentSummary QueryGameObjectComponentSummary(
+            SqliteConnection connection,
+            string gameObjectFile,
+            long gameObjectPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+WITH components AS (
+    SELECT comp.serialized_file,
+           comp.path_id,
+           comp.type
+    FROM source_relations compRel
+    JOIN source_objects comp
+      ON comp.serialized_file = compRel.from_file
+     AND comp.path_id = compRel.from_path_id
+    WHERE compRel.relation = 'component.gameObject'
+      AND compRel.to_file = $goFile
+      AND compRel.to_path_id = $goPathId
+    UNION
+    SELECT comp.serialized_file,
+           comp.path_id,
+           comp.type
+    FROM source_relations compRel
+    JOIN source_objects comp
+      ON comp.serialized_file = compRel.to_file
+     AND comp.path_id = compRel.to_path_id
+    WHERE compRel.relation = 'gameObject.component'
+      AND compRel.from_file = $goFile
+      AND compRel.from_path_id = $goPathId
+)
+SELECT components.serialized_file,
+       components.path_id,
+       components.type,
+       COUNT(mat.id) AS material_relation_count
+FROM components
+LEFT JOIN source_relations mat
+  ON mat.from_file = components.serialized_file
+ AND mat.from_path_id = components.path_id
+ AND mat.relation = 'renderer.material'
+GROUP BY components.serialized_file, components.path_id, components.type
+ORDER BY components.type, components.path_id;";
+            command.Parameters.AddWithValue("$goFile", gameObjectFile ?? string.Empty);
+            command.Parameters.AddWithValue("$goPathId", gameObjectPathId);
+
+            var componentTypes = new HashSet<string>(StringComparer.Ordinal);
+            var rendererCount = 0L;
+            var materialRelationCount = 0L;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var type = reader.GetString(2);
+                componentTypes.Add(type);
+                if (string.Equals(type, "MeshRenderer", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(type, "SkinnedMeshRenderer", StringComparison.OrdinalIgnoreCase))
+                {
+                    rendererCount++;
+                    materialRelationCount += reader.GetInt64(3);
+                }
+            }
+
+            return new GameObjectComponentSummary
+            {
+                ComponentTypes = componentTypes.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+                RendererCount = rendererCount,
+                RendererMaterialRelationCount = materialRelationCount,
+            };
+        }
+
+        private static MissingMaterialUnityEvidence BuildMissingMaterialUnityEvidence(
+            MissingMaterialPrimitiveTarget target,
+            long sourcePathMatchCount,
+            string matchedPath,
+            string gameObjectFile,
+            long gameObjectPathId,
+            string[] componentTypes,
+            long rendererCount,
+            long rendererMaterialRelationCount)
+        {
+            var hasCloth = componentTypes.Any(x => string.Equals(x, "Cloth", StringComparison.OrdinalIgnoreCase));
+            var hasRenderer = rendererCount > 0;
+            var hasMaterialRelation = rendererMaterialRelationCount > 0;
+            var status = sourcePathMatchCount <= 0
+                ? "sourceTransformPathNotFound"
+                : !hasRenderer
+                    ? "sourceGameObjectHasNoRenderer"
+                    : hasMaterialRelation
+                        ? "rendererMaterialRelationExistsCheckExport"
+                        : hasCloth
+                            ? "clothSimulationHelperNoRendererMaterial"
+                            : "rendererHasNoMaterialRelation";
+
+            // 这是诊断标签，不参与默认过滤。满足这些条件时，通常是 Unity 里真实存在但不直接渲染的布料模拟网格。
+            var probableSimulationHelper = hasCloth && hasRenderer && !hasMaterialRelation;
+
+            return new MissingMaterialUnityEvidence
+            {
+                Primitive = target.Primitive,
+                SourcePath = target.SourcePath,
+                MeshPathMatchCount = target.MeshPathMatchCount,
+                SourceTransformPathMatchCount = sourcePathMatchCount,
+                MatchedSourcePath = matchedPath,
+                GameObjectFile = gameObjectFile,
+                GameObjectPathId = gameObjectPathId,
+                ComponentTypes = componentTypes,
+                RendererCount = rendererCount,
+                RendererMaterialRelationCount = rendererMaterialRelationCount,
+                HasClothComponent = hasCloth,
+                HasRendererMaterialRelation = hasMaterialRelation,
+                ProbableSimulationHelper = probableSimulationHelper,
+                Status = status,
+            };
+        }
+
+        private static string ExtractSourceIndexSerializedFile(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return null;
+            }
+
+            var pipe = source.LastIndexOf('|');
+            return pipe >= 0 && pipe + 1 < source.Length
+                ? source.Substring(pipe + 1)
+                : null;
         }
 
         private static int CountWrittenGltfAnimations(string outputPath)
@@ -2808,6 +3313,48 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             public bool hasBaseColorTexture { get; init; }
             public bool hasNormalTexture { get; init; }
             public int imageCount { get; init; }
+        }
+
+        private sealed class MissingMaterialUnityEvidenceSummary
+        {
+            public MissingMaterialUnityEvidence[] Evidence { get; init; } = Array.Empty<MissingMaterialUnityEvidence>();
+            public int ProbableSimulationHelperCount { get; init; }
+        }
+
+        private sealed record MissingMaterialPrimitiveTarget(string Primitive, string SourcePath, int MeshPathMatchCount);
+
+        private sealed class SourceTransformPathMatch
+        {
+            public string Path { get; init; }
+            public string TransformFile { get; init; }
+            public long TransformPathId { get; init; }
+            public string GameObjectFile { get; init; }
+            public long GameObjectPathId { get; init; }
+        }
+
+        private sealed class GameObjectComponentSummary
+        {
+            public string[] ComponentTypes { get; init; } = Array.Empty<string>();
+            public long RendererCount { get; init; }
+            public long RendererMaterialRelationCount { get; init; }
+        }
+
+        private sealed class MissingMaterialUnityEvidence
+        {
+            public string Primitive { get; init; }
+            public string SourcePath { get; init; }
+            public int MeshPathMatchCount { get; init; }
+            public long SourceTransformPathMatchCount { get; init; }
+            public string MatchedSourcePath { get; init; }
+            public string GameObjectFile { get; init; }
+            public long GameObjectPathId { get; init; }
+            public string[] ComponentTypes { get; init; } = Array.Empty<string>();
+            public long RendererCount { get; init; }
+            public long RendererMaterialRelationCount { get; init; }
+            public bool HasClothComponent { get; init; }
+            public bool HasRendererMaterialRelation { get; init; }
+            public bool ProbableSimulationHelper { get; init; }
+            public string Status { get; init; }
         }
 
         private static JObject GetModelAvatarInfo(object source)
