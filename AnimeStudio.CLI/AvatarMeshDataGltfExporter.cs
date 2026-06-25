@@ -353,6 +353,7 @@ namespace AnimeStudio.CLI
             var nodes = new JArray();
             var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
             var rendererSkinBindings = LoadVisualCellRendererSkinBindings(sourceIndexPath, parts, warnings);
+            var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
             var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -363,6 +364,10 @@ namespace AnimeStudio.CLI
                 var part = parts[i];
                 materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
                 var materialIndex = GetVisualCellMaterialIndex(materialBinding, materialIndexByKey);
+                avatarPartDataEvidence.TryGetValue(part.AvatarMeshPathId, out var partDataEvidence);
+                var nodeAvatarPartDataEvidence = partDataEvidence != null
+                    ? (IEnumerable<AvatarPartDataEvidence>)partDataEvidence
+                    : Enumerable.Empty<AvatarPartDataEvidence>();
                 gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath), materialIndex));
                 nodes.Add(new JObject
                 {
@@ -374,7 +379,8 @@ namespace AnimeStudio.CLI
                         ["rendererFile"] = part.RendererFile,
                         ["rendererPathId"] = part.RendererPathId,
                         ["avatarMeshPathId"] = part.AvatarMeshPathId,
-                        ["materialBinding"] = materialBinding?.ToJson()
+                        ["materialBinding"] = materialBinding?.ToJson(),
+                        ["avatarPartDataEvidence"] = new JArray(nodeAvatarPartDataEvidence.Select(x => x.ToJson()))
                     }
                 });
             }
@@ -446,9 +452,12 @@ namespace AnimeStudio.CLI
                 {
                     materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
                     rendererSkinBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var rendererSkinBinding);
-                    return ToReportJson(part, materialBinding, rendererSkinBinding);
+                    avatarPartDataEvidence.TryGetValue(part.AvatarMeshPathId, out var partData);
+                    return ToReportJson(part, materialBinding, rendererSkinBinding, partData);
                 })),
-                ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系，不猜 LOD、材质槽、骨骼或 skin。"
+                ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence.Values.SelectMany(x => x)),
+                ["avatarPartDataEvidenceCount"] = avatarPartDataEvidence.Values.Sum(x => x.Count),
+                ["rule"] = "只按 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset 的确定性 PPtr 选择 Naraka 自定义网格；材质引用只来自 renderer.material / material.texture 源索引关系；AvatarPartDataAsset.m_MeshData 只记录部件/LOD 顺序，不猜材质槽、骨骼或 skin。"
             };
             File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
             WriteVisualCellLibraryMetadata(
@@ -460,6 +469,7 @@ namespace AnimeStudio.CLI
                 parts,
                 materialBindings,
                 rendererSkinBindings,
+                avatarPartDataEvidence,
                 gltfMaterials,
                 gltfImages,
                 gltfTextures);
@@ -477,6 +487,7 @@ namespace AnimeStudio.CLI
             IReadOnlyList<VisualCellPart> parts,
             IReadOnlyDictionary<string, VisualCellMaterialBinding> materialBindings,
             IReadOnlyDictionary<string, VisualCellRendererSkinBinding> rendererSkinBindings,
+            IReadOnlyDictionary<long, List<AvatarPartDataEvidence>> avatarPartDataEvidence,
             JArray gltfMaterials,
             JArray gltfImages,
             JArray gltfTextures)
@@ -503,6 +514,9 @@ namespace AnimeStudio.CLI
                 rendererSkinBindings.Values.Any(x => x.Status == "rendererSkinRelations")
                     ? "renderer_skin_relations_present"
                     : "renderer_skin_relations_missing",
+                avatarPartDataEvidence.Values.Any(x => x.Count > 0)
+                    ? "avatar_part_data_mesh_order_present"
+                    : "avatar_part_data_mesh_order_missing",
                 needsCustomizationTint ? "needs_customization_tint" : "preview_material_not_full_shader");
             var sourceSkinStatuses = parts
                 .Select(x => x.Mesh.Skin.Status)
@@ -510,6 +524,7 @@ namespace AnimeStudio.CLI
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
+            var avatarPartEvidenceItems = avatarPartDataEvidence.Values.SelectMany(x => x).ToArray();
 
             var catalogEntry = new JObject
             {
@@ -558,6 +573,9 @@ namespace AnimeStudio.CLI
                 ["rendererSkinMeshRefCount"] = rendererSkinBindings.Values.Count(x => x.MeshPathId.HasValue),
                 ["rendererSkinRootBoneRefCount"] = rendererSkinBindings.Values.Count(x => x.RootBonePathId.HasValue),
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
+                ["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartEvidenceItems),
+                ["avatarPartDataEvidenceCount"] = avatarPartEvidenceItems.Length,
+                ["avatarPartDataMeshDataIndexes"] = new JArray(avatarPartEvidenceItems.Select(x => x.MeshDataIndex).OrderBy(x => x)),
                 ["selectedLodGroup"] = "lod0RendererAssistants",
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -570,7 +588,8 @@ namespace AnimeStudio.CLI
                     ["rendererMaterialBasis"] = "renderer.material / material.texture from unity_source_index.db",
                     ["skinDataBasis"] = "AvatarMeshDataAsset.m_AnimSkinData / m_AvatarBoneWeights / m_BindPoses",
                     ["rendererSkinBasis"] = "skinnedMeshRenderer.mesh / rootBone / bones from unity_source_index.db",
-                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用和源 skin 字段可追溯；Renderer 可能只是显示挂点，没有 joint 映射、shader tint 和完整角色装配前不进入动画验收。"
+                    ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
+                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序和源 skin 字段可追溯；Renderer/AvatarPartDataAsset 目前都没有提供 joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
 
@@ -1155,7 +1174,33 @@ namespace AnimeStudio.CLI
             return "noRendererSkinRelations";
         }
 
-        private static JObject ToReportJson(VisualCellPart part, VisualCellMaterialBinding materialBinding, VisualCellRendererSkinBinding rendererSkinBinding)
+        private static string SummarizeAvatarPartDataEvidenceStatus(IEnumerable<AvatarPartDataEvidence> evidences)
+        {
+            var list = evidences?.ToList() ?? new List<AvatarPartDataEvidence>();
+            if (list.Count == 0)
+            {
+                return "missing";
+            }
+            if (list.All(x => x.Status == "avatarPartDataMeshOrder"))
+            {
+                return "avatarPartDataMeshOrder";
+            }
+            if (list.Any(x => x.Status == "avatarPartDataMeshOrder"))
+            {
+                return "partialAvatarPartDataMeshOrder";
+            }
+            if (list.Any(x => x.Status == "avatarPartDataMeshOrderScriptUnverified"))
+            {
+                return "scriptUnverified";
+            }
+            return "unknown";
+        }
+
+        private static JObject ToReportJson(
+            VisualCellPart part,
+            VisualCellMaterialBinding materialBinding,
+            VisualCellRendererSkinBinding rendererSkinBinding,
+            IReadOnlyCollection<AvatarPartDataEvidence> avatarPartDataEvidence)
         {
             var meshJson = ToReportJson(part.Mesh, part.MeshJsonPath);
             meshJson["assistantPathId"] = part.AssistantPathId;
@@ -1166,6 +1211,8 @@ namespace AnimeStudio.CLI
             meshJson["assistantJson"] = Path.GetFullPath(part.AssistantJsonPath);
             meshJson["materialBinding"] = materialBinding?.ToJson();
             meshJson["rendererSkinBinding"] = rendererSkinBinding?.ToJson();
+            meshJson["avatarPartDataEvidenceStatus"] = SummarizeAvatarPartDataEvidenceStatus(avatarPartDataEvidence);
+            meshJson["avatarPartDataEvidence"] = new JArray((avatarPartDataEvidence ?? Array.Empty<AvatarPartDataEvidence>()).Select(x => x.ToJson()));
             return meshJson;
         }
 
@@ -1371,6 +1418,132 @@ ORDER BY relation;";
             }
         }
 
+        private static Dictionary<long, List<AvatarPartDataEvidence>> LoadAvatarPartDataEvidence(
+            string jsonFolder,
+            IReadOnlyDictionary<long, ManifestEntry> manifest,
+            IReadOnlyCollection<VisualCellPart> parts,
+            string sourceIndexPath,
+            List<string> warnings)
+        {
+            var result = parts.ToDictionary(
+                x => x.AvatarMeshPathId,
+                _ => new List<AvatarPartDataEvidence>());
+            if (result.Count == 0 || manifest.Count == 0)
+            {
+                return result;
+            }
+
+            SqliteConnection connection = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(sourceIndexPath) && File.Exists(sourceIndexPath))
+                {
+                    SQLitePCL.Batteries_V2.Init();
+                    connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                    connection.Open();
+                }
+                else if (!string.IsNullOrWhiteSpace(sourceIndexPath))
+                {
+                    warnings.Add($"missingSourceIndexForAvatarPartData:{sourceIndexPath}");
+                }
+
+                foreach (var item in manifest)
+                {
+                    var pathId = item.Key;
+                    var entry = item.Value;
+                    if (string.IsNullOrWhiteSpace(entry.JsonPath) || !File.Exists(entry.JsonPath))
+                    {
+                        continue;
+                    }
+
+                    JObject json;
+                    try
+                    {
+                        json = JObject.Parse(File.ReadAllText(entry.JsonPath));
+                    }
+                    catch (JsonException)
+                    {
+                        continue;
+                    }
+
+                    var meshData = json["m_MeshData"] as JArray;
+                    if (meshData == null || meshData.Count == 0 || json["m_VertexData"] != null)
+                    {
+                        continue;
+                    }
+
+                    var scriptName = connection != null
+                        ? ResolveMonoScriptName(connection, entry.SerializedFile, pathId)
+                        : string.Empty;
+                    var scriptVerified = string.Equals(scriptName, "AvatarPartDataAsset", StringComparison.Ordinal);
+                    if (!scriptVerified && !string.IsNullOrWhiteSpace(scriptName))
+                    {
+                        continue;
+                    }
+
+                    var assetName = (string)json["m_Name"] ?? Path.GetFileNameWithoutExtension(entry.JsonPath);
+                    for (var index = 0; index < meshData.Count; index++)
+                    {
+                        var meshPathId = ReadPPtrPathId(meshData[index]);
+                        if (meshPathId == 0 || !result.TryGetValue(meshPathId, out var evidences))
+                        {
+                            continue;
+                        }
+
+                        evidences.Add(new AvatarPartDataEvidence
+                        {
+                            Status = scriptVerified ? "avatarPartDataMeshOrder" : "avatarPartDataMeshOrderScriptUnverified",
+                            AssetName = assetName,
+                            AssetJsonPath = entry.JsonPath,
+                            AssetFile = entry.SerializedFile,
+                            AssetPathId = pathId,
+                            ScriptName = scriptName,
+                            MeshDataIndex = index,
+                            MeshDataCount = meshData.Count,
+                            MeshDataPathId = meshPathId,
+                        });
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is JsonException || ex is InvalidDataException)
+            {
+                warnings.Add($"avatarPartDataEvidenceQueryFailed:{ex.Message}");
+            }
+            finally
+            {
+                connection?.Dispose();
+            }
+
+            return result;
+        }
+
+        private static string ResolveMonoScriptName(SqliteConnection connection, string serializedFile, long pathId)
+        {
+            foreach (var file in new[] { NormalizeSerializedFileName(serializedFile), serializedFile }.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT script.name
+FROM source_relations scriptRel INDEXED BY idx_source_relations_from
+JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE scriptRel.from_file = $file COLLATE NOCASE
+  AND scriptRel.from_path_id = $pathId
+  AND scriptRel.relation = 'monoBehaviour.script'
+LIMIT 1;";
+                command.Parameters.AddWithValue("$file", file ?? string.Empty);
+                command.Parameters.AddWithValue("$pathId", pathId);
+                var value = command.ExecuteScalar() as string;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+
+            return string.Empty;
+        }
+
         private static int CountMaterialTextureRefs(SqliteConnection connection, string materialFile, long materialPathId)
         {
             using var command = connection.CreateCommand();
@@ -1393,6 +1566,18 @@ WHERE relation = 'material.texture'
         private static string GetMaterialKey(string materialFile, long materialPathId)
         {
             return $"{materialFile ?? string.Empty}#{materialPathId}";
+        }
+
+        private static string NormalizeSerializedFileName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+
+            return value.StartsWith("cab-", StringComparison.OrdinalIgnoreCase)
+                ? "CAB-" + value.Substring(4)
+                : value;
         }
 
         private static JObject TryLoadVisualCell(IEnumerable<string> jsonFiles)
@@ -1979,6 +2164,36 @@ WHERE relation = 'material.texture'
                     ["bonesTruncated"] = BonesTruncated,
                     ["boneTargetsPreview"] = BoneTargets != null ? new JArray(BoneTargets.Take(32).Select(x => x.DeepClone())) : null,
                     ["rule"] = "Renderer 骨骼证据只来自 SQLite 源索引的 skinnedMeshRenderer.mesh/rootBone/bones；Naraka 自定义网格如果这里为空，说明 Renderer 不是当前 joint 映射来源。"
+                };
+            }
+        }
+
+        private sealed class AvatarPartDataEvidence
+        {
+            public string Status { get; init; }
+            public string AssetName { get; init; }
+            public string AssetJsonPath { get; init; }
+            public string AssetFile { get; init; }
+            public long AssetPathId { get; init; }
+            public string ScriptName { get; init; }
+            public int MeshDataIndex { get; init; }
+            public int MeshDataCount { get; init; }
+            public long MeshDataPathId { get; init; }
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["status"] = Status,
+                    ["assetName"] = AssetName,
+                    ["assetJson"] = string.IsNullOrWhiteSpace(AssetJsonPath) ? null : Path.GetFullPath(AssetJsonPath),
+                    ["assetFile"] = AssetFile,
+                    ["assetPathId"] = AssetPathId,
+                    ["scriptName"] = ScriptName,
+                    ["meshDataIndex"] = MeshDataIndex,
+                    ["meshDataCount"] = MeshDataCount,
+                    ["meshDataPathId"] = MeshDataPathId,
+                    ["rule"] = "只表示 AvatarPartDataAsset.m_MeshData 的显式 PPtr 顺序；不能证明骨骼、joint 或 skin 绑定。"
                 };
             }
         }
