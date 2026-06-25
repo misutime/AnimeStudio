@@ -5769,6 +5769,10 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 ["textureMode"] = CliExportOptions.TextureMode.ToString(),
                 ["animationPackage"] = CliExportOptions.AnimationPackage.ToString(),
                 ["meshCount"] = imported.MeshList?.Count ?? 0,
+                ["meshWithBoneListCount"] = imported.MeshList?.Count(x => x.BoneList?.Count > 0) ?? 0,
+                ["meshWithVertexWeightsCount"] = imported.MeshList?.Count(HasVertexWeights) ?? 0,
+                ["weightedMeshWithoutBoneListCount"] = imported.MeshList?.Count(x => HasVertexWeights(x) && (x.BoneList == null || x.BoneList.Count == 0)) ?? 0,
+                ["importedBoneTotal"] = imported.MeshList?.Sum(x => x.BoneList?.Count ?? 0) ?? 0,
                 ["materialCount"] = imported.MaterialList?.Count ?? 0,
                 ["textureCount"] = imported.TextureList?.Count ?? 0,
                 ["animationCount"] = imported.AnimationList?.Count ?? 0,
@@ -5790,6 +5794,11 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     break;
             }
             return data;
+        }
+
+        private static bool HasVertexWeights(ImportedMesh mesh)
+        {
+            return mesh?.VertexList?.Any(x => x.Weights?.Any(weight => weight > 0.0001f) == true) == true;
         }
 
         public static bool ExportDumpFile(AssetItem item, string exportPath)

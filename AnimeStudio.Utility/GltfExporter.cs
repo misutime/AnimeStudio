@@ -395,32 +395,54 @@ namespace AnimeStudio
                 return existing;
             }
 
-            var joints = new List<int>();
-            var matrices = new List<Matrix4x4>();
-            foreach (var bone in mesh.BoneList)
+            var profile = new Dictionary<string, object>
             {
-                if (bone.Path == null || !_pathNodeMap.TryGetValue(bone.Path, out var jointNode))
-                {
-                    continue;
-                }
-                joints.Add(jointNode);
-                matrices.Add(bone.Matrix);
-            }
-
-            if (joints.Count == 0)
-            {
-                return -1;
-            }
-
-            var skin = new Dictionary<string, object>
-            {
-                ["joints"] = joints,
-                ["inverseBindMatrices"] = WriteMatrixAccessor(matrices),
+                ["mesh"] = mesh.Path ?? string.Empty,
+                ["boneCount"] = mesh.BoneList?.Count ?? 0,
             };
-            var index = _skins.Count;
-            _skins.Add(skin);
-            _skinMap[mesh.Path] = index;
-            return index;
+            using (Measure("gltf_skin", profile))
+            {
+                var joints = new List<int>();
+                var matrices = new List<Matrix4x4>();
+                var missingBonePaths = new List<string>();
+                foreach (var bone in mesh.BoneList)
+                {
+                    if (bone.Path == null || !_pathNodeMap.TryGetValue(bone.Path, out var jointNode))
+                    {
+                        if (missingBonePaths.Count < 16)
+                        {
+                            missingBonePaths.Add(bone.Path ?? string.Empty);
+                        }
+                        continue;
+                    }
+                    joints.Add(jointNode);
+                    matrices.Add(bone.Matrix);
+                }
+
+                profile["matchedJointCount"] = joints.Count;
+                profile["missingBoneCount"] = Math.Max(0, (mesh.BoneList?.Count ?? 0) - joints.Count);
+                if (missingBonePaths.Count > 0)
+                {
+                    profile["missingBonePathSamples"] = missingBonePaths;
+                }
+
+                if (joints.Count == 0)
+                {
+                    profile["status"] = "noMatchedJoints";
+                    return -1;
+                }
+
+                var skin = new Dictionary<string, object>
+                {
+                    ["joints"] = joints,
+                    ["inverseBindMatrices"] = WriteMatrixAccessor(matrices),
+                };
+                var index = _skins.Count;
+                _skins.Add(skin);
+                _skinMap[mesh.Path] = index;
+                profile["status"] = "ok";
+                return index;
+            }
         }
 
         private void BuildAnimations()

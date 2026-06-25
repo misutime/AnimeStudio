@@ -490,16 +490,20 @@ namespace AnimeStudio
 
             if (meshR is SkinnedMeshRenderer sMesh)
             {
-                using (Measure("model_skin", new Dictionary<string, object>
+                var skinProfile = new Dictionary<string, object>
                 {
                     ["mesh"] = mesh.m_Name,
                     ["renderer"] = m_GameObject2?.m_Name,
                     ["source"] = mesh.assetsFile?.fullName,
                     ["pathId"] = mesh.m_PathID,
+                    ["vertexCount"] = mesh.m_VertexCount,
                     ["boneCount"] = sMesh.m_Bones?.Count ?? 0,
                     ["bindPoseCount"] = mesh.m_BindPose?.Length ?? 0,
+                    ["skinWeightCount"] = mesh.m_Skin?.Count ?? 0,
+                    ["skinWeightedVertexCount"] = CountWeightedVertices(mesh.m_Skin),
                     ["morphChannelCount"] = mesh.m_Shapes?.channels?.Count ?? 0,
-                }))
+                };
+                using (Measure("model_skin", skinProfile))
                 {
                     //Bone
                     /*
@@ -508,22 +512,34 @@ namespace AnimeStudio
                      * 2 - m_BoneNameHashes
                      */
                     var boneType = 0;
-                    if (sMesh.m_Bones.Count > 0)
+                    var boneSource = sMesh;
+                    if ((sMesh.m_Bones == null || sMesh.m_Bones.Count == 0)
+                        && mesh.m_Skin?.Count > 0
+                        && mesh.m_BindPose?.Length > 0
+                        && TryFindUniqueBoneSourceRenderer(sMesh, mesh, out var borrowedBoneSource))
                     {
-                        if (sMesh.m_Bones.Count == mesh.m_BindPose.Length)
+                        boneSource = borrowedBoneSource;
+                        skinProfile["borrowedBoneRendererPathId"] = borrowedBoneSource.m_PathID;
+                    }
+
+                    if (boneSource.m_Bones.Count > 0)
+                    {
+                        if (boneSource.m_Bones.Count == mesh.m_BindPose.Length)
                         {
-                            var verifiedBoneCount = sMesh.m_Bones.Count(x => x.TryGet(out _));
+                            var verifiedBoneCount = boneSource.m_Bones.Count(x => x.TryGet(out _));
+                            skinProfile["verifiedRendererBoneCount"] = verifiedBoneCount;
                             if (verifiedBoneCount > 0)
                             {
                                 boneType = 1;
                             }
-                            if (verifiedBoneCount != sMesh.m_Bones.Count)
+                            if (verifiedBoneCount != boneSource.m_Bones.Count)
                             {
                                 //尝试使用m_BoneNameHashes 4.3 and up
                                 if (mesh.m_BindPose.Length > 0 && (mesh.m_BindPose.Length == mesh.m_BoneNameHashes?.Length))
                                 {
                                     //有效bone数量是否大于SkinnedMeshRenderer
                                     var verifiedBoneCount2 = mesh.m_BoneNameHashes.Count(x => FixBonePath(GetPathFromHash(x)) != null);
+                                    skinProfile["verifiedHashBoneCount"] = verifiedBoneCount2;
                                     if (verifiedBoneCount2 > verifiedBoneCount)
                                     {
                                         boneType = 2;
@@ -538,6 +554,7 @@ namespace AnimeStudio
                         if (mesh.m_BindPose.Length > 0 && (mesh.m_BindPose.Length == mesh.m_BoneNameHashes?.Length))
                         {
                             var verifiedBoneCount = mesh.m_BoneNameHashes.Count(x => FixBonePath(GetPathFromHash(x)) != null);
+                            skinProfile["verifiedHashBoneCount"] = verifiedBoneCount;
                             if (verifiedBoneCount > 0)
                             {
                                 boneType = 2;
@@ -545,16 +562,18 @@ namespace AnimeStudio
                         }
                     }
 
+                    skinProfile["selectedBoneType"] = boneType;
                     if (boneType == 1)
                     {
-                        var boneCount = sMesh.m_Bones.Count;
+                        var boneCount = boneSource.m_Bones.Count;
                         iMesh.BoneList = new List<ImportedBone>(boneCount);
                         for (int i = 0; i < boneCount; i++)
                         {
                             var bone = new ImportedBone();
-                            if (sMesh.m_Bones[i].TryGet(out var m_Transform))
+                            if (boneSource.m_Bones[i].TryGet(out var m_Transform))
                             {
-                                bone.Path = GetTransformPath(m_Transform);
+                                var frame = EnsureTransformFrame(m_Transform);
+                                bone.Path = frame?.Path;
                             }
                             var convert = Matrix4x4.Scale(new Vector3(-1, 1, 1));
                             bone.Matrix = convert * mesh.m_BindPose[i] * convert;
@@ -576,6 +595,7 @@ namespace AnimeStudio
                             iMesh.BoneList.Add(bone);
                         }
                     }
+                    skinProfile["importedBoneCount"] = iMesh.BoneList?.Count ?? 0;
 
                     //Morphs
                     if (mesh.m_Shapes?.channels?.Count > 0)
@@ -734,6 +754,37 @@ namespace AnimeStudio
                 return frame.Path;
             }
             return null;
+        }
+
+        private ImportedFrame EnsureTransformFrame(Transform transform)
+        {
+            if (transform == null)
+            {
+                return null;
+            }
+
+            if (transformDictionary.TryGetValue(transform, out var frame))
+            {
+                return frame;
+            }
+
+            transform.m_GameObject.TryGet(out var gameObject);
+            if (!transform.m_Father.TryGet(out var father)
+                && RootFrame != null
+                && string.Equals(gameObject?.m_Name, RootFrame.Name, StringComparison.Ordinal))
+            {
+                // Naraka 这类资源会把同一 Mesh 的材质树和骨骼树拆成两个根。
+                // Mesh 引用已验证一致时，同名骨骼根直接复用当前根，避免导出双根层级。
+                transformDictionary[transform] = RootFrame;
+                return RootFrame;
+            }
+
+            var parentFrame = father != null
+                ? EnsureTransformFrame(father)
+                : RootFrame;
+            frame = ConvertTransform(transform);
+            (parentFrame ?? RootFrame)?.AddChild(frame);
+            return frame;
         }
 
         private string FixBonePath(AnimationClip m_AnimationClip, string path)
@@ -1205,6 +1256,71 @@ namespace AnimeStudio
 
             options.meshVertexCache[key] = CloneVertexList(vertices);
             options.meshVertexCacheOrder?.Enqueue(key);
+        }
+
+        private static bool TryFindUniqueBoneSourceRenderer(
+            SkinnedMeshRenderer renderer,
+            Mesh mesh,
+            out SkinnedMeshRenderer boneSource)
+        {
+            boneSource = null;
+            if (renderer?.assetsFile?.Objects == null || mesh == null)
+            {
+                return false;
+            }
+
+            SkinnedMeshRenderer match = null;
+            foreach (var candidate in renderer.assetsFile.Objects.OfType<SkinnedMeshRenderer>())
+            {
+                if (ReferenceEquals(candidate, renderer)
+                    || candidate.m_Bones == null
+                    || candidate.m_Bones.Count != mesh.m_BindPose?.Length)
+                {
+                    continue;
+                }
+
+                if (!candidate.m_Mesh.TryGet(out var candidateMesh)
+                    || !IsSameMesh(candidateMesh, mesh)
+                    || !candidate.m_Bones.Any(x => x.TryGet(out _)))
+                {
+                    continue;
+                }
+
+                if (match != null)
+                {
+                    return false;
+                }
+                match = candidate;
+            }
+
+            boneSource = match;
+            return boneSource != null;
+        }
+
+        private static bool IsSameMesh(Mesh left, Mesh right)
+        {
+            return left != null
+                && right != null
+                && left.m_PathID == right.m_PathID
+                && string.Equals(left.assetsFile?.fullName, right.assetsFile?.fullName, StringComparison.Ordinal);
+        }
+
+        private static int CountWeightedVertices(List<BoneWeights4> skin)
+        {
+            if (skin == null || skin.Count == 0)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            foreach (var item in skin)
+            {
+                if (item?.weight != null && item.weight.Any(x => x > 0.0001f))
+                {
+                    count++;
+                }
+            }
+            return count;
         }
 
         private static List<ImportedVertex> CloneVertexList(List<ImportedVertex> vertices)
