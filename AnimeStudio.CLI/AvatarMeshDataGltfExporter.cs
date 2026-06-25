@@ -352,12 +352,17 @@ namespace AnimeStudio.CLI
             var gltfMeshes = new JArray();
             var nodes = new JArray();
             var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
+            var gltfImages = new JArray();
+            var gltfTextures = new JArray();
+            var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var gltfMaterials = BuildVisualCellPreviewMaterials(outputFolder, materialBindings.Values, gltfImages, gltfTextures, materialIndexByKey, warnings);
             using var stream = File.Create(binPath);
             for (var i = 0; i < parts.Count; i++)
             {
                 var part = parts[i];
                 materialBindings.TryGetValue(GetRendererKey(part.RendererFile, part.RendererPathId), out var materialBinding);
-                gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath)));
+                var materialIndex = GetVisualCellMaterialIndex(materialBinding, materialIndexByKey);
+                gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath), materialIndex));
                 nodes.Add(new JObject
                 {
                     ["name"] = part.GameObjectName,
@@ -385,7 +390,7 @@ namespace AnimeStudio.CLI
                 ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(Enumerable.Range(0, nodes.Count)) }),
                 ["nodes"] = nodes,
                 ["meshes"] = gltfMeshes,
-                ["materials"] = new JArray(CreateDiagnosticMaterial()),
+                ["materials"] = gltfMaterials,
                 ["buffers"] = new JArray(new JObject
                 {
                     ["uri"] = Uri.EscapeDataString(binName),
@@ -400,10 +405,19 @@ namespace AnimeStudio.CLI
                     ["selectedLodGroup"] = "lod0RendererAssistants",
                     ["diagnosticOnly"] = true,
                     ["materialBindingSourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
+                    ["previewMaterialSource"] = gltfMaterials.Count > 1 ? Path.GetFullPath(outputFolder) : null,
                     ["unityCoordinateSystemPreserved"] = true,
                     ["note"] = "Naraka ActorBodyVisualCell LOD0 自定义网格诊断导出；按 Unity PPtr 选择 avatarMeshAsset，可记录 Renderer 材质引用，但尚未烘焙材质或绑定骨骼 skin。"
                 }
             };
+            if (gltfImages.Count > 0)
+            {
+                gltf["images"] = gltfImages;
+            }
+            if (gltfTextures.Count > 0)
+            {
+                gltf["textures"] = gltfTextures;
+            }
 
             File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
             var materialRefCount = materialBindings.Values.Sum(x => x.Materials.Count);
@@ -440,7 +454,7 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static JObject WriteMeshObject(Stream stream, JArray bufferViews, JArray accessors, AvatarMeshData mesh, string source)
+        private static JObject WriteMeshObject(Stream stream, JArray bufferViews, JArray accessors, AvatarMeshData mesh, string source, int materialIndex = 0)
         {
             var attributes = new JObject();
             var indexView = WriteUIntBufferView(stream, bufferViews, mesh.Indices.Select(x => checked((uint)x)), 34963);
@@ -511,7 +525,7 @@ namespace AnimeStudio.CLI
                 {
                     ["attributes"] = attributes,
                     ["indices"] = indexAccessor,
-                    ["material"] = 0,
+                    ["material"] = materialIndex,
                     ["mode"] = 4
                 }),
                 ["extras"] = new JObject
@@ -538,6 +552,308 @@ namespace AnimeStudio.CLI
                     ["roughnessFactor"] = 0.85
                 }
             };
+        }
+
+        private static JArray BuildVisualCellPreviewMaterials(
+            string outputFolder,
+            IEnumerable<VisualCellMaterialBinding> bindings,
+            JArray images,
+            JArray textures,
+            Dictionary<string, int> materialIndexByKey,
+            List<string> warnings)
+        {
+            var bindingList = bindings.ToList();
+            var materials = new JArray();
+
+            var exportedAssets = LoadExportedAssetManifest(outputFolder);
+            if (exportedAssets.Count == 0)
+            {
+                materials.Add(CreateDiagnosticMaterial());
+                return materials;
+            }
+
+            foreach (var binding in bindingList)
+            {
+                foreach (var materialRef in binding.Materials)
+                {
+                    var key = GetMaterialKey(materialRef.MaterialFile, materialRef.MaterialPathId);
+                    if (materialIndexByKey.ContainsKey(key))
+                    {
+                        continue;
+                    }
+
+                    if (!exportedAssets.TryGetValue(materialRef.MaterialPathId, out var materialAsset)
+                        || !string.Equals(materialAsset.Type, "Material", StringComparison.OrdinalIgnoreCase))
+                    {
+                        warnings.Add($"missingExportedMaterialJson:{materialRef.MaterialPathId}");
+                        continue;
+                    }
+
+                    var materialJsonPath = FindExportedFile(materialAsset, ".json");
+                    if (string.IsNullOrWhiteSpace(materialJsonPath))
+                    {
+                        warnings.Add($"missingExportedMaterialJsonFile:{materialRef.MaterialPathId}");
+                        continue;
+                    }
+
+                    var gltfMaterial = BuildVisualCellPreviewMaterial(
+                        outputFolder,
+                        JObject.Parse(File.ReadAllText(materialJsonPath)),
+                        materialJsonPath,
+                        exportedAssets,
+                        images,
+                        textures,
+                        warnings);
+                    materialIndexByKey[key] = materials.Count;
+                    materials.Add(gltfMaterial);
+                }
+            }
+
+            var needsDiagnosticMaterial = materials.Count == 0 || bindingList.Any(binding =>
+            {
+                var materialRef = binding.Materials.FirstOrDefault();
+                return materialRef == null
+                    || !materialIndexByKey.ContainsKey(GetMaterialKey(materialRef.MaterialFile, materialRef.MaterialPathId));
+            });
+            if (needsDiagnosticMaterial)
+            {
+                foreach (var key in materialIndexByKey.Keys.ToList())
+                {
+                    materialIndexByKey[key] = materialIndexByKey[key] + 1;
+                }
+                materials.Insert(0, CreateDiagnosticMaterial());
+            }
+
+            return materials;
+        }
+
+        private static JObject BuildVisualCellPreviewMaterial(
+            string gltfFolder,
+            JObject materialJson,
+            string materialJsonPath,
+            IReadOnlyDictionary<long, ExportedAssetInfo> exportedAssets,
+            JArray images,
+            JArray textures,
+            List<string> warnings)
+        {
+            var materialName = (string)materialJson["m_Name"] ?? (string)materialJson["Name"] ?? Path.GetFileNameWithoutExtension(materialJsonPath);
+            var texEnvs = materialJson["m_SavedProperties"]?["m_TexEnvs"] as JObject;
+            var color = materialJson["m_SavedProperties"]?["m_Colors"]?["_Color"];
+            var pbr = new JObject
+            {
+                ["baseColorFactor"] = ReadColorFactor(color),
+                ["metallicFactor"] = 0.0,
+                ["roughnessFactor"] = 0.65,
+            };
+            var textureSlots = new JArray();
+            var usedBaseColor = false;
+            JObject normalTexture = null;
+
+            if (texEnvs != null)
+            {
+                foreach (var property in texEnvs.Properties())
+                {
+                    var textureToken = property.Value?["m_Texture"];
+                    var pathId = textureToken?["m_PathID"]?.Value<long>() ?? 0;
+                    if (pathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var textureName = (string)textureToken["Name"] ?? string.Empty;
+                    var slot = new JObject
+                    {
+                        ["slot"] = property.Name,
+                        ["textureName"] = textureName,
+                        ["pathId"] = pathId,
+                        ["previewUsage"] = "preservedOnly"
+                    };
+
+                    if (exportedAssets.TryGetValue(pathId, out var textureAsset)
+                        && string.Equals(textureAsset.Type, "Texture2D", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var texturePath = FindExportedFile(textureAsset, ".png");
+                        if (!string.IsNullOrWhiteSpace(texturePath))
+                        {
+                            var relativeTexturePath = Path.GetRelativePath(gltfFolder, texturePath).Replace('\\', '/');
+                            slot["uri"] = relativeTexturePath;
+
+                            if (!usedBaseColor && IsSafePreviewBaseColorSlot(property.Name, textureName))
+                            {
+                                var textureIndex = AddGltfTexture(images, textures, textureAsset.Name, relativeTexturePath);
+                                pbr["baseColorTexture"] = new JObject { ["index"] = textureIndex };
+                                slot["gltfTextureIndex"] = textureIndex;
+                                slot["previewUsage"] = "baseColorTexture";
+                                usedBaseColor = true;
+                            }
+                            else if (normalTexture == null && IsNormalSlot(property.Name, textureName))
+                            {
+                                var textureIndex = AddGltfTexture(images, textures, textureAsset.Name, relativeTexturePath);
+                                normalTexture = new JObject { ["index"] = textureIndex };
+                                slot["gltfTextureIndex"] = textureIndex;
+                                slot["previewUsage"] = "normalTexture";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        warnings.Add($"missingExportedTexture:{pathId}");
+                    }
+
+                    textureSlots.Add(slot);
+                }
+            }
+
+            var result = new JObject
+            {
+                ["name"] = materialName,
+                ["doubleSided"] = true,
+                ["pbrMetallicRoughness"] = pbr,
+                ["extras"] = new JObject
+                {
+                    ["animeStudioMaterial"] = new JObject
+                    {
+                        ["workflow"] = "NarakaActorBodyVisualCellDiagnostic",
+                        ["materialJson"] = Path.GetFullPath(materialJsonPath),
+                        ["textureSlots"] = textureSlots,
+                        ["needsCustomizationTint"] = !usedBaseColor,
+                        ["note"] = "只把通用 base color/normal 槽写入 glTF 预览；ID、mask、SH、dir、LUT 等自定义 shader 数据只保留引用，避免伪造材质。"
+                    }
+                }
+            };
+            if (normalTexture != null)
+            {
+                result["normalTexture"] = normalTexture;
+            }
+            return result;
+        }
+
+        private static int AddGltfTexture(JArray images, JArray textures, string name, string relativePath)
+        {
+            var imageIndex = images.Count;
+            images.Add(new JObject
+            {
+                ["uri"] = relativePath,
+                ["name"] = name,
+            });
+            var textureIndex = textures.Count;
+            textures.Add(new JObject
+            {
+                ["source"] = imageIndex,
+                ["name"] = name,
+            });
+            return textureIndex;
+        }
+
+        private static JArray ReadColorFactor(JToken color)
+        {
+            if (color == null)
+            {
+                return new JArray(0.8, 0.8, 0.8, 1.0);
+            }
+
+            return new JArray(
+                color["r"]?.Value<float>() ?? 0.8f,
+                color["g"]?.Value<float>() ?? 0.8f,
+                color["b"]?.Value<float>() ?? 0.8f,
+                color["a"]?.Value<float>() ?? 1.0f);
+        }
+
+        private static bool IsSafePreviewBaseColorSlot(string slot, string textureName)
+        {
+            if (string.IsNullOrWhiteSpace(slot))
+            {
+                return false;
+            }
+
+            var slotText = slot.ToLowerInvariant();
+            var textureText = (textureName ?? string.Empty).ToLowerInvariant();
+            if (textureText.Contains("_id")
+                || textureText.Contains("mask")
+                || textureText.Contains("_n")
+                || textureText.Contains("normal")
+                || textureText.Contains("_dir")
+                || textureText.Contains("_sh")
+                || textureText.Contains("lut"))
+            {
+                return false;
+            }
+
+            return slotText is "_basemap" or "_basecolormap" or "_albedomap" or "_diffusemap"
+                || (slotText == "_maintex" && (textureText.EndsWith("_d") || textureText.Contains("diffuse") || textureText.Contains("albedo")));
+        }
+
+        private static bool IsNormalSlot(string slot, string textureName)
+        {
+            var slotText = (slot ?? string.Empty).ToLowerInvariant();
+            var textureText = (textureName ?? string.Empty).ToLowerInvariant();
+            return slotText.Contains("bump") || slotText.Contains("normal") || textureText.EndsWith("_n") || textureText.Contains("normal");
+        }
+
+        private static int GetVisualCellMaterialIndex(
+            VisualCellMaterialBinding binding,
+            IReadOnlyDictionary<string, int> materialIndexByKey)
+        {
+            var materialRef = binding?.Materials.FirstOrDefault();
+            if (materialRef == null)
+            {
+                return 0;
+            }
+
+            return materialIndexByKey.TryGetValue(GetMaterialKey(materialRef.MaterialFile, materialRef.MaterialPathId), out var index)
+                ? index
+                : 0;
+        }
+
+        private static Dictionary<long, ExportedAssetInfo> LoadExportedAssetManifest(string outputFolder)
+        {
+            var result = new Dictionary<long, ExportedAssetInfo>();
+            var manifestPath = Path.Combine(outputFolder, "export_manifest.jsonl");
+            if (!File.Exists(manifestPath))
+            {
+                return result;
+            }
+
+            foreach (var line in File.ReadLines(manifestPath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                var item = JObject.Parse(line);
+                var pathId = item["pathId"]?.Value<long>() ?? 0;
+                if (pathId == 0)
+                {
+                    continue;
+                }
+
+                result[pathId] = new ExportedAssetInfo(
+                    (string)item["type"] ?? string.Empty,
+                    (string)item["name"] ?? string.Empty,
+                    (string)item["output"] ?? outputFolder);
+            }
+
+            return result;
+        }
+
+        private static string FindExportedFile(ExportedAssetInfo asset, string extension)
+        {
+            if (asset == null || string.IsNullOrWhiteSpace(asset.OutputFolder))
+            {
+                return null;
+            }
+
+            var direct = Path.Combine(asset.OutputFolder, FixFileName(asset.Name) + extension);
+            if (File.Exists(direct))
+            {
+                return direct;
+            }
+
+            return Directory.Exists(asset.OutputFolder)
+                ? Directory.GetFiles(asset.OutputFolder, "*" + extension, SearchOption.TopDirectoryOnly)
+                    .FirstOrDefault(x => string.Equals(Path.GetFileNameWithoutExtension(x), asset.Name, StringComparison.OrdinalIgnoreCase))
+                : null;
         }
 
         private static JObject ToReportJson(AvatarMeshData mesh, string sourceJson)
@@ -673,6 +989,11 @@ WHERE relation = 'material.texture'
         private static string GetRendererKey(string rendererFile, long rendererPathId)
         {
             return $"{rendererFile ?? string.Empty}#{rendererPathId}";
+        }
+
+        private static string GetMaterialKey(string materialFile, long materialPathId)
+        {
+            return $"{materialFile ?? string.Empty}#{materialPathId}";
         }
 
         private static JObject TryLoadVisualCell(IEnumerable<string> jsonFiles)
@@ -1071,6 +1392,11 @@ WHERE relation = 'material.texture'
                 };
             }
         }
+
+        private sealed record ExportedAssetInfo(
+            string Type,
+            string Name,
+            string OutputFolder);
 
         private sealed class AvatarMeshData
         {
