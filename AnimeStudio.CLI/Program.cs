@@ -1245,6 +1245,7 @@ namespace AnimeStudio.CLI
 
                 ExpandTargetedAnimatorControllerBaseClipPathIds(o, sourceIndexPath);
 
+                var usesTargetedSourceIndexClosure = false;
                 if (!string.IsNullOrWhiteSpace(sourceIndexPath))
                 {
                     if (o.RequireFreshSourceAnimationRelations && o.WorkMode == WorkMode.Library)
@@ -1268,6 +1269,7 @@ namespace AnimeStudio.CLI
                         // 已经用完整源索引算出本次目标需要的物理 source file。
                         // 再跑通用 CAB external 闭包会把共享 common 包全部拖进来，定向烟测会退化成大范围加载。
                         assetsManager.ResolveDependencies = false;
+                        usesTargetedSourceIndexClosure = true;
                     }
                     else if (ShouldSkipDependencyClosureForTargetedIndependentExport(o))
                     {
@@ -1410,7 +1412,16 @@ namespace AnimeStudio.CLI
                     var toReadFile = ImportHelper.ProcessingSplitFiles(files.ToList());
 
                     var fileList = new List<string>(toReadFile);
-                    foreach (var batch in ChunkFiles(fileList, GetEffectiveBatchSize(o.WorkMode)))
+                    var effectiveBatchSize = usesTargetedSourceIndexClosure
+                        ? Math.Max(1, fileList.Count)
+                        : GetEffectiveBatchSize(o.WorkMode);
+                    if (usesTargetedSourceIndexClosure)
+                    {
+                        // 定向闭包里的目标文件和外部 CAB 必须同批加载。
+                        // 否则批次导出会先写模型、后加载贴图/材质依赖，造成假缺失。
+                        Logger.Info($"Targeted source-index closure will load {fileList.Count} source file(s) in one batch so Unity PPtr dependencies are available before export.");
+                    }
+                    foreach (var batch in ChunkFiles(fileList, effectiveBatchSize))
                     {
                         var largestBatchFile = batch
                             .Select(x => new { Path = x, Bytes = SafeFileLength(x) })
