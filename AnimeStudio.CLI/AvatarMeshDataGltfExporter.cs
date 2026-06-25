@@ -2132,7 +2132,9 @@ WHERE relation = 'material.texture'
                 else
                 {
                     var avatarBones = new SortedSet<int>();
+                    var avatarBoneRefCounts = new Dictionary<int, int>();
                     var negativeBoneRefs = 0;
+                    var verticesWithNegativeBoneRefs = 0;
                     var maxInfluences = 0;
                     var invalidRanges = 0;
                     var weightedVertices = 0;
@@ -2148,6 +2150,7 @@ WHERE relation = 'material.texture'
                         }
 
                         var hasWeight = false;
+                        var hasNegativeBoneRef = false;
                         for (var i = 0; i < count; i++)
                         {
                             var weight = avatarWeights[offset + i] as JObject;
@@ -2164,9 +2167,13 @@ WHERE relation = 'material.texture'
                             }
 
                             hasWeight = true;
+                            avatarBoneRefCounts[boneIndex] = avatarBoneRefCounts.TryGetValue(boneIndex, out var oldCount)
+                                ? oldCount + 1
+                                : 1;
                             if (boneIndex < 0)
                             {
                                 negativeBoneRefs++;
+                                hasNegativeBoneRef = true;
                             }
                             else
                             {
@@ -2177,6 +2184,10 @@ WHERE relation = 'material.texture'
                         if (hasWeight)
                         {
                             weightedVertices++;
+                        }
+                        if (hasNegativeBoneRef)
+                        {
+                            verticesWithNegativeBoneRefs++;
                         }
                     }
 
@@ -2191,8 +2202,14 @@ WHERE relation = 'material.texture'
                     summary.AvatarMinBoneIndex = avatarBones.Count == 0 ? null : avatarBones.Min;
                     summary.AvatarMaxBoneIndex = avatarBones.Count == 0 ? null : avatarBones.Max;
                     summary.AvatarNegativeBoneRefCount = negativeBoneRefs;
+                    summary.AvatarVerticesWithNegativeBoneRefCount = verticesWithNegativeBoneRefs;
                     summary.AvatarMaxInfluenceCount = maxInfluences;
                     summary.AvatarInvalidRangeCount = invalidRanges;
+                    summary.AvatarTopBoneRefs.AddRange(avatarBoneRefCounts
+                        .OrderByDescending(x => x.Value)
+                        .ThenBy(x => x.Key)
+                        .Take(16)
+                        .Select(x => new BoneRefCount(x.Key, x.Value)));
                 }
             }
 
@@ -2561,9 +2578,11 @@ WHERE relation = 'material.texture'
             public int? AvatarMinBoneIndex { get; set; }
             public int? AvatarMaxBoneIndex { get; set; }
             public int AvatarNegativeBoneRefCount { get; set; }
+            public int AvatarVerticesWithNegativeBoneRefCount { get; set; }
             public int AvatarMaxInfluenceCount { get; set; }
             public int AvatarInvalidRangeCount { get; set; }
             public int BindPoseCount { get; set; }
+            public List<BoneRefCount> AvatarTopBoneRefs { get; } = new();
             public List<string> LayoutWarnings { get; } = new();
 
             public bool HasAnySkinField =>
@@ -2592,14 +2611,28 @@ WHERE relation = 'material.texture'
                     ["avatarMinBoneIndex"] = AvatarMinBoneIndex,
                     ["avatarMaxBoneIndex"] = AvatarMaxBoneIndex,
                     ["avatarNegativeBoneRefCount"] = AvatarNegativeBoneRefCount,
+                    ["avatarVerticesWithNegativeBoneRefCount"] = AvatarVerticesWithNegativeBoneRefCount,
                     ["avatarMaxInfluenceCount"] = AvatarMaxInfluenceCount,
                     ["avatarInvalidRangeCount"] = AvatarInvalidRangeCount,
+                    ["avatarTopBoneRefs"] = new JArray(AvatarTopBoneRefs.Select(x => x.ToJson())),
                     ["bindPoseCount"] = BindPoseCount,
                     ["mappedJointCount"] = 0,
                     ["layoutWarnings"] = new JArray(LayoutWarnings),
                     ["rule"] = "只记录 AvatarMeshDataAsset 里的 skin 字段证据；缺少确定性 joint 名称/路径映射前不写 glTF skin。"
                 };
             }
+        }
+
+        private sealed record BoneRefCount(int BoneIndex, int WeightedRefCount)
+        {
+            public JObject ToJson() => new()
+            {
+                ["boneIndex"] = BoneIndex,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["meaning"] = BoneIndex < 0
+                    ? "Naraka AvatarBoneWeights 中出现的负索引权重；当前只记录为未知哨兵/特殊权重，不能写成 glTF joint。"
+                    : "Naraka AvatarBoneWeights 中的高频 boneIndex；缺少确定性节点表映射前不能写成 glTF joint。"
+            };
         }
 
         private readonly record struct Vector2Value(float X, float Y);
