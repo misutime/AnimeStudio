@@ -67,6 +67,20 @@ namespace AnimeStudio.CLI
             monoObjects.AddRange(boneDriverHints.Select(x => new SourceObjectRef(x.Name, x.SourcePath, x.SerializedFile, x.PathId, x.ScriptName)));
             monoObjects = DistinctObjects(monoObjects).ToList();
 
+            var rendererObjects = DistinctObjects(parts
+                .Where(x => !string.IsNullOrWhiteSpace(x.RendererFile) && x.RendererPathId != 0)
+                .Select(x =>
+                {
+                    var renderer = ResolveSourceObject(connection, x.RendererFile, x.RendererPathId);
+                    return new SourceObjectRef(
+                        string.IsNullOrWhiteSpace(renderer.Name) ? "SkinnedMeshRenderer" : renderer.Name,
+                        renderer.SourcePath,
+                        x.RendererFile,
+                        x.RendererPathId,
+                        "SkinnedMeshRenderer");
+                }))
+                .ToList();
+
             var materialObjects = parts
                 .SelectMany(x => x.Materials.Select(y => new SourceObjectRef(y.MaterialName, y.MaterialSourcePath, y.MaterialFile, y.MaterialPathId, "Material")))
                 .Concat(parts.SelectMany(x => x.Materials.SelectMany(y => y.Textures.Select(z => new SourceObjectRef(z.TextureName, z.TextureSourcePath, z.TextureFile, z.TexturePathId, "Texture2D")))))
@@ -87,6 +101,7 @@ namespace AnimeStudio.CLI
                 ["rule"] = "只根据 unity_source_index.db 中的 ActorBodyVisualCell.lod0RendererAssistants -> LXRendererAssistant.avatarMeshAsset、_renderer、renderer.material、material.texture 确定导出闭包；AvatarPartDataAsset.m_MeshData 只作为部件/LOD 顺序证据，不当作骨骼或 skin 绑定；不按名字猜部件、材质或贴图。",
                 ["target"] = target.ToJson(),
                 ["monoBehaviourExport"] = BuildExportBlock(monoObjects, sourceRoot),
+                ["skinnedMeshRendererExport"] = BuildExportBlock(rendererObjects, sourceRoot),
                 ["transformNodeExport"] = BuildExportBlock(transformNodeObjects, sourceRoot),
                 ["materialTextureExport"] = BuildExportBlock(materialObjects, sourceRoot),
                 ["lod0Parts"] = new JArray(parts.Select(x => x.ToJson())),
@@ -108,7 +123,7 @@ namespace AnimeStudio.CLI
                     ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
                 },
             };
-            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, transformNodeObjects, materialObjects);
+            plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, rendererObjects, transformNodeObjects, materialObjects);
 
             var planPath = Path.Combine(outputFolder, "naraka_avatar_mesh_export_plan.json");
             File.WriteAllText(planPath, plan.ToString(Formatting.Indented));
@@ -652,6 +667,7 @@ LIMIT 1;";
             string outputFolder,
             string dumpRoot,
             IReadOnlyList<SourceObjectRef> monoObjects,
+            IReadOnlyList<SourceObjectRef> rendererObjects,
             IReadOnlyList<SourceObjectRef> transformNodeObjects,
             IReadOnlyList<SourceObjectRef> materialObjects)
         {
@@ -666,6 +682,13 @@ LIMIT 1;";
             foreach (var step in BuildExportSteps("dumpMonoBehaviours", sourceRoot, dumpRoot, sourceIndexPath, "MonoBehaviour", monoObjects))
             {
                 steps.Add(step.ToJson());
+            }
+            if (rendererObjects.Count > 0)
+            {
+                foreach (var step in BuildExportSteps("dumpSkinnedMeshRenderers", sourceRoot, dumpRoot, sourceIndexPath, "SkinnedMeshRenderer", rendererObjects, "JSON"))
+                {
+                    steps.Add(step.ToJson());
+                }
             }
             if (transformNodeObjects.Count > 0)
             {
@@ -706,6 +729,9 @@ LIMIT 1;";
                 .Select(x => (string)x["command"]));
             commands["dumpTransformNodes"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
                 .Where(x => ((string)x["name"])?.StartsWith("dumpTransformNodes", StringComparison.OrdinalIgnoreCase) == true)
+                .Select(x => (string)x["command"]));
+            commands["dumpSkinnedMeshRenderers"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
+                .Where(x => ((string)x["name"])?.StartsWith("dumpSkinnedMeshRenderers", StringComparison.OrdinalIgnoreCase) == true)
                 .Select(x => (string)x["command"]));
             commands["exportMaterialsAndTextures"] = string.Join(Environment.NewLine, steps.OfType<JObject>()
                 .Where(x => ((string)x["name"])?.StartsWith("exportMaterialsAndTextures", StringComparison.OrdinalIgnoreCase) == true)

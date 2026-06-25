@@ -354,6 +354,7 @@ namespace AnimeStudio.CLI
             var nodes = new JArray();
             var materialBindings = LoadVisualCellMaterialBindings(sourceIndexPath, parts, warnings);
             var rendererSkinBindings = LoadVisualCellRendererSkinBindings(sourceIndexPath, parts, warnings);
+            AttachSkinnedMeshRendererJsonEvidence(jsonFolder, rendererSkinBindings.Values, warnings);
             var avatarMeshRelationEvidence = LoadAvatarMeshDataRelationEvidence(sourceIndexPath, parts, warnings);
             var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
@@ -464,6 +465,8 @@ namespace AnimeStudio.CLI
                 ["rendererSkinMeshRefCount"] = rendererSkinBindings.Values.Count(x => x.MeshPathId.HasValue),
                 ["rendererSkinRootBoneRefCount"] = rendererSkinBindings.Values.Count(x => x.RootBonePathId.HasValue),
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
+                ["rendererSkinJsonStatus"] = SummarizeRendererSkinJsonStatus(rendererSkinBindings.Values),
+                ["rendererSkinJsonEmptyBoneRendererCount"] = rendererSkinBindings.Values.Count(x => string.Equals(x.RendererJsonStatus, "skinnedRendererJsonEmptyBones", StringComparison.OrdinalIgnoreCase)),
                 ["avatarMeshExplicitReferenceStatus"] = SummarizeAvatarMeshRelationStatus(avatarMeshRelationEvidence.Values),
                 ["avatarMeshRelationCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.RelationCount),
                 ["avatarMeshNonScriptPPtrRefCount"] = avatarMeshRelationEvidence.Values.Sum(x => x.NonScriptPPtrCount),
@@ -565,6 +568,9 @@ namespace AnimeStudio.CLI
                 parts.Any(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots)
                     ? "anim_skin_bind_pose_slots_self_consistent"
                     : "anim_skin_bind_pose_slots_unverified",
+                rendererSkinBindings.Values.Any(x => string.Equals(x.RendererJsonStatus, "skinnedRendererJsonEmptyBones", StringComparison.OrdinalIgnoreCase))
+                    ? "skinned_renderer_json_confirms_empty_bones"
+                    : "skinned_renderer_json_missing_or_unverified",
                 rendererSkinBindings.Values.Any(x => x.Status == "rendererSkinRelations")
                     ? "renderer_skin_relations_present"
                     : rendererSkinBindings.Values.Any(x => x.Status == "rendererPresentWithoutSkinRelations")
@@ -649,6 +655,8 @@ namespace AnimeStudio.CLI
                 ["rendererSkinMeshRefCount"] = rendererSkinBindings.Values.Count(x => x.MeshPathId.HasValue),
                 ["rendererSkinRootBoneRefCount"] = rendererSkinBindings.Values.Count(x => x.RootBonePathId.HasValue),
                 ["rendererSkinBoneRefCount"] = rendererSkinBindings.Values.Sum(x => x.BoneCount ?? 0),
+                ["rendererSkinJsonStatus"] = SummarizeRendererSkinJsonStatus(rendererSkinBindings.Values),
+                ["rendererSkinJsonEmptyBoneRendererCount"] = rendererSkinBindings.Values.Count(x => string.Equals(x.RendererJsonStatus, "skinnedRendererJsonEmptyBones", StringComparison.OrdinalIgnoreCase)),
                 ["avatarMeshExplicitReferenceStatus"] = report["avatarMeshExplicitReferenceStatus"]?.DeepClone(),
                 ["avatarMeshRelationCount"] = report["avatarMeshRelationCount"]?.DeepClone(),
                 ["avatarMeshNonScriptPPtrRefCount"] = report["avatarMeshNonScriptPPtrRefCount"]?.DeepClone(),
@@ -1338,6 +1346,24 @@ namespace AnimeStudio.CLI
             return "noRendererSkinRelations";
         }
 
+        private static string SummarizeRendererSkinJsonStatus(IEnumerable<VisualCellRendererSkinBinding> bindings)
+        {
+            var statuses = (bindings ?? Enumerable.Empty<VisualCellRendererSkinBinding>())
+                .Select(x => x.RendererJsonStatus)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (statuses.Length == 0)
+            {
+                return "missing";
+            }
+
+            return statuses.Length == 1
+                ? statuses[0]
+                : "mixed:" + string.Join(",", statuses);
+        }
+
         private static string SummarizeAvatarMeshRelationStatus(IEnumerable<AvatarMeshDataRelationEvidence> evidences)
         {
             var list = evidences?.ToList() ?? new List<AvatarMeshDataRelationEvidence>();
@@ -1959,6 +1985,80 @@ ORDER BY relation;";
             }
 
             return result;
+        }
+
+        private static void AttachSkinnedMeshRendererJsonEvidence(
+            string monoBehaviourJsonFolder,
+            IEnumerable<VisualCellRendererSkinBinding> bindings,
+            List<string> warnings)
+        {
+            var list = bindings?.ToList() ?? new List<VisualCellRendererSkinBinding>();
+            if (list.Count == 0 || string.IsNullOrWhiteSpace(monoBehaviourJsonFolder))
+            {
+                return;
+            }
+
+            var dumpRoot = Directory.GetParent(Path.GetFullPath(monoBehaviourJsonFolder))?.FullName;
+            if (string.IsNullOrWhiteSpace(dumpRoot))
+            {
+                return;
+            }
+
+            var rendererJsonFolder = Path.Combine(dumpRoot, "SkinnedMeshRenderer");
+            if (!Directory.Exists(rendererJsonFolder))
+            {
+                return;
+            }
+
+            var byGameObject = list
+                .Where(x => x.RendererGameObjectPathId.HasValue)
+                .GroupBy(x => x.RendererGameObjectPathId.Value)
+                .ToDictionary(x => x.Key, x => x.First());
+
+            foreach (var jsonPath in Directory.GetFiles(rendererJsonFolder, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    var json = JObject.Parse(File.ReadAllText(jsonPath));
+                    var gameObjectPathId = ReadPPtrPathId(json["m_GameObject"]);
+                    if (gameObjectPathId == 0 || !byGameObject.TryGetValue(gameObjectPathId, out var binding))
+                    {
+                        continue;
+                    }
+
+                    binding.RendererJsonPath = jsonPath;
+                    binding.RendererJsonGameObjectPathId = gameObjectPathId;
+                    var meshPathId = ReadPPtrPathId(json["m_Mesh"]);
+                    var rootBonePathId = ReadPPtrPathId(json["m_RootBone"]);
+                    binding.RendererJsonMeshPathId = meshPathId == 0 ? null : meshPathId;
+                    binding.RendererJsonRootBonePathId = rootBonePathId == 0 ? null : rootBonePathId;
+                    binding.RendererJsonBoneCount = (json["m_Bones"] as JArray)?.Count;
+                    binding.RendererJsonMaterialCount = (json["m_Materials"] as JArray)?.Count;
+                    binding.RendererJsonStatus = ResolveSkinnedMeshRendererJsonStatus(binding);
+                }
+                catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+                {
+                    warnings?.Add($"skinnedMeshRendererJsonReadFailed:{Path.GetFileName(jsonPath)}:{ex.Message}");
+                }
+            }
+        }
+
+        private static string ResolveSkinnedMeshRendererJsonStatus(VisualCellRendererSkinBinding binding)
+        {
+            if (binding == null || string.IsNullOrWhiteSpace(binding.RendererJsonPath))
+            {
+                return "missingSkinnedRendererJson";
+            }
+
+            var boneCount = binding.RendererJsonBoneCount ?? 0;
+            if (boneCount == 0 && !binding.RendererJsonRootBonePathId.HasValue && !binding.RendererJsonMeshPathId.HasValue)
+            {
+                return "skinnedRendererJsonEmptyBones";
+            }
+
+            return boneCount > 0 || binding.RendererJsonRootBonePathId.HasValue || binding.RendererJsonMeshPathId.HasValue
+                ? "skinnedRendererJsonSkinRefs"
+                : "skinnedRendererJsonNoSkinRefs";
         }
 
         private static void LoadRendererObjectEvidence(SqliteConnection connection, VisualCellRendererSkinBinding binding)
@@ -3219,6 +3319,13 @@ WHERE relation = 'material.texture'
             public int? BoneCount { get; set; }
             public bool? BonesTruncated { get; set; }
             public JArray BoneTargets { get; set; }
+            public string RendererJsonStatus { get; set; }
+            public string RendererJsonPath { get; set; }
+            public long? RendererJsonGameObjectPathId { get; set; }
+            public long? RendererJsonMeshPathId { get; set; }
+            public long? RendererJsonRootBonePathId { get; set; }
+            public int? RendererJsonBoneCount { get; set; }
+            public int? RendererJsonMaterialCount { get; set; }
 
             public bool HasAnyRelation => MeshPathId.HasValue || RootBonePathId.HasValue || BoneCount.HasValue;
 
@@ -3243,7 +3350,14 @@ WHERE relation = 'material.texture'
                     ["boneCount"] = BoneCount,
                     ["bonesTruncated"] = BonesTruncated,
                     ["boneTargetsPreview"] = BoneTargets != null ? new JArray(BoneTargets.Take(32).Select(x => x.DeepClone())) : null,
-                    ["rule"] = "Renderer 对象、GameObject 和材质引用只说明 LXRendererAssistant 链路有效；骨骼证据仍只来自 SQLite 源索引的 skinnedMeshRenderer.mesh/rootBone/bones，缺这些关系时不能写 glTF skin。"
+                    ["rendererJsonStatus"] = RendererJsonStatus,
+                    ["rendererJsonPath"] = string.IsNullOrWhiteSpace(RendererJsonPath) ? null : Path.GetFullPath(RendererJsonPath),
+                    ["rendererJsonGameObjectPathId"] = RendererJsonGameObjectPathId,
+                    ["rendererJsonMeshPathId"] = RendererJsonMeshPathId,
+                    ["rendererJsonRootBonePathId"] = RendererJsonRootBonePathId,
+                    ["rendererJsonBoneCount"] = RendererJsonBoneCount,
+                    ["rendererJsonMaterialCount"] = RendererJsonMaterialCount,
+                    ["rule"] = "Renderer 对象、GameObject 和材质引用只说明 LXRendererAssistant 链路有效；SQLite 或 SkinnedMeshRenderer JSON 里的 mesh/rootBone/bones 为空时，说明该 Naraka 样本不是标准 Unity Renderer.bones skin 路径，不能写 glTF skin。"
                 };
             }
         }

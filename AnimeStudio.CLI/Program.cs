@@ -1269,6 +1269,19 @@ namespace AnimeStudio.CLI
                         // 再跑通用 CAB external 闭包会把共享 common 包全部拖进来，定向烟测会退化成大范围加载。
                         assetsManager.ResolveDependencies = false;
                     }
+                    else if (ShouldSkipDependencyClosureForTargetedIndependentExport(o))
+                    {
+                        // JSON/Raw/Dump 只读目标对象本体；定向诊断时继续解析外部 CAB 会把 Naraka 这类大包拖成全依赖加载。
+                        // Convert/Library 仍保持原依赖逻辑，避免模型、材质、贴图闭包被意外裁掉。
+                        assetsManager.ResolveDependencies = false;
+                        Logger.Info("Targeted independent Export detected; skipping broad CAB dependency closure for JSON/Raw/Dump assets.");
+                        ProfileLogger.Event("targeted_independent_export_skip_dependency_closure", new Dictionary<string, object>
+                        {
+                            ["exportType"] = o.AssetExportType.ToString(),
+                            ["sourceFileFilterCount"] = o.SourceFileFilter?.Length ?? 0,
+                            ["pathIdFilterCount"] = o.PathIdFilter?.Length ?? 0,
+                        });
+                    }
                 }
                 else if (o.WorkMode == WorkMode.Library || o.WorkMode == WorkMode.AudioLibrary)
                 {
@@ -1910,6 +1923,19 @@ WHERE relation='animatorController.clip'
         }
 
         private readonly record struct SourceObjectKey(string File, long PathId);
+
+        private static bool ShouldSkipDependencyClosureForTargetedIndependentExport(Options o)
+        {
+            if (o == null
+                || o.WorkMode != WorkMode.Export
+                || o.SourceFileFilter.IsNullOrEmpty()
+                || o.PathIdFilter.IsNullOrEmpty())
+            {
+                return false;
+            }
+
+            return o.AssetExportType is ExportType.JSON or ExportType.Raw or ExportType.Dump;
+        }
 
         private static bool TryApplyTargetedSourceIndexSourceFileClosure(
             Options o,
