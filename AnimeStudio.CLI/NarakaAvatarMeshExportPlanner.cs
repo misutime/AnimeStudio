@@ -11,6 +11,8 @@ namespace AnimeStudio.CLI
 {
     internal static class NarakaAvatarMeshExportPlanner
     {
+        private const int MaxPathIdsPerExportStep = 200;
+
         public static string WritePlan(string sourceIndexPath, string selector, string outputFolder, string sourceRoot)
         {
             if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
@@ -53,7 +55,7 @@ namespace AnimeStudio.CLI
                 .OrderByDescending(x => x.TransformNodeCount)
                 .ThenBy(x => x.GameObjectName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            var transformNodeEvidence = allTransformNodeEvidence.Take(24).ToList();
+            var transformNodeEvidence = allTransformNodeEvidence;
             var transformNodeObjects = DistinctObjects(transformNodeEvidence
                 .SelectMany(x => LoadTransformNodeRefs(connection, x.VisualCellSourcePath, target.VisualCellFile, x.VisualCellPathId)))
                 .ToList();
@@ -120,7 +122,7 @@ namespace AnimeStudio.CLI
                     ["count"] = allTransformNodeEvidence.Count,
                     ["emittedCount"] = transformNodeEvidence.Count,
                     ["objects"] = new JArray(transformNodeEvidence.Select(x => x.ToJson())),
-                    ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
+                    ["rule"] = "ActorBodyVisualCell.transformNodes.data 是同 SerializedFile 内的显式 Transform 节点表线索；计划器会完整导出同包节点表，并把 PathID 分块写入命令，避免后续 TRS/节点诊断被采样截断。它能说明视觉单元引用了哪些 Unity 节点，但不能单独作为 AvatarMeshDataAsset 的 skin joint 映射。"
                 },
             };
             plan["commands"] = BuildCommands(sourceIndexPath, sourceRoot, outputFolder, dumpRoot, monoObjects, rendererObjects, transformNodeObjects, materialObjects);
@@ -765,40 +767,61 @@ LIMIT 1;";
             var index = 0;
             foreach (var group in groups)
             {
-                index++;
                 var pathIds = group
                     .Select(x => x.PathId)
                     .Distinct()
                     .OrderBy(x => x)
                     .ToArray();
-                var args = new List<string>
+                foreach (var pathIdChunk in ChunkPathIds(pathIds, MaxPathIdsPerExportStep))
                 {
-                    CliExe(),
-                    PsQuote(sourceRoot),
-                    PsQuote(outputFolder),
-                    "--game Naraka",
-                    "--mode Export",
-                    "--source_files",
-                    PsQuote(group.Key),
-                    "--types",
-                    types,
-                    "--path_ids",
-                    string.Join(" ", pathIds.Select(x => x.ToString(CultureInfo.InvariantCulture))),
-                    "--export_type " + exportType,
-                    "--group_assets ByType",
-                };
-                if (!string.IsNullOrWhiteSpace(sourceIndexPath))
-                {
-                    args.Add("--source_index");
-                    args.Add(PsQuote(sourceIndexPath));
-                }
-                var command = string.Join(" ", args);
+                    index++;
+                    var args = new List<string>
+                    {
+                        CliExe(),
+                        PsQuote(sourceRoot),
+                        PsQuote(outputFolder),
+                        "--game Naraka",
+                        "--mode Export",
+                        "--source_files",
+                        PsQuote(group.Key),
+                        "--types",
+                        types,
+                        "--path_ids",
+                        string.Join(" ", pathIdChunk.Select(x => x.ToString(CultureInfo.InvariantCulture))),
+                        "--export_type " + exportType,
+                        "--group_assets ByType",
+                    };
+                    if (!string.IsNullOrWhiteSpace(sourceIndexPath))
+                    {
+                        args.Add("--source_index");
+                        args.Add(PsQuote(sourceIndexPath));
+                    }
+                    var command = string.Join(" ", args);
 
-                yield return new PlanStep(
-                    $"{stepPrefix}_{index:D2}_{FixStepName(group.Key)}",
-                    command,
-                    group.Key,
-                    pathIds);
+                    yield return new PlanStep(
+                        $"{stepPrefix}_{index:D2}_{FixStepName(group.Key)}",
+                        command,
+                        group.Key,
+                        pathIdChunk);
+                }
+            }
+        }
+
+        private static IEnumerable<long[]> ChunkPathIds(long[] pathIds, int chunkSize)
+        {
+            // Naraka 自定义网格诊断可能要导出几千个 Transform。分块能避免 PowerShell 命令过长。
+            if (pathIds == null || pathIds.Length == 0)
+            {
+                yield break;
+            }
+
+            chunkSize = Math.Max(1, chunkSize);
+            for (var offset = 0; offset < pathIds.Length; offset += chunkSize)
+            {
+                yield return pathIds
+                    .Skip(offset)
+                    .Take(chunkSize)
+                    .ToArray();
             }
         }
 
