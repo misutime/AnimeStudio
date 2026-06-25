@@ -128,6 +128,7 @@ namespace AnimeStudio.CLI
                 ["limit"] = limit,
                 ["selectedModelCount"] = selectedModels.Count,
                 ["matchedModelCount"] = models.Count,
+                ["candidateModelCount"] = models.Count,
                 ["candidateCount"] = filtered.Count,
                 ["sourceIndexPerformance"] = new JObject
                 {
@@ -153,6 +154,7 @@ namespace AnimeStudio.CLI
                 ["sharedAvatarBridgeRule"] = "sharedAvatarController rows require a MonoBehaviour config that points to the selected prefab and an Avatar, plus an Animator that explicitly uses the same Avatar and controller clips. They are deterministic candidates, not visual proof; model gate, TRS export and screenshots must still pass.",
                 ["animatorDiagnosticRule"] = "Diagnostics list matching GameObjects and their Animator/Controller/Clip state. They explain why explicit candidates may be zero, but they do not create or imply a model-animation binding.",
                 ["monoBehaviourPPtrDiagnosticRule"] = "Diagnostics list MonoBehaviour PPtr fields that point at the selected model, plus sibling PPtr fields from the same MonoBehaviour. These are deterministic config clues only; they do not become playable animation candidates unless a model-first gate and explicit animation relation are also proven.",
+                ["selectedModels"] = new JArray(selectedModels.Select(ToJson)),
                 ["models"] = new JArray(models.Select(ToJson)),
                 ["animatorDiagnostics"] = new JArray(animatorDiagnostics.Select(ToJson)),
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
