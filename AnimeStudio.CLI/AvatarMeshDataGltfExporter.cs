@@ -2616,6 +2616,25 @@ LIMIT 1;";
                 var coveredUsedRefs = usedRefs
                     .Where(x => x.BoneIndex < table.Nodes.Count)
                     .ToArray();
+                var mappedUsedRefs = coveredUsedRefs
+                    .Select(x =>
+                    {
+                        var node = table.Nodes[x.BoneIndex];
+                        ExportedTransformNode exportedTransform = null;
+                        exportedTransformNodes?.TryGetValue(node.TransformPathId, out exportedTransform);
+                        return new TransformNodeTableUsedBoneRef(
+                            x.BoneIndex,
+                            x.WeightedRefCount,
+                            node.GameObjectName,
+                            node.GameObjectPathId,
+                            node.TransformPathId,
+                            exportedTransform != null,
+                            exportedTransform?.HasLocalTrs == true);
+                    })
+                    .ToArray();
+                var missingUsedRefs = usedRefs
+                    .Where(x => x.BoneIndex >= table.Nodes.Count)
+                    .ToArray();
                 var exportedCoveredUsedBoneTransformCount = coveredUsedRefs.Count(x =>
                 {
                     var node = table.Nodes[x.BoneIndex];
@@ -2665,6 +2684,8 @@ LIMIT 1;";
                     MissingUsedBoneIndexCount = Math.Max(0, usedRefs.Length - coveredUsedRefs.Length),
                     CoversAllUsedBoneIndices = usedRefs.Length > 0 && coveredUsedRefs.Length == usedRefs.Length,
                     UsedBoneIndexMax = usedRefs.Length == 0 ? null : usedRefs.Max(x => x.BoneIndex),
+                    CoveredUsedBoneRefs = mappedUsedRefs,
+                    MissingUsedBoneRefs = missingUsedRefs,
                     ExportedCoveredUsedBoneTransformCount = exportedCoveredUsedBoneTransformCount,
                     MissingExportedCoveredUsedBoneTransformCount = Math.Max(0, coveredUsedRefs.Length - exportedCoveredUsedBoneTransformCount),
                     AllCoveredUsedBoneTransformsExported = coveredUsedRefs.Length > 0 && exportedCoveredUsedBoneTransformCount == coveredUsedRefs.Length,
@@ -5287,6 +5308,8 @@ LIMIT 1;";
             public int MissingUsedBoneIndexCount { get; init; }
             public bool CoversAllUsedBoneIndices { get; init; }
             public int? UsedBoneIndexMax { get; init; }
+            public IReadOnlyList<TransformNodeTableUsedBoneRef> CoveredUsedBoneRefs { get; init; } = Array.Empty<TransformNodeTableUsedBoneRef>();
+            public IReadOnlyList<BoneRefCount> MissingUsedBoneRefs { get; init; } = Array.Empty<BoneRefCount>();
             public int ExportedCoveredUsedBoneTransformCount { get; init; }
             public int MissingExportedCoveredUsedBoneTransformCount { get; init; }
             public bool AllCoveredUsedBoneTransformsExported { get; init; }
@@ -5311,13 +5334,36 @@ LIMIT 1;";
                 ["missingUsedBoneIndexCount"] = MissingUsedBoneIndexCount,
                 ["coversAllUsedBoneIndices"] = CoversAllUsedBoneIndices,
                 ["usedBoneIndexMax"] = UsedBoneIndexMax,
+                ["coveredUsedBoneRefs"] = new JArray((CoveredUsedBoneRefs ?? Array.Empty<TransformNodeTableUsedBoneRef>()).Take(64).Select(x => x.ToJson())),
+                ["missingUsedBoneRefs"] = new JArray((MissingUsedBoneRefs ?? Array.Empty<BoneRefCount>()).Take(64).Select(x => x.ToJson())),
                 ["exportedCoveredUsedBoneTransformCount"] = ExportedCoveredUsedBoneTransformCount,
                 ["missingExportedCoveredUsedBoneTransformCount"] = MissingExportedCoveredUsedBoneTransformCount,
                 ["allCoveredUsedBoneTransformsExported"] = AllCoveredUsedBoneTransformsExported,
                 ["boneDriverNodeNameMatchCount"] = BoneDriverNodeNameMatchCount,
                 ["boneDriverNodeNameMatches"] = new JArray((BoneDriverNodeNameMatches ?? Array.Empty<string>()).Take(32).Select(x => new JValue(x))),
                 ["mappedTopBoneRefs"] = new JArray((MappedTopBoneRefs ?? Array.Empty<TransformNodeTableCandidateRef>()).Select(x => x.ToJson())),
-                ["rule"] = "只把 AvatarBoneWeights 的 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；usedBoneIndex 覆盖只说明实际权重索引落在候选表内，allCoveredUsedBoneTransformsExported 只说明候选 Transform JSON 可读，仍不能单独证明 joint 映射，不能写入 glTF skin。"
+                ["rule"] = "只把 AvatarBoneWeights 的 boneIndex 按 ActorBodyVisualCell.transformNodes.data 顺序做候选对照；covered/missing usedBoneRefs 只说明实际权重索引是否落在候选表内，allCoveredUsedBoneTransformsExported 只说明候选 Transform JSON 可读，仍不能单独证明 joint 映射，不能写入 glTF skin。"
+            };
+        }
+
+        private sealed record TransformNodeTableUsedBoneRef(
+            int BoneIndex,
+            int WeightedRefCount,
+            string GameObjectName,
+            long GameObjectPathId,
+            long TransformPathId,
+            bool HasExportedTransform,
+            bool HasLocalTrs)
+        {
+            public JObject ToJson() => new()
+            {
+                ["boneIndex"] = BoneIndex,
+                ["weightedRefCount"] = WeightedRefCount,
+                ["candidateGameObjectName"] = GameObjectName,
+                ["candidateGameObjectPathId"] = GameObjectPathId,
+                ["candidateTransformPathId"] = TransformPathId,
+                ["hasExportedTransform"] = HasExportedTransform,
+                ["hasLocalTrs"] = HasLocalTrs,
             };
         }
 
@@ -5585,19 +5631,39 @@ LIMIT 1;";
                     ["avatarBoneRefs"] = new JArray(AvatarBoneRefs.Select(x => x.ToJson())),
                     ["avatarTopBoneRefs"] = new JArray(AvatarTopBoneRefs.Select(x => x.ToJson())),
                     ["transformNodeTableCandidateCount"] = TransformNodeTableCandidates.Count,
-                    ["transformNodeTableCandidates"] = new JArray(TransformNodeTableCandidates
-                        .OrderByDescending(x => x.CoversAllUsedBoneIndices)
-                        .ThenByDescending(x => x.AllCoveredUsedBoneTransformsExported)
-                        .ThenByDescending(x => x.MatchedTopBoneIndexCount)
-                        .ThenByDescending(x => x.TransformNodeCount)
-                        .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
-                        .Take(8)
-                        .Select(x => x.ToJson())),
+                    ["transformNodeTableCandidates"] = new JArray(GetReportTransformNodeTableCandidates().Select(x => x.ToJson())),
                     ["bindPoseCount"] = BindPoseCount,
                     ["mappedJointCount"] = 0,
                     ["layoutWarnings"] = new JArray(LayoutWarnings),
                     ["rule"] = "m_AnimSkinData 的 boneIndex 只先按 m_BindPoses 槽位做自洽检查；m_AvatarBoneWeights 是另一套 avatar boneIndex 证据，avatarBoneRefs 只列出实际参与权重的非负 boneIndex，缺少确定性 joint 名称/路径映射前不写 glTF skin。"
                 };
+            }
+
+            private IEnumerable<TransformNodeTableCandidate> GetReportTransformNodeTableCandidates()
+            {
+                var picked = new List<TransformNodeTableCandidate>();
+                foreach (var candidate in TransformNodeTableCandidates
+                    .OrderByDescending(x => x.CoversAllUsedBoneIndices)
+                    .ThenByDescending(x => x.AllCoveredUsedBoneTransformsExported)
+                    .ThenByDescending(x => x.MatchedTopBoneIndexCount)
+                    .ThenByDescending(x => x.TransformNodeCount)
+                    .ThenBy(x => x.VisualCellGameObjectName, StringComparer.OrdinalIgnoreCase)
+                    .Take(8))
+                {
+                    picked.Add(candidate);
+                }
+
+                foreach (var selected in TransformNodeTableCandidates.Where(x => x.IsSelectedVisualCell))
+                {
+                    if (picked.Any(x => x.VisualCellPathId == selected.VisualCellPathId
+                        && string.Equals(x.SerializedFile, selected.SerializedFile, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+                    picked.Add(selected);
+                }
+
+                return picked;
             }
         }
 
