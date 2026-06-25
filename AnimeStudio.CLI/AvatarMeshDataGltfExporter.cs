@@ -357,10 +357,11 @@ namespace AnimeStudio.CLI
             var avatarMeshRelationEvidence = LoadAvatarMeshDataRelationEvidence(sourceIndexPath, parts, warnings);
             var avatarPartDataEvidence = LoadAvatarPartDataEvidence(jsonFolder, manifest, parts, sourceIndexPath, warnings);
             var boneDriverHints = LoadBoneDriverHints(jsonFolder, manifest, sourceIndexPath, warnings);
+            var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, warnings);
             var transformNodeTables = LoadTransformNodeTableCandidates(sourceIndexPath, parts, warnings);
             foreach (var part in parts)
             {
-                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile));
+                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile, exportedTransformNodes));
             }
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
@@ -487,9 +488,12 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
+                ["transformNodeJsonCount"] = exportedTransformNodes.Count,
+                ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
-                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；同 SerializedFile 内存在多套节点表时不能作为 skin joint 映射。",
+                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；Transform JSON 里的 TRS/父子关系可辅助下一步比对 bind pose，但同 SerializedFile 内存在多套节点表时不能作为 skin joint 映射。",
                 ["hairDeformDataStatus"] = SummarizeHairDeformDataStatus(hairDeformSummaries),
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
                 ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
@@ -548,6 +552,7 @@ namespace AnimeStudio.CLI
                 : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
+            var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, new List<string>());
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var hairDeformDataStatus = SummarizeHairDeformDataStatus(hairDeformSummaries);
             var validationReasons = new JArray(
@@ -649,6 +654,9 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
+                ["transformNodeJsonCount"] = exportedTransformNodes.Count,
+                ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
                 ["hairDeformDataStatus"] = hairDeformDataStatus,
@@ -1195,6 +1203,61 @@ namespace AnimeStudio.CLI
             return result;
         }
 
+        private static Dictionary<long, ExportedTransformNode> LoadExportedTransformNodes(string jsonFolder, List<string> warnings)
+        {
+            var result = new Dictionary<long, ExportedTransformNode>();
+            var dumpRoot = Path.GetDirectoryName(Path.GetFullPath(jsonFolder));
+            if (string.IsNullOrWhiteSpace(dumpRoot) || !Directory.Exists(dumpRoot))
+            {
+                return result;
+            }
+
+            foreach (var pair in LoadExportedAssetManifest(dumpRoot)
+                         .Where(x => string.Equals(x.Value.Type, "Transform", StringComparison.OrdinalIgnoreCase)))
+            {
+                var jsonPath = FindExportedFile(pair.Value, ".json");
+                if (string.IsNullOrWhiteSpace(jsonPath) || !File.Exists(jsonPath))
+                {
+                    warnings?.Add($"missingTransformJson:{pair.Key}");
+                    continue;
+                }
+
+                try
+                {
+                    var json = JObject.Parse(File.ReadAllText(jsonPath));
+                    result[pair.Key] = new ExportedTransformNode
+                    {
+                        PathId = pair.Key,
+                        JsonPath = jsonPath,
+                        LocalPosition = ReadOptionalVector3(json["m_LocalPosition"]),
+                        LocalRotation = ReadOptionalVector4(json["m_LocalRotation"]),
+                        LocalScale = ReadOptionalVector3(json["m_LocalScale"]),
+                        FatherPathId = ReadPPtrPathId(json["m_Father"]),
+                        GameObjectPathId = ReadPPtrPathId(json["m_GameObject"]),
+                        ChildCount = (json["m_Children"] as JArray)?.Count ?? 0,
+                    };
+                }
+                catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException)
+                {
+                    warnings?.Add($"transformJsonReadFailed:{pair.Key}:{ex.Message}");
+                }
+            }
+
+            return result;
+        }
+
+        private static string SummarizeExportedTransformNodeStatus(IReadOnlyDictionary<long, ExportedTransformNode> nodes)
+        {
+            if (nodes == null || nodes.Count == 0)
+            {
+                return "missing";
+            }
+
+            return nodes.Values.All(x => x.HasLocalTrs)
+                ? "readableLocalTrs"
+                : "partialReadableLocalTrs";
+        }
+
         private static string FindExportedFile(ExportedAssetInfo asset, string extension)
         {
             if (asset == null || string.IsNullOrWhiteSpace(asset.OutputFolder))
@@ -1202,7 +1265,10 @@ namespace AnimeStudio.CLI
                 return null;
             }
 
-            var direct = Path.Combine(asset.OutputFolder, FixFileName(asset.Name) + extension);
+            var fileName = string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase)
+                ? ToExportedJsonFileName(asset.Name)
+                : FixFileName(asset.Name) + extension;
+            var direct = Path.Combine(asset.OutputFolder, fileName);
             if (File.Exists(direct))
             {
                 return direct;
@@ -1563,7 +1629,8 @@ LIMIT 1;";
         private static IEnumerable<TransformNodeTableCandidate> BuildTransformNodeTableCandidates(
             SkinSummary skin,
             IReadOnlyList<TransformNodeTable> tables,
-            string serializedFile)
+            string serializedFile,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
         {
             if (skin == null || tables == null || tables.Count == 0)
             {
@@ -1590,7 +1657,9 @@ LIMIT 1;";
                     .Select(x =>
                     {
                         var node = table.Nodes[x.BoneIndex];
-                        return new TransformNodeTableCandidateRef(x.BoneIndex, x.WeightedRefCount, node.GameObjectName, node.GameObjectPathId, node.TransformPathId);
+                        ExportedTransformNode exportedTransform = null;
+                        exportedTransformNodes?.TryGetValue(node.TransformPathId, out exportedTransform);
+                        return new TransformNodeTableCandidateRef(x.BoneIndex, x.WeightedRefCount, node.GameObjectName, node.GameObjectPathId, node.TransformPathId, exportedTransform);
                     })
                     .Where(x => !string.IsNullOrWhiteSpace(x.GameObjectName))
                     .ToArray();
@@ -2480,6 +2549,12 @@ WHERE relation = 'material.texture'
                 return "MonoBehaviour_" + monoMatch.Groups["id"].Value + ".json";
             }
 
+            var transformMatch = Regex.Match(name, @"^Transform#(?<id>\d+)$", RegexOptions.IgnoreCase);
+            if (transformMatch.Success)
+            {
+                return "Transform_" + transformMatch.Groups["id"].Value + ".json";
+            }
+
             return FixFileName(name) + ".json";
         }
 
@@ -2881,6 +2956,19 @@ WHERE relation = 'material.texture'
             return new Vector3Value(ReadFloat(token, "x"), ReadFloat(token, "y"), ReadFloat(token, "z"));
         }
 
+        private static Vector3Value? ReadOptionalVector3(JToken token)
+        {
+            if (token == null)
+            {
+                return null;
+            }
+
+            return new Vector3Value(
+                ReadOptionalNamedFloat(token, "x", "X"),
+                ReadOptionalNamedFloat(token, "y", "Y"),
+                ReadOptionalNamedFloat(token, "z", "Z"));
+        }
+
         private static Vector4Value ReadVector4(JToken token, string field)
         {
             if (token == null)
@@ -2888,6 +2976,27 @@ WHERE relation = 'material.texture'
                 throw new InvalidDataException($"AvatarMeshDataAsset vertex missing {field}.");
             }
             return new Vector4Value(ReadFloat(token, "x"), ReadFloat(token, "y"), ReadFloat(token, "z"), ReadFloat(token, "w"));
+        }
+
+        private static Vector4Value? ReadOptionalVector4(JToken token)
+        {
+            if (token == null)
+            {
+                return null;
+            }
+
+            return new Vector4Value(
+                ReadOptionalNamedFloat(token, "x", "X"),
+                ReadOptionalNamedFloat(token, "y", "Y"),
+                ReadOptionalNamedFloat(token, "z", "Z"),
+                ReadOptionalNamedFloat(token, "w", "W"));
+        }
+
+        private static float ReadOptionalNamedFloat(JToken token, string lowerName, string upperName)
+        {
+            return token?[lowerName]?.Value<float>()
+                ?? token?[upperName]?.Value<float>()
+                ?? 0f;
         }
 
         private static float ReadFloat(JToken token, string name)
@@ -3251,7 +3360,8 @@ WHERE relation = 'material.texture'
             int WeightedRefCount,
             string GameObjectName,
             long GameObjectPathId,
-            long TransformPathId)
+            long TransformPathId,
+            ExportedTransformNode ExportedTransform)
         {
             public JObject ToJson() => new()
             {
@@ -3260,7 +3370,50 @@ WHERE relation = 'material.texture'
                 ["candidateGameObjectName"] = GameObjectName,
                 ["candidateGameObjectPathId"] = GameObjectPathId,
                 ["candidateTransformPathId"] = TransformPathId,
+                ["candidateTransform"] = ExportedTransform?.ToJson(),
             };
+        }
+
+        private sealed class ExportedTransformNode
+        {
+            public long PathId { get; init; }
+            public string JsonPath { get; init; }
+            public Vector3Value? LocalPosition { get; init; }
+            public Vector4Value? LocalRotation { get; init; }
+            public Vector3Value? LocalScale { get; init; }
+            public long FatherPathId { get; init; }
+            public long GameObjectPathId { get; init; }
+            public int ChildCount { get; init; }
+
+            public bool HasLocalTrs => LocalPosition.HasValue && LocalRotation.HasValue && LocalScale.HasValue;
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = HasLocalTrs ? "readableLocalTrs" : "missingLocalTrs",
+                ["sourceJson"] = string.IsNullOrWhiteSpace(JsonPath) ? null : Path.GetFullPath(JsonPath),
+                ["transformPathId"] = PathId,
+                ["gameObjectPathIdFromJson"] = GameObjectPathId,
+                ["fatherPathId"] = FatherPathId,
+                ["childCount"] = ChildCount,
+                ["localPosition"] = ToJson(LocalPosition),
+                ["localRotation"] = ToJson(LocalRotation),
+                ["localScale"] = ToJson(LocalScale),
+                ["rule"] = "该 Transform JSON 只提供候选节点的 local TRS 和层级线索；缺少 AvatarMeshDataAsset 到节点表的确定映射前不能写 glTF skin。"
+            };
+
+            private static JToken ToJson(Vector3Value? value)
+            {
+                return value.HasValue
+                    ? new JArray(value.Value.X, value.Value.Y, value.Value.Z)
+                    : JValue.CreateNull();
+            }
+
+            private static JToken ToJson(Vector4Value? value)
+            {
+                return value.HasValue
+                    ? new JArray(value.Value.X, value.Value.Y, value.Value.Z, value.Value.W)
+                    : JValue.CreateNull();
+            }
         }
 
         private sealed record ExportedAssetInfo(
