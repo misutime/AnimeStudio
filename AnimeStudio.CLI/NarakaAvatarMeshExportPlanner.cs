@@ -51,6 +51,8 @@ namespace AnimeStudio.CLI
             }
 
             var boneDriverHints = LoadBoneDriverHints(connection, target.VisualCellFile).ToList();
+            var attachedMonoBehaviourComponents = LoadAttachedMonoBehaviourComponents(connection, target).ToList();
+            var attachedComponentPPtrTargets = LoadAttachedComponentPPtrTargets(connection, attachedMonoBehaviourComponents, target).ToList();
             var allTransformNodeEvidence = LoadActorBodyVisualCellTransformNodeEvidence(connection, target.VisualCellFile)
                 .OrderByDescending(x => x.TransformNodeCount)
                 .ThenBy(x => x.GameObjectName, StringComparer.OrdinalIgnoreCase)
@@ -59,6 +61,10 @@ namespace AnimeStudio.CLI
             var transformNodeObjects = DistinctObjects(transformNodeEvidence
                 .SelectMany(x => LoadTransformNodeRefs(connection, x.VisualCellSourcePath, target.VisualCellFile, x.VisualCellPathId)))
                 .ToList();
+            transformNodeObjects.AddRange(attachedComponentPPtrTargets
+                .Where(x => string.Equals(x.TargetType, "Transform", StringComparison.Ordinal))
+                .Select(x => x.Target));
+            transformNodeObjects = DistinctObjects(transformNodeObjects).ToList();
             var hairCustomizationTintObjects = LoadHairCustomizationTintObjects(connection).ToList();
             var monoObjects = new List<SourceObjectRef>
             {
@@ -67,6 +73,10 @@ namespace AnimeStudio.CLI
             monoObjects.AddRange(parts.Select(x => new SourceObjectRef(x.AssistantName, x.AssistantSourcePath, x.AssistantFile, x.AssistantPathId, "LXRendererAssistant")));
             monoObjects.AddRange(parts.Select(x => new SourceObjectRef(x.AvatarMeshName, x.AvatarMeshSourcePath, x.AvatarMeshFile, x.AvatarMeshPathId, "AvatarMeshDataAsset")));
             monoObjects.AddRange(parts.SelectMany(x => x.AvatarPartDataEvidence.Select(y => new SourceObjectRef(y.AssetName, y.AssetSourcePath, y.AssetFile, y.AssetPathId, "AvatarPartDataAsset"))));
+            monoObjects.AddRange(attachedMonoBehaviourComponents);
+            monoObjects.AddRange(attachedComponentPPtrTargets
+                .Where(x => string.Equals(x.TargetType, "MonoBehaviour", StringComparison.Ordinal))
+                .Select(x => x.Target));
             monoObjects.AddRange(boneDriverHints.Select(x => new SourceObjectRef(x.Name, x.SourcePath, x.SerializedFile, x.PathId, x.ScriptName)));
             monoObjects = DistinctObjects(monoObjects).ToList();
 
@@ -120,6 +130,20 @@ namespace AnimeStudio.CLI
                     ["count"] = boneDriverHints.Count,
                     ["objects"] = new JArray(boneDriverHints.Select(x => x.ToJson())),
                     ["rule"] = "BoneFollowDriver/BoneHairFollowDriver 只作为同一视觉包内的骨骼名称线索导出；不能作为 mesh joint 或 skin 绑定。"
+                },
+                ["attachedMonoBehaviourComponents"] = new JObject
+                {
+                    ["status"] = attachedMonoBehaviourComponents.Count > 0 ? "found" : "missing",
+                    ["count"] = attachedMonoBehaviourComponents.Count,
+                    ["objects"] = new JArray(attachedMonoBehaviourComponents.Select(x => x.ToJson())),
+                    ["rule"] = "同一个 GameObject 上的 MonoBehaviour 组件来自 Unity component.gameObject 显式关系。它们只作为脸部、表情、换装或运行时配置线索随计划导出；不能单独证明完整角色装配、skin 或动画绑定。"
+                },
+                ["attachedComponentPPtrTargets"] = new JObject
+                {
+                    ["status"] = attachedComponentPPtrTargets.Count > 0 ? "found" : "missing",
+                    ["count"] = attachedComponentPPtrTargets.Count,
+                    ["objects"] = new JArray(attachedComponentPPtrTargets.Select(x => x.ToJson())),
+                    ["rule"] = "只对同 GameObject 上除 ActorBodyVisualCell 之外的额外组件追一层 PPtr 目标，例如 AvatarFaceRuntime 的 AvatarFaceData、head/neck/root/eye Transform。它们是配置和骨骼诊断线索，不能自动升级成 skin 或动画绑定。"
                 },
                 ["actorBodyVisualCellTransformNodes"] = new JObject
                 {
@@ -429,6 +453,112 @@ ORDER BY script.name, obj.path_id;";
                     reader.GetString(2),
                     reader.GetInt64(3),
                     reader.IsDBNull(4) ? string.Empty : reader.GetString(4));
+            }
+        }
+
+        private static IEnumerable<SourceObjectRef> LoadAttachedMonoBehaviourComponents(SqliteConnection connection, TargetSelection target)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(target.GameObjectFile) || target.GameObjectPathId == 0)
+            {
+                yield break;
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT obj.name,
+       obj.source_path,
+       obj.serialized_file,
+       obj.path_id,
+       script.name
+FROM source_relations componentRel INDEXED BY idx_source_relations_to
+JOIN source_objects obj
+  ON obj.serialized_file = componentRel.from_file
+ AND obj.path_id = componentRel.from_path_id
+ AND obj.type = 'MonoBehaviour'
+LEFT JOIN source_relations scriptRel INDEXED BY idx_source_relations_from
+  ON scriptRel.from_file = obj.serialized_file
+ AND scriptRel.from_path_id = obj.path_id
+ AND scriptRel.relation = 'monoBehaviour.script'
+LEFT JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE componentRel.to_file = $gameObjectFile COLLATE NOCASE
+  AND componentRel.to_path_id = $gameObjectPathId
+  AND componentRel.relation = 'component.gameObject'
+ORDER BY obj.name COLLATE NOCASE, obj.path_id;";
+            command.Parameters.AddWithValue("$gameObjectFile", NormalizeSerializedFileName(target.GameObjectFile));
+            command.Parameters.AddWithValue("$gameObjectPathId", target.GameObjectPathId);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                var scriptName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                var role = string.IsNullOrWhiteSpace(scriptName)
+                    ? "AttachedMonoBehaviour"
+                    : "AttachedComponent:" + scriptName;
+                yield return new SourceObjectRef(
+                    name,
+                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetInt64(3),
+                    role);
+            }
+        }
+
+        private static IEnumerable<AttachedComponentPPtrTarget> LoadAttachedComponentPPtrTargets(
+            SqliteConnection connection,
+            IReadOnlyList<SourceObjectRef> attachedComponents,
+            TargetSelection target)
+        {
+            if (attachedComponents == null || attachedComponents.Count == 0)
+            {
+                yield break;
+            }
+
+            foreach (var component in attachedComponents
+                .Where(x => x.PathId != target.VisualCellPathId || !string.Equals(x.SerializedFile, target.VisualCellFile, StringComparison.OrdinalIgnoreCase)))
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT json_extract(rel.raw_json, '$.details.path'),
+       target.type,
+       target.name,
+       target.source_path,
+       target.serialized_file,
+       target.path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects target
+  ON target.serialized_file = rel.to_file
+ AND target.path_id = rel.to_path_id
+WHERE rel.from_file = $componentFile COLLATE NOCASE
+  AND rel.from_path_id = $componentPathId
+  AND rel.relation = 'monoBehaviour.pptr'
+  AND target.type IN ('MonoBehaviour', 'Transform')
+ORDER BY rel.id;";
+                command.Parameters.AddWithValue("$componentFile", NormalizeSerializedFileName(component.SerializedFile));
+                command.Parameters.AddWithValue("$componentPathId", component.PathId);
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var fieldPath = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var targetType = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                    var role = "AttachedComponentPPtr:" + (string.IsNullOrWhiteSpace(fieldPath) ? targetType : fieldPath);
+                    var targetRef = new SourceObjectRef(
+                        reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                        reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                        reader.GetString(4),
+                        reader.GetInt64(5),
+                        role);
+                    yield return new AttachedComponentPPtrTarget(
+                        component.Name,
+                        component.SerializedFile,
+                        component.PathId,
+                        fieldPath,
+                        targetType,
+                        targetRef);
+                }
             }
         }
 
@@ -1143,6 +1273,25 @@ LIMIT 1;";
                 ["serializedFile"] = SerializedFile,
                 ["pathId"] = PathId,
                 ["role"] = Role,
+            };
+        }
+
+        private sealed record AttachedComponentPPtrTarget(
+            string ComponentName,
+            string ComponentFile,
+            long ComponentPathId,
+            string FieldPath,
+            string TargetType,
+            SourceObjectRef Target)
+        {
+            public JObject ToJson() => new()
+            {
+                ["componentName"] = ComponentName,
+                ["componentFile"] = ComponentFile,
+                ["componentPathId"] = ComponentPathId,
+                ["fieldPath"] = FieldPath,
+                ["targetType"] = TargetType,
+                ["target"] = Target?.ToJson(),
             };
         }
 
