@@ -744,21 +744,7 @@ namespace AnimeStudio.CLI
                         exportPath = GetLibraryExportPath(savePath, asset);
                         break;
                     case AssetGroupOption.BySource: //source file
-                        if (string.IsNullOrEmpty(asset.SourceFile.originalPath))
-                        {
-                            exportPath = Path.Combine(
-                                savePath,
-                                asset.SourceFile.fileName + "_export"
-                            );
-                        }
-                        else
-                        {
-                            exportPath = Path.Combine(
-                                savePath,
-                                Path.GetFileName(asset.SourceFile.originalPath) + "_export",
-                                asset.SourceFile.fileName
-                            );
-                        }
+                        exportPath = GetSourceExportPath(savePath, asset);
                         break;
                     default:
                         exportPath = savePath;
@@ -6278,16 +6264,23 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     Path.Combine(savePath, asset.TypeString) + Path.DirectorySeparatorChar,
                 AssetGroupOption.ByLibrary =>
                     GetLibraryExportPath(savePath, asset) + Path.DirectorySeparatorChar,
-                AssetGroupOption.BySource when string.IsNullOrEmpty(asset.SourceFile.originalPath) =>
-                    Path.Combine(savePath, asset.SourceFile.fileName + "_export") + Path.DirectorySeparatorChar,
                 AssetGroupOption.BySource =>
-                    Path.Combine(
-                        savePath,
-                        Path.GetFileName(asset.SourceFile.originalPath) + "_export",
-                        asset.SourceFile.fileName
-                    ) + Path.DirectorySeparatorChar,
+                    GetSourceExportPath(savePath, asset) + Path.DirectorySeparatorChar,
                 _ => savePath + Path.DirectorySeparatorChar,
             };
+        }
+
+        private static string GetSourceExportPath(string savePath, AssetItem asset)
+        {
+            // 只清洗输出目录名，source 原始路径仍写进 manifest/报告，方便回查 Unity CAB。
+            var sourceFileName = Exporter.FixFileName(asset.SourceFile?.fileName ?? "source");
+            if (string.IsNullOrEmpty(asset.SourceFile?.originalPath))
+            {
+                return Path.Combine(savePath, sourceFileName + "_export");
+            }
+
+            var sourceFolderName = Exporter.FixFileName(Path.GetFileName(asset.SourceFile.originalPath));
+            return Path.Combine(savePath, sourceFolderName + "_export", sourceFileName);
         }
 
         private static string GetLibraryExportPath(string savePath, AssetItem asset)

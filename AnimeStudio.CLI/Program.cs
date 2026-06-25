@@ -1276,9 +1276,9 @@ namespace AnimeStudio.CLI
                     else if (ShouldSkipDependencyClosureForTargetedIndependentExport(o))
                     {
                         // JSON/Raw/Dump 只读目标对象本体；定向诊断时继续解析外部 CAB 会把 Naraka 这类大包拖成全依赖加载。
-                        // Convert/Library 仍保持原依赖逻辑，避免模型、材质、贴图闭包被意外裁掉。
+                        // Convert 只对明确的 MonoBehaviour 诊断走这里，模型/材质/贴图仍保持原依赖逻辑。
                         assetsManager.ResolveDependencies = false;
-                        Logger.Info("Targeted independent Export detected; skipping broad CAB dependency closure for JSON/Raw/Dump assets.");
+                        Logger.Info("Targeted independent Export detected; skipping broad CAB dependency closure for standalone diagnostic assets.");
                         ProfileLogger.Event("targeted_independent_export_skip_dependency_closure", new Dictionary<string, object>
                         {
                             ["exportType"] = o.AssetExportType.ToString(),
@@ -1947,7 +1947,22 @@ WHERE relation='animatorController.clip'
                 return false;
             }
 
-            return o.AssetExportType is ExportType.JSON or ExportType.Raw or ExportType.Dump;
+            return o.AssetExportType is ExportType.JSON or ExportType.Raw or ExportType.Dump
+                || IsTargetedMonoBehaviourConvertExport(o);
+        }
+
+        private static bool IsTargetedMonoBehaviourConvertExport(Options o)
+        {
+            if (o?.AssetExportType != ExportType.Convert || o.TypeFilter.IsNullOrEmpty())
+            {
+                return false;
+            }
+
+            return o.TypeFilter.All(x =>
+            {
+                var typeName = (x ?? string.Empty).Split(':')[0].Trim();
+                return string.Equals(typeName, nameof(ClassIDType.MonoBehaviour), StringComparison.OrdinalIgnoreCase);
+            });
         }
 
         private static bool TryApplyTargetedSourceIndexSourceFileClosure(
