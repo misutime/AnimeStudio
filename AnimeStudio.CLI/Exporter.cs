@@ -6469,7 +6469,11 @@ ORDER BY components.type, components.path_id;";
             {
                 return "Ball";
             }
-            if (Regex.IsMatch(text, @"(^|/)trophy|prop|props|object|item|weapon"))
+            // 这些是跨 Unity 项目常见的可复用物件词元，归为 Prop；避免按单个游戏名字猜。
+            if (HasToken(
+                text,
+                "trophy|trophies|prop|props|object|objects|item|items|weapon|weapons"
+                + "|device|devices|gadget|gadgets|mechanism|mechanisms|pickup|pickups|collectible|collectibles"))
             {
                 return "Prop";
             }
