@@ -199,6 +199,13 @@ CREATE TABLE assets (
     animation_type TEXT,
     skeleton_hash TEXT,
     validation_status TEXT,
+    source_skin_mapping_status TEXT,
+    selected_visual_cell_transform_node_status TEXT,
+    external_skeleton_context_status TEXT,
+    external_skeleton_context_serialized_file TEXT,
+    external_skeleton_context_container TEXT,
+    external_skeleton_context_name TEXT,
+    external_skeleton_context_path_id INTEGER,
     raw_json TEXT NOT NULL
 );
 CREATE TABLE unity_assets (
@@ -424,6 +431,8 @@ CREATE TABLE library_reports (
                 "CREATE INDEX idx_assets_source ON assets(source, path_id);",
                 "CREATE INDEX idx_assets_output ON assets(output);",
                 "CREATE INDEX idx_assets_kind_output ON assets(kind, output);",
+                "CREATE INDEX idx_assets_source_skin_mapping ON assets(source_skin_mapping_status);",
+                "CREATE INDEX idx_assets_external_skeleton_context ON assets(external_skeleton_context_status, external_skeleton_context_name);",
                 "CREATE INDEX idx_unity_assets_source ON unity_assets(source, path_id);",
                 "CREATE INDEX idx_unity_assets_name ON unity_assets(name);",
                 "CREATE INDEX idx_unity_relations_from ON unity_relations(from_source, from_path_id);",
@@ -565,9 +574,30 @@ VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bak
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, raw_json)
-VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $rawJson);";
-            var p = AddParameters(command, "$kind", "$resourceKind", "$name", "$sourceType", "$container", "$source", "$pathId", "$output", "$audioKind", "$animationType", "$skeletonHash", "$validationStatus", "$rawJson");
+INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, source_skin_mapping_status, selected_visual_cell_transform_node_status, external_skeleton_context_status, external_skeleton_context_serialized_file, external_skeleton_context_container, external_skeleton_context_name, external_skeleton_context_path_id, raw_json)
+VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $sourceSkinMappingStatus, $selectedVisualCellTransformNodeStatus, $externalSkeletonContextStatus, $externalSkeletonContextSerializedFile, $externalSkeletonContextContainer, $externalSkeletonContextName, $externalSkeletonContextPathId, $rawJson);";
+            var p = AddParameters(
+                command,
+                "$kind",
+                "$resourceKind",
+                "$name",
+                "$sourceType",
+                "$container",
+                "$source",
+                "$pathId",
+                "$output",
+                "$audioKind",
+                "$animationType",
+                "$skeletonHash",
+                "$validationStatus",
+                "$sourceSkinMappingStatus",
+                "$selectedVisualCellTransformNodeStatus",
+                "$externalSkeletonContextStatus",
+                "$externalSkeletonContextSerializedFile",
+                "$externalSkeletonContextContainer",
+                "$externalSkeletonContextName",
+                "$externalSkeletonContextPathId",
+                "$rawJson");
 
             var rows = ReadJsonLines(path).ToList();
             AttachModelValidation(root, rows);
@@ -588,6 +618,14 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 Set(p, "$animationType", S(obj, "animationType"));
                 Set(p, "$skeletonHash", S(obj, "skeletonHash"));
                 Set(p, "$validationStatus", S(obj, "modelValidationStatus") ?? S(obj["modelValidation"] as JObject, "Status"));
+                var externalSkeletonContext = obj["externalSkeletonContextCandidate"] as JObject;
+                Set(p, "$sourceSkinMappingStatus", S(obj, "sourceSkinMappingStatus"));
+                Set(p, "$selectedVisualCellTransformNodeStatus", S(obj, "selectedVisualCellTransformNodeTableStatus"));
+                Set(p, "$externalSkeletonContextStatus", S(obj, "externalSkeletonContextCandidateStatus") ?? S(externalSkeletonContext, "status"));
+                Set(p, "$externalSkeletonContextSerializedFile", S(externalSkeletonContext, "serializedFile"));
+                Set(p, "$externalSkeletonContextContainer", S(externalSkeletonContext, "container"));
+                Set(p, "$externalSkeletonContextName", S(externalSkeletonContext, "visualCellGameObjectName"));
+                Set(p, "$externalSkeletonContextPathId", I(externalSkeletonContext, "visualCellPathId"));
                 Set(p, "$rawJson", obj.ToString(Formatting.None));
                 command.ExecuteNonQuery();
                 count++;
@@ -3517,6 +3555,7 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                 "核心规则：索引要全，导出要精。进入索引不代表默认导出或推荐使用；导出仍按 Unity 显式关系、结构兼容和严格匹配规则执行。\n\n" +
                 "桌面工具默认优先读取 SQLite。高频查询，例如模型列表、动画 binding path 定向匹配、缩略图状态、筛选统计，应尽量走 SQLite 索引；JSON/JSONL 保留给人工排查、兼容旧流程和重新建库。\n\n" +
                 "主要表：`assets`、`unity_assets`、`unity_relations`、`animation_bindings`、`animation_binding_paths`、`export_manifest`、`json_documents`、`files`。每条结构化记录都尽量保留 `raw_json`，方便后续无损迁移。\n\n" +
+                "`assets` 会把常用筛选字段展开成显式列。永劫 ActorBodyVisualCell 自定义网格的 `source_skin_mapping_status`、`selected_visual_cell_transform_node_status` 和 `external_skeleton_context_*` 只表示外部骨架上下文诊断线索，不等于 glTF skin/joint 已经可用。\n\n" +
                 "音频说明：当前 AudioLibrary 可以导出原始 `.fsb` 等文件；FMOD/native 转 WAV 作为后续批量转换阶段，不阻塞索引与素材库建设。\n");
         }
 
