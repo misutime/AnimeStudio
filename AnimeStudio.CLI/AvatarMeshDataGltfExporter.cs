@@ -54,21 +54,25 @@ namespace AnimeStudio.CLI
             });
             var indexAccessor = accessors.Count - 1;
 
-            var positionView = WriteFloatBufferView(stream, bufferViews, mesh.Positions.SelectMany(ToFloatArray3), 34962);
+            // AvatarMeshDataAsset 里的顶点是 Unity 坐标，glTF 需要 Y-up。
+            // 这里在写出入口统一转换，读取层仍保留原始 JSON 证据。
+            var gltfPositions = mesh.Positions.Select(ConvertUnityPositionToGltf).ToArray();
+            var (gltfMin, gltfMax) = CalculateBounds(gltfPositions);
+            var positionView = WriteFloatBufferView(stream, bufferViews, gltfPositions.SelectMany(ToFloatArray3), 34962);
             accessors.Add(new JObject
             {
                 ["bufferView"] = positionView,
                 ["componentType"] = 5126,
                 ["count"] = mesh.Positions.Count,
                 ["type"] = "VEC3",
-                ["min"] = new JArray(mesh.Min.X, mesh.Min.Y, mesh.Min.Z),
-                ["max"] = new JArray(mesh.Max.X, mesh.Max.Y, mesh.Max.Z)
+                ["min"] = new JArray(gltfMin.X, gltfMin.Y, gltfMin.Z),
+                ["max"] = new JArray(gltfMax.X, gltfMax.Y, gltfMax.Z)
             });
             attributes["POSITION"] = accessors.Count - 1;
 
             if (mesh.Normals.Count == mesh.Positions.Count)
             {
-                var normalView = WriteFloatBufferView(stream, bufferViews, mesh.Normals.SelectMany(ToFloatArray3), 34962);
+                var normalView = WriteFloatBufferView(stream, bufferViews, mesh.Normals.Select(ConvertUnityDirectionToGltf).SelectMany(ToFloatArray3), 34962);
                 accessors.Add(new JObject
                 {
                     ["bufferView"] = normalView,
@@ -81,7 +85,7 @@ namespace AnimeStudio.CLI
 
             if (mesh.Tangents.Count == mesh.Positions.Count)
             {
-                var tangentView = WriteFloatBufferView(stream, bufferViews, mesh.Tangents.SelectMany(ToFloatArray4), 34962);
+                var tangentView = WriteFloatBufferView(stream, bufferViews, mesh.Tangents.Select(ConvertUnityTangentToGltf).SelectMany(ToFloatArray4), 34962);
                 accessors.Add(new JObject
                 {
                     ["bufferView"] = tangentView,
@@ -130,7 +134,8 @@ namespace AnimeStudio.CLI
                         ["source"] = Path.GetFullPath(jsonPath),
                         ["sourceType"] = "AvatarMeshDataAsset",
                         ["diagnosticOnly"] = true,
-                        ["unityCoordinateSystemPreserved"] = true,
+                        ["unityCoordinateSystemPreserved"] = false,
+                        ["axisConversion"] = "Unity(x,y,z) -> glTF(x,z,-y)",
                         ["note"] = "Naraka 自定义 MonoBehaviour 网格诊断导出；尚未绑定 prefab 模块关系、材质或骨骼。"
                     }
                 }),
@@ -251,7 +256,8 @@ namespace AnimeStudio.CLI
                     ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                     ["sourceType"] = "AvatarMeshDataAssetSet",
                     ["diagnosticOnly"] = true,
-                    ["unityCoordinateSystemPreserved"] = true,
+                    ["unityCoordinateSystemPreserved"] = false,
+                    ["axisConversion"] = "Unity(x,y,z) -> glTF(x,z,-y)",
                     ["note"] = "Naraka 自定义 MonoBehaviour 网格集合诊断导出；可能包含 LOD 变体，尚未绑定 prefab 模块关系、材质槽或骨骼 skin。"
                 }
             };
@@ -437,7 +443,8 @@ namespace AnimeStudio.CLI
                     ["diagnosticOnly"] = true,
                     ["materialBindingSourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
                     ["previewMaterialSource"] = gltfMaterials.Count > 1 ? Path.GetFullPath(outputFolder) : null,
-                    ["unityCoordinateSystemPreserved"] = true,
+                    ["unityCoordinateSystemPreserved"] = false,
+                    ["axisConversion"] = "Unity(x,y,z) -> glTF(x,z,-y)",
                     ["note"] = "Naraka ActorBodyVisualCell LOD0 自定义网格诊断导出；按 Unity PPtr 选择 avatarMeshAsset，可记录 Renderer 材质引用，但尚未烘焙材质或绑定骨骼 skin。"
                 }
             };
@@ -985,21 +992,25 @@ namespace AnimeStudio.CLI
             });
             var indexAccessor = accessors.Count - 1;
 
-            var positionView = WriteFloatBufferView(stream, bufferViews, mesh.Positions.SelectMany(ToFloatArray3), 34962);
+            // AvatarMeshDataAsset 里的顶点是 Unity 坐标，glTF 需要 Y-up。
+            // 目录/LOD0 模式也走这里，避免单件和组装件坐标不一致。
+            var gltfPositions = mesh.Positions.Select(ConvertUnityPositionToGltf).ToArray();
+            var (gltfMin, gltfMax) = CalculateBounds(gltfPositions);
+            var positionView = WriteFloatBufferView(stream, bufferViews, gltfPositions.SelectMany(ToFloatArray3), 34962);
             accessors.Add(new JObject
             {
                 ["bufferView"] = positionView,
                 ["componentType"] = 5126,
                 ["count"] = mesh.Positions.Count,
                 ["type"] = "VEC3",
-                ["min"] = new JArray(mesh.Min.X, mesh.Min.Y, mesh.Min.Z),
-                ["max"] = new JArray(mesh.Max.X, mesh.Max.Y, mesh.Max.Z)
+                ["min"] = new JArray(gltfMin.X, gltfMin.Y, gltfMin.Z),
+                ["max"] = new JArray(gltfMax.X, gltfMax.Y, gltfMax.Z)
             });
             attributes["POSITION"] = accessors.Count - 1;
 
             if (mesh.Normals.Count == mesh.Positions.Count)
             {
-                var normalView = WriteFloatBufferView(stream, bufferViews, mesh.Normals.SelectMany(ToFloatArray3), 34962);
+                var normalView = WriteFloatBufferView(stream, bufferViews, mesh.Normals.Select(ConvertUnityDirectionToGltf).SelectMany(ToFloatArray3), 34962);
                 accessors.Add(new JObject
                 {
                     ["bufferView"] = normalView,
@@ -1012,7 +1023,7 @@ namespace AnimeStudio.CLI
 
             if (mesh.Tangents.Count == mesh.Positions.Count)
             {
-                var tangentView = WriteFloatBufferView(stream, bufferViews, mesh.Tangents.SelectMany(ToFloatArray4), 34962);
+                var tangentView = WriteFloatBufferView(stream, bufferViews, mesh.Tangents.Select(ConvertUnityTangentToGltf).SelectMany(ToFloatArray4), 34962);
                 accessors.Add(new JObject
                 {
                     ["bufferView"] = tangentView,
@@ -1051,7 +1062,8 @@ namespace AnimeStudio.CLI
                     ["source"] = source,
                     ["sourceType"] = "AvatarMeshDataAsset",
                     ["diagnosticOnly"] = true,
-                    ["unityCoordinateSystemPreserved"] = true,
+                    ["unityCoordinateSystemPreserved"] = false,
+                    ["axisConversion"] = "Unity(x,y,z) -> glTF(x,z,-y)",
                     ["note"] = "Naraka 自定义 MonoBehaviour 网格诊断导出；尚未绑定 prefab 模块关系、材质或骨骼。"
                 }
             };
@@ -3765,6 +3777,19 @@ LIMIT 1;";
                     list.Max(x => x.Max.Z)));
         }
 
+        private static (Vector3Value Min, Vector3Value Max) CalculateBounds(IReadOnlyCollection<Vector3Value> values)
+        {
+            return (
+                new Vector3Value(
+                    values.Min(x => x.X),
+                    values.Min(x => x.Y),
+                    values.Min(x => x.Z)),
+                new Vector3Value(
+                    values.Max(x => x.X),
+                    values.Max(x => x.Y),
+                    values.Max(x => x.Z)));
+        }
+
         private static AvatarMeshData ReadMesh(JObject json, string source)
         {
             var meshName = (string)json["m_MeshName"];
@@ -4254,6 +4279,21 @@ LIMIT 1;";
         {
             yield return value.X;
             yield return value.Y;
+        }
+
+        private static Vector3Value ConvertUnityPositionToGltf(Vector3Value value)
+        {
+            return new Vector3Value(value.X, value.Z, -value.Y);
+        }
+
+        private static Vector3Value ConvertUnityDirectionToGltf(Vector3Value value)
+        {
+            return new Vector3Value(value.X, value.Z, -value.Y);
+        }
+
+        private static Vector4Value ConvertUnityTangentToGltf(Vector4Value value)
+        {
+            return new Vector4Value(value.X, value.Z, -value.Y, value.W);
         }
 
         private static IEnumerable<float> ToFloatArray3(Vector3Value value)
