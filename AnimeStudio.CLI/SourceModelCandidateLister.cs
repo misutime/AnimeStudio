@@ -2323,7 +2323,8 @@ WHERE to_file = $file
                 && File.Exists(processPath)
                 && string.Equals(Path.GetFileName(processPath), "AnimeStudio.CLI.exe", StringComparison.OrdinalIgnoreCase))
             {
-                return QuotePowerShellArgument(processPath);
+                // PowerShell 不能直接把带引号的 exe 路径当命令，显式用 & 调用当前 CLI。
+                return "& " + QuotePowerShellArgument(processPath);
             }
 
             var entryPath = Environment.GetCommandLineArgs().FirstOrDefault();
