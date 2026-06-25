@@ -206,6 +206,7 @@ CREATE TABLE assets (
     character_assembly_candidate_only INTEGER,
     material_status TEXT,
     material_needs_customization_tint INTEGER,
+    material_needs_custom_shader_layer INTEGER,
     material_has_base_color_texture INTEGER,
     material_has_normal_texture INTEGER,
     material_image_count INTEGER,
@@ -444,6 +445,7 @@ CREATE TABLE library_reports (
                 "CREATE INDEX idx_assets_library_role ON assets(library_role);",
                 "CREATE INDEX idx_assets_character_assembly ON assets(character_assembly_family, character_assembly_role);",
                 "CREATE INDEX idx_assets_material_status ON assets(material_status);",
+                "CREATE INDEX idx_assets_material_shader_layer ON assets(material_needs_custom_shader_layer);",
                 "CREATE INDEX idx_assets_source_skin_mapping ON assets(source_skin_mapping_status);",
                 "CREATE INDEX idx_assets_external_skeleton_context ON assets(external_skeleton_context_status, external_skeleton_context_name);",
                 "CREATE INDEX idx_unity_assets_source ON unity_assets(source, path_id);",
@@ -587,8 +589,8 @@ VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bak
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, library_role, diagnostic_only, character_assembly_role, character_assembly_family, character_assembly_candidate_only, material_status, material_needs_customization_tint, material_has_base_color_texture, material_has_normal_texture, material_image_count, source_skin_mapping_status, selected_visual_cell_transform_node_status, external_skeleton_context_status, external_skeleton_context_serialized_file, external_skeleton_context_container, external_skeleton_context_name, external_skeleton_context_path_id, raw_json)
-VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $libraryRole, $diagnosticOnly, $characterAssemblyRole, $characterAssemblyFamily, $characterAssemblyCandidateOnly, $materialStatus, $materialNeedsCustomizationTint, $materialHasBaseColorTexture, $materialHasNormalTexture, $materialImageCount, $sourceSkinMappingStatus, $selectedVisualCellTransformNodeStatus, $externalSkeletonContextStatus, $externalSkeletonContextSerializedFile, $externalSkeletonContextContainer, $externalSkeletonContextName, $externalSkeletonContextPathId, $rawJson);";
+INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, library_role, diagnostic_only, character_assembly_role, character_assembly_family, character_assembly_candidate_only, material_status, material_needs_customization_tint, material_needs_custom_shader_layer, material_has_base_color_texture, material_has_normal_texture, material_image_count, source_skin_mapping_status, selected_visual_cell_transform_node_status, external_skeleton_context_status, external_skeleton_context_serialized_file, external_skeleton_context_container, external_skeleton_context_name, external_skeleton_context_path_id, raw_json)
+VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $libraryRole, $diagnosticOnly, $characterAssemblyRole, $characterAssemblyFamily, $characterAssemblyCandidateOnly, $materialStatus, $materialNeedsCustomizationTint, $materialNeedsCustomShaderLayer, $materialHasBaseColorTexture, $materialHasNormalTexture, $materialImageCount, $sourceSkinMappingStatus, $selectedVisualCellTransformNodeStatus, $externalSkeletonContextStatus, $externalSkeletonContextSerializedFile, $externalSkeletonContextContainer, $externalSkeletonContextName, $externalSkeletonContextPathId, $rawJson);";
             var p = AddParameters(
                 command,
                 "$kind",
@@ -610,6 +612,7 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 "$characterAssemblyCandidateOnly",
                 "$materialStatus",
                 "$materialNeedsCustomizationTint",
+                "$materialNeedsCustomShaderLayer",
                 "$materialHasBaseColorTexture",
                 "$materialHasNormalTexture",
                 "$materialImageCount",
@@ -649,6 +652,7 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 Set(p, "$characterAssemblyCandidateOnly", B(obj, "characterAssemblyCandidateOnly"));
                 Set(p, "$materialStatus", S(obj, "materialStatus"));
                 Set(p, "$materialNeedsCustomizationTint", B(obj, "materialNeedsCustomizationTint"));
+                Set(p, "$materialNeedsCustomShaderLayer", B(obj, "materialNeedsCustomShaderLayer"));
                 Set(p, "$materialHasBaseColorTexture", B(obj, "materialHasBaseColorTexture"));
                 Set(p, "$materialHasNormalTexture", B(obj, "materialHasNormalTexture"));
                 Set(p, "$materialImageCount", I(obj, "materialImageCount"));
@@ -2517,9 +2521,10 @@ LIMIT 2;";
             {
                 reasons.Add("missing_renderer_material_binding");
             }
-            if (ModelMaterialNeedsAnimationReview(model))
+            var materialReviewReason = GetMaterialAnimationReviewReason(model);
+            if (!string.IsNullOrWhiteSpace(materialReviewReason))
             {
-                reasons.Add("material_customization_tint_not_ready");
+                reasons.Add(materialReviewReason);
             }
             if ((I(model, "unresolvedModelDependencyCount") ?? 0) > 0)
             {
@@ -2567,6 +2572,7 @@ LIMIT 2;";
                 ["materialImageCount"] = I(model, "materialImageCount") ?? I(body, "ImageCount"),
                 ["materialStatus"] = S(model, "materialStatus"),
                 ["materialNeedsCustomizationTint"] = IsTrue(model, "materialNeedsCustomizationTint"),
+                ["materialNeedsCustomShaderLayer"] = IsTrue(model, "materialNeedsCustomShaderLayer"),
                 ["materialStatusCounts"] = model?["materialStatusCounts"]?.DeepClone(),
                 ["modelConversionIssueCount"] = I(model, "modelConversionIssueCount") ?? 0,
                 ["modelConversionIssueTypes"] = model?["modelConversionIssueTypes"]?.DeepClone(),
@@ -2587,22 +2593,32 @@ LIMIT 2;";
                 evidence);
         }
 
-        private static bool ModelMaterialNeedsAnimationReview(JObject model)
+        private static string GetMaterialAnimationReviewReason(JObject model)
         {
             if (model == null)
             {
-                return false;
+                return null;
             }
 
             if (IsTrue(model, "materialNeedsCustomizationTint"))
             {
-                return true;
+                return "material_customization_tint_not_ready";
+            }
+            if (IsTrue(model, "materialNeedsCustomShaderLayer"))
+            {
+                return "material_custom_shader_layer_not_ready";
             }
 
             var status = S(model, "materialStatus");
-            return string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(status, "needsCustomShaderLayer", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase))
+            {
+                return "material_customization_tint_not_ready";
+            }
+
+            return string.Equals(status, "needsCustomShaderLayer", StringComparison.OrdinalIgnoreCase)
+                ? "material_custom_shader_layer_not_ready"
+                : null;
         }
 
         private static JObject BuildModelAnimationGateJson(ModelAnimationGate gate)

@@ -4247,9 +4247,10 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 reasons.Add("missing_renderer_material_binding");
             }
-            if (ModelMaterialNeedsAnimationReview(model))
+            var materialReviewReason = GetMaterialAnimationReviewReason(model);
+            if (!string.IsNullOrWhiteSpace(materialReviewReason))
             {
-                reasons.Add("material_customization_tint_not_ready");
+                reasons.Add(materialReviewReason);
             }
             if ((JsonLong(model, "unresolvedModelDependencyCount") ?? 0) > 0)
             {
@@ -4297,6 +4298,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 ["materialImageCount"] = JsonLong(model, "materialImageCount") ?? JsonLong(body, "ImageCount"),
                 ["materialStatus"] = JsonText(model, "materialStatus"),
                 ["materialNeedsCustomizationTint"] = JsonBool(model, "materialNeedsCustomizationTint"),
+                ["materialNeedsCustomShaderLayer"] = JsonBool(model, "materialNeedsCustomShaderLayer"),
                 ["materialStatusCounts"] = model?["materialStatusCounts"]?.DeepClone(),
                 ["modelConversionIssueCount"] = JsonLong(model, "modelConversionIssueCount") ?? 0,
                 ["modelConversionIssueTypes"] = model?["modelConversionIssueTypes"]?.DeepClone(),
@@ -4317,22 +4319,32 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 evidence);
         }
 
-        private static bool ModelMaterialNeedsAnimationReview(JObject model)
+        private static string GetMaterialAnimationReviewReason(JObject model)
         {
             if (model == null)
             {
-                return false;
+                return null;
             }
 
             if (JsonBool(model, "materialNeedsCustomizationTint"))
             {
-                return true;
+                return "material_customization_tint_not_ready";
+            }
+            if (JsonBool(model, "materialNeedsCustomShaderLayer"))
+            {
+                return "material_custom_shader_layer_not_ready";
             }
 
             var status = JsonText(model, "materialStatus");
-            return string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(status, "needsCustomShaderLayer", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "tintParametersOnly", StringComparison.OrdinalIgnoreCase))
+            {
+                return "material_customization_tint_not_ready";
+            }
+
+            return string.Equals(status, "needsCustomShaderLayer", StringComparison.OrdinalIgnoreCase)
+                ? "material_custom_shader_layer_not_ready"
+                : null;
         }
 
         private static JObject BuildModelAnimationGateJson(ModelAnimationGate gate)
