@@ -41,6 +41,7 @@ namespace AnimeStudio
         private Dictionary<AnimationClip, Dictionary<uint, string>> animationTosCache = new Dictionary<AnimationClip, Dictionary<uint, string>>();
         private Dictionary<Texture2D, string> textureNameDictionary = new Dictionary<Texture2D, string>();
         private Dictionary<Transform, ImportedFrame> transformDictionary = new Dictionary<Transform, ImportedFrame>();
+        private readonly HashSet<Renderer> skippedLowerLodRenderers = new HashSet<Renderer>();
         private bool hasExplicitAnimationList;
         Dictionary<uint, string> morphChannelNames = new Dictionary<uint, string>();
 
@@ -87,6 +88,10 @@ namespace AnimeStudio
                 var m_Transform = m_GameObject.m_Transform;
                 ConvertTransforms(m_Transform, RootFrame);
                 CreateBonePathHash(m_Transform);
+            }
+            foreach (var m_GameObject in m_GameObjects)
+            {
+                MarkLowerLodRenderers(m_GameObject.m_Transform);
             }
             foreach (var m_GameObject in m_GameObjects)
             {
@@ -171,6 +176,7 @@ namespace AnimeStudio
                 CreateBonePathHash(m_Transform);
             }
 
+            MarkLowerLodRenderers(m_Transform);
             ConvertMeshRenderer(m_Transform);
         }
 
@@ -207,6 +213,106 @@ namespace AnimeStudio
             {
                 if (pptr.TryGet(out var child))
                     ConvertMeshRenderer(child);
+            }
+        }
+
+        private void MarkLowerLodRenderers(Transform parent)
+        {
+            if (parent == null)
+            {
+                return;
+            }
+
+            // Unity 里常把同一父节点下的 body/body_L1/body_L2 作为 LOD 兄弟。
+            // 默认素材库只导出最近景网格，避免多个 LOD 在 glTF 里同时可见。
+            var groups = new Dictionary<string, List<(GameObject GameObject, int? Lod)>>(
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var childPtr in parent.m_Children)
+            {
+                if (!childPtr.TryGet(out var child)
+                    || !child.m_GameObject.TryGet(out var childGameObject)
+                    || !HasRenderableRenderer(childGameObject))
+                {
+                    continue;
+                }
+
+                var baseName = GetLodBaseName(childGameObject.m_Name, out var lod);
+                if (!groups.TryGetValue(baseName, out var group))
+                {
+                    group = new List<(GameObject GameObject, int? Lod)>();
+                    groups[baseName] = group;
+                }
+                group.Add((childGameObject, lod));
+            }
+
+            foreach (var group in groups.Values)
+            {
+                if (group.Count <= 1 || !group.Any(x => x.Lod.HasValue))
+                {
+                    continue;
+                }
+
+                var hasBaseMesh = group.Any(x => !x.Lod.HasValue);
+                int? keepLod = hasBaseMesh ? null : group.Where(x => x.Lod.HasValue).Min(x => x.Lod.Value);
+                foreach (var item in group)
+                {
+                    var shouldSkip = hasBaseMesh
+                        ? item.Lod.HasValue
+                        : item.Lod.HasValue && item.Lod.Value > keepLod;
+                    if (!shouldSkip)
+                    {
+                        continue;
+                    }
+
+                    AddRendererToLowerLodSkipSet(item.GameObject.m_MeshRenderer);
+                    AddRendererToLowerLodSkipSet(item.GameObject.m_SkinnedMeshRenderer);
+                }
+            }
+
+            foreach (var childPtr in parent.m_Children)
+            {
+                if (childPtr.TryGet(out var child))
+                {
+                    MarkLowerLodRenderers(child);
+                }
+            }
+        }
+
+        private static bool HasRenderableRenderer(GameObject gameObject)
+        {
+            return gameObject?.m_MeshRenderer != null || gameObject?.m_SkinnedMeshRenderer != null;
+        }
+
+        private static string GetLodBaseName(string name, out int? lod)
+        {
+            lod = null;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return string.Empty;
+            }
+
+            var split = name.LastIndexOf("_L", StringComparison.OrdinalIgnoreCase);
+            if (split < 0 || split + 2 >= name.Length)
+            {
+                return name;
+            }
+
+            var numberText = name.Substring(split + 2);
+            if (!numberText.All(char.IsDigit) || !int.TryParse(numberText, out var lodValue))
+            {
+                return name;
+            }
+
+            lod = lodValue;
+            return name.Substring(0, split);
+        }
+
+        private void AddRendererToLowerLodSkipSet(Renderer renderer)
+        {
+            if (renderer != null)
+            {
+                skippedLowerLodRenderers.Add(renderer);
             }
         }
 
@@ -291,10 +397,31 @@ namespace AnimeStudio
 
         private void ConvertMeshRenderer(Renderer meshR)
         {
+            meshR.m_GameObject.TryGet(out var m_GameObject2);
+            if (skippedLowerLodRenderers.Contains(meshR))
+            {
+                RecordConversionIssue(
+                    "skippedLowerLodRenderer",
+                    m_GameObject2?.m_Name,
+                    meshR.assetsFile?.originalPath ?? meshR.assetsFile?.fileName,
+                    null,
+                    meshR.m_PathID,
+                    $"path={GetTransformPath(m_GameObject2?.m_Transform)}");
+                using (Measure("model_mesh_skipped", new Dictionary<string, object>
+                {
+                    ["reason"] = "lower_lod_renderer",
+                    ["renderer"] = m_GameObject2?.m_Name,
+                    ["source"] = meshR.assetsFile?.fullName,
+                    ["rendererPathId"] = meshR.m_PathID,
+                }))
+                {
+                }
+                return;
+            }
+
             var mesh = GetMesh(meshR);
             if (mesh == null)
                 return;
-            meshR.m_GameObject.TryGet(out var m_GameObject2);
             if (ShouldSkipNonVisualSimulationMesh(meshR, mesh, m_GameObject2))
             {
                 using (Measure("model_mesh_skipped", new Dictionary<string, object>
