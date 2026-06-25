@@ -198,6 +198,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.EndfieldCabLocationIndex,
                 optionsBinder.InspectEndfieldManifestDeps,
                 optionsBinder.ExportAvatarOracle,
+                optionsBinder.ExportAvatarMeshDataGltf,
                 optionsBinder.RecoverImportedAvatarAssets,
                 optionsBinder.RecoverImportedAnimationClips,
                 optionsBinder.RecoverImportedAnimatorControllers,
@@ -356,6 +357,7 @@ namespace AnimeStudio.CLI
         public FileInfo EndfieldCabLocationIndex { get; set; }
         public string[] InspectEndfieldManifestDeps { get; set; }
         public FileInfo ExportAvatarOracle { get; set; }
+        public FileInfo ExportAvatarMeshDataGltf { get; set; }
         public DirectoryInfo RecoverImportedAvatarAssets { get; set; }
         public DirectoryInfo RecoverImportedAnimationClips { get; set; }
         public DirectoryInfo RecoverImportedAnimatorControllers { get; set; }
@@ -509,6 +511,7 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> EndfieldCabLocationIndex;
         public readonly Option<string[]> InspectEndfieldManifestDeps;
         public readonly Option<FileInfo> ExportAvatarOracle;
+        public readonly Option<FileInfo> ExportAvatarMeshDataGltf;
         public readonly Option<DirectoryInfo> RecoverImportedAvatarAssets;
         public readonly Option<DirectoryInfo> RecoverImportedAnimationClips;
         public readonly Option<DirectoryInfo> RecoverImportedAnimatorControllers;
@@ -660,6 +663,7 @@ namespace AnimeStudio.CLI
             EndfieldCabLocationIndex = new Option<FileInfo>("--endfield_cab_location_index", "Existing endfield_cab_location_index.json used by --locate_endfield_missing_source_cabs to avoid rescanning all VFS bundles.").LegalFilePathsOnly();
             InspectEndfieldManifestDeps = new Option<string[]>("--inspect_endfield_manifest_deps", "Diagnostic: parse an Arknights Endfield bundle manifest and list bundle dependency paths for one or more main/*.ab or initial/*.ab bundle paths. input_path is the manifest file; output_path receives endfield_manifest_dependencies.json.") { AllowMultipleArgumentsPerToken = true };
             ExportAvatarOracle = new Option<FileInfo>("--export_avatar_oracle", "Export one AvatarConstant oracle JSON from unity_source_index.db. Use --preview_model to select Avatar name/pathId/source and --preview_output for the output folder.").LegalFilePathsOnly();
+            ExportAvatarMeshDataGltf = new Option<FileInfo>("--export_avatar_mesh_data_gltf", "Diagnostic: convert one AvatarMeshDataAsset TypeTree JSON into a static glTF. Use --preview_output for the output folder. Does not infer prefab/module/material bindings.").LegalFilePathsOnly();
             RecoverImportedAvatarAssets = new Option<DirectoryInfo>("--recover_imported_avatar_assets", "Recover missing original UnityEngine.Avatar assets from a Library root into the Unity bake project ImportedAvatar folder. Uses library_index.db avatar source/pathId, not guessed skeleton data.").LegalFilePathsOnly();
             RecoverImportedAnimationClips = new Option<DirectoryInfo>("--recover_imported_animation_clips", "Recover deterministic Humanoid/Muscle AnimationClip .anim assets from a Library root into the Unity bake project ImportedAnimationClip folder. Uses explicit SQLite candidates and AnimatorController baseLayerClip context; no name or bone-count guessing.").LegalFilePathsOnly();
             RecoverImportedAnimatorControllers = new Option<DirectoryInfo>("--recover_imported_animator_controllers", "Experimental: rebuild default-state RuntimeAnimatorController assets into the Unity bake project ImportedAnimatorController folder from unity_file_inspect.json and explicit Library candidates. This is diagnostic until full state/transition semantics are recovered.").LegalFilePathsOnly();
@@ -905,6 +909,7 @@ namespace AnimeStudio.CLI
                 EndfieldCabLocationIndex = bindingContext.ParseResult.GetValueForOption(EndfieldCabLocationIndex),
                 InspectEndfieldManifestDeps = bindingContext.ParseResult.GetValueForOption(InspectEndfieldManifestDeps),
                 ExportAvatarOracle = bindingContext.ParseResult.GetValueForOption(ExportAvatarOracle),
+                ExportAvatarMeshDataGltf = bindingContext.ParseResult.GetValueForOption(ExportAvatarMeshDataGltf),
                 RecoverImportedAvatarAssets = bindingContext.ParseResult.GetValueForOption(RecoverImportedAvatarAssets),
                 RecoverImportedAnimationClips = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimationClips),
                 RecoverImportedAnimatorControllers = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimatorControllers),

@@ -554,6 +554,16 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 `selectorQueryMode=targeted_exact_name` / `targeted_exact_path_id` 默认不再沿 `Transform.child` 子树做深层递归。Endfield 大源索引里同名 actor 变体很多，某些根节点层级很深或只是配置/场景实例，默认递归会让交互式候选查询卡住。候选报告现在优先快速返回 Animator、Avatar、Controller 和直接 SkinnedRenderer 线索；是否真的有完整 Mesh/Material/Texture/skin，必须通过实际 Library 导出、`model_validation.json`、glTF validator 和清晰截图确认。
 
+Naraka 这类项目可能把可见部件放在自定义 `MonoBehaviour` 数据里。排查 `AvatarMeshDataAsset` 时，可以先用 `--types MonoBehaviour --export_type Convert` 导出 TypeTree JSON，再把单个 JSON 转成静态诊断 glTF：
+
+```powershell
+.\AnimeStudio.CLI\bin\Debug\net8.0-windows\AnimeStudio.CLI.exe `
+  --export_avatar_mesh_data_gltf "D:\Assets\Naraka\MonoDump_HadiHairMeshData_Convert\MonoBehaviour\hair_01_mesh_data.json" `
+  --preview_output "D:\Assets\Naraka\AvatarMeshDataProbe_HadiHairGltf"
+```
+
+这个命令只读取 JSON 里的 `m_VertexData`、`m_Indices`、`m_HairUVSetData` / `m_UVData` 等确定性字段，输出灰色静态 glTF、bin 和 `avatar_mesh_data_report.json`。它不会猜 prefab 模块关系、Renderer 材质槽、骨骼或 skin 绑定；产物只能作为“自定义网格数据存在且可解码”的诊断证据，不能直接作为默认 Library 主资源、材质验收或动画 smoke 证据。
+
 2026-06-24 对 `P_actor_pelica_01`、`P_actor_endminf_01`、`P_actor_endminm_01`、`P_actor_boynpc_01` 等 Endfield 样本复查后，经验是：很多 `P_actor_*` 在 `source_objects` 的 GameObject/Animator 层只是 levelseq、cutscene、skeletalmorph/gamedata 或配置线索，报告会标 `noVisibleMesh,noMaterial`。这不一定表示完全不能导出结构模型，例如 skeletalmorph 路径可以导出带 skin 的模型；但如果导出截图仍呈现 mask/tint 未复原、白模、黑白块或主要材质不完整，就只能作为模型/材质诊断，不能进入动画 smoke。`P_actor_boynpc_01` 本轮导出 Mesh/skin/bbox 和 validator 无 error，但重建后的 `model_validation.status=warning`，因为标准 `baseColorTexture` 只覆盖 `1/14` 个 primitive；截图也显示 ColorMask/Tint 预览材质仍明显不完整，并且没有显式动画候选，因此不能算生产动画样本。
 
 默认候选扫描优先服务 prefab/Animator/SkinnedMeshRenderer 角色主线，不做全库 `MeshRenderer + MeshFilter` 静态 join。需要为场景、建筑、道具寻找第一阶段样本时，可以在同一命令上追加 `--include_static_meshes`，报告会额外列出 `StaticRendererModel` 行。这个开关只扩大模型候选诊断范围，不会让静态模型自动进入动画 smoke；静态候选仍必须先导出并通过 Mesh、UV、材质、贴图、bbox 验收。静态 Renderer 如果缺少 container 语义，报告会标记 `staticRendererNeedsContainerReview`；`initialassets/intro` 这类 intro 小场景会标记 `introOnly`，不能作为生产 smoke 证据。

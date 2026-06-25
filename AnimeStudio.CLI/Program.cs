@@ -659,6 +659,14 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.ExportAvatarMeshDataGltf != null)
+                {
+                    AvatarMeshDataGltfExporter.Export(
+                        o.ExportAvatarMeshDataGltf.FullName,
+                        o.PreviewOutput?.FullName);
+                    return;
+                }
+
                 if (o.RecoverImportedAvatarAssets != null)
                 {
                     WarnUnityBakeDeprecated();
@@ -784,7 +792,7 @@ namespace AnimeStudio.CLI
 
                 if (o.Input == null || o.Output == null)
                 {
-                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --ensure_source_index_query_indexes, --list_source_model_candidates, --list_source_model_animations, --locate_source_cabs, --locate_endfield_cabs, --locate_endfield_missing_source_cabs, --build_endfield_cab_location_index, --locate_endfield_strings, --inspect_endfield_manifest_deps, --export_avatar_oracle, or --build_source_sqlite_index for post-export commands.");
+                    Logger.Error("input_path and output_path are required for export. Use --convert_model_textures, --generate_preview_gltf, --pack_model_animations, --generate_unity_bake_request, --apply_unity_bake_result, --recover_imported_avatar_assets, --recover_imported_animation_clips, --generate_skeleton_guide, --rebuild_library_indexes, --migrate_library_relative_paths, --build_sqlite_index, --verify_source_index, --ensure_source_index_query_indexes, --list_source_model_candidates, --list_source_model_animations, --locate_source_cabs, --locate_endfield_cabs, --locate_endfield_missing_source_cabs, --build_endfield_cab_location_index, --locate_endfield_strings, --inspect_endfield_manifest_deps, --export_avatar_oracle, --export_avatar_mesh_data_gltf, or --build_source_sqlite_index for post-export commands.");
                     return;
                 }
 
