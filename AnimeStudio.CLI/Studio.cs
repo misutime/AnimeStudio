@@ -5220,8 +5220,14 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 return legacy ? "BlendShapeLegacyNotImplemented" : "BlendShapePreviewReady";
             }
-            if (rendererMaterialCount > 0)
+            if (rendererMaterialCount > 0
+                && transformBindingCount == 0
+                && trueBlendShapeCount == 0
+                && rendererPropertyCount == 0
+                && activeStateCount == 0)
             {
+                // 只有纯材质曲线才走材质映射待实现；混合 Transform 的 clip 继续看节点绑定，
+                // 避免把已经解析出的 TRS 诊断信息盖掉。
                 return "MaterialAnimationNotMapped";
             }
             if (activeStateCount > 0)

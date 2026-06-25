@@ -86,6 +86,10 @@ namespace AnimeStudio
         }
         private static bool AddAvatarTOS(this AnimationClip clip, Avatar avatar, Dictionary<uint, string> tos)
         {
+            if (avatar == null || avatar.m_TOS == null)
+            {
+                return false;
+            }
             return clip.AddTOS(avatar.m_TOS.ToDictionary(x => x.Key, x => x.Value), tos);
         }
         private static bool AddAnimatorTOS(this AnimationClip clip, Animator animator, Dictionary<uint, string> tos)
@@ -112,6 +116,11 @@ namespace AnimeStudio
         }
         private static bool AddTOS(this AnimationClip clip, Dictionary<uint, string> src, Dictionary<uint, string> dest)
         {
+            if (src == null || clip?.m_ClipBindingConstant?.genericBindings == null)
+            {
+                return false;
+            }
+
             int tosCount = clip.m_ClipBindingConstant.genericBindings.Count;
             for (int i = 0; i < tosCount; i++)
             {
@@ -229,6 +238,11 @@ namespace AnimeStudio
         #region Others
         private static bool IsContainsAnimationClip(this Animation animation, AnimationClip clip)
         {
+            if (animation?.m_Animations == null)
+            {
+                return false;
+            }
+
             foreach (PPtr<AnimationClip> ptr in animation.m_Animations)
             {
                 if (ptr.TryGet(out var animationClip) && animationClip.Equals(clip))
@@ -293,7 +307,7 @@ namespace AnimeStudio
         {
             if (runtimeAnimatorController is AnimatorController animatorController)
             {
-                foreach (PPtr<AnimationClip> ptr in animatorController.m_AnimationClips)
+                foreach (PPtr<AnimationClip> ptr in animatorController.m_AnimationClips ?? Enumerable.Empty<PPtr<AnimationClip>>())
                 {
                     if (ptr.TryGet(out var animationClip) && animationClip.Equals(clip))
                     {
