@@ -1029,6 +1029,8 @@ CrossGame_VRising_AssembledPreview_V3\
 
 `character_assemblies.json` 会把 `diagnosticOnly=true` 或 `libraryRole` 含 `Diagnostic` 的模块挡在自动推荐之外。即使这类模块的 joint 名刚好能和 base skeleton 对上，也只能作为人工预览候选，`canAutoAssemble=false`；等它通过正式 skin、材质、装配和视觉验收后，才允许进入默认推荐。
 
+Naraka `ActorBodyVisualCell` 诊断 glTF 的文件名通常是 `MonoBehaviour_lod0.gltf`。装配索引会优先用 catalog 里的 `selectedVisualCellGameObjectName` 识别和展示模块名，例如 `ch_m_hadi_hair_lv_ss0` 可作为 Hair 候选归到 `ch_m_hadi` family；但只要它仍是 `CustomMeshDiagnostic` / `diagnosticOnly=true`，就不会进入 `recommendedModules`。
+
 ### 按需生成动画预览
 
 `model_animations.json` 里的候选关系需要经过实际 glTF 写入验证。选中一个模型和一个候选动画后，用 `--generate_preview_gltf` 生成临时可播放 glTF：

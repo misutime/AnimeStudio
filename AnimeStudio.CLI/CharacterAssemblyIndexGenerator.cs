@@ -22,7 +22,7 @@ namespace AnimeStudio.CLI
                 .Where(x => !string.IsNullOrWhiteSpace((string)x["output"]))
                 .ToArray();
             var modules = modelRows
-                .Select(x => new ModuleInfo(x, InferModuleRole((string)x["name"], x), GetFamily((string)x["name"])))
+                .Select(x => new ModuleInfo(x, InferModuleRole(x), GetFamily(x)))
                 .Where(x => !string.Equals(x.Role, "Body", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(x.Role, "Unknown", StringComparison.OrdinalIgnoreCase))
                 .ToArray();
@@ -35,9 +35,10 @@ namespace AnimeStudio.CLI
                     continue;
                 }
 
-                var family = GetFamily((string)model["name"]);
+                var family = GetFamily(model);
                 var sameFamilyModules = modules
                     .Where(x => string.Equals(x.Family, family, StringComparison.OrdinalIgnoreCase))
+                    .Where(x => !IsDiagnosticModule(x.Catalog))
                     .ToArray();
                 var missingRoles = new List<string>();
                 if (!sameFamilyModules.Any(x => string.Equals(x.Role, "Face", StringComparison.OrdinalIgnoreCase)))
@@ -75,14 +76,14 @@ namespace AnimeStudio.CLI
                 .OrderBy(x => (string)x["name"], StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var modules = modelRows
-                .Select(x => new ModuleInfo(x, InferModuleRole((string)x["name"], x), GetFamily((string)x["name"])))
+                .Select(x => new ModuleInfo(x, InferModuleRole(x), GetFamily(x)))
                 .Where(x => !string.Equals(x.Role, "Body", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(x.Role, "Unknown", StringComparison.OrdinalIgnoreCase))
                 .ToArray();
 
             var assemblies = bases.Select(baseModel =>
             {
-                var family = GetFamily((string)baseModel["name"]);
+                var family = GetFamily(baseModel);
                 var baseJointNames = GetRemapTargetNames(baseModel);
                 var compatibleModules = modules
                     .Where(x => string.Equals(x.Family, family, StringComparison.OrdinalIgnoreCase))
@@ -151,7 +152,7 @@ namespace AnimeStudio.CLI
             return JObject.FromObject(new
             {
                 role = module.Role,
-                name = (string)module.Catalog["name"],
+                name = GetAssemblyName(module.Catalog),
                 output = (string)module.Catalog["output"],
                 skeletonHash = (string)module.Catalog["skeletonHash"],
                 meshCount = (int?)module.Catalog["meshCount"] ?? 0,
@@ -185,7 +186,7 @@ namespace AnimeStudio.CLI
 
         private static bool IsCharacterBase(JObject model)
         {
-            var role = InferModuleRole((string)model["name"], model);
+            var role = InferModuleRole(model);
             if (!string.Equals(role, "Body", StringComparison.OrdinalIgnoreCase))
             {
                 return false;
@@ -203,9 +204,15 @@ namespace AnimeStudio.CLI
             return Regex.IsMatch(text, @"(^|/)actor_visual_parts?(/|$)", RegexOptions.IgnoreCase);
         }
 
-        private static string InferModuleRole(string name, JObject model)
+        private static string InferModuleRole(JObject model)
         {
-            name ??= string.Empty;
+            var explicitRole = (string)model["characterAssemblyRole"];
+            if (!string.IsNullOrWhiteSpace(explicitRole))
+            {
+                return explicitRole;
+            }
+
+            var name = GetAssemblyName(model);
             var meshPaths = string.Join("\n", model["meshPaths"]?.Values<string>() ?? Enumerable.Empty<string>());
             if (Regex.IsMatch(name, "(^|[_-])Face|Head", RegexOptions.IgnoreCase)
                 || Regex.IsMatch(meshPaths, "Face|Head|Eyebrow", RegexOptions.IgnoreCase))
@@ -231,7 +238,7 @@ namespace AnimeStudio.CLI
 
         private static int ScoreModule(ModuleInfo module, bool canAutoAssemble)
         {
-            var name = (string)module.Catalog["name"] ?? string.Empty;
+            var name = GetAssemblyName(module.Catalog);
             var score = canAutoAssemble ? 10000 : 0;
             if (name.Contains("Standard", StringComparison.OrdinalIgnoreCase))
             {
@@ -294,6 +301,30 @@ namespace AnimeStudio.CLI
             return slash < 0 ? normalized : normalized[(slash + 1)..];
         }
 
+        private static string GetFamily(JObject model)
+        {
+            var explicitFamily = (string)model["characterAssemblyFamily"];
+            var derivedFamily = GetFamily(GetAssemblyName(model));
+            if (!string.IsNullOrWhiteSpace(explicitFamily)
+                && !(string.Equals(explicitFamily, "ch", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(derivedFamily)
+                    && !string.Equals(derivedFamily, explicitFamily, StringComparison.OrdinalIgnoreCase)))
+            {
+                return explicitFamily;
+            }
+
+            return derivedFamily;
+        }
+
+        private static string GetAssemblyName(JObject model)
+        {
+            // Naraka 自定义网格的 glTF 文件名常是 MonoBehaviour_lod0。
+            // 真正可读的模块名已经在 catalog 里保留为 selectedVisualCellGameObjectName。
+            return (string)model["selectedVisualCellGameObjectName"]
+                ?? (string)model["name"]
+                ?? string.Empty;
+        }
+
         private static string GetFamily(string name)
         {
             if (string.IsNullOrWhiteSpace(name))
@@ -306,6 +337,15 @@ namespace AnimeStudio.CLI
                 return match.Value;
             }
             var parts = name.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 3
+                && string.Equals(parts[0], "ch", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(parts[1], "m", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(parts[1], "f", StringComparison.OrdinalIgnoreCase)))
+            {
+                // 角色模块常用 ch_性别_角色 的稳定前缀；比只取 ch 更保守，
+                // 可避免不同角色的发型/身体在索引里互相混成一个 family。
+                return string.Join("_", parts.Take(3));
+            }
             return parts.Length == 0 ? string.Empty : parts[0];
         }
 
