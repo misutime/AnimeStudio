@@ -459,6 +459,11 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellPathId"] = selectedVisualCell.PathId,
                 ["selectedVisualCellGameObjectPathId"] = selectedVisualCell.GameObjectPathId,
                 ["selectedVisualCellGameObjectName"] = selectedVisualCell.GameObjectName,
+                ["selectedVisualCellTransformPathId"] = selectedVisualCell.TransformPathId,
+                ["selectedVisualCellTransformPath"] = selectedVisualCell.TransformPath,
+                ["selectedVisualCellTransformPathStatus"] = selectedVisualCell.TransformPathStatus,
+                ["selectedVisualCellDirectChildCount"] = selectedVisualCell.DirectChildCount,
+                ["selectedVisualCellDirectChildNames"] = new JArray(selectedVisualCell.DirectChildNames.Select(x => new JValue(x))),
                 ["selectedVisualCellTransformNodeCount"] = selectedVisualCell.TransformNodeCount,
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
                 ["assistantCount"] = selectedAssistants.Count,
@@ -600,6 +605,9 @@ namespace AnimeStudio.CLI
                     ? "avatar_part_data_mesh_order_present"
                     : "avatar_part_data_mesh_order_missing",
                 boneDriverHints.Count > 0 ? "bone_driver_hints_present" : "bone_driver_hints_missing",
+                string.Equals((string)report["selectedVisualCellTransformPathStatus"], "resolved", StringComparison.OrdinalIgnoreCase)
+                    ? "selected_visual_cell_transform_hierarchy_present"
+                    : "selected_visual_cell_transform_hierarchy_missing",
                 transformNodeTableCandidateStatus == "missing"
                     ? "transform_node_table_candidates_missing"
                     : transformNodeTableCandidateStatus == "indexOrderCandidatesAmbiguous"
@@ -646,6 +654,11 @@ namespace AnimeStudio.CLI
                 ["selectedVisualCellPathId"] = report["selectedVisualCellPathId"]?.DeepClone(),
                 ["selectedVisualCellGameObjectPathId"] = report["selectedVisualCellGameObjectPathId"]?.DeepClone(),
                 ["selectedVisualCellGameObjectName"] = report["selectedVisualCellGameObjectName"]?.DeepClone(),
+                ["selectedVisualCellTransformPathId"] = report["selectedVisualCellTransformPathId"]?.DeepClone(),
+                ["selectedVisualCellTransformPath"] = report["selectedVisualCellTransformPath"]?.DeepClone(),
+                ["selectedVisualCellTransformPathStatus"] = report["selectedVisualCellTransformPathStatus"]?.DeepClone(),
+                ["selectedVisualCellDirectChildCount"] = report["selectedVisualCellDirectChildCount"]?.DeepClone(),
+                ["selectedVisualCellDirectChildNames"] = report["selectedVisualCellDirectChildNames"]?.DeepClone(),
                 ["textureMode"] = "Png",
                 ["animationPackage"] = "Separate",
                 ["diagnosticOnly"] = true,
@@ -729,6 +742,7 @@ namespace AnimeStudio.CLI
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
+                    ["selectedTransformHierarchyBasis"] = "GameObject.component -> Transform / Transform.child / Transform.parent from unity_source_index.db",
                     ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                     ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
                     ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
@@ -2761,6 +2775,10 @@ WHERE relation = 'material.texture'
 
             var gameObjectPathId = ReadPPtrPathId(visualCellSource.Json["m_GameObject"]);
             var gameObjectName = string.Empty;
+            long? transformPathId = null;
+            var transformPath = string.Empty;
+            var transformPathStatus = "sourceIndexUnavailable";
+            var directChildNames = Array.Empty<string>();
             int? transformNodeCount = null;
 
             if (pathId.HasValue
@@ -2777,6 +2795,15 @@ WHERE relation = 'material.texture'
                     if (gameObjectPathId != 0)
                     {
                         gameObjectName = ResolveObjectName(connection, serializedFile, gameObjectPathId);
+                        var transformInfo = ResolveGameObjectTransformPath(connection, serializedFile, gameObjectPathId);
+                        transformPath = transformInfo.TransformPath;
+                        transformPathStatus = transformInfo.Status;
+                        var resolvedTransformPathId = ResolveTransformForGameObject(connection, serializedFile, gameObjectPathId);
+                        if (resolvedTransformPathId != 0)
+                        {
+                            transformPathId = resolvedTransformPathId;
+                            directChildNames = LoadDirectChildGameObjectNames(connection, serializedFile, resolvedTransformPathId, maxCount: 64);
+                        }
                     }
                 }
                 catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
@@ -2790,7 +2817,59 @@ WHERE relation = 'material.texture'
                 serializedFile,
                 gameObjectPathId == 0 ? null : gameObjectPathId,
                 gameObjectName,
+                transformPathId,
+                transformPath,
+                transformPathStatus,
+                directChildNames.Length,
+                directChildNames,
                 transformNodeCount);
+        }
+
+        private static string[] LoadDirectChildGameObjectNames(
+            SqliteConnection connection,
+            string serializedFile,
+            long transformPathId,
+            int maxCount)
+        {
+            var result = new List<string>();
+            if (connection == null || string.IsNullOrWhiteSpace(serializedFile) || transformPathId == 0)
+            {
+                return result.ToArray();
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT go.name
+FROM source_relations rel INDEXED BY idx_source_relations_to
+LEFT JOIN source_relations cg
+  ON cg.from_file = rel.from_file
+ AND cg.from_path_id = rel.from_path_id
+ AND cg.relation = 'component.gameObject'
+LEFT JOIN source_objects go
+  ON go.serialized_file = cg.to_file
+ AND go.path_id = cg.to_path_id
+WHERE rel.to_file = $file
+  AND rel.to_path_id = $pathId
+  AND rel.relation = 'transform.parent'
+ORDER BY go.name
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$file", NormalizeSerializedFileName(serializedFile));
+            command.Parameters.AddWithValue("$pathId", transformPathId);
+            command.Parameters.AddWithValue("$limit", Math.Max(1, maxCount));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    result.Add(name);
+                }
+            }
+
+            return result
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         private static bool PathsEqual(string left, string right)
@@ -3436,6 +3515,11 @@ WHERE relation = 'material.texture'
             string SerializedFile,
             long? GameObjectPathId,
             string GameObjectName,
+            long? TransformPathId,
+            string TransformPath,
+            string TransformPathStatus,
+            int DirectChildCount,
+            IReadOnlyList<string> DirectChildNames,
             int? TransformNodeCount);
 
         private sealed record ManifestEntry(
