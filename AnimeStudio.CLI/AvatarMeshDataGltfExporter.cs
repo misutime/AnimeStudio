@@ -279,8 +279,9 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, JObject visualCell, string sourceIndexPath)
+        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, VisualCellJson visualCellSource, string sourceIndexPath)
         {
+            var visualCell = visualCellSource.Json;
             var manifest = LoadManifest(jsonFolder);
             if (manifest.Count == 0)
             {
@@ -295,6 +296,7 @@ namespace AnimeStudio.CLI
 
             var parts = new List<VisualCellPart>();
             var warnings = new List<string>();
+            var selectedVisualCell = ResolveSelectedVisualCellInfo(visualCellSource, manifest, sourceIndexPath, warnings);
             foreach (var assistantPathId in selectedAssistants)
             {
                 if (!manifest.TryGetValue(assistantPathId, out var assistantEntry) || !File.Exists(assistantEntry.JsonPath))
@@ -363,7 +365,7 @@ namespace AnimeStudio.CLI
             var boneDriverNodeNames = BuildBoneDriverNodeNameSet(boneDriverHints);
             foreach (var part in parts)
             {
-                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile, exportedTransformNodes, boneDriverNodeNames));
+                part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile, exportedTransformNodes, boneDriverNodeNames, selectedVisualCell.PathId));
             }
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
@@ -398,6 +400,7 @@ namespace AnimeStudio.CLI
 
             var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var gltf = new JObject
             {
@@ -422,6 +425,8 @@ namespace AnimeStudio.CLI
                 {
                     ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                     ["sourceType"] = "ActorBodyVisualCell",
+                    ["selectedVisualCellPathId"] = selectedVisualCell.PathId,
+                    ["selectedVisualCellGameObjectName"] = selectedVisualCell.GameObjectName,
                     ["selectedLodGroup"] = "lod0RendererAssistants",
                     ["diagnosticOnly"] = true,
                     ["materialBindingSourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
@@ -449,6 +454,12 @@ namespace AnimeStudio.CLI
                 ["sourceDirectory"] = Path.GetFullPath(jsonFolder),
                 ["output"] = gltfPath,
                 ["selectedLodGroup"] = "lod0RendererAssistants",
+                ["selectedVisualCellJson"] = Path.GetFullPath(visualCellSource.JsonPath),
+                ["selectedVisualCellFile"] = selectedVisualCell.SerializedFile,
+                ["selectedVisualCellPathId"] = selectedVisualCell.PathId,
+                ["selectedVisualCellGameObjectPathId"] = selectedVisualCell.GameObjectPathId,
+                ["selectedVisualCellGameObjectName"] = selectedVisualCell.GameObjectName,
+                ["selectedVisualCellTransformNodeCount"] = selectedVisualCell.TransformNodeCount,
                 ["sourceIndex"] = string.IsNullOrWhiteSpace(sourceIndexPath) ? null : Path.GetFullPath(sourceIndexPath),
                 ["assistantCount"] = selectedAssistants.Count,
                 ["resolvedPartCount"] = parts.Count,
@@ -495,6 +506,8 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates),
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["selectedVisualCellTransformNodeTableStatus"] = selectedTransformNodeTableStatus,
+                ["selectedVisualCellTransformNodeTableCandidateCount"] = transformNodeTableCandidates.Count(x => x.IsSelectedVisualCell),
                 ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
                 ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
@@ -502,7 +515,7 @@ namespace AnimeStudio.CLI
                 ["transformNodeJsonReadableTrsCount"] = exportedTransformNodes.Values.Count(x => x.HasLocalTrs),
                 ["transformNodeTableCandidateVisualCells"] = new JArray(GetTransformNodeTableCandidateVisualCells(transformNodeTableCandidates)),
                 ["transformNodeTableRangeCoveringVisualCells"] = new JArray(GetTransformNodeTableRangeCoveringVisualCells(transformNodeTableCandidates)),
-                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；Transform JSON 里的 TRS/父子关系可辅助下一步比对 bind pose，但同 SerializedFile 内存在多套节点表时不能作为 skin joint 映射。",
+                ["transformNodeTableCandidateRule"] = "这些节点表只是 AvatarBoneWeights boneIndex 与 ActorBodyVisualCell.transformNodes.data 顺序的候选对照；selectedVisualCellTransformNodeTableStatus 会单独说明本次选中 VisualCell 自身是否有节点表。同 SerializedFile 内其它节点表只能诊断，不能作为 skin joint 映射。",
                 ["hairDeformDataStatus"] = SummarizeHairDeformDataStatus(hairDeformSummaries),
                 ["hairDeformDataPartCount"] = hairDeformSummaries.Count(x => x.Count > 0),
                 ["hairDeformDataVertexCount"] = hairDeformSummaries.Sum(x => x.Count),
@@ -561,6 +574,7 @@ namespace AnimeStudio.CLI
                 : gltfTextures.Count > 0 ? "previewMaterial" : "diagnosticGray";
             var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
+            var selectedTransformNodeTableStatus = (string)report["selectedVisualCellTransformNodeTableStatus"];
             var exportedTransformNodes = LoadExportedTransformNodes(jsonFolder, new List<string>());
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var hairDeformDataStatus = SummarizeHairDeformDataStatus(hairDeformSummaries);
@@ -591,6 +605,13 @@ namespace AnimeStudio.CLI
                     : transformNodeTableCandidateStatus == "indexOrderCandidatesAmbiguous"
                         ? "transform_node_table_candidates_ambiguous"
                         : "transform_node_table_candidate_present",
+                selectedTransformNodeTableStatus == "selectedVisualCellHasNoTransformNodes"
+                    ? "selected_visual_cell_transform_nodes_missing"
+                    : selectedTransformNodeTableStatus == "selectedVisualCellPresentButInsufficientForAvatarBoneRange"
+                        ? "selected_visual_cell_transform_nodes_insufficient"
+                        : selectedTransformNodeTableStatus == "selectedVisualCellRangeCoveringCandidate"
+                            ? "selected_visual_cell_transform_nodes_present"
+                            : "selected_visual_cell_transform_nodes_unverified",
                 transformNodeTableCandidates.Any(x => x.BoneDriverNodeNameMatchCount > 0)
                     ? "bone_driver_transform_node_overlap_present"
                     : "bone_driver_transform_node_overlap_missing",
@@ -621,6 +642,10 @@ namespace AnimeStudio.CLI
                 ["output"] = relativeOutput,
                 ["format"] = "Gltf",
                 ["modelSource"] = "NarakaActorBodyVisualCellLod0",
+                ["selectedVisualCellFile"] = report["selectedVisualCellFile"]?.DeepClone(),
+                ["selectedVisualCellPathId"] = report["selectedVisualCellPathId"]?.DeepClone(),
+                ["selectedVisualCellGameObjectPathId"] = report["selectedVisualCellGameObjectPathId"]?.DeepClone(),
+                ["selectedVisualCellGameObjectName"] = report["selectedVisualCellGameObjectName"]?.DeepClone(),
                 ["textureMode"] = "Png",
                 ["animationPackage"] = "Separate",
                 ["diagnosticOnly"] = true,
@@ -676,6 +701,9 @@ namespace AnimeStudio.CLI
                 ["transformNodeTableCandidateStatus"] = transformNodeTableCandidateStatus,
                 ["transformNodeTableCandidateCount"] = transformNodeTableCandidates.Length,
                 ["transformNodeTableRangeCoveringCandidateCount"] = transformNodeTableCandidates.Count(x => x.CoversAvatarBoneIndexRange),
+                ["selectedVisualCellTransformNodeCount"] = report["selectedVisualCellTransformNodeCount"]?.DeepClone(),
+                ["selectedVisualCellTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
+                ["selectedVisualCellTransformNodeTableCandidateCount"] = report["selectedVisualCellTransformNodeTableCandidateCount"]?.DeepClone(),
                 ["transformNodeTableBoneDriverOverlapStatus"] = SummarizeTransformNodeTableBoneDriverOverlapStatus(transformNodeTableCandidates),
                 ["transformNodeTableBoneDriverOverlapCandidateCount"] = transformNodeTableCandidates.Count(x => x.BoneDriverNodeNameMatchCount > 0),
                 ["transformNodeJsonStatus"] = SummarizeExportedTransformNodeStatus(exportedTransformNodes),
@@ -701,8 +729,9 @@ namespace AnimeStudio.CLI
                     ["avatarPartDataBasis"] = "AvatarPartDataAsset.m_MeshData",
                     ["boneDriverHintBasis"] = "BoneFollowDriver/BoneHairFollowDriver serializeName fields",
                     ["transformNodeTableCandidateBasis"] = "ActorBodyVisualCell.transformNodes.data index-order candidates from unity_source_index.db",
+                    ["selectedTransformNodeTableStatus"] = report["selectedVisualCellTransformNodeTableStatus"]?.DeepClone(),
                     ["hairDeformDataBasis"] = "AvatarMeshDataAsset.m_HairDeformData packed half4 diagnostic values",
-                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver 目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
+                    ["rule"] = "该记录只证明 Naraka 自定义网格、材质引用、部件顺序、骨骼名称线索、目标节点表状态和源 skin 字段可追溯；Renderer/AvatarPartDataAsset/BoneDriver/同包 transformNodes 候选目前都没有提供 mesh joint 映射，shader tint 和完整角色装配前不进入动画验收。"
                 }
             };
 
@@ -1527,6 +1556,30 @@ namespace AnimeStudio.CLI
                 : "multipleBoneDriverNodeOverlapCandidates";
         }
 
+        private static string SummarizeSelectedVisualCellTransformNodeTableStatus(
+            IEnumerable<TransformNodeTableCandidate> candidates,
+            SelectedVisualCellInfo selectedVisualCell)
+        {
+            if (selectedVisualCell == null || !selectedVisualCell.PathId.HasValue)
+            {
+                return "unknownSelectedVisualCell";
+            }
+
+            var selectedCandidates = (candidates ?? Array.Empty<TransformNodeTableCandidate>())
+                .Where(x => x.IsSelectedVisualCell)
+                .ToArray();
+            if (selectedCandidates.Length == 0)
+            {
+                return selectedVisualCell.TransformNodeCount == 0
+                    ? "selectedVisualCellHasNoTransformNodes"
+                    : "missingSelectedVisualCellTransformNodeCandidate";
+            }
+
+            return selectedCandidates.Any(x => x.CoversAvatarBoneIndexRange)
+                ? "selectedVisualCellRangeCoveringCandidate"
+                : "selectedVisualCellPresentButInsufficientForAvatarBoneRange";
+        }
+
         private static string ResolveAnimSkinBindPoseSlotStatus(SkinSummary summary)
         {
             if (summary == null || summary.AnimSkinDataCount <= 0)
@@ -1760,7 +1813,8 @@ LIMIT 1;";
             IReadOnlyList<TransformNodeTable> tables,
             string serializedFile,
             IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes,
-            ISet<string> boneDriverNodeNames)
+            ISet<string> boneDriverNodeNames,
+            long? selectedVisualCellPathId)
         {
             if (skin == null || tables == null || tables.Count == 0)
             {
@@ -1813,6 +1867,7 @@ LIMIT 1;";
                     VisualCellPathId = table.VisualCellPathId,
                     VisualCellGameObjectName = table.VisualCellGameObjectName,
                     Container = table.Container,
+                    IsSelectedVisualCell = selectedVisualCellPathId.HasValue && table.VisualCellPathId == selectedVisualCellPathId.Value,
                     TransformNodeCount = table.TransformNodeCount,
                     RequiredNodeCount = requiredNodeCount,
                     CoversAvatarBoneIndexRange = requiredNodeCount.HasValue && table.TransformNodeCount >= requiredNodeCount.Value,
@@ -2665,7 +2720,7 @@ WHERE relation = 'material.texture'
                 : value;
         }
 
-        private static JObject TryLoadVisualCell(IEnumerable<string> jsonFiles)
+        private static VisualCellJson TryLoadVisualCell(IEnumerable<string> jsonFiles)
         {
             foreach (var jsonFile in jsonFiles)
             {
@@ -2674,7 +2729,7 @@ WHERE relation = 'material.texture'
                     var json = JObject.Parse(File.ReadAllText(jsonFile));
                     if (json["lod0RendererAssistants"] is JArray)
                     {
-                        return json;
+                        return new VisualCellJson(json, jsonFile);
                     }
                 }
                 catch (JsonException)
@@ -2684,6 +2739,75 @@ WHERE relation = 'material.texture'
             }
 
             return null;
+        }
+
+        private static SelectedVisualCellInfo ResolveSelectedVisualCellInfo(
+            VisualCellJson visualCellSource,
+            IReadOnlyDictionary<long, ManifestEntry> manifest,
+            string sourceIndexPath,
+            List<string> warnings)
+        {
+            long? pathId = null;
+            var serializedFile = string.Empty;
+            foreach (var item in manifest ?? new Dictionary<long, ManifestEntry>())
+            {
+                if (PathsEqual(item.Value.JsonPath, visualCellSource.JsonPath))
+                {
+                    pathId = item.Key;
+                    serializedFile = NormalizeSerializedFileName(item.Value.SerializedFile);
+                    break;
+                }
+            }
+
+            var gameObjectPathId = ReadPPtrPathId(visualCellSource.Json["m_GameObject"]);
+            var gameObjectName = string.Empty;
+            int? transformNodeCount = null;
+
+            if (pathId.HasValue
+                && !string.IsNullOrWhiteSpace(serializedFile)
+                && !string.IsNullOrWhiteSpace(sourceIndexPath)
+                && File.Exists(sourceIndexPath))
+            {
+                try
+                {
+                    SQLitePCL.Batteries_V2.Init();
+                    using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                    connection.Open();
+                    transformNodeCount = CountTransformNodes(connection, serializedFile, pathId.Value);
+                    if (gameObjectPathId != 0)
+                    {
+                        gameObjectName = ResolveObjectName(connection, serializedFile, gameObjectPathId);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException || ex is SqliteException || ex is InvalidDataException)
+                {
+                    warnings.Add($"selectedVisualCellQueryFailed:{ex.Message}");
+                }
+            }
+
+            return new SelectedVisualCellInfo(
+                pathId,
+                serializedFile,
+                gameObjectPathId == 0 ? null : gameObjectPathId,
+                gameObjectName,
+                transformNodeCount);
+        }
+
+        private static bool PathsEqual(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            {
+                return false;
+            }
+
+            try
+            {
+                return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         private static Dictionary<long, ManifestEntry> LoadManifest(string jsonFolder)
@@ -3303,6 +3427,17 @@ WHERE relation = 'material.texture'
             return value.Length == 0 ? "avatar_mesh_data" : value;
         }
 
+        private sealed record VisualCellJson(
+            JObject Json,
+            string JsonPath);
+
+        private sealed record SelectedVisualCellInfo(
+            long? PathId,
+            string SerializedFile,
+            long? GameObjectPathId,
+            string GameObjectName,
+            int? TransformNodeCount);
+
         private sealed record ManifestEntry(
             string JsonPath,
             string SerializedFile);
@@ -3564,6 +3699,7 @@ WHERE relation = 'material.texture'
             public long VisualCellPathId { get; init; }
             public string VisualCellGameObjectName { get; init; }
             public string Container { get; init; }
+            public bool IsSelectedVisualCell { get; init; }
             public int TransformNodeCount { get; init; }
             public int? RequiredNodeCount { get; init; }
             public bool CoversAvatarBoneIndexRange { get; init; }
@@ -3580,6 +3716,7 @@ WHERE relation = 'material.texture'
                 ["visualCellPathId"] = VisualCellPathId,
                 ["visualCellGameObjectName"] = VisualCellGameObjectName,
                 ["container"] = Container,
+                ["isSelectedVisualCell"] = IsSelectedVisualCell,
                 ["transformNodeCount"] = TransformNodeCount,
                 ["requiredNodeCount"] = RequiredNodeCount,
                 ["coversAvatarBoneIndexRange"] = CoversAvatarBoneIndexRange,
