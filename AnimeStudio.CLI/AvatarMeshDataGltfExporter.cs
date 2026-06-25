@@ -14,11 +14,11 @@ namespace AnimeStudio.CLI
 {
     internal static class AvatarMeshDataGltfExporter
     {
-        public static string Export(string jsonPath, string outputFolder, string sourceIndexPath = null)
+        public static string Export(string jsonPath, string outputFolder, string sourceIndexPath = null, bool allowExternalSkeletonSkinDiagnostic = false)
         {
             if (!string.IsNullOrWhiteSpace(jsonPath) && Directory.Exists(jsonPath))
             {
-                return ExportDirectory(jsonPath, outputFolder, sourceIndexPath);
+                return ExportDirectory(jsonPath, outputFolder, sourceIndexPath, allowExternalSkeletonSkinDiagnostic);
             }
 
             if (string.IsNullOrWhiteSpace(jsonPath) || !File.Exists(jsonPath))
@@ -186,7 +186,7 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static string ExportDirectory(string jsonFolder, string outputFolder, string sourceIndexPath)
+        private static string ExportDirectory(string jsonFolder, string outputFolder, string sourceIndexPath, bool allowExternalSkeletonSkinDiagnostic)
         {
             var jsonFiles = Directory.GetFiles(jsonFolder, "*.json", SearchOption.TopDirectoryOnly)
                 .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
@@ -199,7 +199,7 @@ namespace AnimeStudio.CLI
             var visualCell = TryLoadVisualCell(jsonFiles);
             if (visualCell != null)
             {
-                return ExportVisualCellDirectory(jsonFolder, outputFolder, visualCell, sourceIndexPath);
+                return ExportVisualCellDirectory(jsonFolder, outputFolder, visualCell, sourceIndexPath, allowExternalSkeletonSkinDiagnostic);
             }
 
             outputFolder = string.IsNullOrWhiteSpace(outputFolder)
@@ -287,7 +287,7 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, VisualCellJson visualCellSource, string sourceIndexPath)
+        private static string ExportVisualCellDirectory(string jsonFolder, string outputFolder, VisualCellJson visualCellSource, string sourceIndexPath, bool allowExternalSkeletonSkinDiagnostic)
         {
             var visualCell = visualCellSource.Json;
             var manifest = LoadManifest(jsonFolder);
@@ -379,6 +379,20 @@ namespace AnimeStudio.CLI
             {
                 part.Mesh.Skin.TransformNodeTableCandidates.AddRange(BuildTransformNodeTableCandidates(part.Mesh.Skin, transformNodeTables, part.AvatarMeshFile, exportedTransformNodes, boneDriverNodeNames, selectedVisualCell.PathId));
             }
+            var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
+            var externalSkeletonContextCandidate = SelectExternalSkeletonContextCandidate(transformNodeTableCandidates);
+            var diagnosticSkin = BuildExternalSkeletonDiagnosticSkin(
+                nodes,
+                externalSkeletonContextCandidate,
+                exportedTransformNodes,
+                allowExternalSkeletonSkinDiagnostic,
+                warnings);
+            var sceneNodeIndices = new List<int>();
+            if (diagnosticSkin != null)
+            {
+                sceneNodeIndices.AddRange(diagnosticSkin.RootNodeIndices);
+            }
+
             var gltfImages = new JArray();
             var gltfTextures = new JArray();
             var materialIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -393,8 +407,8 @@ namespace AnimeStudio.CLI
                 var nodeAvatarPartDataEvidence = partDataEvidence != null
                     ? (IEnumerable<AvatarPartDataEvidence>)partDataEvidence
                     : Enumerable.Empty<AvatarPartDataEvidence>();
-                gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath), materialIndex));
-                nodes.Add(new JObject
+                gltfMeshes.Add(WriteMeshObject(stream, bufferViews, accessors, part.Mesh, Path.GetFullPath(part.MeshJsonPath), materialIndex, diagnosticSkin));
+                var node = new JObject
                 {
                     ["name"] = part.GameObjectName,
                     ["mesh"] = i,
@@ -407,12 +421,17 @@ namespace AnimeStudio.CLI
                         ["materialBinding"] = materialBinding?.ToJson(),
                         ["avatarPartDataEvidence"] = new JArray(nodeAvatarPartDataEvidence.Select(x => x.ToJson()))
                     }
-                });
+                };
+                if (diagnosticSkin != null)
+                {
+                    node["skin"] = 0;
+                    node["extras"]["externalSkeletonDiagnosticSkin"] = diagnosticSkin.ToNodeJson();
+                }
+                nodes.Add(node);
+                sceneNodeIndices.Add(nodes.Count - 1);
             }
 
             var totalBounds = CalculateBounds(parts.Select(x => x.Mesh));
-            var transformNodeTableCandidates = GetDistinctTransformNodeTableCandidates(parts).ToArray();
-            var externalSkeletonContextCandidate = SelectExternalSkeletonContextCandidate(transformNodeTableCandidates);
             var transformNodeTableCandidateStatus = SummarizeTransformNodeTableCandidateStatus(transformNodeTableCandidates);
             var selectedTransformNodeTableStatus = SummarizeSelectedVisualCellTransformNodeTableStatus(transformNodeTableCandidates, selectedVisualCell);
             var usedBoneCoverageCandidateCount = transformNodeTableCandidates.Count(x => x.CoversAllUsedBoneIndices);
@@ -431,6 +450,11 @@ namespace AnimeStudio.CLI
             var hairDeformSummaries = parts.Select(x => x.Mesh.HairDeform).ToArray();
             var rangeCoveringMappedNodeNames = GetTransformNodeTableRangeCoveringMappedNodeNames(parts).ToArray();
             var rangeCoveringEvidence = BuildTransformNodeTableRangeCoveringEvidence(parts);
+            var skins = new JArray();
+            if (diagnosticSkin != null)
+            {
+                skins.Add(diagnosticSkin.BuildSkinJson(stream, bufferViews, accessors));
+            }
             var gltf = new JObject
             {
                 ["asset"] = new JObject
@@ -439,7 +463,7 @@ namespace AnimeStudio.CLI
                     ["generator"] = "AnimeStudio Naraka ActorBodyVisualCell diagnostic LOD exporter"
                 },
                 ["scene"] = 0,
-                ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(Enumerable.Range(0, nodes.Count)) }),
+                ["scenes"] = new JArray(new JObject { ["nodes"] = new JArray(sceneNodeIndices.Distinct()) }),
                 ["nodes"] = nodes,
                 ["meshes"] = gltfMeshes,
                 ["materials"] = gltfMaterials,
@@ -472,6 +496,10 @@ namespace AnimeStudio.CLI
             if (gltfTextures.Count > 0)
             {
                 gltf["textures"] = gltfTextures;
+            }
+            if (skins.Count > 0)
+            {
+                gltf["skins"] = skins;
             }
 
             File.WriteAllText(gltfPath, gltf.ToString(Formatting.Indented));
@@ -512,6 +540,9 @@ namespace AnimeStudio.CLI
                 ["assistantCount"] = selectedAssistants.Count,
                 ["resolvedPartCount"] = parts.Count,
                 ["meshCount"] = parts.Count,
+                ["skinCount"] = diagnosticSkin != null ? 1 : 0,
+                ["boneCount"] = diagnosticSkin?.JointCount ?? 0,
+                ["externalSkeletonDiagnosticSkin"] = diagnosticSkin?.ToJson(),
                 ["vertexCount"] = parts.Sum(x => x.Mesh.Positions.Count),
                 ["indexCount"] = parts.Sum(x => x.Mesh.Indices.Count),
                 ["triangleCount"] = parts.Sum(x => x.Mesh.Indices.Count / 3),
@@ -618,7 +649,8 @@ namespace AnimeStudio.CLI
                 rendererListEvidence,
                 gltfMaterials,
                 gltfImages,
-                gltfTextures);
+                gltfTextures,
+                diagnosticSkin);
             Logger.Info($"Exported Naraka ActorBodyVisualCell LOD0 diagnostic glTF: {gltfPath}");
             Logger.Info($"Wrote Naraka ActorBodyVisualCell diagnostic report: {reportPath}");
             return gltfPath;
@@ -639,7 +671,8 @@ namespace AnimeStudio.CLI
             VisualCellRendererListEvidence rendererListEvidence,
             JArray gltfMaterials,
             JArray gltfImages,
-            JArray gltfTextures)
+            JArray gltfTextures,
+            ExternalSkeletonDiagnosticSkin diagnosticSkin)
         {
             // 这里先把 Naraka 自定义网格接进 AssetLibrary v1，
             // 但仍按诊断模型处理，不能绕过模型优先门禁。
@@ -668,7 +701,8 @@ namespace AnimeStudio.CLI
             var hairDeformDataStatus = SummarizeHairDeformDataStatus(hairDeformSummaries);
             var validationReasons = new JArray(
                 "diagnostic_custom_mesh",
-                "missing_skin_binding",
+                diagnosticSkin != null ? "external_skeleton_diagnostic_skin_present" : "missing_skin_binding",
+                diagnosticSkin != null ? "external_skeleton_rest_inverse_bind_matrices_diagnostic" : "skin_inverse_bind_matrices_missing",
                 parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped") ? "skin_data_present_unmapped" : "skin_data_missing",
                 parts.Any(x => x.Mesh.Skin.AnimSkinIndicesFitBindPoseSlots)
                     ? "anim_skin_bind_pose_slots_self_consistent"
@@ -794,8 +828,9 @@ namespace AnimeStudio.CLI
                 ["embeddedAnimationCount"] = 0,
                 ["importedAnimationListCount"] = 0,
                 ["morphCount"] = 0,
-                ["boneCount"] = 0,
-                ["skinCount"] = 0,
+                ["boneCount"] = diagnosticSkin?.JointCount ?? 0,
+                ["skinCount"] = diagnosticSkin != null ? 1 : 0,
+                ["externalSkeletonDiagnosticSkin"] = diagnosticSkin?.ToJson(),
                 ["sourceSkinDataStatus"] = sourceSkinStatuses.Length == 1 ? sourceSkinStatuses[0] : string.Join(",", sourceSkinStatuses),
                 ["sourceSkinBindPoseCount"] = parts.Sum(x => x.Mesh.Skin.BindPoseCount),
                 ["animSkinBindPoseSlotStatus"] = SummarizeAnimSkinBindPoseSlotStatus(parts.Select(x => x.Mesh.Skin)),
@@ -804,7 +839,7 @@ namespace AnimeStudio.CLI
                 ["sourceSkinAvatarRequiredNodeCount"] = report["sourceSkinAvatarRequiredNodeCount"]?.DeepClone(),
                 ["avatarBoneOffsetPairStatus"] = report["avatarBoneOffsetPairStatus"]?.DeepClone(),
                 ["avatarBoneOffsetPairExactPartCount"] = report["avatarBoneOffsetPairExactPartCount"]?.DeepClone(),
-                ["sourceSkinMappedJointCount"] = 0,
+                ["sourceSkinMappedJointCount"] = diagnosticSkin?.JointCount ?? 0,
                 ["sourceSkinUnmapped"] = parts.Any(x => x.Mesh.Skin.Status == "presentUnmapped"),
                 ["rendererSkinBindingStatus"] = SummarizeRendererSkinBindingStatus(rendererSkinBindings.Values),
                 ["rendererSkinRendererRefCount"] = rendererSkinBindings.Values.Count(x => x.RendererObjectFound),
@@ -956,9 +991,14 @@ namespace AnimeStudio.CLI
             validation["Path"] = relativeOutput;
             validation["diagnosticOnly"] = true;
             validation["customMeshValidationReasons"] = validationReasons.DeepClone();
+            var hasExternalDiagnosticSkin = (validationReasons ?? new JArray())
+                .Values<string>()
+                .Any(x => string.Equals(x, "external_skeleton_diagnostic_skin_present", StringComparison.OrdinalIgnoreCase));
             validation["Notes"] = MergeStringArray(
                 validation["Notes"] as JArray,
-                "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型：源 skin 字段尚未映射到 glTF joints，hair tint/customization shader 未完全复原，禁止进入动画生产验收。");
+                hasExternalDiagnosticSkin
+                    ? "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型：外部骨架 skin 只在显式诊断开关下写出，rest inverse bind matrix 和视觉效果尚未通过生产验收。"
+                    : "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型：源 skin 字段尚未映射到 glTF joints，hair tint/customization shader 未完全复原，禁止进入动画生产验收。");
 
             var body = validation["Body"] as JObject;
             if (body != null)
@@ -966,7 +1006,9 @@ namespace AnimeStudio.CLI
                 body["ModelBodyStatus"] = "warning";
                 body["Evidence"] = MergeStringArray(
                     body["Evidence"] as JArray,
-                    "自定义网格源 JSON 可包含 skin 字段，但当前没有确定性 joint 映射，所以没有写 glTF skin；材质只做保守预览，未烘焙 Naraka customization tint。");
+                    hasExternalDiagnosticSkin
+                        ? "显式诊断开关已写入外部骨架 skin；joint 来源和权重可追溯，inverse bind matrix 来自外部骨架 rest world TRS 求逆，材质仍未烘焙 Naraka customization tint。"
+                        : "自定义网格源 JSON 可包含 skin 字段，但当前没有确定性 joint 映射，所以没有写 glTF skin；材质只做保守预览，未烘焙 Naraka customization tint。");
             }
 
             validation["animationGate"] = BuildBlockedCustomMeshAnimationGate(validation, validationReasons);
@@ -1026,13 +1068,15 @@ namespace AnimeStudio.CLI
                 .Values<string>()
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .ToArray();
+            var hasExternalDiagnosticSkin = customReasons.Any(x => string.Equals(x, "external_skeleton_diagnostic_skin_present", StringComparison.OrdinalIgnoreCase));
             var reasons = MergeStringArray(
                 validation?["animationGate"]?["reasons"] as JArray,
                 "model_validation_not_ok",
                 "model_body_not_ok",
-                "diagnostic_custom_mesh",
-                "missing_skin_binding",
-                "source_skin_unmapped");
+                "diagnostic_custom_mesh");
+            reasons = hasExternalDiagnosticSkin
+                ? MergeStringArray(reasons, "external_skeleton_diagnostic_skin_present", "external_skeleton_rest_inverse_bind_matrices_diagnostic")
+                : MergeStringArray(reasons, "missing_skin_binding", "source_skin_unmapped");
             foreach (var reason in customReasons.Where(x =>
                 string.Equals(x, "needs_customization_tint", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(x, "skin_data_present_unmapped", StringComparison.OrdinalIgnoreCase)
@@ -1047,7 +1091,9 @@ namespace AnimeStudio.CLI
                 ["ready"] = false,
                 ["status"] = "blocked",
                 ["reasons"] = reasons,
-                ["rule"] = "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型；缺少确定性 glTF skin/joint 映射或 customization tint 时，禁止进入动画导出、合成或生产 smoke。"
+                ["rule"] = hasExternalDiagnosticSkin
+                    ? "Naraka ActorBodyVisualCell 外部骨架 skin 仍是显式诊断输出；rest inverse bind matrix、材质 tint 和清晰视觉验收通过前，禁止进入动画导出、合成或生产 smoke。"
+                    : "Naraka ActorBodyVisualCell 自定义网格仍是诊断模型；缺少确定性 glTF skin/joint 映射或 customization tint 时，禁止进入动画导出、合成或生产 smoke。"
             };
         }
 
@@ -1118,7 +1164,7 @@ namespace AnimeStudio.CLI
             return (value ?? string.Empty).Replace('\\', '/').TrimStart('/');
         }
 
-        private static JObject WriteMeshObject(Stream stream, JArray bufferViews, JArray accessors, AvatarMeshData mesh, string source, int materialIndex = 0)
+        private static JObject WriteMeshObject(Stream stream, JArray bufferViews, JArray accessors, AvatarMeshData mesh, string source, int materialIndex = 0, ExternalSkeletonDiagnosticSkin diagnosticSkin = null)
         {
             var attributes = new JObject();
             var indexView = WriteUIntBufferView(stream, bufferViews, mesh.Indices.Select(x => checked((uint)x)), 34963);
@@ -1186,6 +1232,29 @@ namespace AnimeStudio.CLI
                 attributes["TEXCOORD_0"] = accessors.Count - 1;
             }
 
+            if (diagnosticSkin != null && TryBuildDiagnosticSkinAttributes(mesh, diagnosticSkin, out var jointValues, out var weightValues))
+            {
+                var jointsView = WriteUShortBufferView(stream, bufferViews, jointValues, 34962);
+                accessors.Add(new JObject
+                {
+                    ["bufferView"] = jointsView,
+                    ["componentType"] = 5123,
+                    ["count"] = mesh.Positions.Count,
+                    ["type"] = "VEC4"
+                });
+                attributes["JOINTS_0"] = accessors.Count - 1;
+
+                var weightsView = WriteFloatBufferView(stream, bufferViews, weightValues, 34962);
+                accessors.Add(new JObject
+                {
+                    ["bufferView"] = weightsView,
+                    ["componentType"] = 5126,
+                    ["count"] = mesh.Positions.Count,
+                    ["type"] = "VEC4"
+                });
+                attributes["WEIGHTS_0"] = accessors.Count - 1;
+            }
+
             return new JObject
             {
                 ["name"] = mesh.MeshName,
@@ -1206,6 +1275,279 @@ namespace AnimeStudio.CLI
                     ["note"] = "Naraka 自定义 MonoBehaviour 网格诊断导出；尚未绑定 prefab 模块关系、材质或骨骼。"
                 }
             };
+        }
+
+        private static ExternalSkeletonDiagnosticSkin BuildExternalSkeletonDiagnosticSkin(
+            JArray nodes,
+            TransformNodeTableCandidate candidate,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes,
+            bool enabled,
+            List<string> warnings)
+        {
+            if (!enabled)
+            {
+                return null;
+            }
+
+            if (candidate == null
+                || !candidate.CoversAllUsedBoneIndices
+                || !candidate.AllCoveredUsedBoneTransformsExported)
+            {
+                warnings.Add("externalSkeletonDiagnosticSkinSkipped:candidateMissingOrIncomplete");
+                return null;
+            }
+
+            var exported = exportedTransformNodes ?? new Dictionary<long, ExportedTransformNode>();
+            var usedRefs = (candidate.CoveredUsedBoneRefs ?? Array.Empty<TransformNodeTableUsedBoneRef>())
+                .Where(x => x.BoneIndex >= 0 && x.ExportedTransform?.HasLocalTrs == true)
+                .GroupBy(x => x.BoneIndex)
+                .Select(x => x.OrderByDescending(y => y.WeightedRefCount).First())
+                .OrderBy(x => x.BoneIndex)
+                .ToArray();
+            if (usedRefs.Length == 0)
+            {
+                warnings.Add("externalSkeletonDiagnosticSkinSkipped:noReadableUsedBoneRefs");
+                return null;
+            }
+
+            var pathIds = new HashSet<long>(usedRefs.Select(x => x.TransformPathId));
+            foreach (var usedRef in usedRefs)
+            {
+                var current = usedRef.TransformPathId;
+                for (var guard = 0; guard < 128; guard++)
+                {
+                    if (!exported.TryGetValue(current, out var transform)
+                        || transform.FatherPathId == 0
+                        || pathIds.Contains(transform.FatherPathId))
+                    {
+                        break;
+                    }
+
+                    pathIds.Add(transform.FatherPathId);
+                    current = transform.FatherPathId;
+                }
+            }
+
+            var nameByPath = usedRefs
+                .GroupBy(x => x.TransformPathId)
+                .ToDictionary(x => x.Key, x => x.First().GameObjectName, EqualityComparer<long>.Default);
+            var nodeIndexByPath = new Dictionary<long, int>();
+            foreach (var pathId in pathIds.OrderBy(x => x))
+            {
+                if (!exported.TryGetValue(pathId, out var transform) || !transform.HasLocalTrs)
+                {
+                    continue;
+                }
+
+                var node = new JObject
+                {
+                    ["name"] = !string.IsNullOrWhiteSpace(nameByPath.TryGetValue(pathId, out var name) ? name : null)
+                        ? name
+                        : "Transform_" + pathId.ToString(CultureInfo.InvariantCulture),
+                    ["translation"] = new JArray(ToFloatArray3(ConvertUnityPositionToGltf(transform.LocalPosition.Value))),
+                    ["rotation"] = new JArray(ToFloatArray4(ConvertUnityRotationToGltf(transform.LocalRotation.Value))),
+                    ["scale"] = new JArray(ToFloatArray3(transform.LocalScale.Value)),
+                    ["extras"] = new JObject
+                    {
+                        ["narakaExternalSkeletonDiagnostic"] = true,
+                        ["sourceTransformPathId"] = pathId,
+                        ["sourceGameObjectPathId"] = transform.GameObjectPathId,
+                        ["sourceJson"] = string.IsNullOrWhiteSpace(transform.JsonPath) ? null : Path.GetFullPath(transform.JsonPath)
+                    }
+                };
+                nodes.Add(node);
+                nodeIndexByPath[pathId] = nodes.Count - 1;
+            }
+
+            foreach (var pair in nodeIndexByPath.ToArray())
+            {
+                if (!exported.TryGetValue(pair.Key, out var transform)
+                    || !nodeIndexByPath.TryGetValue(transform.FatherPathId, out var parentNodeIndex))
+                {
+                    continue;
+                }
+
+                var parent = (JObject)nodes[parentNodeIndex];
+                var children = parent["children"] as JArray;
+                if (children == null)
+                {
+                    children = new JArray();
+                    parent["children"] = children;
+                }
+                children.Add(pair.Value);
+            }
+
+            var jointNodeIndices = new List<int>();
+            var jointPathIds = new List<long>();
+            var boneIndexToJointSlot = new Dictionary<int, int>();
+            foreach (var usedRef in usedRefs)
+            {
+                if (!nodeIndexByPath.TryGetValue(usedRef.TransformPathId, out var nodeIndex))
+                {
+                    continue;
+                }
+
+                boneIndexToJointSlot[usedRef.BoneIndex] = jointNodeIndices.Count;
+                jointNodeIndices.Add(nodeIndex);
+                jointPathIds.Add(usedRef.TransformPathId);
+            }
+
+            if (jointNodeIndices.Count == 0)
+            {
+                warnings.Add("externalSkeletonDiagnosticSkinSkipped:noJointNodes");
+                return null;
+            }
+
+            var sourceRootNodeIndices = nodeIndexByPath
+                .Where(x => !exported.TryGetValue(x.Key, out var transform) || !nodeIndexByPath.ContainsKey(transform.FatherPathId))
+                .Select(x => x.Value)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToArray();
+            var syntheticRoot = new JObject
+            {
+                ["name"] = "NarakaExternalSkeletonDiagnosticRoot",
+                ["children"] = new JArray(sourceRootNodeIndices),
+                ["extras"] = new JObject
+                {
+                    ["narakaExternalSkeletonDiagnostic"] = true,
+                    ["syntheticRoot"] = true,
+                    ["rule"] = "glTF skin 需要 joint 共享根；该节点只把外部 VisualCell transformNodes 的多个根合并为诊断骨架根，不代表 Unity 原对象。"
+                }
+            };
+            nodes.Add(syntheticRoot);
+            var syntheticRootIndex = nodes.Count - 1;
+            var inverseBindMatrices = BuildInverseBindMatrices(jointPathIds, pathIds, exported);
+
+            return new ExternalSkeletonDiagnosticSkin(
+                candidate,
+                jointNodeIndices.ToArray(),
+                new[] { syntheticRootIndex },
+                boneIndexToJointSlot,
+                inverseBindMatrices,
+                nodeIndexByPath.Count + 1,
+                pathIds.Count - jointNodeIndices.Count);
+        }
+
+        private static IReadOnlyList<float[]> BuildInverseBindMatrices(
+            IReadOnlyList<long> jointPathIds,
+            IReadOnlyCollection<long> includedPathIds,
+            IReadOnlyDictionary<long, ExportedTransformNode> exportedTransformNodes)
+        {
+            var included = new HashSet<long>(includedPathIds ?? Array.Empty<long>());
+            var worldCache = new Dictionary<long, System.Numerics.Matrix4x4>();
+            System.Numerics.Matrix4x4 GetWorld(long pathId)
+            {
+                if (worldCache.TryGetValue(pathId, out var cached))
+                {
+                    return cached;
+                }
+
+                if (exportedTransformNodes == null
+                    || !exportedTransformNodes.TryGetValue(pathId, out var transform)
+                    || !transform.HasLocalTrs)
+                {
+                    return System.Numerics.Matrix4x4.Identity;
+                }
+
+                var local = ToMatrix4x4(transform);
+                var world = transform.FatherPathId != 0 && included.Contains(transform.FatherPathId)
+                    ? local * GetWorld(transform.FatherPathId)
+                    : local;
+                worldCache[pathId] = world;
+                return world;
+            }
+
+            return (jointPathIds ?? Array.Empty<long>())
+                .Select(pathId =>
+                {
+                    var world = GetWorld(pathId);
+                    if (!System.Numerics.Matrix4x4.Invert(world, out var inverse))
+                    {
+                        inverse = System.Numerics.Matrix4x4.Identity;
+                    }
+                    return ToFloatArray(inverse).ToArray();
+                })
+                .ToArray();
+        }
+
+        private static System.Numerics.Matrix4x4 ToMatrix4x4(ExportedTransformNode transform)
+        {
+            var t = ConvertUnityPositionToGltf(transform.LocalPosition.Value);
+            var r = ConvertUnityRotationToGltf(transform.LocalRotation.Value);
+            var s = transform.LocalScale.Value;
+            var scale = System.Numerics.Matrix4x4.CreateScale(s.X, s.Y, s.Z);
+            var rotation = System.Numerics.Matrix4x4.CreateFromQuaternion(new System.Numerics.Quaternion(r.X, r.Y, r.Z, r.W));
+            var translation = System.Numerics.Matrix4x4.CreateTranslation(t.X, t.Y, t.Z);
+            return scale * rotation * translation;
+        }
+
+        private static IEnumerable<float> ToFloatArray(System.Numerics.Matrix4x4 matrix)
+        {
+            yield return CleanMatrixFloat(matrix.M11); yield return CleanMatrixFloat(matrix.M12); yield return CleanMatrixFloat(matrix.M13); yield return CleanMatrixFloat(matrix.M14);
+            yield return CleanMatrixFloat(matrix.M21); yield return CleanMatrixFloat(matrix.M22); yield return CleanMatrixFloat(matrix.M23); yield return CleanMatrixFloat(matrix.M24);
+            yield return CleanMatrixFloat(matrix.M31); yield return CleanMatrixFloat(matrix.M32); yield return CleanMatrixFloat(matrix.M33); yield return CleanMatrixFloat(matrix.M34);
+            yield return CleanMatrixFloat(matrix.M41); yield return CleanMatrixFloat(matrix.M42); yield return CleanMatrixFloat(matrix.M43); yield return CleanMatrixFloat(matrix.M44);
+        }
+
+        private static float CleanMatrixFloat(float value)
+        {
+            if (Math.Abs(value) < 0.0000001f)
+            {
+                return 0f;
+            }
+            if (Math.Abs(value - 1f) < 0.000001f)
+            {
+                return 1f;
+            }
+            if (Math.Abs(value + 1f) < 0.000001f)
+            {
+                return -1f;
+            }
+            return value;
+        }
+
+        private static bool TryBuildDiagnosticSkinAttributes(
+            AvatarMeshData mesh,
+            ExternalSkeletonDiagnosticSkin diagnosticSkin,
+            out ushort[] jointValues,
+            out float[] weightValues)
+        {
+            jointValues = null;
+            weightValues = null;
+            if (mesh?.Skin?.VertexAvatarInfluences == null
+                || mesh.Skin.VertexAvatarInfluences.Count != mesh.Positions.Count
+                || diagnosticSkin?.BoneIndexToJointSlot == null)
+            {
+                return false;
+            }
+
+            jointValues = new ushort[mesh.Positions.Count * 4];
+            weightValues = new float[mesh.Positions.Count * 4];
+            for (var vertexIndex = 0; vertexIndex < mesh.Positions.Count; vertexIndex++)
+            {
+                var picked = mesh.Skin.VertexAvatarInfluences[vertexIndex]
+                    .Where(x => x.Weight > 0f && diagnosticSkin.BoneIndexToJointSlot.ContainsKey(x.BoneIndex))
+                    .OrderByDescending(x => x.Weight)
+                    .ThenBy(x => x.BoneIndex)
+                    .Take(4)
+                    .ToArray();
+                var weightSum = picked.Sum(x => Math.Max(0f, x.Weight));
+                if (picked.Length == 0 || weightSum <= 0f)
+                {
+                    weightValues[vertexIndex * 4] = 1f;
+                    continue;
+                }
+
+                for (var i = 0; i < picked.Length; i++)
+                {
+                    var dst = vertexIndex * 4 + i;
+                    jointValues[dst] = checked((ushort)diagnosticSkin.BoneIndexToJointSlot[picked[i].BoneIndex]);
+                    weightValues[dst] = Math.Max(0f, picked[i].Weight) / weightSum;
+                }
+            }
+
+            return true;
         }
 
         private static JObject CreateDiagnosticMaterial()
@@ -2758,7 +3100,8 @@ LIMIT 1;";
                             node.GameObjectPathId,
                             node.TransformPathId,
                             exportedTransform != null,
-                            exportedTransform?.HasLocalTrs == true);
+                            exportedTransform?.HasLocalTrs == true,
+                            exportedTransform);
                     })
                     .ToArray();
                 var missingUsedRefs = usedRefs
@@ -4671,6 +5014,7 @@ LIMIT 1;";
                     {
                         var offset = offsets[vertexIndex * 2].Value<int>();
                         var count = offsets[vertexIndex * 2 + 1].Value<int>();
+                        var vertexInfluences = new List<VertexSkinInfluence>();
                         maxInfluences = Math.Max(maxInfluences, count);
                         if (offset == expectedOffset)
                         {
@@ -4684,6 +5028,7 @@ LIMIT 1;";
                         if (offset < 0 || count < 0 || offset + count > avatarWeights.Count)
                         {
                             invalidRanges++;
+                            summary.VertexAvatarInfluences.Add(Array.Empty<VertexSkinInfluence>());
                             continue;
                         }
 
@@ -4705,6 +5050,7 @@ LIMIT 1;";
                             }
 
                             hasWeight = true;
+                            vertexInfluences.Add(new VertexSkinInfluence(boneIndex, value));
                             avatarBoneRefCounts[boneIndex] = avatarBoneRefCounts.TryGetValue(boneIndex, out var oldCount)
                                 ? oldCount + 1
                                 : 1;
@@ -4723,6 +5069,10 @@ LIMIT 1;";
                         {
                             weightedVertices++;
                         }
+                        summary.VertexAvatarInfluences.Add(vertexInfluences
+                            .OrderByDescending(x => x.Weight)
+                            .ThenBy(x => x.BoneIndex)
+                            .ToArray());
                         if (hasNegativeBoneRef)
                         {
                             verticesWithNegativeBoneRefs++;
@@ -4984,15 +5334,33 @@ LIMIT 1;";
             return AddBufferView(bufferViews, offset, stream.Length - offset, target);
         }
 
+        private static int WriteUShortBufferView(Stream stream, JArray bufferViews, IEnumerable<ushort> values, int target)
+        {
+            Align4(stream);
+            var offset = stream.Length;
+            using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+            foreach (var value in values)
+            {
+                writer.Write(value);
+            }
+            writer.Flush();
+            Align4(stream);
+            return AddBufferView(bufferViews, offset, stream.Length - offset, target);
+        }
+
         private static int AddBufferView(JArray bufferViews, long offset, long length, int target)
         {
-            bufferViews.Add(new JObject
+            var bufferView = new JObject
             {
                 ["buffer"] = 0,
                 ["byteOffset"] = offset,
                 ["byteLength"] = length,
-                ["target"] = target
-            });
+            };
+            if (target != 0)
+            {
+                bufferView["target"] = target;
+            }
+            bufferViews.Add(bufferView);
             return bufferViews.Count - 1;
         }
 
@@ -5022,6 +5390,12 @@ LIMIT 1;";
 
         private static Vector4Value ConvertUnityTangentToGltf(Vector4Value value)
         {
+            return new Vector4Value(value.X, value.Z, -value.Y, value.W);
+        }
+
+        private static Vector4Value ConvertUnityRotationToGltf(Vector4Value value)
+        {
+            // 诊断 skin 和位置/法线使用同一轴变换。这里仍需后续用视觉对照确认 bind pose 空间。
             return new Vector4Value(value.X, value.Z, -value.Y, value.W);
         }
 
@@ -5602,7 +5976,8 @@ LIMIT 1;";
             long GameObjectPathId,
             long TransformPathId,
             bool HasExportedTransform,
-            bool HasLocalTrs)
+            bool HasLocalTrs,
+            ExportedTransformNode ExportedTransform)
         {
             public JObject ToJson() => new()
             {
@@ -5613,6 +5988,7 @@ LIMIT 1;";
                 ["candidateTransformPathId"] = TransformPathId,
                 ["hasExportedTransform"] = HasExportedTransform,
                 ["hasLocalTrs"] = HasLocalTrs,
+                ["candidateTransform"] = ExportedTransform?.ToJson(),
             };
         }
 
@@ -5836,6 +6212,7 @@ LIMIT 1;";
             public int BindPoseCount { get; set; }
             public List<BoneRefCount> AvatarBoneRefs { get; } = new();
             public List<BoneRefCount> AvatarTopBoneRefs { get; } = new();
+            public List<IReadOnlyList<VertexSkinInfluence>> VertexAvatarInfluences { get; } = new();
             public List<TransformNodeTableCandidate> TransformNodeTableCandidates { get; } = new();
             public List<string> LayoutWarnings { get; } = new();
 
@@ -5927,6 +6304,100 @@ LIMIT 1;";
                     : "Naraka AvatarBoneWeights 中的高频 boneIndex；缺少确定性节点表映射前不能写成 glTF joint。"
             };
         }
+
+        private sealed class ExternalSkeletonDiagnosticSkin
+        {
+            private readonly TransformNodeTableCandidate _candidate;
+
+            public ExternalSkeletonDiagnosticSkin(
+                TransformNodeTableCandidate candidate,
+                IReadOnlyList<int> jointNodeIndices,
+                IReadOnlyList<int> rootNodeIndices,
+                IReadOnlyDictionary<int, int> boneIndexToJointSlot,
+                IReadOnlyList<float[]> inverseBindMatrices,
+                int nodeCount,
+                int ancestorNodeCount)
+            {
+                _candidate = candidate;
+                JointNodeIndices = jointNodeIndices ?? Array.Empty<int>();
+                RootNodeIndices = rootNodeIndices ?? Array.Empty<int>();
+                BoneIndexToJointSlot = boneIndexToJointSlot ?? new Dictionary<int, int>();
+                InverseBindMatrices = inverseBindMatrices ?? Array.Empty<float[]>();
+                NodeCount = nodeCount;
+                AncestorNodeCount = Math.Max(0, ancestorNodeCount);
+            }
+
+            public IReadOnlyList<int> JointNodeIndices { get; }
+            public IReadOnlyList<int> RootNodeIndices { get; }
+            public IReadOnlyDictionary<int, int> BoneIndexToJointSlot { get; }
+            public IReadOnlyList<float[]> InverseBindMatrices { get; }
+            public int NodeCount { get; }
+            public int AncestorNodeCount { get; }
+            public int JointCount => JointNodeIndices.Count;
+
+            public JObject BuildSkinJson(Stream stream, JArray bufferViews, JArray accessors)
+            {
+                var matrices = InverseBindMatrices.Count == JointCount
+                    ? InverseBindMatrices.SelectMany(x => x)
+                    : Enumerable.Range(0, JointCount).SelectMany(_ => IdentityMatrix4x4());
+                var inverseBindView = WriteFloatBufferView(stream, bufferViews, matrices, 0);
+                accessors.Add(new JObject
+                {
+                    ["bufferView"] = inverseBindView,
+                    ["componentType"] = 5126,
+                    ["count"] = JointCount,
+                    ["type"] = "MAT4"
+                });
+
+                var result = new JObject
+                {
+                    ["name"] = "NarakaExternalSkeletonDiagnosticSkin",
+                    ["joints"] = new JArray(JointNodeIndices),
+                    ["inverseBindMatrices"] = accessors.Count - 1,
+                    ["extras"] = ToJson()
+                };
+                if (RootNodeIndices.Count > 0)
+                {
+                    result["skeleton"] = RootNodeIndices[0];
+                }
+                return result;
+            }
+
+            public JObject ToNodeJson() => new()
+            {
+                ["status"] = "externalSkeletonDiagnosticSkin",
+                ["skinIndex"] = 0,
+                ["jointCount"] = JointCount,
+                ["rule"] = "显式诊断开关生成的外部骨架 skin；用于验证 Naraka 模块 boneIndex 是否能套用完整身体 VisualCell 节点表，不代表默认生产绑定已通过。"
+            };
+
+            public JObject ToJson() => new()
+            {
+                ["status"] = "externalSkeletonDiagnosticSkin",
+                ["visualCellPathId"] = _candidate?.VisualCellPathId,
+                ["visualCellGameObjectName"] = _candidate?.VisualCellGameObjectName,
+                ["jointCount"] = JointCount,
+                ["nodeCount"] = NodeCount,
+                ["ancestorNodeCount"] = AncestorNodeCount,
+                ["rootNodeCount"] = RootNodeIndices.Count,
+                ["inverseBindMatrixSource"] = InverseBindMatrices.Count == JointCount
+                    ? "externalSkeletonRestWorldInverseDiagnostic"
+                    : "identityDiagnosticFallback",
+                ["weightSource"] = "AvatarMeshDataAsset.m_AvatarBoneWeights",
+                ["jointSource"] = "external ActorBodyVisualCell.transformNodes.data index order",
+                ["rule"] = "该 skin 只在显式诊断开关下写出。boneIndex 到 joint 的映射来自外部 VisualCell 节点表顺序，inverse bind matrix 来自外部骨架 rest world TRS 求逆，必须通过静态/动画视觉验证后才能进入生产结论。"
+            };
+
+            private static IEnumerable<float> IdentityMatrix4x4()
+            {
+                yield return 1f; yield return 0f; yield return 0f; yield return 0f;
+                yield return 0f; yield return 1f; yield return 0f; yield return 0f;
+                yield return 0f; yield return 0f; yield return 1f; yield return 0f;
+                yield return 0f; yield return 0f; yield return 0f; yield return 1f;
+            }
+        }
+
+        private sealed record VertexSkinInfluence(int BoneIndex, float Weight);
 
         private readonly record struct Vector2Value(float X, float Y);
         private readonly record struct Vector3Value(float X, float Y, float Z);

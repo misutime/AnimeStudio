@@ -200,6 +200,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.ExportAvatarOracle,
                 optionsBinder.ExportNarakaAvatarMeshPlan,
                 optionsBinder.ExportAvatarMeshDataGltf,
+                optionsBinder.NarakaAvatarMeshExternalSkeletonSkinDiagnostic,
                 optionsBinder.RecoverImportedAvatarAssets,
                 optionsBinder.RecoverImportedAnimationClips,
                 optionsBinder.RecoverImportedAnimatorControllers,
@@ -360,6 +361,7 @@ namespace AnimeStudio.CLI
         public FileInfo ExportAvatarOracle { get; set; }
         public FileInfo ExportNarakaAvatarMeshPlan { get; set; }
         public FileInfo ExportAvatarMeshDataGltf { get; set; }
+        public bool NarakaAvatarMeshExternalSkeletonSkinDiagnostic { get; set; }
         public DirectoryInfo RecoverImportedAvatarAssets { get; set; }
         public DirectoryInfo RecoverImportedAnimationClips { get; set; }
         public DirectoryInfo RecoverImportedAnimatorControllers { get; set; }
@@ -515,6 +517,7 @@ namespace AnimeStudio.CLI
         public readonly Option<FileInfo> ExportAvatarOracle;
         public readonly Option<FileInfo> ExportNarakaAvatarMeshPlan;
         public readonly Option<FileInfo> ExportAvatarMeshDataGltf;
+        public readonly Option<bool> NarakaAvatarMeshExternalSkeletonSkinDiagnostic;
         public readonly Option<DirectoryInfo> RecoverImportedAvatarAssets;
         public readonly Option<DirectoryInfo> RecoverImportedAnimationClips;
         public readonly Option<DirectoryInfo> RecoverImportedAnimatorControllers;
@@ -668,6 +671,7 @@ namespace AnimeStudio.CLI
             ExportAvatarOracle = new Option<FileInfo>("--export_avatar_oracle", "Export one AvatarConstant oracle JSON from unity_source_index.db. Use --preview_model to select Avatar name/pathId/source and --preview_output for the output folder.").LegalFilePathsOnly();
             ExportNarakaAvatarMeshPlan = new Option<FileInfo>("--export_naraka_avatar_mesh_plan", "Diagnostic: build a deterministic Naraka ActorBodyVisualCell custom mesh export plan from unity_source_index.db. Use --preview_model for GameObject name or PathID, --preview_source_root for the full Unity source root, and --preview_output for plan files.").LegalFilePathsOnly();
             ExportAvatarMeshDataGltf = new Option<FileInfo>("--export_avatar_mesh_data_gltf", "Diagnostic: convert one AvatarMeshDataAsset TypeTree JSON file, or a folder of JSON files, into static glTF. Use --preview_output for the output folder. Optional --source_index records renderer material references for Naraka ActorBodyVisualCell folders, but does not bake materials.").LegalFilePathsOnly();
+            NarakaAvatarMeshExternalSkeletonSkinDiagnostic = new Option<bool>("--naraka_avatar_mesh_external_skeleton_skin_diagnostic", "Diagnostic only: for Naraka ActorBodyVisualCell folder exports, write glTF JOINTS_0/WEIGHTS_0 from AvatarBoneWeights using the best external transformNodes candidate. Default is off because the mapping still needs visual and bind-pose validation.");
             RecoverImportedAvatarAssets = new Option<DirectoryInfo>("--recover_imported_avatar_assets", "Recover missing original UnityEngine.Avatar assets from a Library root into the Unity bake project ImportedAvatar folder. Uses library_index.db avatar source/pathId, not guessed skeleton data.").LegalFilePathsOnly();
             RecoverImportedAnimationClips = new Option<DirectoryInfo>("--recover_imported_animation_clips", "Recover deterministic Humanoid/Muscle AnimationClip .anim assets from a Library root into the Unity bake project ImportedAnimationClip folder. Uses explicit SQLite candidates and AnimatorController baseLayerClip context; no name or bone-count guessing.").LegalFilePathsOnly();
             RecoverImportedAnimatorControllers = new Option<DirectoryInfo>("--recover_imported_animator_controllers", "Experimental: rebuild default-state RuntimeAnimatorController assets into the Unity bake project ImportedAnimatorController folder from unity_file_inspect.json and explicit Library candidates. This is diagnostic until full state/transition semantics are recovered.").LegalFilePathsOnly();
@@ -915,6 +919,7 @@ namespace AnimeStudio.CLI
                 ExportAvatarOracle = bindingContext.ParseResult.GetValueForOption(ExportAvatarOracle),
                 ExportNarakaAvatarMeshPlan = bindingContext.ParseResult.GetValueForOption(ExportNarakaAvatarMeshPlan),
                 ExportAvatarMeshDataGltf = bindingContext.ParseResult.GetValueForOption(ExportAvatarMeshDataGltf),
+                NarakaAvatarMeshExternalSkeletonSkinDiagnostic = bindingContext.ParseResult.GetValueForOption(NarakaAvatarMeshExternalSkeletonSkinDiagnostic),
                 RecoverImportedAvatarAssets = bindingContext.ParseResult.GetValueForOption(RecoverImportedAvatarAssets),
                 RecoverImportedAnimationClips = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimationClips),
                 RecoverImportedAnimatorControllers = bindingContext.ParseResult.GetValueForOption(RecoverImportedAnimatorControllers),
