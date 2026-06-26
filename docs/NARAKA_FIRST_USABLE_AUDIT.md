@@ -72,6 +72,7 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
 2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_RelationHealth_Current`：`sourceIndexAnimationRelationHealth.status=ok`，`animatorController.clip=98`、`resolved=98`、`missing=0`。此前 `resolved=97/missing=1` 是 Library 摘要查询没有按 SerializedFile 大小写不敏感匹配造成的假 warning，不代表当前源索引缺 AnimationClip CAB。
 同一轮新增 `explicitControllerClipDomains` 诊断：当前 24 个显式 AnimatorController 中 `UiStateController=21/95`、`VfxOrEffect=3/3`（controllers/clipEdges）。这说明源索引里的 controller-clip 关系可解析，但目前主要是 UI 状态机和特效 clip，不能作为角色身体动画生产关系。
+`explicitAnimatorControllerUsages` 继续确认生产动画边界：当前 `withAvatar=15`、`withAvatarAndControllerClipEdges=0`，带 Avatar 的 Animator+Controller 样本都落在 `PreviewOrTimeline/TrackEditorPreview` 一侧，只能作为诊断线索，不能作为角色生产动画关系。
 
 输入探针：
 

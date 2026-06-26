@@ -27,11 +27,14 @@ function Invoke-Checked {
 
     Write-Host ""
     Write-Host "== $Label =="
-    & $FilePath @Arguments
+    if ($env:ANIMESTUDIO_SMOKE_DEBUG_ARGS -eq "1") {
+        Write-Host ("Args({0}): {1}" -f $Arguments.Count, ($Arguments -join " | "))
+    }
+    & $FilePath @($Arguments)
     if ($LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE"
     }
-}
+};
 
 function Test-FileRequired {
     param(
@@ -44,7 +47,7 @@ function Test-FileRequired {
     if (!(Test-Path -LiteralPath $Path)) {
         throw "$Label not found: $Path"
     }
-}
+};
 
 function ConvertTo-SmokeText {
     param(
@@ -62,6 +65,19 @@ function ConvertTo-SmokeText {
     }
 
     return $text
+}
+
+function ConvertTo-SmokeJsonLiteral {
+    param(
+        [object]$Value,
+        [int]$Depth = 10
+    )
+
+    if ($null -eq $Value) {
+        return "null"
+    }
+
+    return ($Value | ConvertTo-Json -Depth $Depth -Compress)
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -103,45 +119,27 @@ $animationGltfPath = $null
 $browserValidationStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
 $thumbnailStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
 
-Invoke-Checked `
-    -Label "Probe Naraka input" `
-    -FilePath $cli `
-    -Arguments @(
-        $SourceRoot,
-        $probeOutput,
-        "--game", "Naraka",
-        "--probe_source_input"
-    )
+Write-Host ""
+Write-Host "== Probe Naraka input =="
+& $cli $SourceRoot $probeOutput "--game" "Naraka" "--probe_source_input"
+if ($LASTEXITCODE -ne 0) {
+    throw "Probe Naraka input failed with exit code $LASTEXITCODE"
+}
 
 # 这个样本来自完整源索引的确定性闭包，用来证明标准角色部件模型链路。
-Invoke-Checked `
-    -Label "Export Hadi body s9 smoke" `
-    -FilePath $cli `
-    -Arguments @(
-        $SourceRoot,
-        $hadiOutput,
-        "--game", "Naraka",
-        "--mode", "Library",
-        "--group_assets", "ByLibrary",
-        "--profile_3d", "Core",
-        "--model_format", "Gltf",
-        "--texture_mode", "Png",
-        "--animation_package", "Separate",
-        "--fbx_animation", "Skip",
-        "--source_index", $SourceIndex,
-        "--source_files", "4\c\4c08b7069a411750",
-        "--path_ids", "-6619473669887381141"
-    )
+Write-Host ""
+Write-Host "== Export Hadi body s9 smoke =="
+& $cli $SourceRoot $hadiOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Separate" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" "--path_ids" "-6619473669887381141"
+if ($LASTEXITCODE -ne 0) {
+    throw "Export Hadi body s9 smoke failed with exit code $LASTEXITCODE"
+}
 
-Invoke-Checked `
-    -Label "Rebuild AssetLibrary v1 index" `
-    -FilePath $cli `
-    -Arguments @(
-        "--build_sqlite_index", $hadiOutput,
-        "--source_index", $SourceIndex,
-        "--game", "Naraka",
-        "--skip_sqlite_file_index"
-    )
+Write-Host ""
+Write-Host "== Rebuild AssetLibrary v1 index =="
+& $cli "--build_sqlite_index" $hadiOutput "--source_index" $SourceIndex "--game" "Naraka" "--skip_sqlite_file_index"
+if ($LASTEXITCODE -ne 0) {
+    throw "Rebuild AssetLibrary v1 index failed with exit code $LASTEXITCODE"
+}
 
 $manifest = Join-Path $hadiOutput "asset_library.json"
 $db = Join-Path $hadiOutput "library_index.db"
@@ -158,10 +156,7 @@ Test-FileRequired -Path $gltf -Label "Hadi glTF"
 if (!$SkipGltfValidation) {
     $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
     if ($null -ne $gltfTransform) {
-        Invoke-Checked `
-            -Label "Validate Hadi glTF" `
-            -FilePath $gltfTransform.Source `
-            -Arguments @("validate", $gltf)
+        Invoke-Checked -Label "Validate Hadi glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $gltf)
         $hadiGltfValidationStatus = "ok"
     }
     else {
@@ -174,21 +169,17 @@ if (!$SkipAnimationDiagnostic) {
     Test-FileRequired -Path $AnimationSidecar -Label "Naraka animation sidecar"
 
     # 手动动画诊断只证明路径恢复和独立 glTF 写出，不创建默认模型-动画推荐关系。
-    Invoke-Checked `
-        -Label "Export Dijiang A8 standalone animation diagnostic" `
-        -FilePath $cli `
-        -Arguments @(
-        "--export_animation_gltf_from_files", $gltf,
-        "--preview_animation", $AnimationSidecar,
-        "--preview_output", $animationOutput,
-        "--source_index", $AnimationSourceIndex,
-        "--preview_avatar", $AnimationPreviewAvatar
-    )
+    Write-Host ""
+    Write-Host "== Export Dijiang A8 standalone animation diagnostic =="
+    & $cli "--export_animation_gltf_from_files" $gltf "--preview_animation" $AnimationSidecar "--preview_output" $animationOutput "--source_index" $AnimationSourceIndex "--preview_avatar" $AnimationPreviewAvatar
+    if ($LASTEXITCODE -ne 0) {
+        throw "Export Dijiang A8 standalone animation diagnostic failed with exit code $LASTEXITCODE"
+    }
     $animationDiagnosticStatus = "ok"
 
     $animationReport = Join-Path $animationOutput "standalone_animation_gltf_report.json"
     Test-FileRequired -Path $animationReport -Label "standalone_animation_gltf_report.json"
-    $animationReportJson = Get-Content -LiteralPath $animationReport -Raw | ConvertFrom-Json
+    $animationReportJson = Get-Content -LiteralPath $animationReport -Raw -Encoding UTF8 | ConvertFrom-Json
 
     if ($animationReportJson.status -ne "ok") {
         throw "Animation diagnostic did not finish as ok: $($animationReportJson.status) $($animationReportJson.reason)"
@@ -203,10 +194,7 @@ if (!$SkipAnimationDiagnostic) {
         if (!$SkipGltfValidation) {
             $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
             if ($null -ne $gltfTransform) {
-                Invoke-Checked `
-                    -Label "Validate Dijiang A8 animation glTF" `
-                    -FilePath $gltfTransform.Source `
-                    -Arguments @("validate", $animationGltfPath)
+                Invoke-Checked -Label "Validate Dijiang A8 animation glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $animationGltfPath)
                 $animationGltfValidationStatus = "ok"
             }
         }
@@ -216,16 +204,10 @@ if (!$SkipAnimationDiagnostic) {
 if (!$SkipBrowserValidation) {
     $browserCli = "D:\misutime\UnrealExporter\dist\AssetLibraryBrowser.Cli\AssetLibraryBrowser.Cli.exe"
     if (Test-Path -LiteralPath $browserCli) {
-        Invoke-Checked `
-            -Label "Validate AssetLibrary v1" `
-            -FilePath $browserCli `
-            -Arguments @("validate-library", $hadiOutput)
+        Invoke-Checked -Label "Validate AssetLibrary v1" -FilePath $browserCli -Arguments @("validate-library", $hadiOutput)
         $browserValidationStatus = "ok"
 
-        Invoke-Checked `
-            -Label "Render browser thumbnail" `
-            -FilePath $browserCli `
-            -Arguments @("build-thumbnails", $hadiOutput, "1", "1")
+        Invoke-Checked -Label "Render browser thumbnail" -FilePath $browserCli -Arguments @("build-thumbnails", $hadiOutput, "1", "1")
         $thumbnailStatus = "ok"
     }
     else {
@@ -233,9 +215,9 @@ if (!$SkipBrowserValidation) {
     }
 }
 
-$assetLibrary = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
-$modelValidation = Get-Content -LiteralPath $validation -Raw | ConvertFrom-Json
-$sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw | ConvertFrom-Json
+$assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+$modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
+$sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($null -eq $sqliteSummaryJson.qualityGates) {
     throw "sqlite_index_summary.json lost qualityGates section."
 }
@@ -252,87 +234,114 @@ if (Test-Path -LiteralPath $thumbnailCache) {
     $thumbnailFileCount = (Get-ChildItem -LiteralPath $thumbnailCache -Recurse -File | Measure-Object).Count
 }
 
-# 这两个报告只汇总已经验证过的产物，不改变正式素材库内容或动画关系结论。
-$smokeSummary = [ordered]@{
-    generatedAt = (Get-Date).ToString("o")
-    game = "Naraka"
-    sourceRoot = $SourceRoot
-    sourceIndex = $SourceIndex
-    outputRoot = $OutputRoot
-    libraryRoot = $hadiOutput
-    assetLibrary = $manifest
-    libraryIndex = $db
-    sqliteSummary = $sqliteSummary
-    modelValidation = $validation
-    modelGltf = $gltf
-    checks = [ordered]@{
-        hadiGltfValidation = $hadiGltfValidationStatus
-        browserValidation = $browserValidationStatus
-        thumbnailRender = $thumbnailStatus
-        thumbnailFileCount = $thumbnailFileCount
-        animationDiagnostic = $animationDiagnosticStatus
-        animationGltfValidation = $animationGltfValidationStatus
-    }
-    capabilities = [ordered]@{
-        models = $assetLibrary.capabilities.models
-        animations = $assetLibrary.capabilities.animations
-        animationPreviewComposer = $assetLibrary.capabilities.animationPreviewComposer
-    }
-    modelTotals = $modelValidation.totals
-    sqliteCounts = $sqliteSummaryJson.counts
-    qualityGates = $sqliteSummaryJson.qualityGates
-    animationRelationCoverage = if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
-        [ordered]@{
-            models = $sqliteSummaryJson.animationRelationCoverage.totals.models
-            animations = $sqliteSummaryJson.animationRelationCoverage.totals.animations
-            explicitCandidates = $sqliteSummaryJson.animationRelationCoverage.totals.explicitCandidates
-            modelsWithExplicitCandidates = $sqliteSummaryJson.animationRelationCoverage.totals.modelsWithExplicitCandidates
-            modelAnimationRelations = $sqliteSummaryJson.counts.modelAnimationRelations
-            sourceIndexAnimationRelationHealth = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.status
-            animatorControllerClipRelations = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.relationCounts.'animatorController.clip'
-            resolvedAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.resolvedTargetCounts.'animatorController.clip'
-            missingAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingTargetCounts.'animatorController.clip'
-            missingAnimatorControllerClipTargetSamples = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingAnimatorControllerClipTargetSamples
-            explicitControllerClipDomains = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitControllerClipDomains
-        }
-    } else {
-        [ordered]@{
-            models = 0
-            animations = 0
-            explicitCandidates = 0
-            modelsWithExplicitCandidates = 0
-            modelAnimationRelations = 0
-            sourceIndexAnimationRelationHealth = "unknown"
-        }
-    }
-    animationDiagnostic = if ($null -ne $animationReportJson) {
-        [ordered]@{
-            status = $animationReportJson.status
-            message = $animationReportJson.message
-            gltf = $animationGltfPath
-            avatarInjectionMode = $animationReportJson.avatarInjection.mode
-            diagnosticOnly = $animationReportJson.avatarInjection.diagnosticOnly
-            notDefaultModelAnimationRelation = $animationReportJson.avatarInjection.notDefaultModelAnimationRelation
-            manualReviewRequired = $animationReportJson.avatarInjection.manualReviewRequired
-            tosCount = $animationReportJson.avatarInjection.tosCount
-        }
-    } else {
-        [ordered]@{
-            status = $animationDiagnosticStatus
-            diagnosticOnly = $true
-            notDefaultModelAnimationRelation = $true
-        }
-    }
+$generatedAt = (Get-Date).ToString("o")
+$coverageModels = 0
+$coverageAnimations = 0
+$coverageExplicitCandidates = 0
+$coverageModelsWithExplicitCandidates = 0
+$sourceIndexAnimationRelationHealthStatus = "unknown"
+$animatorControllerClipRelations = 0
+$resolvedAnimatorControllerClipTargets = 0
+$missingAnimatorControllerClipTargets = 0
+$missingAnimatorControllerClipTargetSamplesJson = "null"
+$explicitControllerClipDomainsJson = "null"
+$explicitAnimatorControllerUsagesJson = "null"
+
+if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
+    $coverageModels = $sqliteSummaryJson.animationRelationCoverage.totals.models
+    $coverageAnimations = $sqliteSummaryJson.animationRelationCoverage.totals.animations
+    $coverageExplicitCandidates = $sqliteSummaryJson.animationRelationCoverage.totals.explicitCandidates
+    $coverageModelsWithExplicitCandidates = $sqliteSummaryJson.animationRelationCoverage.totals.modelsWithExplicitCandidates
+    $sourceIndexAnimationRelationHealthStatus = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.status
+    $animatorControllerClipRelations = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.relationCounts.'animatorController.clip'
+    $resolvedAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.resolvedTargetCounts.'animatorController.clip'
+    $missingAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingTargetCounts.'animatorController.clip'
+    $missingAnimatorControllerClipTargetSamplesJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingAnimatorControllerClipTargetSamples 10
+    $explicitControllerClipDomainsJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitControllerClipDomains 10
+    $explicitAnimatorControllerUsagesJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages 10
 }
 
-$summaryJsonPath = Join-Path $OutputRoot "smoke_summary.json"
-$smokeSummary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $summaryJsonPath -Encoding UTF8
+if ($null -ne $animationReportJson) {
+    $animationDiagnosticLines = @()
+    $animationDiagnosticLines += "{"
+    $animationDiagnosticLines += '  "status": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.status) + ","
+    $animationDiagnosticLines += '  "message": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.message) + ","
+    $animationDiagnosticLines += '  "gltf": ' + (ConvertTo-SmokeJsonLiteral $animationGltfPath) + ","
+    $animationDiagnosticLines += '  "avatarInjectionMode": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.mode) + ","
+    $animationDiagnosticLines += '  "diagnosticOnly": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.diagnosticOnly) + ","
+    $animationDiagnosticLines += '  "notDefaultModelAnimationRelation": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.notDefaultModelAnimationRelation) + ","
+    $animationDiagnosticLines += '  "manualReviewRequired": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.manualReviewRequired) + ","
+    $animationDiagnosticLines += '  "tosCount": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.tosCount)
+    $animationDiagnosticLines += "}"
+    $animationDiagnosticJson = $animationDiagnosticLines -join [Environment]::NewLine
+} else {
+    $animationDiagnosticLines = @()
+    $animationDiagnosticLines += "{"
+    $animationDiagnosticLines += '  "status": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticStatus) + ","
+    $animationDiagnosticLines += '  "diagnosticOnly": true,'
+    $animationDiagnosticLines += '  "notDefaultModelAnimationRelation": true'
+    $animationDiagnosticLines += "}"
+    $animationDiagnosticJson = $animationDiagnosticLines -join [Environment]::NewLine
+}
 
-$reportPath = Join-Path $OutputRoot "SMOKE_REPORT.md"
-$reportLines = [System.Collections.Generic.List[string]]::new()
+# 这两个报告只汇总已经验证过的产物，不改变正式素材库内容或动画关系结论。
+$summaryJsonLines = @()
+$summaryJsonLines += "{"
+$summaryJsonLines += '  "generatedAt": ' + (ConvertTo-SmokeJsonLiteral $generatedAt) + ","
+$summaryJsonLines += '  "game": "Naraka",'
+$summaryJsonLines += '  "sourceRoot": ' + (ConvertTo-SmokeJsonLiteral $SourceRoot) + ","
+$summaryJsonLines += '  "sourceIndex": ' + (ConvertTo-SmokeJsonLiteral $SourceIndex) + ","
+$summaryJsonLines += '  "outputRoot": ' + (ConvertTo-SmokeJsonLiteral $OutputRoot) + ","
+$summaryJsonLines += '  "libraryRoot": ' + (ConvertTo-SmokeJsonLiteral $hadiOutput) + ","
+$summaryJsonLines += '  "assetLibrary": ' + (ConvertTo-SmokeJsonLiteral $manifest) + ","
+$summaryJsonLines += '  "libraryIndex": ' + (ConvertTo-SmokeJsonLiteral $db) + ","
+$summaryJsonLines += '  "sqliteSummary": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummary) + ","
+$summaryJsonLines += '  "modelValidation": ' + (ConvertTo-SmokeJsonLiteral $validation) + ","
+$summaryJsonLines += '  "modelGltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ","
+$summaryJsonLines += '  "checks": {'
+$summaryJsonLines += '    "hadiGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $hadiGltfValidationStatus) + ","
+$summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
+$summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
+$summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
+$summaryJsonLines += '    "animationDiagnostic": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticStatus) + ","
+$summaryJsonLines += '    "animationGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $animationGltfValidationStatus)
+$summaryJsonLines += '  },'
+$summaryJsonLines += '  "capabilities": {'
+$summaryJsonLines += '    "models": ' + (ConvertTo-SmokeJsonLiteral $assetLibrary.capabilities.models) + ","
+$summaryJsonLines += '    "animations": ' + (ConvertTo-SmokeJsonLiteral $assetLibrary.capabilities.animations) + ","
+$summaryJsonLines += '    "animationPreviewComposer": ' + (ConvertTo-SmokeJsonLiteral $assetLibrary.capabilities.animationPreviewComposer)
+$summaryJsonLines += '  },'
+$summaryJsonLines += '  "modelTotals": ' + (ConvertTo-SmokeJsonLiteral $modelValidation.totals 10) + ","
+$summaryJsonLines += '  "sqliteCounts": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.counts 10) + ","
+$summaryJsonLines += '  "qualityGates": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.qualityGates 10) + ","
+$summaryJsonLines += '  "animationRelationCoverage": {'
+$summaryJsonLines += '    "models": ' + (ConvertTo-SmokeJsonLiteral $coverageModels) + ","
+$summaryJsonLines += '    "animations": ' + (ConvertTo-SmokeJsonLiteral $coverageAnimations) + ","
+$summaryJsonLines += '    "explicitCandidates": ' + (ConvertTo-SmokeJsonLiteral $coverageExplicitCandidates) + ","
+$summaryJsonLines += '    "modelsWithExplicitCandidates": ' + (ConvertTo-SmokeJsonLiteral $coverageModelsWithExplicitCandidates) + ","
+$summaryJsonLines += '    "modelAnimationRelations": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.counts.modelAnimationRelations) + ","
+$summaryJsonLines += '    "sourceIndexAnimationRelationHealth": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAnimationRelationHealthStatus) + ","
+$summaryJsonLines += '    "animatorControllerClipRelations": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerClipRelations) + ","
+$summaryJsonLines += '    "resolvedAnimatorControllerClipTargets": ' + (ConvertTo-SmokeJsonLiteral $resolvedAnimatorControllerClipTargets) + ","
+$summaryJsonLines += '    "missingAnimatorControllerClipTargets": ' + (ConvertTo-SmokeJsonLiteral $missingAnimatorControllerClipTargets) + ","
+$summaryJsonLines += '    "missingAnimatorControllerClipTargetSamples": ' + $missingAnimatorControllerClipTargetSamplesJson + ","
+$summaryJsonLines += '    "explicitControllerClipDomains": ' + $explicitControllerClipDomainsJson + ","
+$summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnimatorControllerUsagesJson
+$summaryJsonLines += '  },'
+$summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
+$summaryJsonLines += "}"
+$summaryJson = $summaryJsonLines -join [Environment]::NewLine
+$summaryJsonPath = [System.IO.Path]::Combine($OutputRoot, "smoke_summary.json")
+if ([string]::IsNullOrWhiteSpace($summaryJsonPath)) {
+    throw "smoke_summary.json output path is empty. OutputRoot='$OutputRoot'"
+}
+$summaryJson | Set-Content -LiteralPath $summaryJsonPath -Encoding UTF8
+
+$reportPath = [System.IO.Path]::Combine($OutputRoot, "SMOKE_REPORT.md")
+$reportLines = [System.Activator]::CreateInstance([System.Collections.Generic.List[string]])
 $reportLines.Add("# Naraka first usable smoke report")
 $reportLines.Add("")
-$reportLines.Add(("Generated: {0}" -f $smokeSummary.generatedAt))
+$reportLines.Add(("Generated: {0}" -f $generatedAt))
 $reportLines.Add("")
 $reportLines.Add("## Summary")
 $reportLines.Add("")
@@ -410,6 +419,22 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         if ($domainParts.Count -gt 0) {
             $reportLines.Add(('- Explicit controller clip domains: `{0}` (controllers/clipEdges)' -f ($domainParts -join ', ')))
         }
+    }
+    if ($null -ne $relationHealth.explicitAnimatorControllerUsages -and $null -ne $relationHealth.explicitAnimatorControllerUsages.domainCounts) {
+        $usageParts = @()
+        foreach ($domain in $relationHealth.explicitAnimatorControllerUsages.domainCounts) {
+            $usageParts += ('{0}={1}/{2}/{3}' -f `
+                (ConvertTo-SmokeText $domain.domain),
+                (ConvertTo-SmokeText $domain.animators "0"),
+                (ConvertTo-SmokeText $domain.withAvatar "0"),
+                (ConvertTo-SmokeText $domain.controllerClipEdges "0"))
+        }
+        if ($usageParts.Count -gt 0) {
+            $reportLines.Add(('- Explicit animator controller usages: `{0}` (animators/withAvatar/controllerClipEdges)' -f ($usageParts -join ', ')))
+        }
+        $reportLines.Add(('- Animator controller production gate: withAvatar=`{0}`, withAvatarAndControllerClipEdges=`{1}`' -f `
+            (ConvertTo-SmokeText $relationHealth.explicitAnimatorControllerUsages.withAvatar "0"),
+            (ConvertTo-SmokeText $relationHealth.explicitAnimatorControllerUsages.withAvatarAndControllerClipEdges "0")))
     }
 }
 $reportLines.Add("")

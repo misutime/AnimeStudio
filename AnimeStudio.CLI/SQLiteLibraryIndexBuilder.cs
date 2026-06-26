@@ -4731,6 +4731,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     ? BuildMissingSourceRelationTargetSamples(sourceConnection, "animatorController.clip", "AnimationClip", 8)
                     : new JArray();
                 var explicitControllerClipDomains = BuildExplicitControllerClipDomainSummary(sourceConnection);
+                var explicitAnimatorControllerUsages = BuildExplicitAnimatorControllerUsageSummary(sourceConnection);
 
                 return new JObject
                 {
@@ -4762,6 +4763,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                         ["AnimatorOverrideController"] = overrideControllerObjects,
                     },
                     ["explicitControllerClipDomains"] = explicitControllerClipDomains,
+                    ["explicitAnimatorControllerUsages"] = explicitAnimatorControllerUsages,
                     ["nonEmptyOverrideSetCount"] = nonEmptyOverrideSet,
                     ["staleOverridePairIndex"] = staleOverridePairs,
                     ["missingControllerClipTargets"] = missingControllerClipTargets,
@@ -4784,6 +4786,101 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     ["error"] = e.GetType().Name + ": " + e.Message,
                 };
             }
+        }
+
+        private static JObject BuildExplicitAnimatorControllerUsageSummary(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = @"
+SELECT
+    animator.name AS animator_name,
+    MIN(animator.source_path) AS sample_source,
+    COALESCE(controller.name, '') AS controller_name,
+    COALESCE(avatar.name, '') AS avatar_name,
+    COUNT(clipRel.rowid) AS controller_clip_edges
+FROM source_relations ctrl
+JOIN source_objects animator
+  ON animator.serialized_file = ctrl.from_file COLLATE NOCASE
+ AND animator.path_id = ctrl.from_path_id
+LEFT JOIN source_objects controller
+  ON controller.serialized_file = ctrl.to_file COLLATE NOCASE
+ AND controller.path_id = ctrl.to_path_id
+LEFT JOIN source_relations avatarRel
+  ON avatarRel.from_file = ctrl.from_file
+ AND avatarRel.from_path_id = ctrl.from_path_id
+ AND avatarRel.relation = 'animator.avatar'
+LEFT JOIN source_objects avatar
+  ON avatar.serialized_file = avatarRel.to_file COLLATE NOCASE
+ AND avatar.path_id = avatarRel.to_path_id
+LEFT JOIN source_relations clipRel
+  ON clipRel.from_file = ctrl.to_file COLLATE NOCASE
+ AND clipRel.from_path_id = ctrl.to_path_id
+ AND clipRel.relation = 'animatorController.clip'
+WHERE ctrl.relation = 'animator.controller'
+GROUP BY ctrl.from_file, ctrl.from_path_id, animator.name, controller.name, avatar.name
+ORDER BY controller_clip_edges DESC, animator_name COLLATE NOCASE;";
+
+            var rows = new List<AnimatorControllerUsageRow>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var animatorName = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var sampleSource = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                    var controllerName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                    var avatarName = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                    var controllerClipEdges = reader.IsDBNull(4) ? 0 : reader.GetInt64(4);
+                    rows.Add(new AnimatorControllerUsageRow(
+                        ClassifyAnimatorControllerUsageDomain(animatorName, sampleSource, controllerName, avatarName),
+                        animatorName,
+                        sampleSource,
+                        controllerName,
+                        avatarName,
+                        controllerClipEdges));
+                }
+            }
+
+            var domainCounts = new JArray();
+            foreach (var group in rows.GroupBy(r => r.Domain).OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                domainCounts.Add(new JObject
+                {
+                    ["domain"] = group.Key,
+                    ["animators"] = group.Count(),
+                    ["withAvatar"] = group.Count(r => !string.IsNullOrWhiteSpace(r.AvatarName)),
+                    ["controllerClipEdges"] = group.Sum(r => r.ControllerClipEdges),
+                });
+            }
+
+            var samples = new JArray();
+            foreach (var row in rows
+                         .OrderByDescending(r => !string.IsNullOrWhiteSpace(r.AvatarName))
+                         .ThenByDescending(r => r.ControllerClipEdges)
+                         .ThenBy(r => r.AnimatorName, StringComparer.OrdinalIgnoreCase)
+                         .Take(16))
+            {
+                samples.Add(new JObject
+                {
+                    ["domain"] = row.Domain,
+                    ["animator"] = row.AnimatorName,
+                    ["controller"] = row.ControllerName,
+                    ["avatar"] = string.IsNullOrWhiteSpace(row.AvatarName) ? null : row.AvatarName,
+                    ["controllerClipEdges"] = row.ControllerClipEdges,
+                    ["sampleSource"] = row.SampleSource,
+                });
+            }
+
+            return new JObject
+            {
+                ["rule"] = "该统计只说明 Animator.m_Controller 的使用域和 Avatar/clip 覆盖情况；它不是模型-动画绑定结果。带 Avatar 但使用预览/Timeline controller 的样本仍只能作为诊断线索。",
+                ["totalAnimators"] = rows.Count,
+                ["withAvatar"] = rows.Count(r => !string.IsNullOrWhiteSpace(r.AvatarName)),
+                ["withControllerClipEdges"] = rows.Count(r => r.ControllerClipEdges > 0),
+                ["withAvatarAndControllerClipEdges"] = rows.Count(r => !string.IsNullOrWhiteSpace(r.AvatarName) && r.ControllerClipEdges > 0),
+                ["domainCounts"] = domainCounts,
+                ["samples"] = samples,
+            };
         }
 
         private static JObject BuildExplicitControllerClipDomainSummary(SqliteConnection connection)
@@ -4918,6 +5015,49 @@ ORDER BY clip_edges DESC, controller_name COLLATE NOCASE;";
             return "Other";
         }
 
+        private static string ClassifyAnimatorControllerUsageDomain(string animatorName, string sampleSource, string controllerName, string avatarName)
+        {
+            var text = ((animatorName ?? string.Empty) + " " + (sampleSource ?? string.Empty) + " " + (controllerName ?? string.Empty) + " " + (avatarName ?? string.Empty)).ToLowerInvariant();
+            if (ContainsAny(text, "trackeditor", "timeline", "cutscene", "cinematic", "preview"))
+            {
+                return "PreviewOrTimeline";
+            }
+
+            if (ContainsAny(text,
+                    "uiface",
+                    "ui_",
+                    "/ui",
+                    "\\ui",
+                    "btn",
+                    "button",
+                    "dropdown",
+                    "slider",
+                    "mousecursor",
+                    "progressbar",
+                    "joystick",
+                    "selector",
+                    "pressed",
+                    "highlighted",
+                    "disabled",
+                    "selected",
+                    "hover"))
+            {
+                return "UiStateController";
+            }
+
+            if (ContainsAny(text, "fx_", "vfx", "effect", "particle", "trail", "aura", "skill"))
+            {
+                return "VfxOrEffect";
+            }
+
+            if (ContainsAny(text, "device", "prop", "scene", "stage"))
+            {
+                return "PropOrScene";
+            }
+
+            return "Other";
+        }
+
         private static bool ContainsAny(string text, params string[] tokens)
         {
             foreach (var token in tokens)
@@ -4937,6 +5077,14 @@ ORDER BY clip_edges DESC, controller_name COLLATE NOCASE;";
             string SampleSource,
             long ClipEdges,
             string ClipNames);
+
+        private sealed record AnimatorControllerUsageRow(
+            string Domain,
+            string AnimatorName,
+            string SampleSource,
+            string ControllerName,
+            string AvatarName,
+            long ControllerClipEdges);
 
         private static JArray BuildMissingSourceRelationTargetSamples(SqliteConnection connection, string relation, string targetType, int limit)
         {
