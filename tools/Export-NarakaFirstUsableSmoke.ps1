@@ -2423,6 +2423,11 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
         if ($null -eq $zhumuMergedCoreBodyCoverage -or [string]$zhumuMergedCoreBodyCoverage.status -ne "diagnostic" -or $zhumuMergedCoreBodyJointCount -lt 1 -or $zhumuMergedAnimatedCoreBodyJointCount -lt 1) {
             throw "Zhumu merged animation preview lost core-body coverage diagnostic. status=$($zhumuMergedCoreBodyCoverage.status) coreBodyJoints=$zhumuMergedCoreBodyJointCount animatedCoreBodyJoints=$zhumuMergedAnimatedCoreBodyJointCount"
         }
+        $zhumuMergedRootMotionCoverage = $zhumuMergedJointCoverage.rootMotionCoverage
+        $zhumuMergedRootMotionAncestorChannels = ConvertTo-SmokeInt64 $zhumuMergedRootMotionCoverage.skeletonAncestorChannelCount
+        if ($null -eq $zhumuMergedRootMotionCoverage -or [string]$zhumuMergedRootMotionCoverage.status -ne "diagnostic" -or $zhumuMergedRootMotionAncestorChannels -lt 1) {
+            throw "Zhumu merged animation preview lost root-motion skeleton ancestor diagnostic. status=$($zhumuMergedRootMotionCoverage.status) ancestorChannels=$zhumuMergedRootMotionAncestorChannels"
+        }
 
         $zhumuMergedReasonCodes = @($zhumuMergedReportJson.sourceAssessment.reasons | ForEach-Object { [string]$_.reason } | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
         foreach ($requiredReason in @("standalone_animation_not_production_ready", "standalone_animation_experimental", "humanoid_solver_known_limb_risk", "low_humanoid_channel_coverage")) {
@@ -3761,6 +3766,10 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.coreBodyCoverage.animatedCoreBodyJointCount "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.coreBodyCoverage.coreBodyJointCount "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.coreBodyCoverage.animatedCoreBodyJointCoverage "0")))
+    $reportLines.Add(('- Root motion ancestor coverage: status=`{0}`, ancestorChannels=`{1}`, nonSkinChannels=`{2}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.rootMotionCoverage.status "unknown"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.rootMotionCoverage.skeletonAncestorChannelCount "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.rootMotionCoverage.nonSkinChannelCount "0")))
     $reportLines.Add(('- Diagnostic reasons: `{0}`' -f (($zhumuMergedAnimationPreview.reasonCodes | ForEach-Object { [string]$_ }) -join ', ')))
     $reportLines.Add(('- Production readiness: `{0}`; blocked requirements: `{1}`' -f `
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.productionReadiness "unknown"),

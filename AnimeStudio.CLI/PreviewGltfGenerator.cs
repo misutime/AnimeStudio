@@ -314,6 +314,7 @@ namespace AnimeStudio.CLI
             var missingNodes = new JArray();
             var channelCount = 0;
             var animatedNodeIndices = new HashSet<int>();
+            var animatedChannelTargets = new List<MergedAnimationChannelTarget>();
             foreach (var sourceAnimation in animation["animations"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
                 var animationClone = (JObject)sourceAnimation.DeepClone();
@@ -359,6 +360,9 @@ namespace AnimeStudio.CLI
 
                     target["node"] = newNodeIndex;
                     animatedNodeIndices.Add(newNodeIndex);
+                    animatedChannelTargets.Add(new MergedAnimationChannelTarget(
+                        NodeIndex: newNodeIndex,
+                        Path: (string)target["path"] ?? string.Empty));
                 }
 
                 animationClone["extras"] ??= new JObject();
@@ -389,7 +393,7 @@ namespace AnimeStudio.CLI
             }
 
             merged["extras"] ??= new JObject();
-            var animationJointCoverage = BuildAnimationJointCoverageReport(merged, animatedNodeIndices, channelCount, output);
+            var animationJointCoverage = BuildAnimationJointCoverageReport(merged, animatedNodeIndices, animatedChannelTargets, channelCount, output);
             var mergeAssessment = AssessStandaloneAnimationForMerge(animation, channelCount, animationJointCoverage);
             var hiddenLodMeshes = HideNonPrimaryLodMeshes(merged["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>());
             merged["extras"]["animeStudioMergedAnimation"] = new JObject
@@ -519,7 +523,12 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        private static JObject BuildAnimationJointCoverageReport(JObject mergedGltf, IEnumerable<int> animatedNodeIndices, int channelCount, string gltfDirectory)
+        private static JObject BuildAnimationJointCoverageReport(
+            JObject mergedGltf,
+            IEnumerable<int> animatedNodeIndices,
+            IReadOnlyList<MergedAnimationChannelTarget> animatedChannelTargets,
+            int channelCount,
+            string gltfDirectory)
         {
             var animatedNodes = new HashSet<int>(animatedNodeIndices);
             var skinJointIndices = new HashSet<int>();
@@ -545,6 +554,7 @@ namespace AnimeStudio.CLI
                 : (double)animatedSkinJoints.Length / skinJointIndices.Count;
             var vertexWeightCoverage = BuildAnimationVertexWeightCoverageReport(mergedGltf, gltfDirectory, animatedNodes);
             var coreBodyCoverage = BuildCoreBodyCoverageReport(nodeNames, skinJointIndices, animatedNodes);
+            var rootMotionCoverage = BuildRootMotionCoverageReport(nodeNames, skinJointIndices, animatedChannelTargets);
 
             return new JObject
             {
@@ -557,10 +567,109 @@ namespace AnimeStudio.CLI
                 ["animatedSkinJointCoverage"] = Math.Round(coverage, 4),
                 ["vertexWeightCoverage"] = vertexWeightCoverage,
                 ["coreBodyCoverage"] = coreBodyCoverage,
+                ["rootMotionCoverage"] = rootMotionCoverage,
                 ["animatedSkinJointNames"] = new JArray(animatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
                 ["unanimatedSkinJointSample"] = new JArray(unanimatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
                 ["rule"] = "这里只统计已合并 glTF 里动画 channel 直接命中的 skin joint，帮助判断覆盖范围；它不是视觉验收，也不能单独证明动画生产可用。",
             };
+        }
+
+        private static JObject BuildRootMotionCoverageReport(
+            JObject[] nodes,
+            ISet<int> skinJointIndices,
+            IReadOnlyList<MergedAnimationChannelTarget> animatedChannelTargets)
+        {
+            var childToParent = BuildChildToParentMap(nodes);
+            var skeletonAncestorChannels = new JArray();
+            var nonSkinChannelCount = 0;
+            var skeletonAncestorChannelCount = 0;
+            var translationChannelCount = 0;
+            var rotationChannelCount = 0;
+            var scaleChannelCount = 0;
+
+            foreach (var target in animatedChannelTargets)
+            {
+                if (skinJointIndices.Contains(target.NodeIndex))
+                {
+                    continue;
+                }
+
+                nonSkinChannelCount++;
+                if (string.Equals(target.Path, "translation", StringComparison.OrdinalIgnoreCase))
+                {
+                    translationChannelCount++;
+                }
+                else if (string.Equals(target.Path, "rotation", StringComparison.OrdinalIgnoreCase))
+                {
+                    rotationChannelCount++;
+                }
+                else if (string.Equals(target.Path, "scale", StringComparison.OrdinalIgnoreCase))
+                {
+                    scaleChannelCount++;
+                }
+
+                var descendantSkinJoints = skinJointIndices
+                    .Where(joint => IsAncestorOf(target.NodeIndex, joint, childToParent))
+                    .OrderBy(x => x)
+                    .ToArray();
+                if (descendantSkinJoints.Length == 0)
+                {
+                    continue;
+                }
+
+                skeletonAncestorChannelCount++;
+                skeletonAncestorChannels.Add(new JObject
+                {
+                    ["node"] = target.NodeIndex,
+                    ["nodeName"] = GetGltfNodeName(nodes, target.NodeIndex),
+                    ["path"] = target.Path,
+                    ["descendantSkinJointCount"] = descendantSkinJoints.Length,
+                    ["descendantSkinJointSample"] = new JArray(descendantSkinJoints.Take(12).Select(x => GetGltfNodeName(nodes, x))),
+                });
+            }
+
+            return new JObject
+            {
+                ["status"] = skeletonAncestorChannelCount > 0 ? "diagnostic" : "no_skeleton_ancestor_root_motion",
+                ["nonSkinChannelCount"] = nonSkinChannelCount,
+                ["skeletonAncestorChannelCount"] = skeletonAncestorChannelCount,
+                ["translationChannelCount"] = translationChannelCount,
+                ["rotationChannelCount"] = rotationChannelCount,
+                ["scaleChannelCount"] = scaleChannelCount,
+                ["skeletonAncestorChannels"] = skeletonAncestorChannels,
+                ["rule"] = "统计未直接命中 skin joint、但目标节点是 skin joint 祖先的 TRS channel，用来解释 RootT/RootQ 等 root motion 是否落在骨架容器上；这是诊断字段，不代表 root/Pelvis 处理已经生产正确。",
+            };
+        }
+
+        private static Dictionary<int, int> BuildChildToParentMap(JObject[] nodes)
+        {
+            var parents = new Dictionary<int, int>();
+            for (var parentIndex = 0; parentIndex < nodes.Length; parentIndex++)
+            {
+                foreach (var childIndex in nodes[parentIndex]["children"]?.Values<int>() ?? Enumerable.Empty<int>())
+                {
+                    parents[childIndex] = parentIndex;
+                }
+            }
+
+            return parents;
+        }
+
+        private static bool IsAncestorOf(int possibleAncestor, int nodeIndex, IReadOnlyDictionary<int, int> childToParent)
+        {
+            var current = nodeIndex;
+            var guard = 0;
+            while (childToParent.TryGetValue(current, out var parent) && guard++ < 4096)
+            {
+                if (parent == possibleAncestor)
+                {
+                    return true;
+                }
+
+                current = parent;
+            }
+
+            return false;
         }
 
         private static JObject BuildCoreBodyCoverageReport(JObject[] nodes, ISet<int> skinJointIndices, ISet<int> animatedNodes)
@@ -914,6 +1023,7 @@ namespace AnimeStudio.CLI
                     ["coreBodyJointCount"] = (int?)animationJointCoverage?["coreBodyCoverage"]?["coreBodyJointCount"] ?? 0,
                     ["animatedCoreBodyJointCount"] = (int?)animationJointCoverage?["coreBodyCoverage"]?["animatedCoreBodyJointCount"] ?? 0,
                     ["animatedCoreBodyJointCoverage"] = (double?)animationJointCoverage?["coreBodyCoverage"]?["animatedCoreBodyJointCoverage"] ?? 0d,
+                    ["rootMotionSkeletonAncestorChannelCount"] = (int?)animationJointCoverage?["rootMotionCoverage"]?["skeletonAncestorChannelCount"] ?? 0,
                     ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道和全量 skin joint 覆盖偏低；主体骨覆盖、顶点权重覆盖和视觉验收需要分开看，不能只凭合并成功升级为生产可用。",
                 });
             }
@@ -4036,6 +4146,8 @@ LIMIT 32;";
         private sealed record PreviewSelection(JObject Model, JObject Animation);
 
         private sealed record LodNodeInfo(string BaseName, int Lod);
+
+        private sealed record MergedAnimationChannelTarget(int NodeIndex, string Path);
 
         private sealed record HiddenLodMeshReport(int Node, string Name, int Mesh, string Group, int HiddenLod, string SelectedNode, int SelectedLod);
 

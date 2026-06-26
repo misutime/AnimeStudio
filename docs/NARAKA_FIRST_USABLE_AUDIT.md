@@ -258,6 +258,10 @@ D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current\RenderProbe\zh
 
 三帧 bbox 分别约为 `(-1.7855,-1.9233,-2.4681) -> (2.0541,1.3011,1.9651)`、`(-2.1099,-1.6354,-1.3669) -> (1.7240,2.7049,1.8846)`、`(-1.8469,-1.4915,-1.0680) -> (1.4500,2.6488,1.3946)`，说明动画确实驱动了模型节点；但它仍缺少正式 AnimatorController/脚本语义、主体骨骼覆盖和清晰视觉验收，不能升级为生产动画能力。
 
+同日继续补充 `--merge_animation_gltf` 的 root motion 祖先诊断：`animationJointCoverage.rootMotionCoverage` 会统计未直接命中 skin joint、但目标节点是 skin joint 祖先的 TRS channel。重新生成 `D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current` 后，Zhumu A4 报告显示 `nonSkinChannelCount=2`、`skeletonAncestorChannelCount=2`、`translationChannelCount=1`、`rotationChannelCount=1`，两个 channel 都落在节点 `fx_battle_zhumu2_attack_a4_01_soul`，其下有 96 个 skin joint。这说明 `RootT/RootQ` 没有在 standalone -> model 合并时丢掉，而是写到了骨架容器祖先；但这仍只是解释 root motion 落点的诊断字段，不能证明 Pelvis/root 生产处理已经正确，也不能改变 `capabilities.animations=false`。
+
+复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_ZhumuRootMotionCoverage_Quick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过：代表库保持 `models=4`、`ok=4`、`withSkin=3`、`withTextures=4`，Zhumu 合并预览保持 `status=needs_review` 和 `productionReadiness=blocked`，root motion 祖先 channel 门禁通过，默认 `modelAnimationRelations=0`、`relationAnimationRows=0`、`capabilities.animations=false` 不变。下一步如果要把它推进到生产动画，需要恢复 SimpleAnimation 状态语义、确认目标模型根和 Avatar，并做清晰视觉验收；不能只靠这两个祖先 channel 升级默认动画关系。
+
 当前已验证一个诊断正样本：
 
 ```text
