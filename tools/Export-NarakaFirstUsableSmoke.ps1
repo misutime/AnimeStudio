@@ -715,6 +715,7 @@ $libraryOutput = Join-Path $OutputRoot "RepresentativeModels"
 $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
 $scriptAnimationHadiOutput = Join-Path $OutputRoot "SourceModelAnimation_HadiBody_ScriptComponentDiagnostic"
 $scriptAnimationFxOutput = Join-Path $OutputRoot "SourceModelAnimation_FxAttack_ScriptComponentDiagnostic"
+$sourceModelJiantianshiOutput = Join-Path $OutputRoot "SourceModelAnimation_Jiantianshi_FormalModelDiagnostic"
 $avatarTosDijiangOutput = Join-Path $OutputRoot "SourceModelAnimation_Dijiang_AvatarTosDiagnostic"
 $avatarCompatibilitySamuraiOutput = Join-Path $OutputRoot "SourceModelAnimation_SamuraiGhost_AvatarCompatibilityDiagnostic"
 $representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
@@ -789,12 +790,14 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     status = "notChecked"
     rule = "Selected-model script AnimationClip PPtr diagnostics are local evidence only. They must stay diagnosticOnly/notDefaultModelAnimationRelation and never create default model-animation candidates without script semantics, model validation and visual validation."
     hadiBody = $null
+    jiantianshiFormal = $null
     fxAttack = $null
 }
 $sourceModelAvatarDiagnostics = [pscustomobject]@{
     status = "notChecked"
     rule = "Avatar.m_TOS hash coverage and model-avatar structural overlap are source-index diagnostics only. They can guide solver/oracle probes, but must stay defaultCandidateCount=0 until explicit Unity animation context, model validation, TRS export and visual validation are proven."
     dijiangTos = $null
+    jiantianshiFormalCompatibility = $null
     samuraiGhostCompatibility = $null
 }
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
@@ -906,6 +909,11 @@ Invoke-Checked -Label "List Hadi body source-model animations" -FilePath $cli -A
     "--preview_model", "ch_m_hadi_lv_s9",
     "--preview_output", $scriptAnimationHadiOutput,
     "--source_candidate_limit", "40")
+Invoke-Checked -Label "List Jiantianshi formal source-model animations" -FilePath $cli -Arguments @(
+    "--list_source_model_animations", $SourceIndex,
+    "--preview_model", "ch_f_jiantianshi_lv_s1",
+    "--preview_output", $sourceModelJiantianshiOutput,
+    "--source_candidate_limit", "40")
 Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $cli -Arguments @(
     "--list_source_model_animations", $SourceIndex,
     "--preview_model", "fxattack_male_sw_attack_heavy_02",
@@ -913,13 +921,30 @@ Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $
     "--source_candidate_limit", "20")
 
 $hadiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_m_hadi_lv_s9" -OutputRoot $scriptAnimationHadiOutput
+$jiantianshiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_f_jiantianshi_lv_s1" -OutputRoot $sourceModelJiantianshiOutput
 $fxScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "fxattack_male_sw_attack_heavy_02" -OutputRoot $scriptAnimationFxOutput
+$jiantianshiAvatarCompatibilityDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector "ch_f_jiantianshi_lv_s1" -OutputRoot $sourceModelJiantianshiOutput
 
 if ($hadiScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "Hadi body script animation diagnostic did not select any source model."
 }
 if ($hadiScriptAnimationDiagnostic.candidateCount -ne 0 -or $hadiScriptAnimationDiagnostic.scriptAnimationRows -ne 0) {
     throw "Hadi body unexpectedly produced default or script animation rows. candidates=$($hadiScriptAnimationDiagnostic.candidateCount) scriptRows=$($hadiScriptAnimationDiagnostic.scriptAnimationRows)"
+}
+if ($jiantianshiScriptAnimationDiagnostic.selectedModelCount -lt 1) {
+    throw "Jiantianshi formal source-model diagnostic did not select any source model."
+}
+if ($jiantianshiScriptAnimationDiagnostic.candidateCount -ne 0 -or $jiantianshiScriptAnimationDiagnostic.scriptAnimationRows -ne 0 -or $jiantianshiScriptAnimationDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "Jiantianshi formal source-model diagnostic must stay without default/script animation rows. candidates=$($jiantianshiScriptAnimationDiagnostic.candidateCount) scriptRows=$($jiantianshiScriptAnimationDiagnostic.scriptAnimationRows) invalidRows=$($jiantianshiScriptAnimationDiagnostic.invalidBoundaryRows)"
+}
+if ($jiantianshiAvatarCompatibilityDiagnostic.candidateCount -ne 0 -or $jiantianshiAvatarCompatibilityDiagnostic.avatarTosDefaultCandidateCount -ne 0 -or $jiantianshiAvatarCompatibilityDiagnostic.modelAvatarDefaultCandidateCount -ne 0) {
+    throw "Jiantianshi formal Avatar compatibility diagnostic unexpectedly produced default candidates. candidates=$($jiantianshiAvatarCompatibilityDiagnostic.candidateCount) avatarTosDefault=$($jiantianshiAvatarCompatibilityDiagnostic.avatarTosDefaultCandidateCount) modelAvatarDefault=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarDefaultCandidateCount)"
+}
+if ($jiantianshiAvatarCompatibilityDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "Jiantianshi formal Avatar compatibility diagnostic lost diagnostic-only boundary. invalidRows=$($jiantianshiAvatarCompatibilityDiagnostic.invalidBoundaryRows)"
+}
+if ($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarRows -lt 1 -or $jiantianshiAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows -lt 1 -or $jiantianshiAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage -lt 0.9) {
+    throw "Jiantianshi formal Avatar compatibility diagnostic lost structural overlap evidence. rows=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarRows) highOverlapRows=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows) maxCoverage=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage)"
 }
 if ($fxScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "FxAttack script animation diagnostic did not select any source model."
@@ -944,6 +969,7 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     status = "ok"
     rule = $scriptAnimationComponentDiagnostics.rule
     hadiBody = $hadiScriptAnimationDiagnostic
+    jiantianshiFormal = $jiantianshiScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
 }
 
@@ -996,6 +1022,7 @@ $sourceModelAvatarDiagnostics = [pscustomobject]@{
     status = "ok"
     rule = $sourceModelAvatarDiagnostics.rule
     dijiangTos = if ($null -ne $dijiangAvatarDiagnostic) { $dijiangAvatarDiagnostic } else { [pscustomobject]@{ status = "skipped"; reason = "SkipAnimationDiagnostic" } }
+    jiantianshiFormalCompatibility = $jiantianshiAvatarCompatibilityDiagnostic
     samuraiGhostCompatibility = $samuraiAvatarDiagnostic
 }
 
@@ -2084,11 +2111,16 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     }
     if ($scriptAnimationComponentDiagnostics.status -eq "ok") {
         $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
+        $jiantianshiScript = $scriptAnimationComponentDiagnostics.jiantianshiFormal
         $fxScript = $scriptAnimationComponentDiagnostics.fxAttack
-        $reportLines.Add(('- Selected-model script AnimationClip diagnostic: Hadi selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`; Fx selected=`{3}`, candidates=`{4}`, scriptRows=`{5}`, invalidBoundaryRows=`{6}`' -f `
+        $reportLines.Add(('- Selected-model script AnimationClip diagnostic: Hadi selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`; Jiantianshi selected=`{3}`, candidates=`{4}`, scriptRows=`{5}`, invalidBoundaryRows=`{6}`; Fx selected=`{7}`, candidates=`{8}`, scriptRows=`{9}`, invalidBoundaryRows=`{10}`' -f `
             (ConvertTo-SmokeText $hadiScript.selectedModelCount "0"),
             (ConvertTo-SmokeText $hadiScript.candidateCount "0"),
             (ConvertTo-SmokeText $hadiScript.scriptAnimationRows "0"),
+            (ConvertTo-SmokeText $jiantianshiScript.selectedModelCount "0"),
+            (ConvertTo-SmokeText $jiantianshiScript.candidateCount "0"),
+            (ConvertTo-SmokeText $jiantianshiScript.scriptAnimationRows "0"),
+            (ConvertTo-SmokeText $jiantianshiScript.invalidBoundaryRows "0"),
             (ConvertTo-SmokeText $fxScript.selectedModelCount "0"),
             (ConvertTo-SmokeText $fxScript.candidateCount "0"),
             (ConvertTo-SmokeText $fxScript.scriptAnimationRows "0"),
@@ -2102,15 +2134,22 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $fxScript.subtreeSkinnedRendererRows "0"),
             (ConvertTo-SmokeText $fxScript.subtreeTruncatedRows "0"),
             (ConvertTo-SmokeText $fxScript.animatorRows "0")))
-        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi proves normal visible model selection is not promoted; FxAttack proves local SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
+        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi and Jiantianshi prove visible/formal model selection is not promoted by name or skeleton alone; FxAttack proves local SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
     }
     else {
         $reportLines.Add(('- Selected-model script AnimationClip diagnostic: `{0}`' -f $scriptAnimationComponentDiagnostics.status))
     }
     if ($sourceModelAvatarDiagnostics.status -eq "ok") {
         $samuraiAvatar = $sourceModelAvatarDiagnostics.samuraiGhostCompatibility
-        $reportLines.Add(('- Source-model Avatar/TOS diagnostics: status=`{0}`, Samurai selected=`{1}`, candidates=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`' -f `
+        $jiantianshiAvatar = $sourceModelAvatarDiagnostics.jiantianshiFormalCompatibility
+        $reportLines.Add(('- Source-model Avatar/TOS diagnostics: status=`{0}`, Jiantianshi selected=`{1}`, candidates=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`; Samurai selected=`{7}`, candidates=`{8}`, modelAvatarRows=`{9}`, highOverlapRows=`{10}`, maxCoverage=`{11}`, invalidBoundaryRows=`{12}`' -f `
             (ConvertTo-SmokeText $sourceModelAvatarDiagnostics.status),
+            (ConvertTo-SmokeText $jiantianshiAvatar.selectedModelCount "0"),
+            (ConvertTo-SmokeText $jiantianshiAvatar.candidateCount "0"),
+            (ConvertTo-SmokeText $jiantianshiAvatar.modelAvatarRows "0"),
+            (ConvertTo-SmokeText $jiantianshiAvatar.modelAvatarHighOverlapRows "0"),
+            (ConvertTo-SmokeText $jiantianshiAvatar.modelAvatarMaxCoverage "0"),
+            (ConvertTo-SmokeText $jiantianshiAvatar.invalidBoundaryRows "0"),
             (ConvertTo-SmokeText $samuraiAvatar.selectedModelCount "0"),
             (ConvertTo-SmokeText $samuraiAvatar.candidateCount "0"),
             (ConvertTo-SmokeText $samuraiAvatar.modelAvatarRows "0"),
@@ -2297,6 +2336,7 @@ $reportLines.Add(('- `sqlite_index_summary.json`: `{0}`' -f $sqliteSummary))
 $reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
 $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.hadiBody.report))
+$reportLines.Add(('- Jiantianshi formal source-model diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.jiantianshiFormal.report))
 $reportLines.Add(('- FxAttack script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.fxAttack.report))
 if ($sourceModelAvatarDiagnostics.status -eq "ok") {
     if ($null -ne $sourceModelAvatarDiagnostics.dijiangTos -and $sourceModelAvatarDiagnostics.dijiangTos.status -ne "skipped") {

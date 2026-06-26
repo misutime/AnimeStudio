@@ -114,6 +114,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 同日继续把 `ch_f_jiantianshi_lv_s1` 固化为独立 smoke 门禁，防止它只靠四模型总数间接通过。脚本现在会从 `asset_catalog.jsonl` 检查它必须是 `PrefabPrimary` / `Character`，来源仍为 `c\8\c8f77e18090d4d34`、`pathId=2767142543816441398`，`modelValidationStatus=ok`、`modelBodyStatus=ok`、`materialMissingRendererBinding=false`、材质 primitive 覆盖完整且 `boneCount>0`；同时从 `model_animations.compact.json` 检查 `modelAnimationGate=ready`、`modelReadyForAnimation=true`、默认候选数为 0。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_JiantianshiGate_StaticQuick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过，`formalSkinnedRepresentativeBoundary.status=ok`，报告行显示 `materials=5/5`、`bones=92`、`animationGate=ready`、`defaultCandidates=0`，整体仍为 `models=4`、`ok=4`、`capabilities.animations=false`。
 
+同日把 `ch_f_jiantianshi_lv_s1` 的源码动画边界也纳入 smoke。脚本会对正式模型运行 `--list_source_model_animations`，同一份报告同时压成脚本动画诊断和模型-Avatar 结构诊断：脚本侧要求 `selectedModelCount=2`、`candidateCount=0`、`scriptAnimationRows=0`、`invalidBoundaryRows=0`；Avatar 结构侧要求 `candidateCount=0`、`modelAvatarRows>=1`、`modelAvatarHighOverlapRows>=1`、`modelAvatarMaxCoverage>=0.9` 且默认候选仍为 0。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_JiantianshiAnimationBoundary_Quick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过，实际 Jiantianshi 诊断为 `scriptAnimationRows=0`、`modelAvatarRows=7`、`modelAvatarHighOverlapRows=6`、`modelAvatarMaxCoverage=1`、`invalidBoundaryRows=0`。代表库仍为 `models=4`、`ok=4`、`withSkin=3`、`withTextures=4`，SQLite 仍为 `textureAssets=54`、`textureLinks=62`、`materialSidecars=19`、`modelBindingPaths=542`、`modelAnimationCandidates=0`，`capabilities.animations=false`、`animationSupport.defaultModelAnimationCandidateCount=0` 不变。该门禁只说明正式模型已有可追踪的 Avatar 结构线索，不能替代显式 Animator/Controller/Clip 关系、TRS 写回和视觉验收。
+
 输入探针：
 
 ```powershell
