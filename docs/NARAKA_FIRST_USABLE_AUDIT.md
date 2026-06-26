@@ -98,6 +98,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 随后把 Avatar/TOS 与模型-Avatar 结构摘要纳入 Naraka smoke 自动门禁。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_AvatarSummaryGate_Quick_Current`（`-SkipBrowserValidation`）：`sourceModelAvatarDiagnostics.status=ok`，Dijiang 摘要为 `candidateCount=0`、`avatarTosRows=1`、`avatarTosMaxCoverage=1`、`invalidBoundaryRows=0`；SamuraiGhost 摘要为 `candidateCount=0`、`modelAvatarRows=30`、`modelAvatarHighOverlapRows=30`、`modelAvatarMaxCoverage=1`、`invalidBoundaryRows=0`。smoke 仍输出 `capabilities.animations=false`，说明这些结构线索只用于后续动画求解选点，不会自动启用生产动画能力。
 
+随后执行不跳过浏览器和动画诊断的完整 smoke：`D:\Assets\Naraka\Naraka_FirstUsableSmoke_AvatarSummaryGate_DefaultFull_Current`。默认代表模型保持 `models=3`、`ok=3`、`withSkin=2`、`withTextures=3`；SQLite 计数为 `textureAssets=43`、`textureLinks=48`、`materialSidecars=15`、`textureLinkErrors=0`、`modelBindingPaths=410`；`browserValidation=ok`、`thumbnailRender=ok`、`thumbnailFileCount=3`。动画边界门禁也保持预期：Dijiang TOS 诊断 `avatarTosRows=1`、`avatarTosMaxCoverage=1`、`candidateCount=0`；SamuraiGhost 模型-Avatar 兼容诊断 `modelAvatarRows=30`、`modelAvatarHighOverlapRows=30`、`modelAvatarMaxCoverage=1`、`candidateCount=0`；脚本动画诊断 `scriptAnimationRows=20`、`invalidBoundaryRows=0`；Dijiang A8 独立动画 `animationDiagnostic=ok`、`animationGltfValidation=ok`。该完整复验仍要求 `capabilities.models=true`、`capabilities.animations=false`，确保 Avatar/TOS、脚本字段和手动动画 glTF 都只作为诊断证据，不会伪装成默认生产动画库。
+
 同日补充 Hadi 模块化边界 smoke：脚本会读取默认代表模型的 `asset_catalog.jsonl` 行，要求 `ch_m_hadi_lv_s9` 继续标记为 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，且 `modelCompletenessMissingRoles` 至少包含 `Face` 和 `Hair`。该门禁保护“body/服装部件可作为模型素材使用，但不能当完整角色或生产动画 smoke 样本”的结论。
 
 输入探针：
