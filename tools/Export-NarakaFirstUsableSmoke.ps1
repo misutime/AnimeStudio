@@ -109,9 +109,9 @@ if (!$KeepExisting -and (Test-Path -LiteralPath $OutputRoot)) {
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 
 $probeOutput = Join-Path $OutputRoot "SourceInputProbe"
-$hadiOutput = Join-Path $OutputRoot "HadiBody_s9"
+$libraryOutput = Join-Path $OutputRoot "RepresentativeModels"
 $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
-$hadiGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+$representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
 $animationGltfValidationStatus = if ($SkipGltfValidation -or $SkipAnimationDiagnostic) { "skipped" } else { "toolMissing" }
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
 $animationReportJson = $null
@@ -126,38 +126,45 @@ if ($LASTEXITCODE -ne 0) {
     throw "Probe Naraka input failed with exit code $LASTEXITCODE"
 }
 
-# 这个样本来自完整源索引的确定性闭包，用来证明标准角色部件模型链路。
+# 这些样本来自完整源索引的确定性闭包，用来同时覆盖角色部件、武器和普通道具。
 Write-Host ""
-Write-Host "== Export Hadi body s9 smoke =="
-& $cli $SourceRoot $hadiOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Separate" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" "--path_ids" "-6619473669887381141"
+Write-Host "== Export Naraka representative model smoke =="
+& $cli $SourceRoot $libraryOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Separate" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" "d\1\d1d0bc7b6c107e00" "0\f\0f2ab2b1ab070ac0" "--path_ids" "-6619473669887381141" "3879445205109982761" "3817277305598733592"
 if ($LASTEXITCODE -ne 0) {
-    throw "Export Hadi body s9 smoke failed with exit code $LASTEXITCODE"
+    throw "Export Naraka representative model smoke failed with exit code $LASTEXITCODE"
 }
 
 Write-Host ""
 Write-Host "== Rebuild AssetLibrary v1 index =="
-& $cli "--build_sqlite_index" $hadiOutput "--source_index" $SourceIndex "--game" "Naraka" "--skip_sqlite_file_index"
+& $cli "--build_sqlite_index" $libraryOutput "--source_index" $SourceIndex "--game" "Naraka" "--skip_sqlite_file_index"
 if ($LASTEXITCODE -ne 0) {
     throw "Rebuild AssetLibrary v1 index failed with exit code $LASTEXITCODE"
 }
 
-$manifest = Join-Path $hadiOutput "asset_library.json"
-$db = Join-Path $hadiOutput "library_index.db"
-$sqliteSummary = Join-Path $hadiOutput "sqlite_index_summary.json"
-$validation = Join-Path $hadiOutput "model_validation.json"
-$gltf = Join-Path $hadiOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
+$manifest = Join-Path $libraryOutput "asset_library.json"
+$db = Join-Path $libraryOutput "library_index.db"
+$sqliteSummary = Join-Path $libraryOutput "sqlite_index_summary.json"
+$validation = Join-Path $libraryOutput "model_validation.json"
+$gltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
+$bowGltf = Join-Path $libraryOutput "Models\assets\res\prefab\drop_item_generate\weapon\weapon_drop_bow_dongjun\weapon_drop_bow_dongjun.gltf"
+$deviceGltf = Join-Path $libraryOutput "Models\assets\res\prefab\device_generate\device_hongbao_02\device_hongbao_02.gltf"
+$representativeGltfs = @($gltf, $bowGltf, $deviceGltf)
 
 Test-FileRequired -Path $manifest -Label "asset_library.json"
 Test-FileRequired -Path $db -Label "library_index.db"
 Test-FileRequired -Path $sqliteSummary -Label "sqlite_index_summary.json"
 Test-FileRequired -Path $validation -Label "model_validation.json"
 Test-FileRequired -Path $gltf -Label "Hadi glTF"
+Test-FileRequired -Path $bowGltf -Label "Bow prop glTF"
+Test-FileRequired -Path $deviceGltf -Label "Device prop glTF"
 
 if (!$SkipGltfValidation) {
     $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
     if ($null -ne $gltfTransform) {
-        Invoke-Checked -Label "Validate Hadi glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $gltf)
-        $hadiGltfValidationStatus = "ok"
+        foreach ($representativeGltf in $representativeGltfs) {
+            Invoke-Checked -Label "Validate representative glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $representativeGltf)
+        }
+        $representativeGltfValidationStatus = "ok"
     }
     else {
         Write-Warning "gltf-transform.cmd not found; skipped glTF validator."
@@ -204,10 +211,10 @@ if (!$SkipAnimationDiagnostic) {
 if (!$SkipBrowserValidation) {
     $browserCli = "D:\misutime\UnrealExporter\dist\AssetLibraryBrowser.Cli\AssetLibraryBrowser.Cli.exe"
     if (Test-Path -LiteralPath $browserCli) {
-        Invoke-Checked -Label "Validate AssetLibrary v1" -FilePath $browserCli -Arguments @("validate-library", $hadiOutput)
+        Invoke-Checked -Label "Validate AssetLibrary v1" -FilePath $browserCli -Arguments @("validate-library", $libraryOutput)
         $browserValidationStatus = "ok"
 
-        Invoke-Checked -Label "Render browser thumbnail" -FilePath $browserCli -Arguments @("build-thumbnails", $hadiOutput, "1", "1")
+        Invoke-Checked -Label "Render browser thumbnail" -FilePath $browserCli -Arguments @("build-thumbnails", $libraryOutput, "1", "3")
         $thumbnailStatus = "ok"
     }
     else {
@@ -228,7 +235,7 @@ if ($null -ne $sqliteSummaryJson.qualityGates.textureLinkErrors) {
 if ($textureLinkErrors -ne 0) {
     throw "Texture link quality gate failed: textureLinkErrors=$textureLinkErrors"
 }
-$thumbnailCache = Join-Path $hadiOutput ".asset_browser_cache"
+$thumbnailCache = Join-Path $libraryOutput ".asset_browser_cache"
 $thumbnailFileCount = 0
 if (Test-Path -LiteralPath $thumbnailCache) {
     $thumbnailFileCount = (Get-ChildItem -LiteralPath $thumbnailCache -Recurse -File | Measure-Object).Count
@@ -292,14 +299,19 @@ $summaryJsonLines += '  "game": "Naraka",'
 $summaryJsonLines += '  "sourceRoot": ' + (ConvertTo-SmokeJsonLiteral $SourceRoot) + ","
 $summaryJsonLines += '  "sourceIndex": ' + (ConvertTo-SmokeJsonLiteral $SourceIndex) + ","
 $summaryJsonLines += '  "outputRoot": ' + (ConvertTo-SmokeJsonLiteral $OutputRoot) + ","
-$summaryJsonLines += '  "libraryRoot": ' + (ConvertTo-SmokeJsonLiteral $hadiOutput) + ","
+$summaryJsonLines += '  "libraryRoot": ' + (ConvertTo-SmokeJsonLiteral $libraryOutput) + ","
 $summaryJsonLines += '  "assetLibrary": ' + (ConvertTo-SmokeJsonLiteral $manifest) + ","
 $summaryJsonLines += '  "libraryIndex": ' + (ConvertTo-SmokeJsonLiteral $db) + ","
 $summaryJsonLines += '  "sqliteSummary": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummary) + ","
 $summaryJsonLines += '  "modelValidation": ' + (ConvertTo-SmokeJsonLiteral $validation) + ","
 $summaryJsonLines += '  "modelGltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ","
+$summaryJsonLines += '  "representativeModels": ['
+$summaryJsonLines += '    { "name": "ch_m_hadi_lv_s9", "role": "CharacterPart", "gltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ' },'
+$summaryJsonLines += '    { "name": "weapon_drop_bow_dongjun", "role": "WeaponProp", "gltf": ' + (ConvertTo-SmokeJsonLiteral $bowGltf) + ' },'
+$summaryJsonLines += '    { "name": "device_hongbao_02", "role": "Prop", "gltf": ' + (ConvertTo-SmokeJsonLiteral $deviceGltf) + ' }'
+$summaryJsonLines += '  ],'
 $summaryJsonLines += '  "checks": {'
-$summaryJsonLines += '    "hadiGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $hadiGltfValidationStatus) + ","
+$summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
 $summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
@@ -348,12 +360,12 @@ $reportLines.Add("")
 $reportLines.Add(('- Source root: `{0}`' -f $SourceRoot))
 $reportLines.Add(('- Source index: `{0}`' -f $SourceIndex))
 $reportLines.Add(('- Output root: `{0}`' -f $OutputRoot))
-$reportLines.Add(('- Library root: `{0}`' -f $hadiOutput))
+$reportLines.Add(('- Library root: `{0}`' -f $libraryOutput))
 $reportLines.Add("")
 $reportLines.Add("## Static Library")
 $reportLines.Add("")
 $reportLines.Add(('- Capabilities: models=`{0}`, animations=`{1}`, animationPreviewComposer=`{2}`' -f $assetLibrary.capabilities.models, $assetLibrary.capabilities.animations, (ConvertTo-SmokeText $assetLibrary.capabilities.animationPreviewComposer "null")))
-$reportLines.Add(('- Hadi glTF validator: `{0}`' -f $hadiGltfValidationStatus))
+$reportLines.Add(('- Representative glTF validator: `{0}`' -f $representativeGltfValidationStatus))
 $reportLines.Add(('- AssetLibrary browser validation: `{0}`' -f $browserValidationStatus))
 $reportLines.Add(('- Thumbnail render: `{0}`, cache files=`{1}`' -f $thumbnailStatus, $thumbnailFileCount))
 if ($null -ne $modelValidation.totals) {
@@ -363,6 +375,7 @@ if ($null -ne $modelValidation.totals) {
         (ConvertTo-SmokeText $modelValidation.totals.warning "0"),
         (ConvertTo-SmokeText $modelValidation.totals.error "0")))
 }
+$reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
 $reportLines.Add("")
 $reportLines.Add("## SQLite Index")
 $reportLines.Add("")
@@ -466,6 +479,8 @@ $reportLines.Add(('- `sqlite_index_summary.json`: `{0}`' -f $sqliteSummary))
 $reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
 $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))
+$reportLines.Add(('- Bow prop glTF: `{0}`' -f $bowGltf))
+$reportLines.Add(('- Device prop glTF: `{0}`' -f $deviceGltf))
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
 }
@@ -474,7 +489,7 @@ $reportLines | Set-Content -LiteralPath $reportPath -Encoding UTF8
 Write-Host ""
 Write-Host "Naraka first usable smoke completed."
 Write-Host "Output: $OutputRoot"
-Write-Host "Library: $hadiOutput"
+Write-Host "Library: $libraryOutput"
 Write-Host "Report: $reportPath"
 Write-Host "Summary JSON: $summaryJsonPath"
 Write-Host ("Capabilities: models={0}, animations={1}" -f $assetLibrary.capabilities.models, $assetLibrary.capabilities.animations)

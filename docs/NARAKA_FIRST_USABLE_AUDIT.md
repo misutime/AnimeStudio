@@ -61,15 +61,16 @@ static_bigtree: models=1 textures=12 material_sidecars=1 texture_links=13 link_e
 tools\Export-NarakaFirstUsableSmoke.ps1
 ```
 
-默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针、导出 Hadi body s9、重建 `library_index.db`，并在本机工具存在时执行 glTF validator、AssetLibrary Browser 验证和 1 张缩略图渲染。脚本还会默认跑 Dijiang A8 独立动画 glTF 诊断，验证 `Avatar.m_TOS` 路径恢复和动画 glTF 写出；报告必须保留 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，因此它不会把当前手动动画诊断升级成生产动画库能力。只想跑 P0/P1 静态链路时传 `-SkipAnimationDiagnostic`。
+默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针，并用完整源索引闭包定向导出三个默认 Library 代表模型：`ch_m_hadi_lv_s9` 角色部件、`weapon_drop_bow_dongjun` 武器道具、`device_hongbao_02` 普通道具；随后重建 `library_index.db`，并在本机工具存在时执行 3 个 glTF validator、AssetLibrary Browser 验证和 3 张缩略图渲染。脚本还会默认跑 Dijiang A8 独立动画 glTF 诊断，验证 `Avatar.m_TOS` 路径恢复和动画 glTF 写出；报告必须保留 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，因此它不会把当前手动动画诊断升级成生产动画库能力。只想跑 P0/P1 静态链路时传 `-SkipAnimationDiagnostic`。
 
 脚本结束后会在 `OutputRoot` 写出两个汇总文件：
 
 - `SMOKE_REPORT.md`：人读 smoke 结论，汇总静态模型、glTF 校验、浏览器校验、缩略图、SQLite 索引计数、贴图链接质量门槛、特殊 shader 降级计数、动画关系覆盖摘要和动画诊断边界。
 - `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数、`qualityGates` 和动画诊断状态。
 
-这两个文件只汇总 smoke 证据，不会改变正式 `HadiBody_s9` 素材库，也不会把诊断动画写成默认动画关系。
+这两个文件只汇总 smoke 证据，不会改变正式 `RepresentativeModels` 素材库，也不会把诊断动画写成默认动画关系。
 脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
+2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_MultiModel_Clean_Current`：默认 smoke 批次生成 `models=3`、`ok=3`、`withTextures=3`、`textureAssets=43`、`materialSidecars=15`、`textureLinkErrors=0`，3 个 glTF validator、AssetLibrary Browser 校验和 3 张缩略图均通过。这把一行 smoke 从单 Hadi 样本扩展为角色部件、武器和道具三类默认 Library 正样本；静态树和 face custom shader 仍作为独立诊断/扩展样本记录，不强塞进默认 smoke。
 2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_RelationHealth_Current`：`sourceIndexAnimationRelationHealth.status=ok`，`animatorController.clip=98`、`resolved=98`、`missing=0`。此前 `resolved=97/missing=1` 是 Library 摘要查询没有按 SerializedFile 大小写不敏感匹配造成的假 warning，不代表当前源索引缺 AnimationClip CAB。
 同一轮新增 `explicitControllerClipDomains` 诊断：当前 24 个显式 AnimatorController 中 `UiStateController=21/95`、`VfxOrEffect=3/3`（controllers/clipEdges）。这说明源索引里的 controller-clip 关系可解析，但目前主要是 UI 状态机和特效 clip，不能作为角色身体动画生产关系。
 `explicitAnimatorControllerUsages` 继续确认生产动画边界：当前 `withAvatar=15`、`withAvatarAndControllerClipEdges=0`，带 Avatar 的 Animator+Controller 样本都落在 `PreviewOrTimeline/TrackEditorPreview` 一侧，只能作为诊断线索，不能作为角色生产动画关系。
@@ -84,7 +85,7 @@ AnimeStudio.CLI\bin\Release\net9.0-windows\AnimeStudio.CLI.exe `
   --probe_source_input
 ```
 
-Hadi body 定向 Library 导出示例：
+代表模型批次定向 Library 导出示例：
 
 ```powershell
 AnimeStudio.CLI\bin\Release\net9.0-windows\AnimeStudio.CLI.exe `
@@ -99,8 +100,8 @@ AnimeStudio.CLI\bin\Release\net9.0-windows\AnimeStudio.CLI.exe `
   --animation_package Separate `
   --fbx_animation Skip `
   --source_index "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db" `
-  --source_files "4\c\4c08b7069a411750" `
-  --path_ids -6619473669887381141
+  --source_files "4\c\4c08b7069a411750" "d\1\d1d0bc7b6c107e00" "0\f\0f2ab2b1ab070ac0" `
+  --path_ids -6619473669887381141 3879445205109982761 3817277305598733592
 ```
 
 刷新 AssetLibrary v1 索引：
