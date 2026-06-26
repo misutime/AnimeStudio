@@ -70,6 +70,7 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 这两个文件只汇总 smoke 证据，不会改变正式 `HadiBody_s9` 素材库，也不会把诊断动画写成默认动画关系。
 脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
+2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_RelationHealth_Current`：`sourceIndexAnimationRelationHealth.status=ok`，`animatorController.clip=98`、`resolved=98`、`missing=0`。此前 `resolved=97/missing=1` 是 Library 摘要查询没有按 SerializedFile 大小写不敏感匹配造成的假 warning，不代表当前源索引缺 AnimationClip CAB。
 
 输入探针：
 

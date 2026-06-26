@@ -4727,6 +4727,9 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                 var staleOverridePairs = overrideControllerObjects > 0
                     && (overrideSet == 0 || (nonEmptyOverrideSet > 0 && overridePair == 0));
                 var missingControllerClipTargets = controllerClipMissingTargets > 0;
+                var missingControllerClipTargetSamples = missingControllerClipTargets
+                    ? BuildMissingSourceRelationTargetSamples(sourceConnection, "animatorController.clip", "AnimationClip", 8)
+                    : new JArray();
 
                 return new JObject
                 {
@@ -4752,6 +4755,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     {
                         ["animatorController.clip"] = controllerClipMissingTargets,
                     },
+                    ["missingAnimatorControllerClipTargetSamples"] = missingControllerClipTargetSamples,
                     ["objectCounts"] = new JObject
                     {
                         ["AnimatorOverrideController"] = overrideControllerObjects,
@@ -4778,6 +4782,80 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     ["error"] = e.GetType().Name + ": " + e.Message,
                 };
             }
+        }
+
+        private static JArray BuildMissingSourceRelationTargetSamples(SqliteConnection connection, string relation, string targetType, int limit)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = $@"
+SELECT
+    r.to_file,
+    r.to_path_id,
+    r.to_type_hint,
+    COUNT(*) AS relation_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS distinct_referrer_count,
+    MIN(r.from_source) AS sample_from_source,
+    MIN(r.from_file) AS sample_from_file,
+    MIN(r.from_type) AS sample_from_type,
+    MIN(r.from_name) AS sample_from_name,
+    MIN(r.from_path_id) AS sample_from_path_id,
+    MIN(e.file_name) AS sample_external_file_name,
+    MIN(e.path_name) AS sample_external_path_name,
+    MIN(e.guid) AS sample_external_guid
+FROM source_relations r
+LEFT JOIN source_objects target
+  ON target.serialized_file = r.to_file COLLATE NOCASE
+ AND target.path_id = r.to_path_id
+ AND target.type = $targetType
+LEFT JOIN source_externals e
+  ON e.serialized_file = r.from_file COLLATE NOCASE
+ AND e.file_id = r.to_file_id
+WHERE r.relation = $relation
+  AND target.id IS NULL
+  AND NOT ({UnityBuiltinTargetSql("r.to_file")})
+GROUP BY r.to_file, r.to_path_id, r.to_type_hint
+ORDER BY relation_count DESC, distinct_referrer_count DESC
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$relation", relation);
+            command.Parameters.AddWithValue("$targetType", targetType);
+            command.Parameters.AddWithValue("$limit", limit);
+
+            var samples = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                samples.Add(new JObject
+                {
+                    ["targetFile"] = reader.IsDBNull(0) ? null : reader.GetString(0),
+                    ["targetPathId"] = reader.IsDBNull(1) ? JValue.CreateNull() : new JValue(reader.GetInt64(1)),
+                    ["targetTypeHint"] = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    ["relationCount"] = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
+                    ["distinctReferrerCount"] = reader.IsDBNull(4) ? 0 : reader.GetInt64(4),
+                    ["sampleReferrer"] = new JObject
+                    {
+                        ["source"] = reader.IsDBNull(5) ? null : reader.GetString(5),
+                        ["serializedFile"] = reader.IsDBNull(6) ? null : reader.GetString(6),
+                        ["type"] = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        ["name"] = reader.IsDBNull(8) ? null : reader.GetString(8),
+                        ["pathId"] = reader.IsDBNull(9) ? JValue.CreateNull() : new JValue(reader.GetInt64(9)),
+                    },
+                    ["sampleExternal"] = new JObject
+                    {
+                        ["fileName"] = reader.IsDBNull(10) ? null : reader.GetString(10),
+                        ["pathName"] = reader.IsDBNull(11) ? null : reader.GetString(11),
+                        ["guid"] = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    },
+                });
+            }
+
+            return samples;
+        }
+
+        private static string UnityBuiltinTargetSql(string column)
+        {
+            // Unity 内置资源不会出现在游戏源索引里，不能当成缺 CAB 或缺依赖。
+            return $"LOWER(COALESCE({column}, '')) IN ('unity default resources', 'resources/unity_builtin_extra')";
         }
 
         private static JObject BuildUnityBakeProductionSummary(SqliteConnection connection)
@@ -5519,7 +5597,7 @@ EXISTS (
 SELECT COUNT(*)
 FROM source_relations r
 JOIN source_objects o
-  ON o.serialized_file = r.to_file
+  ON o.serialized_file = r.to_file COLLATE NOCASE
  AND o.path_id = r.to_path_id
  AND o.type = $targetType
 WHERE r.relation = $relation;";

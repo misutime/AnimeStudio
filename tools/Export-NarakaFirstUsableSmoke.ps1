@@ -292,6 +292,7 @@ $smokeSummary = [ordered]@{
             animatorControllerClipRelations = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.relationCounts.'animatorController.clip'
             resolvedAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.resolvedTargetCounts.'animatorController.clip'
             missingAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingTargetCounts.'animatorController.clip'
+            missingAnimatorControllerClipTargetSamples = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingAnimatorControllerClipTargetSamples
         }
     } else {
         [ordered]@{
@@ -389,6 +390,14 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         (ConvertTo-SmokeText $relationHealth.relationCounts.'animatorController.clip' "0"),
         (ConvertTo-SmokeText $relationHealth.resolvedTargetCounts.'animatorController.clip' "0"),
         (ConvertTo-SmokeText $relationHealth.missingTargetCounts.'animatorController.clip' "0")))
+    if ($null -ne $relationHealth.missingAnimatorControllerClipTargetSamples -and $relationHealth.missingAnimatorControllerClipTargetSamples.Count -gt 0) {
+        $firstMissingClip = $relationHealth.missingAnimatorControllerClipTargetSamples[0]
+        $reportLines.Add(('- Missing animatorController.clip target samples=`{0}`, firstTarget=`{1}:{2}`, sampleController=`{3}`' -f `
+            $relationHealth.missingAnimatorControllerClipTargetSamples.Count,
+            (ConvertTo-SmokeText $firstMissingClip.targetFile),
+            (ConvertTo-SmokeText $firstMissingClip.targetPathId "0"),
+            (ConvertTo-SmokeText $firstMissingClip.sampleReferrer.name)))
+    }
 }
 $reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
