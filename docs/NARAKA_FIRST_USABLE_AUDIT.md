@@ -271,6 +271,14 @@ D:\Assets\Naraka\Naraka_FirstUsableSmoke_SimpleAnimationShortlistProbe_Quick_Cur
 
 本轮验证结果：`selectedModelCount=14`、`candidateCount=0`、`scriptAnimationRows=4`、`subtreeVisibleRendererRows=4`、`subtreeSkinnedRendererRows=4`、`subtreeTruncatedRows=0`、`animatorRows=4`，首条脚本为 `SimpleAnimation`，字段 `m_Clip` 指向 `ch_f_japan_yaodaoji_lv_s14_wings_idle`。Avatar 兼容诊断也保持 `candidateCount=0`、`avatarTosRows=0`、`modelAvatarRows=14`、`highOverlapRows=0`、`invalidBoundaryRows=0`。这说明短名单首样本确实有“脚本 Clip 引用 + 可见 skinned 子树 + Animator/Avatar 上下文”的后续求解价值，但当前仍是 `diagnosticOnly` / `productionReadiness=blocked`，不能升级成默认 `model_animations.json` 推荐关系，也不能改变 `asset_library.json.capabilities.animations=false`。
 
+随后复验最新默认完整 smoke：
+
+```powershell
+tools\Export-NarakaFirstUsableSmoke.ps1 -OutputRoot "D:\Assets\Naraka\Naraka_FirstUsableSmoke_YaodaojiShortlist_DefaultFull_Current"
+```
+
+本次未跳过浏览器或动画诊断，完整闭环通过：默认代表库保持 `models=4`、`ok=4`、`withSkin=3`、`withTextures=4`、`textureLinkErrors=0`；`AssetLibrary Browser` 校验为 `ok`，缩略图为 `thumbnailExpectedCount=4` / `thumbnailFileCount=4`；Dijiang A8 独立动画诊断和 glTF validator 均为 `ok`；Zhumu 合并预览保持 `status=ok`、`renderProbeStatus=ok`、`productionReadiness=blocked`；Yaodaoji wings 短名单首样本保持 `scriptAnimationRows=4`、`subtreeSkinnedRendererRows=4`、`productionReadiness=blocked`。同时 `capabilities.animations=false`、`animationSupport.defaultModelAnimationCandidateCount=0`、`modelAnimationRelations=0`、`relationAnimationRows=0` 不变，说明当前一行 smoke 已覆盖模型、贴图、材质、索引、报告、浏览器预览和诊断动画边界，但生产动画库仍未启用。
+
 ## 风险和下一步
 
 - Hadi body 是模块化角色 body/服装部件，当前 `modelCompletenessStatus=modular_incomplete`，不能单独作为完整角色动画 smoke。
