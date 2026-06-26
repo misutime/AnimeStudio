@@ -236,6 +236,16 @@ if (!$SkipBrowserValidation) {
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw | ConvertFrom-Json
+if ($null -eq $sqliteSummaryJson.qualityGates) {
+    throw "sqlite_index_summary.json lost qualityGates section."
+}
+$textureLinkErrors = 0
+if ($null -ne $sqliteSummaryJson.qualityGates.textureLinkErrors) {
+    $textureLinkErrors = [long]$sqliteSummaryJson.qualityGates.textureLinkErrors
+}
+if ($textureLinkErrors -ne 0) {
+    throw "Texture link quality gate failed: textureLinkErrors=$textureLinkErrors"
+}
 $thumbnailCache = Join-Path $hadiOutput ".asset_browser_cache"
 $thumbnailFileCount = 0
 if (Test-Path -LiteralPath $thumbnailCache) {
@@ -270,6 +280,7 @@ $smokeSummary = [ordered]@{
     }
     modelTotals = $modelValidation.totals
     sqliteCounts = $sqliteSummaryJson.counts
+    qualityGates = $sqliteSummaryJson.qualityGates
     animationRelationCoverage = if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         [ordered]@{
             models = $sqliteSummaryJson.animationRelationCoverage.totals.models
@@ -355,6 +366,15 @@ if ($null -ne $sqliteSummaryJson.counts) {
     $reportLines.Add(('- Model animation candidates=`{0}`, model animation relations=`{1}`' -f `
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationCandidates "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationRelations "0")))
+}
+if ($null -ne $sqliteSummaryJson.qualityGates) {
+    $reportLines.Add(('- Quality gates: textureLinkErrors=`{0}`, customShaderSidecars=`{1}`, layeredMaterialUnresolvedSidecars=`{2}`, degradedPreviewSidecars=`{3}`, modelsNeedingCustomShaderLayer=`{4}`, modelsNeedingCustomizationTint=`{5}`' -f `
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.textureLinkErrors "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.customShaderRequiredSidecars "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.layeredMaterialUnresolvedSidecars "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.degradedPreviewSidecars "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.modelsNeedingCustomShaderLayer "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.modelsNeedingCustomizationTint "0")))
 }
 if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     $relationHealth = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth

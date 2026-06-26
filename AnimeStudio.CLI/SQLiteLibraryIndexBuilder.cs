@@ -4089,6 +4089,7 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
         {
             var summaryPath = GetSQLiteSummaryPath(root, dbPath);
             var animationRelationCoverage = BuildAnimationRelationCoverageSummarySafely(connection, root, skipSidecarScan, sourceIndexPath);
+            var qualityGates = BuildQualityGateSummary(connection);
             var summary = new JObject
             {
                 ["schemaVersion"] = 1,
@@ -4102,6 +4103,7 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                     ? "本次重建跳过 files 表，用于快速刷新模型-动画关系、sidecar 能力和源索引健康检查。需要完整文件浏览/审计时重新运行不带 --skip_sqlite_file_index 的 build。"
                     : "本次包含 files 表，适合完整文件浏览和审计；大型素材库会明显增加重建时间。",
                 ["counts"] = JObject.FromObject(counts),
+                ["qualityGates"] = qualityGates,
                 ["animationRelationCoverage"] = animationRelationCoverage
             };
             File.WriteAllText(summaryPath, summary.ToString(Formatting.Indented));
@@ -4117,6 +4119,54 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                 "主要表：`assets`、`unity_assets`、`unity_relations`、`animation_bindings`、`animation_binding_paths`、`export_manifest`、`json_documents`、`files`。每条结构化记录都尽量保留 `raw_json`，方便后续无损迁移。\n\n" +
                 "`assets` 会把常用筛选字段展开成显式列。永劫 ActorBodyVisualCell 自定义网格的 `library_role`、`diagnostic_only`、`character_assembly_role`、`character_assembly_family`、`material_status`、`source_skin_mapping_status`、`selected_visual_cell_transform_node_status` 和 `external_skeleton_context_*` 只服务浏览、筛选和诊断，不等于 glTF skin/joint 或正式角色装配已经可用。\n\n" +
                 "音频说明：当前 AudioLibrary 可以导出原始 `.fsb` 等文件；FMOD/native 转 WAV 作为后续批量转换阶段，不阻塞索引与素材库建设。\n");
+        }
+
+        private static JObject BuildQualityGateSummary(SqliteConnection connection)
+        {
+            var textureLinkErrors = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM texture_links
+WHERE link_error IS NOT NULL
+  AND trim(link_error) <> '';");
+            var unsupportedShaderSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(unsupported_shader, 0) <> 0;");
+            var customShaderRequiredSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(custom_shader_required, 0) <> 0;");
+            var layeredMaterialUnresolvedSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(layered_material_unresolved, 0) <> 0;");
+            var degradedPreviewSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(pbr_preview_status, '') = 'bestEffortDegradedPreview';");
+            var modelsNeedingCustomShaderLayer = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM assets
+WHERE kind='Model'
+  AND COALESCE(material_needs_custom_shader_layer, 0) <> 0;");
+            var modelsNeedingCustomizationTint = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM assets
+WHERE kind='Model'
+  AND COALESCE(material_needs_customization_tint, 0) <> 0;");
+
+            return new JObject
+            {
+                ["textureLinkErrors"] = textureLinkErrors,
+                ["textureLinksOk"] = textureLinkErrors == 0,
+                ["unsupportedShaderSidecars"] = unsupportedShaderSidecars,
+                ["customShaderRequiredSidecars"] = customShaderRequiredSidecars,
+                ["layeredMaterialUnresolvedSidecars"] = layeredMaterialUnresolvedSidecars,
+                ["degradedPreviewSidecars"] = degradedPreviewSidecars,
+                ["modelsNeedingCustomShaderLayer"] = modelsNeedingCustomShaderLayer,
+                ["modelsNeedingCustomizationTint"] = modelsNeedingCustomizationTint,
+                ["rule"] = "textureLinkErrors 必须为 0 才能说明当前素材库 glTF 贴图引用闭环；customShader/layered 计数表示已确定性保留但需要私有 shader 或人工材质重建，不等同于贴图丢失。"
+            };
         }
 
         private static JObject BuildAnimationRelationCoverageSummarySafely(SqliteConnection connection, string root, bool skipSidecarScan, string sourceIndexPath)
