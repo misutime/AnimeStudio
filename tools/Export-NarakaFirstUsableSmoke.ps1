@@ -119,6 +119,9 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $scriptRows = @($json.scriptAnimationComponentDiagnostics)
     $invalidBoundaryRows = @($scriptRows | Where-Object { $_.diagnosticOnly -ne $true -or $_.notDefaultModelAnimationRelation -ne $true })
     $visibleRendererRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.visibleRendererCount) -gt 0 })
+    $subtreeVisibleRendererRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.subtree.visibleRendererCount) -gt 0 })
+    $subtreeSkinnedRendererRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.subtree.skinnedMeshRendererCount) -gt 0 })
+    $subtreeTruncatedRows = @($scriptRows | Where-Object { $_.gameObject.subtree.truncated -eq $true })
     $animatorRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.animatorCount) -gt 0 })
     $firstRow = $null
     if ($scriptRows.Count -gt 0) {
@@ -127,16 +130,25 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $firstScriptName = $null
     $firstFieldPath = $null
     $firstClipName = $null
+    $firstSubtreeVisibleRendererCount = 0L
+    $firstSubtreeSkinnedMeshRendererCount = 0L
+    $firstSubtreeVisibleSamples = @()
     if ($null -ne $firstRow) {
         $firstScriptName = [string]$firstRow.monoBehaviour.scriptName
         $firstFieldPath = [string]$firstRow.reference.path
         $firstClipName = [string]$firstRow.reference.animation.name
+        $firstSubtreeVisibleRendererCount = [Convert]::ToInt64($firstRow.gameObject.subtree.visibleRendererCount)
+        $firstSubtreeSkinnedMeshRendererCount = [Convert]::ToInt64($firstRow.gameObject.subtree.skinnedMeshRendererCount)
+        $firstSubtreeVisibleSamples = @($firstRow.gameObject.subtree.visibleGameObjectSamples)
     }
     $selectedModelCount = [Convert]::ToInt64($json.selectedModelCount)
     $candidateCount = [Convert]::ToInt64($json.candidateCount)
     $scriptAnimationRows = [Convert]::ToInt64($scriptRows.Count)
     $invalidBoundaryRowCount = [Convert]::ToInt64($invalidBoundaryRows.Count)
     $visibleRendererRowCount = [Convert]::ToInt64($visibleRendererRows.Count)
+    $subtreeVisibleRendererRowCount = [Convert]::ToInt64($subtreeVisibleRendererRows.Count)
+    $subtreeSkinnedRendererRowCount = [Convert]::ToInt64($subtreeSkinnedRendererRows.Count)
+    $subtreeTruncatedRowCount = [Convert]::ToInt64($subtreeTruncatedRows.Count)
     $animatorRowCount = [Convert]::ToInt64($animatorRows.Count)
 
     # 这里只读报告并压成 smoke 摘要；脚本动画语义仍然需要游戏脚本解释，不能升级成默认候选。
@@ -150,10 +162,16 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryJsonLines += '  "scriptAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationRows) + ","
     $summaryJsonLines += '  "invalidBoundaryRows": ' + (ConvertTo-SmokeJsonLiteral $invalidBoundaryRowCount) + ","
     $summaryJsonLines += '  "visibleRendererRows": ' + (ConvertTo-SmokeJsonLiteral $visibleRendererRowCount) + ","
+    $summaryJsonLines += '  "subtreeVisibleRendererRows": ' + (ConvertTo-SmokeJsonLiteral $subtreeVisibleRendererRowCount) + ","
+    $summaryJsonLines += '  "subtreeSkinnedRendererRows": ' + (ConvertTo-SmokeJsonLiteral $subtreeSkinnedRendererRowCount) + ","
+    $summaryJsonLines += '  "subtreeTruncatedRows": ' + (ConvertTo-SmokeJsonLiteral $subtreeTruncatedRowCount) + ","
     $summaryJsonLines += '  "animatorRows": ' + (ConvertTo-SmokeJsonLiteral $animatorRowCount) + ","
     $summaryJsonLines += '  "firstScriptName": ' + (ConvertTo-SmokeJsonLiteral $firstScriptName) + ","
     $summaryJsonLines += '  "firstFieldPath": ' + (ConvertTo-SmokeJsonLiteral $firstFieldPath) + ","
-    $summaryJsonLines += '  "firstClipName": ' + (ConvertTo-SmokeJsonLiteral $firstClipName)
+    $summaryJsonLines += '  "firstClipName": ' + (ConvertTo-SmokeJsonLiteral $firstClipName) + ","
+    $summaryJsonLines += '  "firstSubtreeVisibleRendererCount": ' + (ConvertTo-SmokeJsonLiteral $firstSubtreeVisibleRendererCount) + ","
+    $summaryJsonLines += '  "firstSubtreeSkinnedMeshRendererCount": ' + (ConvertTo-SmokeJsonLiteral $firstSubtreeSkinnedMeshRendererCount) + ","
+    $summaryJsonLines += '  "firstSubtreeVisibleSamples": ' + (ConvertTo-SmokeJsonLiteral $firstSubtreeVisibleSamples 5)
     $summaryJsonLines += "}"
     return (($summaryJsonLines -join [Environment]::NewLine) | ConvertFrom-Json)
 }
@@ -643,6 +661,9 @@ if ($fxScriptAnimationDiagnostic.invalidBoundaryRows -ne 0) {
 }
 if ($fxScriptAnimationDiagnostic.visibleRendererRows -ne 0 -or $fxScriptAnimationDiagnostic.animatorRows -lt 1) {
     throw "FxAttack script diagnostic no longer looks like a non-rendered animation control node. visibleRendererRows=$($fxScriptAnimationDiagnostic.visibleRendererRows) animatorRows=$($fxScriptAnimationDiagnostic.animatorRows)"
+}
+if ($fxScriptAnimationDiagnostic.subtreeTruncatedRows -ne 0) {
+    throw "FxAttack bounded script-animation subtree diagnostic was truncated. truncatedRows=$($fxScriptAnimationDiagnostic.subtreeTruncatedRows)"
 }
 
 $scriptAnimationComponentDiagnostics = [pscustomobject]@{
@@ -1649,13 +1670,16 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $fxScript.candidateCount "0"),
             (ConvertTo-SmokeText $fxScript.scriptAnimationRows "0"),
             (ConvertTo-SmokeText $fxScript.invalidBoundaryRows "0")))
-        $reportLines.Add(('-   Fx first script=`{0}`, field=`{1}`, clip=`{2}`, visibleRendererRows=`{3}`, animatorRows=`{4}`' -f `
+        $reportLines.Add(('-   Fx first script=`{0}`, field=`{1}`, clip=`{2}`, visibleRendererRows=`{3}`, subtreeVisibleRows=`{4}`, subtreeSkinnedRows=`{5}`, subtreeTruncatedRows=`{6}`, animatorRows=`{7}`' -f `
             (ConvertTo-SmokeText $fxScript.firstScriptName ""),
             (ConvertTo-SmokeText $fxScript.firstFieldPath ""),
             (ConvertTo-SmokeText $fxScript.firstClipName ""),
             (ConvertTo-SmokeText $fxScript.visibleRendererRows "0"),
+            (ConvertTo-SmokeText $fxScript.subtreeVisibleRendererRows "0"),
+            (ConvertTo-SmokeText $fxScript.subtreeSkinnedRendererRows "0"),
+            (ConvertTo-SmokeText $fxScript.subtreeTruncatedRows "0"),
             (ConvertTo-SmokeText $fxScript.animatorRows "0")))
-        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi proves normal visible model selection is not promoted; FxAttack proves local SimpleAnimation-style clip PPtrs are retained as diagnostic evidence only, not default model-animation candidates.')
+        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi proves normal visible model selection is not promoted; FxAttack proves local SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
     }
     else {
         $reportLines.Add(('- Selected-model script AnimationClip diagnostic: `{0}`' -f $scriptAnimationComponentDiagnostics.status))

@@ -171,7 +171,7 @@ namespace AnimeStudio.CLI
                 ["sharedAvatarBridgeRule"] = "sharedAvatarController rows require a MonoBehaviour config that points to the selected prefab and an Avatar, plus an Animator that explicitly uses the same Avatar and controller clips. They are deterministic candidates, not visual proof; model gate, TRS export and screenshots must still pass.",
                 ["animatorDiagnosticRule"] = "Diagnostics list matching GameObjects and their Animator/Controller/Clip state. They explain why explicit candidates may be zero, but they do not create or imply a model-animation binding.",
                 ["monoBehaviourPPtrDiagnosticRule"] = "Diagnostics list MonoBehaviour PPtr fields that point at the selected model, plus sibling PPtr fields from the same MonoBehaviour. These are deterministic config clues only; they do not become playable animation candidates unless a model-first gate and explicit animation relation are also proven.",
-                ["scriptAnimationComponentDiagnosticRule"] = "Diagnostics list AnimationClip PPtr fields on MonoBehaviour components attached to the selected GameObject and its direct children only. These rows are local script-animation clues, not default model-animation candidates; deeper hierarchy scans must stay explicit and bounded.",
+                ["scriptAnimationComponentDiagnosticRule"] = "Diagnostics list AnimationClip PPtr fields on MonoBehaviour components attached to the selected GameObject and its direct children. Each row also includes a bounded subtree visibility summary for local context. These rows are script-animation clues, not default model-animation candidates; deeper or broader scans must stay explicit and bounded.",
                 ["avatarTosClipDiagnosticRule"] = "Diagnostics list AnimationClip binding pathHash coverage against the selected model's explicit Animator.avatar -> Avatar.m_TOS table. This is structural evidence for Naraka hash-only path recovery only; it is not a default model-animation relation and must not bypass Animator/Controller context, model validation, TRS export, or visual review.",
                 ["modelVisibilityDiagnosticRule"] = "Diagnostics count Renderer/Animator components under the selected GameObject hierarchy. They only explain whether a selected source object looks like a visible model root; real model readiness still requires exported glTF, material/texture/skin/bbox validation, and visual review.",
                 ["modelAvatarCompatibilityDiagnosticRule"] = "Diagnostics compare selected model Transform evidence against Avatar TOS/oracle paths. This is structural compatibility only: it must not create default model-animation relations, bypass explicit Animator/Controller context, or mark Humanoid/Muscle animation playable.",
@@ -927,10 +927,19 @@ LIMIT $limit;");
                 var gameObjectName = LoadSourceObjectName(connection, gameObject);
                 var gameObjectDepth = gameObject.PathId == model.PathId && string.Equals(gameObject.SerializedFile, model.SerializedFile, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
                 var components = LoadComponentsForGameObject(connection, gameObject);
+                var monoBehaviourComponents = components
+                    .Where(x => string.Equals(x.Type, "MonoBehaviour", StringComparison.Ordinal))
+                    .ToList();
+                if (monoBehaviourComponents.Count == 0)
+                {
+                    continue;
+                }
+
                 var visibleRendererCount = components.Count(x => string.Equals(x.Type, "MeshRenderer", StringComparison.Ordinal) || string.Equals(x.Type, "SkinnedMeshRenderer", StringComparison.Ordinal));
                 var animatorCount = components.Count(x => string.Equals(x.Type, "Animator", StringComparison.Ordinal));
                 var rectTransformCount = components.Count(x => string.Equals(x.Type, "RectTransform", StringComparison.Ordinal));
-                foreach (var component in components.Where(x => string.Equals(x.Type, "MonoBehaviour", StringComparison.Ordinal)))
+                var subtreeVisibility = LoadScriptAnimationSubtreeVisibility(connection, gameObject, maxDepth: 4, maxGameObjects: 160);
+                foreach (var component in monoBehaviourComponents)
                 {
                     result.AddRange(LoadScriptAnimationClipRefsForMonoBehaviour(
                         connection,
@@ -941,6 +950,7 @@ LIMIT $limit;");
                         visibleRendererCount,
                         animatorCount,
                         rectTransformCount,
+                        subtreeVisibility,
                         component,
                         Math.Max(1, limit - result.Count)));
                     if (result.Count >= limit)
@@ -962,6 +972,7 @@ LIMIT $limit;");
             int visibleRendererCount,
             int animatorCount,
             int rectTransformCount,
+            ScriptAnimationSubtreeVisibility subtreeVisibility,
             ComponentRow monoBehaviour,
             int limit)
         {
@@ -1018,6 +1029,14 @@ LIMIT $limit;");
                     visibleRendererCount,
                     animatorCount,
                     rectTransformCount,
+                    subtreeVisibility?.GameObjectCount ?? 0,
+                    subtreeVisibility?.MeshRendererCount ?? 0,
+                    subtreeVisibility?.SkinnedMeshRendererCount ?? 0,
+                    subtreeVisibility?.AnimatorCount ?? 0,
+                    subtreeVisibility?.RectTransformCount ?? 0,
+                    subtreeVisibility?.MaxDepth ?? 0,
+                    subtreeVisibility?.Truncated ?? false,
+                    subtreeVisibility?.VisibleGameObjectSamples ?? new List<string>(),
                     monoBehaviour.SerializedFile,
                     monoBehaviour.PathId,
                     ReadString(reader, 0),
@@ -1049,6 +1068,136 @@ LIMIT $limit;");
                 .GroupBy(x => (x.SerializedFile ?? string.Empty) + "\n" + x.PathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
                 .Select(x => x.First())
                 .ToList();
+        }
+
+        private static ScriptAnimationSubtreeVisibility LoadScriptAnimationSubtreeVisibility(SqliteConnection connection, SourceObjectKey gameObject, int maxDepth, int maxGameObjects)
+        {
+            var rootTransform = LoadTransformForGameObject(connection, gameObject);
+            if (rootTransform == null)
+            {
+                var rootComponents = LoadComponentsForGameObject(connection, gameObject);
+                return BuildScriptAnimationSubtreeVisibility(
+                    connection,
+                    new List<SourceObjectKey> { gameObject },
+                    new Dictionary<string, List<ComponentRow>>(StringComparer.Ordinal)
+                    {
+                        [BuildObjectKey(gameObject.SerializedFile, gameObject.PathId)] = rootComponents,
+                    },
+                    maxDepth: 0,
+                    truncated: false);
+            }
+
+            var gameObjects = new List<SourceObjectKey>();
+            var componentsByGameObject = new Dictionary<string, List<ComponentRow>>(StringComparer.Ordinal);
+            var visitedTransforms = new HashSet<SourceObjectKey>();
+            var queue = new Queue<(SourceObjectKey Transform, int Depth)>();
+            var observedMaxDepth = 0;
+            var truncated = false;
+            queue.Enqueue((rootTransform, 0));
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                if (!visitedTransforms.Add(current.Transform))
+                {
+                    continue;
+                }
+
+                observedMaxDepth = Math.Max(observedMaxDepth, current.Depth);
+                var currentGameObject = LoadGameObjectForTransform(connection, current.Transform);
+                if (currentGameObject != null)
+                {
+                    var key = BuildObjectKey(currentGameObject.SerializedFile, currentGameObject.PathId);
+                    if (!componentsByGameObject.ContainsKey(key))
+                    {
+                        gameObjects.Add(currentGameObject);
+                        componentsByGameObject[key] = LoadComponentsForGameObject(connection, currentGameObject);
+                    }
+                }
+
+                if (gameObjects.Count >= maxGameObjects)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                if (current.Depth >= maxDepth)
+                {
+                    continue;
+                }
+
+                foreach (var child in LoadChildTransforms(connection, current.Transform))
+                {
+                    queue.Enqueue((child, current.Depth + 1));
+                }
+            }
+
+            return BuildScriptAnimationSubtreeVisibility(connection, gameObjects, componentsByGameObject, observedMaxDepth, truncated);
+        }
+
+        private static ScriptAnimationSubtreeVisibility BuildScriptAnimationSubtreeVisibility(
+            SqliteConnection connection,
+            IReadOnlyList<SourceObjectKey> gameObjects,
+            IReadOnlyDictionary<string, List<ComponentRow>> componentsByGameObject,
+            int maxDepth,
+            bool truncated)
+        {
+            var meshRendererCount = 0;
+            var skinnedMeshRendererCount = 0;
+            var animatorCount = 0;
+            var rectTransformCount = 0;
+            var visibleSamples = new List<string>();
+
+            foreach (var gameObject in gameObjects ?? Array.Empty<SourceObjectKey>())
+            {
+                var key = BuildObjectKey(gameObject.SerializedFile, gameObject.PathId);
+                if (!componentsByGameObject.TryGetValue(key, out var components))
+                {
+                    components = LoadComponentsForGameObject(connection, gameObject);
+                }
+
+                var hasVisibleRenderer = false;
+                foreach (var component in components)
+                {
+                    if (string.Equals(component.Type, "MeshRenderer", StringComparison.Ordinal))
+                    {
+                        meshRendererCount++;
+                        hasVisibleRenderer = true;
+                    }
+                    else if (string.Equals(component.Type, "SkinnedMeshRenderer", StringComparison.Ordinal))
+                    {
+                        skinnedMeshRendererCount++;
+                        hasVisibleRenderer = true;
+                    }
+                    else if (string.Equals(component.Type, "Animator", StringComparison.Ordinal))
+                    {
+                        animatorCount++;
+                    }
+                    else if (string.Equals(component.Type, "RectTransform", StringComparison.Ordinal))
+                    {
+                        rectTransformCount++;
+                    }
+                }
+
+                if (hasVisibleRenderer && visibleSamples.Count < 8)
+                {
+                    var name = LoadSourceObjectName(connection, gameObject);
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        visibleSamples.Add(name);
+                    }
+                }
+            }
+
+            return new ScriptAnimationSubtreeVisibility(
+                gameObjects?.Count ?? 0,
+                meshRendererCount,
+                skinnedMeshRendererCount,
+                animatorCount,
+                rectTransformCount,
+                maxDepth,
+                truncated,
+                visibleSamples);
         }
 
         private static ModelTransformEvidence LoadModelTransformEvidence(SqliteConnection connection, ModelRow model, int maxTransforms)
@@ -1208,6 +1357,53 @@ LIMIT 1;");
             command.Parameters.AddWithValue("$transformFile", transform.SerializedFile ?? string.Empty);
             command.Parameters.AddWithValue("$transformPathId", transform.PathId);
             return Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        private static SourceObjectKey LoadGameObjectForTransform(SqliteConnection connection, SourceObjectKey transform)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT go.serialized_file, go.path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects go
+  ON go.serialized_file = rel.to_file
+ AND go.path_id = rel.to_path_id
+ AND go.type = 'GameObject'
+WHERE rel.from_file = $transformFile
+  AND rel.from_path_id = $transformPathId
+  AND rel.relation = 'component.gameObject'
+LIMIT 1;");
+            command.Parameters.AddWithValue("$transformFile", transform.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$transformPathId", transform.PathId);
+
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1))
+                : null;
+        }
+
+        private static SourceObjectKey LoadTransformForGameObject(SqliteConnection connection, SourceObjectKey gameObject)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT comp.serialized_file, comp.path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects comp
+  ON comp.serialized_file = rel.to_file
+ AND comp.path_id = rel.to_path_id
+ AND comp.type IN ('Transform', 'RectTransform')
+WHERE rel.from_file = $gameObjectFile
+  AND rel.from_path_id = $gameObjectPathId
+  AND rel.relation = 'gameObject.component'
+ORDER BY CASE WHEN comp.type = 'Transform' THEN 0 ELSE 1 END
+LIMIT 1;");
+            command.Parameters.AddWithValue("$gameObjectFile", gameObject.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$gameObjectPathId", gameObject.PathId);
+
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1))
+                : null;
         }
 
         private static string LoadSourceObjectName(SqliteConnection connection, SourceObjectKey sourceObject)
@@ -2796,6 +2992,19 @@ LIMIT $limit;";
                     ["visibleRendererCount"] = row.VisibleRendererCount,
                     ["animatorCount"] = row.AnimatorCount,
                     ["rectTransformCount"] = row.RectTransformCount,
+                    ["subtree"] = new JObject
+                    {
+                        ["rule"] = "该子树统计包含当前脚本节点和受限深度后代，只用于判断脚本动画线索附近是否有可见对象；它不证明 AnimationClip 会驱动这些 Renderer。",
+                        ["gameObjectCount"] = row.SubtreeGameObjectCount,
+                        ["visibleRendererCount"] = row.SubtreeMeshRendererCount + row.SubtreeSkinnedMeshRendererCount,
+                        ["meshRendererCount"] = row.SubtreeMeshRendererCount,
+                        ["skinnedMeshRendererCount"] = row.SubtreeSkinnedMeshRendererCount,
+                        ["animatorCount"] = row.SubtreeAnimatorCount,
+                        ["rectTransformCount"] = row.SubtreeRectTransformCount,
+                        ["maxDepth"] = row.SubtreeMaxDepth,
+                        ["truncated"] = row.SubtreeTruncated,
+                        ["visibleGameObjectSamples"] = new JArray(row.SubtreeVisibleGameObjectSamples ?? Array.Empty<string>()),
+                    },
                 },
                 ["monoBehaviour"] = new JObject
                 {
@@ -3102,6 +3311,14 @@ LIMIT $limit;";
             int VisibleRendererCount,
             int AnimatorCount,
             int RectTransformCount,
+            int SubtreeGameObjectCount,
+            int SubtreeMeshRendererCount,
+            int SubtreeSkinnedMeshRendererCount,
+            int SubtreeAnimatorCount,
+            int SubtreeRectTransformCount,
+            int SubtreeMaxDepth,
+            bool SubtreeTruncated,
+            IReadOnlyList<string> SubtreeVisibleGameObjectSamples,
             string MonoBehaviourSerializedFile,
             long MonoBehaviourPathId,
             string MonoBehaviourName,
@@ -3113,6 +3330,16 @@ LIMIT $limit;";
             string AnimationSourcePath,
             string AnimationSerializedFile,
             long AnimationPathId);
+
+        private sealed record ScriptAnimationSubtreeVisibility(
+            int GameObjectCount,
+            int MeshRendererCount,
+            int SkinnedMeshRendererCount,
+            int AnimatorCount,
+            int RectTransformCount,
+            int MaxDepth,
+            bool Truncated,
+            IReadOnlyList<string> VisibleGameObjectSamples);
 
         private sealed record ModelVisibilityDiagnosticRow(
             string ModelName,
