@@ -8,7 +8,7 @@
 
 当前 Naraka P0/P1 静态素材库链路已经可用：`StreamingAssets` 输入、Naraka header 修正、源索引、定向 Library 导出、共享贴图、材质 sidecar、`asset_library.json`、`library_index.db`、glTF 校验和浏览器索引验证都能跑通。
 
-动画仍是 P2 诊断阶段。当前已有手动 `--preview_avatar` 入口能把源索引里的 Avatar.m_TOS 临时注入，用于 hash-only TRS 动画路径恢复诊断；但它不会创建默认模型-动画关系，也不能让 `asset_library.json.capabilities.animations` 变成 `true`。生产动画能力还需要继续找到完整角色、Avatar、Controller/Clip 或其它 Unity 显式关系，并补足清晰视觉验收。
+动画仍是 P2 诊断阶段。当前已有手动 `--preview_avatar` 入口能把源索引里的 Avatar.m_TOS 或 Avatar oracle 临时注入，用于 hash-only TRS 动画路径恢复和显式 Humanoid/Muscle 求解诊断；但它不会创建默认模型-动画关系，也不能让 `asset_library.json.capabilities.animations` 变成 `true`。生产动画能力还需要继续找到完整角色、Avatar、Controller/Clip 或其它 Unity 显式关系，并补足清晰视觉验收。
 
 ## 输入形态
 
@@ -58,6 +58,8 @@ zhumu_soul_attack_prefab: models=1 textures=10 material_sidecars=2 texture_links
 这类样本不应被归类为贴图丢失或材质错绑；它们说明 Mesh、UV、贴图引用和原始材质槽已经确定性保留，但仍需要 Naraka 私有 shader 复刻或人工材质重建。
 smoke 会额外检查 `material_sidecars` 中的自定义 shader 行是否保留 `key_texture_slots_json`、`exported_textures_json`、`unresolved_steps_json`、`raw_json` 和 Unity `m_Shader` PPtr 引用。新建索引会把 shader 引用写入 `shader_reference_json`，并用 `shader_name_status=referenceOnly` 区分“已保留原始 shader 引用但当前无法解析名称”。`sqlite_index_summary.json.qualityGates` 也会写出 `shaderReferenceSidecars`、`shaderReferenceOnlySidecars`、`customShaderReferenceSidecars` 和 `customShaderMissingNameSidecars`，方便 smoke 和人工报告直接判断。`shader_name` 目前在既有 Face 样本中仍为空，smoke 会记录 `missingShaderNameRows` 作为后续上游材质 sidecar 追踪项，但不把少量私有 shader 名缺失误判成贴图丢失或材质错绑。
 通用 glTF 模型导出路径也已补齐 catalog 顶层 `materialNeedsCustomShaderLayer` 汇总：即使某个材质同时能生成 `standardGltfMaterial` 级别的 base color / normal 预览，只要 glTF `extras.animeStudioMaterial` 里存在 `needsCustomShaderLayer`、`customShaderRequired` 或 `layeredMaterialUnresolved`，模型行仍会保留这个私有 shader 风险标记。SQLite `assets.material_needs_custom_shader_layer` 和动画门禁可直接读取该字段，不需要绕到单个 material sidecar 才能发现“需要私有 shader/人工材质重建”状态。
+
+如果后续遇到更多 `_IrisDiffuseTex`、`_IrisNormalTex`、`_IrisSpecTex` 或类似 Naraka 私有 shader 分层槽，当前验收口径保持不变：Mesh、UV、Renderer 材质槽、原始贴图引用和已导出贴图能确定性保留时，应归类为 `unsupportedShader` / `customShaderRequired` / `layeredMaterialUnresolved`，而不是贴图丢失或材质错绑。best-effort PBR 预览可以保留，但必须继续标记为降级预览，不能为了接近游戏画面而硬猜通道混合或覆盖 Unity 原始材质数据。
 
 ## 可复现命令
 
@@ -187,6 +189,22 @@ gltf-transform validate "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current\
 ```
 
 ## 动画当前能力
+
+2026-06-26 追加 Zhumu `SimpleAnimation` 定向 Clip 探针：`mo_pve_b_zhumu2_attack_a4_01_soul` 来源为 `4/f/4fd035612d51ea0f|CAB-6fdd8ff580c579cc6a7b605e4f718290`、`pathId=-3269044911608736500`。最初用 `--types AnimationClip:Both --export_full_decoded_animation_curves --source_files 4\f\4fd035612d51ea0f --path_ids -3269044911608736500` 导出时，`AnimationClipExtensions.FindTOS` 在扫描上下文里的 `Animator` / `Animation` / `GameObject` TOS 来源时遇到空 PPtr 并抛出 `NullReferenceException`。这不是 Clip 本体坏，也不是材质/贴图问题；缺失的 TOS 来源只能让路径映射降级，不能让 AnimationClip 导出中断。
+
+修复后同一命令能导出 sidecar：
+
+```text
+D:\Assets\Naraka\Zhumu_AttackA4_SimpleAnimationClip_DecodedProbe_AfterTosGuard_Current\Animations\mo\mo_pve_b_zhumu2_attack_a4_01_soul.animation_asset.json
+```
+
+sidecar 状态为 `animationType=MixedHumanoidTransform`、`decoded.status=ok`、`bindingSource=AnimationClip.m_ClipBindingConstant`，共有 131 个 binding，其中 111 个 `HumanoidMuscle`、20 个 `Transform`。普通文件入口不强制内部求解时会正确失败并写报告：`playbackKind=MixedHumanoidMuscleAndTransformTrs`，直接 Transform 曲线没有匹配到模型 glTF 节点，主体身体动作必须先走 Humanoid/Muscle 求解。显式传 `--preview_avatar base_model_female_165cm_skeletonAvatar --preview_force_internal_humanoid_solve` 后，工具能生成诊断用无 mesh 独立动画 glTF：
+
+```text
+D:\Assets\Naraka\Zhumu_AttackA4_StandaloneAnimationGltfProbe_ForcedInternal_Current\mo_pve_b_zhumu2_attack_a4_01_soul.animation.gltf
+```
+
+`gltf-transform inspect` 显示该文件包含 1 个动画、23 个 channel、757 个 keyframe；报告消息为 `experimental_solved_known_limb_formula_risk`。这说明 AnimeStudio 的 Naraka Humanoid/Muscle 诊断链路已经能从脚本动画 Clip 走到 glTF TRS 输出，但仍是显式手动预览和内部 solver 实验结果，`avatarInjection.diagnosticOnly=true`、`notDefaultModelAnimationRelation=true`，不能写入默认 `model_animations.json` 推荐关系，也不能改变 `capabilities.animations=false`。
 
 当前已验证一个诊断正样本：
 

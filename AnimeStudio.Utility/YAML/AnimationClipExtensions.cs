@@ -94,7 +94,13 @@ namespace AnimeStudio
         }
         private static bool AddAnimatorTOS(this AnimationClip clip, Animator animator, Dictionary<uint, string> tos)
         {
-            if (animator.m_Avatar.TryGet(out var avatar))
+            // 依赖闭包里可能只有 Clip，没有完整 Animator/Avatar；TOS 缺失只降级路径映射，不能中断动画导出。
+            if (animator == null)
+            {
+                return false;
+            }
+
+            if (animator.m_Avatar != null && animator.m_Avatar.TryGet(out var avatar))
             {
                 if (clip.AddAvatarTOS(avatar, tos))
                 {
@@ -107,7 +113,7 @@ namespace AnimeStudio
         }
         private static bool AddAnimationTOS(this AnimationClip clip, Animation animation, Dictionary<uint, string> tos)
         {
-            if (animation.m_GameObject.TryGet(out var go))
+            if (animation?.m_GameObject != null && animation.m_GameObject.TryGet(out var go))
             {
                 Dictionary<uint, string> animationTOS = go.BuildTOS();
                 return clip.AddTOS(animationTOS, tos);
@@ -142,7 +148,7 @@ namespace AnimeStudio
         }
         private static bool IsAnimatorContainsClip(this AnimationClip clip, Animator animator)
         {
-            if (animator.m_Controller.TryGet(out var runtime))
+            if (animator?.m_Controller != null && animator.m_Controller.TryGet(out var runtime))
             {
                 return runtime.IsContainsAnimationClip(clip);
             }
@@ -255,11 +261,16 @@ namespace AnimeStudio
         
         private static Dictionary<uint, string> BuildTOS(this Animator animator)
         {
+            if (animator == null)
+            {
+                return null;
+            }
+
             if (animator.version[0] > 4 || (animator.version[0] == 4 && animator.version[1] >= 3))
             {
                 if (animator.m_HasTransformHierarchy)
                 {
-                    if (animator.m_GameObject.TryGet(out var go))
+                    if (animator.m_GameObject != null && animator.m_GameObject.TryGet(out var go))
                     {
                         return go.BuildTOS();
                     }
@@ -271,7 +282,7 @@ namespace AnimeStudio
             }
             else
             {
-                if (animator.m_GameObject.TryGet(out var go))
+                if (animator.m_GameObject != null && animator.m_GameObject.TryGet(out var go))
                 {
                     return go.BuildTOS();
                 }
@@ -280,6 +291,11 @@ namespace AnimeStudio
         }
         private static Dictionary<uint, string> BuildTOS(this GameObject gameObject)
         {
+            if (gameObject == null || gameObject.m_Transform == null)
+            {
+                return null;
+            }
+
             Dictionary<uint, string> tos = new Dictionary<uint, string>() { { 0, string.Empty } };
             gameObject.BuildTOS(string.Empty, tos);
             return tos;
@@ -287,11 +303,16 @@ namespace AnimeStudio
         private static void BuildTOS(this GameObject parent, string parentPath, Dictionary<uint, string> tos)
         {
             Transform transform = parent.m_Transform;
+            if (transform?.m_Children == null)
+            {
+                return;
+            }
+
             foreach (PPtr<Transform> childPtr in transform.m_Children)
             {
-                if (childPtr.TryGet(out var childTransform))
+                if (childPtr != null && childPtr.TryGet(out var childTransform))
                 {
-                    if (childTransform.m_GameObject.TryGet(out var child))
+                    if (childTransform.m_GameObject != null && childTransform.m_GameObject.TryGet(out var child))
                     {
                         string path = parentPath != string.Empty ? parentPath + '/' + child.m_Name : child.m_Name;
                         var pathHash = CRC.CalculateDigestUTF8(path);
