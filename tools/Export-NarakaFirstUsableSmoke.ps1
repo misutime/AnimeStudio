@@ -507,9 +507,14 @@ function Test-ModelReportEntrypoints {
         [string]$AssetCatalogPath
     )
 
-    Test-FileRequired -Path (Join-Path $LibraryRoot "LIBRARY_README.md") -Label "LIBRARY_README.md"
+    $libraryReadmePath = Join-Path $LibraryRoot "LIBRARY_README.md"
+    Test-FileRequired -Path $libraryReadmePath -Label "LIBRARY_README.md"
     Test-FileRequired -Path (Join-Path $LibraryRoot "SQLITE_INDEX_README.md") -Label "SQLITE_INDEX_README.md"
     Test-FileRequired -Path $AssetCatalogPath -Label "asset_catalog.jsonl"
+    $libraryReadmeText = Get-Content -LiteralPath $libraryReadmePath -Raw -Encoding UTF8
+    if ($libraryReadmeText -notmatch "## 动画支持状态") {
+        throw "LIBRARY_README.md missing animation support status section."
+    }
 
     $modelRows = @()
     foreach ($catalogLine in Get-Content -LiteralPath $AssetCatalogPath -Encoding UTF8) {
@@ -570,6 +575,7 @@ function Test-ModelReportEntrypoints {
         assetReadmeCount = [int]$modelRows.Count
         materialReportCount = [int]$modelRows.Count
         rootReadme = "LIBRARY_README.md"
+        rootReadmeAnimationStatus = "ok"
         sqliteReadme = "SQLITE_INDEX_README.md"
         missingAssetReadmes = $missingAssetReadmes
         missingMaterialReports = $missingMaterialReports

@@ -103,6 +103,8 @@ namespace AnimeStudio.CLI
             sb.AppendLine($"- 模块组装条目: `{(int?)assemblies?["assemblyCount"] ?? 0}`");
             sb.AppendLine();
 
+            AppendLibraryAnimationStatus(sb, compact);
+
             sb.AppendLine("## 设计原则");
             sb.AppendLine();
             sb.AppendLine("- 模型和动画默认分离：模型保持干净，动画独立入库。");
@@ -112,6 +114,67 @@ namespace AnimeStudio.CLI
             sb.AppendLine();
 
             File.WriteAllText(Path.Combine(savePath, "LIBRARY_README.md"), sb.ToString(), Encoding.UTF8);
+        }
+
+        private static void AppendLibraryAnimationStatus(StringBuilder sb, JObject compact)
+        {
+            var animationCount = (compact?["animations"] as JArray)?.Count ?? 0;
+            var candidateCount = CountCompactAnimationCandidates(compact);
+            var compactModels = (compact?["models"] as JArray)?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var gates = compactModels
+                .Select(x => x["modelAnimationGate"] as JObject)
+                .Where(x => x != null)
+                .ToArray();
+            var readyGateCount = gates.Count(x => string.Equals((string)x["status"], "ready", StringComparison.OrdinalIgnoreCase));
+            var blockedGateCount = gates.Count(x => string.Equals((string)x["status"], "blocked", StringComparison.OrdinalIgnoreCase));
+            var readyModelCount = compactModels.Count(x => (bool?)x["modelReadyForAnimation"] == true);
+            var reasonCounts = CountGateReasons(gates);
+
+            sb.AppendLine("## 动画支持状态");
+            sb.AppendLine();
+            if (animationCount == 0 && candidateCount == 0)
+            {
+                sb.AppendLine("- 当前正式库没有生产动画资产或默认模型-动画候选。");
+                sb.AppendLine("- 这表示动画仍处于诊断或待绑定阶段，不代表模型、骨骼、贴图和材质不可用。");
+            }
+            else
+            {
+                sb.AppendLine($"- 动画资产: `{animationCount}`");
+                sb.AppendLine($"- 默认模型-动画候选: `{candidateCount}`");
+            }
+
+            sb.AppendLine($"- 模型动画门禁: ready `{readyGateCount}` / blocked `{blockedGateCount}` / modelReady `{readyModelCount}`");
+            if (reasonCounts.Count > 0)
+            {
+                sb.AppendLine("- 主要阻塞原因:");
+                foreach (var pair in reasonCounts.Take(6))
+                {
+                    sb.AppendLine($"  - `{pair.Key}`: `{pair.Value}`");
+                }
+            }
+
+            sb.AppendLine("- 详细机器依据在 `model_animations.compact.json` 和 `model_animations.json`；结构兼容、脚本字段或 Avatar/TOS 线索只有通过显式关系、TRS 导出和视觉验收后，才能升级为生产动画。");
+            sb.AppendLine();
+        }
+
+        private static int CountCompactAnimationCandidates(JObject compact)
+        {
+            return (compact?["modelAnimationRefs"] as JArray)?
+                .OfType<JObject>()
+                .SelectMany(x => (x["candidates"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                .Count() ?? 0;
+        }
+
+        private static List<KeyValuePair<string, int>> CountGateReasons(IEnumerable<JObject> gates)
+        {
+            return gates
+                .SelectMany(x => (x["reasons"] as JArray)?.Values<string>() ?? Enumerable.Empty<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new KeyValuePair<string, int>(x.Key, x.Count()))
+                .OrderByDescending(x => x.Value)
+                .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private static string BuildReadme(

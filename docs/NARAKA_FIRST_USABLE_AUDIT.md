@@ -102,6 +102,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 随后补充动画诊断摘要的生产门槛字段：`scriptAnimationComponentDiagnosticSummary`、`avatarTosClipDiagnosticSummary` 和 `modelAvatarCompatibilityDiagnosticSummary` 都会写 `productionReadiness=blocked` 与 `blockedProductionRequirements`，把缺少脚本语义、显式动画关系、模型 glTF 验证、动画 TRS 导出和视觉验收这些原因机器化。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_AnimationBlockedFields_Quick_Current`（`-SkipBrowserValidation`）通过：FxAttack 脚本诊断 blocked requirements 为 `scriptSemantics,validatedModelGltf,animationTrsExport,visualReview`；Dijiang Avatar/TOS 诊断为 `explicitAnimatorControllerOrAnimationClipRelation,validatedModelGltf,animationTrsExport,visualReview`；SamuraiGhost 模型-Avatar 兼容诊断为 `explicitAnimationClipRelation,validatedModelGltf,animationTrsExport,visualReview`；三者 `invalidBoundaryRows=0` 且 `capabilities.animations=false`。这只是把“为什么还不能升级生产动画”从说明文字变成可校验字段，不改变当前动画支持等级。
 
+随后补充正式 Library 人读入口的动画支持状态。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_LibraryAnimationStatus_StaticQuick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过，`modelReportEntrypoints.rootReadmeAnimationStatus=ok`；`RepresentativeModels\LIBRARY_README.md` 现在会写“当前正式库没有生产动画资产或默认模型-动画候选”，并列出模型动画门禁 `ready=2 / blocked=1 / modelReady=2`，主要阻塞原因为 `material_customization_tint_not_ready` 和 `modular_character_incomplete`。这让打开素材库根目录的人也能看到动画支持等级，而不是只在 smoke 外层或 JSON 里看到 `capabilities.animations=false`。
+
 同日补充 Hadi 模块化边界 smoke：脚本会读取默认代表模型的 `asset_catalog.jsonl` 行，要求 `ch_m_hadi_lv_s9` 继续标记为 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，且 `modelCompletenessMissingRoles` 至少包含 `Face` 和 `Hair`。该门禁保护“body/服装部件可作为模型素材使用，但不能当完整角色或生产动画 smoke 样本”的结论。
 
 输入探针：
