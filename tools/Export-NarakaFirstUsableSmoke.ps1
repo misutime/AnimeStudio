@@ -1923,6 +1923,18 @@ else {
     $zhumuMergedAnimationPreview.status = "skipped"
 }
 
+if ($zhumuMergedAnimationPreview.status -eq "ok") {
+    if ([string]$zhumuMergedAnimationPreview.productionReadiness -ne "blocked") {
+        throw "Zhumu merged animation preview must stay production-blocked. productionReadiness=$($zhumuMergedAnimationPreview.productionReadiness)"
+    }
+    $zhumuMergedActualBlockedRequirements = @($zhumuMergedAnimationPreview.blockedProductionRequirements | ForEach-Object { [string]$_ })
+    foreach ($requiredRequirement in $zhumuMergedBlockedProductionRequirements) {
+        if ($zhumuMergedActualBlockedRequirements -notcontains [string]$requiredRequirement) {
+            throw "Zhumu merged animation preview lost production blocked requirement: $requiredRequirement"
+        }
+    }
+}
+
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
