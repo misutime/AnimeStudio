@@ -927,6 +927,7 @@ WHERE kind='Model'
                     models.Add((reader.GetInt64(0), ReadNullableString(reader, 1), ReadNullableString(reader, 2)));
                 }
             }
+            var sharedTextureCandidates = BuildSharedTextureCandidateIndex(root);
 
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
@@ -946,7 +947,7 @@ VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes,
                     continue;
                 }
 
-                foreach (var link in ReadGltfTextureLinks(root, modelPath, model.Output))
+                foreach (var link in ReadGltfTextureLinks(root, modelPath, model.Output, sharedTextureCandidates))
                 {
                     Set(p, "$assetId", model.Id);
                     Set(p, "$textureOutput", link.Shared);
@@ -967,7 +968,35 @@ VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes,
             return count;
         }
 
-        private static IEnumerable<TextureLinkRow> ReadGltfTextureLinks(string root, string gltfPath, string modelOutput)
+        private static Dictionary<string, List<string>> BuildSharedTextureCandidateIndex(string root)
+        {
+            var textureRoot = Path.Combine(root, "Textures");
+            var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            if (!Directory.Exists(textureRoot))
+            {
+                return result;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(textureRoot, "*", SearchOption.AllDirectories))
+            {
+                if (!TextureFileExtensions.Contains(Path.GetExtension(file)))
+                {
+                    continue;
+                }
+
+                var name = Path.GetFileName(file);
+                if (!result.TryGetValue(name, out var list))
+                {
+                    list = new List<string>();
+                    result[name] = list;
+                }
+                list.Add(file);
+            }
+
+            return result;
+        }
+
+        private static IEnumerable<TextureLinkRow> ReadGltfTextureLinks(string root, string gltfPath, string modelOutput, IReadOnlyDictionary<string, List<string>> sharedTextureCandidates)
         {
             JObject gltf;
             try
@@ -1023,6 +1052,10 @@ VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes,
                         sizeBytes = info.Length;
                         sha256 = ComputeSha256(texturePath);
                         hardLinked = IsLikelyHardLinked(info) ? 1 : 0;
+                        if (TryResolveSharedTexture(root, texturePath, sha256, sizeBytes.Value, sharedTextureCandidates, out var sharedTexture))
+                        {
+                            shared = sharedTexture;
+                        }
                     }
                     else
                     {
@@ -1037,6 +1070,7 @@ VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes,
                     ["imageIndex"] = imageIndex,
                     ["uri"] = uri,
                     ["usage"] = usage,
+                    ["modelTexture"] = string.IsNullOrWhiteSpace(texturePath) ? null : MakeRelative(root, texturePath),
                     ["shared"] = shared,
                     ["sha256"] = sha256,
                     ["sizeBytes"] = sizeBytes,
@@ -1048,6 +1082,53 @@ VALUES ($assetId, $textureOutput, $usage, $source, $shared, $sha256, $sizeBytes,
 
                 yield return new TextureLinkRow(source, shared, usage, sha256, sizeBytes, extension, hardLinked, linkError, raw);
             }
+        }
+
+        private static bool TryResolveSharedTexture(
+            string root,
+            string texturePath,
+            string sha256,
+            long sizeBytes,
+            IReadOnlyDictionary<string, List<string>> sharedTextureCandidates,
+            out string shared)
+        {
+            shared = null;
+            if (string.IsNullOrWhiteSpace(texturePath) || string.IsNullOrWhiteSpace(sha256))
+            {
+                return false;
+            }
+
+            var fileName = Path.GetFileName(texturePath);
+            if (string.IsNullOrWhiteSpace(fileName)
+                || !sharedTextureCandidates.TryGetValue(fileName, out var candidates))
+            {
+                return false;
+            }
+
+            foreach (var candidate in candidates)
+            {
+                if (string.Equals(Path.GetFullPath(candidate), Path.GetFullPath(texturePath), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var info = new FileInfo(candidate);
+                if (!info.Exists || info.Length != sizeBytes)
+                {
+                    continue;
+                }
+
+                // 同名只能当候选，最终必须用内容 hash 确认，避免把不同游戏私有贴图错连。
+                if (!string.Equals(ComputeSha256(candidate), sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                shared = MakeRelative(root, candidate);
+                return true;
+            }
+
+            return false;
         }
 
         private static Dictionary<int, HashSet<string>> BuildGltfImageUsageMap(JObject gltf)
