@@ -4842,9 +4842,11 @@ SELECT
     COUNT(*) AS relation_count,
     COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
     COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count,
+    GROUP_CONCAT(DISTINCT COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS field_paths,
     MIN(r.from_source) AS sample_source,
     MIN(r.from_file) AS sample_file,
     MIN(r.from_path_id) AS sample_path_id,
+    MIN(COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS sample_field_path,
     MIN(clip.name) AS sample_clip_name
 FROM source_objects clip
 JOIN source_relations r
@@ -4871,12 +4873,14 @@ LIMIT $limit;";
                     ["relationCount"] = reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
                     ["objectCount"] = reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
                     ["distinctClipCount"] = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
+                    ["fieldPaths"] = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
                     ["sample"] = new JObject
                     {
-                        ["source"] = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
-                        ["serializedFile"] = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                        ["pathId"] = reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
-                        ["clipName"] = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                        ["source"] = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                        ["serializedFile"] = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                        ["pathId"] = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                        ["fieldPath"] = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                        ["clipName"] = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
                     },
                 });
             }

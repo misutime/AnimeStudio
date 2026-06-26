@@ -1076,11 +1076,12 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $monoClipSummary.objectCount "0"),
             (ConvertTo-SmokeText $monoClipSummary.distinctClipCount "0")))
         foreach ($scriptRow in @($monoClipSummary.topScripts | Select-Object -First 8)) {
-            $reportLines.Add(('-   {0}: relations=`{1}`, objects=`{2}`, distinctClips=`{3}`, sampleClip=`{4}`' -f `
+            $reportLines.Add(('-   {0}: relations=`{1}`, objects=`{2}`, distinctClips=`{3}`, fieldPaths=`{4}`, sampleClip=`{5}`' -f `
                 (ConvertTo-SmokeText $scriptRow.scriptName),
                 (ConvertTo-SmokeText $scriptRow.relationCount "0"),
                 (ConvertTo-SmokeText $scriptRow.objectCount "0"),
                 (ConvertTo-SmokeText $scriptRow.distinctClipCount "0"),
+                (ConvertTo-SmokeText $scriptRow.fieldPaths ""),
                 (ConvertTo-SmokeText $scriptRow.sample.clipName "")))
         }
         $reportLines.Add('- MonoBehaviour AnimationClip PPtr rule: these are explicit script-field references for investigation, but custom script semantics are required before any default model-animation binding can be created.')

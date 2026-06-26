@@ -2947,9 +2947,11 @@ SELECT
     COUNT(*) AS relation_count,
     COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
     COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count,
+    GROUP_CONCAT(DISTINCT COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS field_paths,
     MIN(r.from_source) AS sample_source,
     MIN(r.from_file) AS sample_file,
     MIN(r.from_path_id) AS sample_path_id,
+    MIN(COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS sample_field_path,
     MIN(clip.name) AS sample_clip_name
 FROM source_objects clip
 JOIN source_relations r
@@ -2976,11 +2978,13 @@ LIMIT $limit;";
                     ["relationCount"] = ReadInt64(reader, "relation_count"),
                     ["objectCount"] = ReadInt64(reader, "object_count"),
                     ["distinctClipCount"] = ReadInt64(reader, "distinct_clip_count"),
+                    ["fieldPaths"] = ReadString(reader, "field_paths"),
                     ["sample"] = new JObject
                     {
                         ["source"] = ReadString(reader, "sample_source"),
                         ["serializedFile"] = ReadString(reader, "sample_file"),
                         ["pathId"] = ReadInt64(reader, "sample_path_id"),
+                        ["fieldPath"] = ReadString(reader, "sample_field_path"),
                         ["clipName"] = ReadString(reader, "sample_clip_name"),
                     },
                 });
