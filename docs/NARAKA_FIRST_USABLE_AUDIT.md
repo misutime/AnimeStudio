@@ -104,6 +104,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 随后补充正式 Library 人读入口的动画支持状态。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_LibraryAnimationStatus_StaticQuick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过，`modelReportEntrypoints.rootReadmeAnimationStatus=ok`；`RepresentativeModels\LIBRARY_README.md` 现在会写“当前正式库没有生产动画资产或默认模型-动画候选”，并列出模型动画门禁 `ready=2 / blocked=1 / modelReady=2`，主要阻塞原因为 `material_customization_tint_not_ready` 和 `modular_character_incomplete`。这让打开素材库根目录的人也能看到动画支持等级，而不是只在 smoke 外层或 JSON 里看到 `capabilities.animations=false`。
 
+随后把同一动画支持等级写入 SQLite 机器索引。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_SqliteAnimationSupport_StaticQuick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过，`library_index.db.metadata.animationSupport.status=notProductionReady`、`productionReady=false`、`animationAssetCount=0`、`defaultModelAnimationCandidateCount=0`、`modelGateReadyCount=2`、`modelGateBlockedCount=1`、`modelReadyForAnimationCount=2`；`sqlite_index_summary.json.animationSupport` 和 `smoke_summary.json.animationSupport` 也保留同样字段。浏览器或自动化现在可以直接从 SQLite 区分“动画仍诊断/待绑定”与“索引缺失或导出失败”。
+
 同日补充 Hadi 模块化边界 smoke：脚本会读取默认代表模型的 `asset_catalog.jsonl` 行，要求 `ch_m_hadi_lv_s9` 继续标记为 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，且 `modelCompletenessMissingRoles` 至少包含 `Face` 和 `Hair`。该门禁保护“body/服装部件可作为模型素材使用，但不能当完整角色或生产动画 smoke 样本”的结论。
 
 输入探针：

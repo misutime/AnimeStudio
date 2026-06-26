@@ -457,6 +457,9 @@ function Test-AssetLibraryV1Contract {
     )
     $sqliteStatus = "toolMissing"
     $missingTables = @()
+    $animationSupportStatus = "toolMissing"
+    $animationSupportProductionReady = $null
+    $animationSupportDefaultCandidateCount = $null
     $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
     if ($null -ne $sqlite3) {
         $tableRows = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT name FROM sqlite_master WHERE type='table';"
@@ -478,6 +481,21 @@ function Test-AssetLibraryV1Contract {
             throw "AssetLibrary v1 SQLite index is missing required table(s): $($missingTables -join ', ')"
         }
         $sqliteStatus = "ok"
+
+        $animationSupportRaw = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT value FROM metadata WHERE key='animationSupport' LIMIT 1;"
+        if ($LASTEXITCODE -ne 0) {
+            throw "sqlite3 failed while checking AssetLibrary animationSupport metadata."
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$animationSupportRaw)) {
+            throw "AssetLibrary SQLite metadata missing animationSupport."
+        }
+        $animationSupportJson = ([string]$animationSupportRaw) | ConvertFrom-Json
+        $animationSupportStatus = [string]$animationSupportJson.status
+        $animationSupportProductionReady = [bool]$animationSupportJson.productionReady
+        $animationSupportDefaultCandidateCount = [long]$animationSupportJson.defaultModelAnimationCandidateCount
+        if ($animationSupportProductionReady -ne $false -or $animationSupportDefaultCandidateCount -ne 0) {
+            throw "AssetLibrary animationSupport metadata must stay non-production for Naraka smoke. productionReady=$animationSupportProductionReady candidates=$animationSupportDefaultCandidateCount"
+        }
     }
     else {
         Write-Warning "sqlite3.exe not found; AssetLibrary v1 required table check skipped."
@@ -494,6 +512,9 @@ function Test-AssetLibraryV1Contract {
         capabilitiesModels = [bool]$AssetLibrary.capabilities.models
         capabilitiesAnimations = [bool]$AssetLibrary.capabilities.animations
         sqliteTableCheck = $sqliteStatus
+        animationSupportStatus = $animationSupportStatus
+        animationSupportProductionReady = $animationSupportProductionReady
+        animationSupportDefaultCandidateCount = $animationSupportDefaultCandidateCount
         requiredTables = $requiredTables
         missingTables = $missingTables
     }
@@ -1575,6 +1596,12 @@ if ($null -ne $sqliteSummaryJson.qualityGates.textureLinkErrors) {
 if ($textureLinkErrors -ne 0) {
     throw "Texture link quality gate failed: textureLinkErrors=$textureLinkErrors"
 }
+if ($null -eq $sqliteSummaryJson.animationSupport) {
+    throw "sqlite_index_summary.json lost animationSupport section."
+}
+if ($sqliteSummaryJson.animationSupport.productionReady -ne $false -or [long]$sqliteSummaryJson.animationSupport.defaultModelAnimationCandidateCount -ne 0) {
+    throw "sqlite_index_summary.json animationSupport must stay non-production for Naraka smoke. productionReady=$($sqliteSummaryJson.animationSupport.productionReady) candidates=$($sqliteSummaryJson.animationSupport.defaultModelAnimationCandidateCount)"
+}
 $thumbnailCache = Join-Path $libraryOutput ".asset_browser_cache"
 $thumbnailFileCount = 0
 if (Test-Path -LiteralPath $thumbnailCache) {
@@ -1768,6 +1795,7 @@ $summaryJsonLines += '  },'
 $summaryJsonLines += '  "modelTotals": ' + (ConvertTo-SmokeJsonLiteral $modelValidation.totals 10) + ","
 $summaryJsonLines += '  "sqliteCounts": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.counts 10) + ","
 $summaryJsonLines += '  "qualityGates": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.qualityGates 10) + ","
+$summaryJsonLines += '  "animationSupport": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationSupport 10) + ","
 $summaryJsonLines += '  "animationRelationCoverage": {'
 $summaryJsonLines += '    "models": ' + (ConvertTo-SmokeJsonLiteral $coverageModels) + ","
 $summaryJsonLines += '    "animations": ' + (ConvertTo-SmokeJsonLiteral $coverageAnimations) + ","

@@ -146,8 +146,9 @@ namespace AnimeStudio.CLI
             counts["modelAnimationRelations"] = RunCountStage("unified model animation relations", () => BuildUnifiedModelAnimationRelations(connection));
 
             var capabilities = BuildAssetLibraryCapabilities(connection);
-            RunStage("write capability metadata", () => WriteCapabilityMetadata(connection, capabilities));
-            RunStage("write summary", () => WriteSummary(connection, root, dbPath, counts, skipFileIndex, skipSidecarScan, sourceIndexPath));
+            var animationSupport = BuildAnimationSupportSummary(root, capabilities);
+            RunStage("write capability metadata", () => WriteCapabilityMetadata(connection, capabilities, animationSupport));
+            RunStage("write summary", () => WriteSummary(connection, root, dbPath, counts, skipFileIndex, skipSidecarScan, sourceIndexPath, animationSupport));
             RunStage("write asset library manifest", () => WriteUnifiedAssetLibraryManifest(root, resolvedSourceGame, capabilities));
             Logger.Info($"SQLite library index written: {dbPath}; elapsed={totalWatch.Elapsed.TotalSeconds:F1}s");
             return dbPath;
@@ -4030,10 +4031,11 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
             return capabilities;
         }
 
-        private static void WriteCapabilityMetadata(SqliteConnection connection, JObject capabilities)
+        private static void WriteCapabilityMetadata(SqliteConnection connection, JObject capabilities, JObject animationSupport)
         {
             using var transaction = connection.BeginTransaction();
             InsertMetadata(connection, transaction, "capabilities", capabilities.ToString(Formatting.None));
+            InsertMetadata(connection, transaction, "animationSupport", (animationSupport ?? new JObject()).ToString(Formatting.None));
             transaction.Commit();
         }
 
@@ -4051,6 +4053,68 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                 ["capabilities"] = capabilities != null ? (JObject)capabilities.DeepClone() : new JObject()
             };
             File.WriteAllText(Path.Combine(root, "asset_library.json"), manifest.ToString(Formatting.Indented));
+        }
+
+        private static JObject BuildAnimationSupportSummary(string root, JObject capabilities)
+        {
+            var compactPath = Path.Combine(root, "model_animations.compact.json");
+            JObject compact = null;
+            if (File.Exists(compactPath))
+            {
+                try
+                {
+                    compact = JObject.Parse(File.ReadAllText(compactPath));
+                }
+                catch (JsonException e)
+                {
+                    Logger.Warning($"Unable to read compact animation support summary: {e.Message}");
+                }
+            }
+
+            var animationAssetCount = (compact?["animations"] as JArray)?.Count ?? 0;
+            var defaultCandidateCount = CountCompactAnimationCandidates(compact);
+            var compactModels = (compact?["models"] as JArray)?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var gates = compactModels
+                .Select(x => x["modelAnimationGate"] as JObject)
+                .Where(x => x != null)
+                .ToArray();
+            var readyGateCount = gates.Count(x => string.Equals(S(x, "status"), "ready", StringComparison.OrdinalIgnoreCase));
+            var blockedGateCount = gates.Count(x => string.Equals(S(x, "status"), "blocked", StringComparison.OrdinalIgnoreCase));
+            var modelReadyCount = compactModels.Count(x => x.Value<bool?>("modelReadyForAnimation") == true);
+            var reasonCounts = gates
+                .SelectMany(x => (x["reasons"] as JArray)?.Values<string>() ?? Enumerable.Empty<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new JObject
+                {
+                    ["reason"] = x.Key,
+                    ["count"] = x.Count()
+                })
+                .OrderByDescending(x => x.Value<int>("count"))
+                .ThenBy(x => x.Value<string>("reason"), StringComparer.OrdinalIgnoreCase)
+                .Take(12);
+
+            var productionReady = capabilities?.Value<bool>("animations") == true;
+            return new JObject
+            {
+                ["status"] = productionReady ? "productionReady" : "notProductionReady",
+                ["productionReady"] = productionReady,
+                ["animationAssetCount"] = animationAssetCount,
+                ["defaultModelAnimationCandidateCount"] = defaultCandidateCount,
+                ["modelGateReadyCount"] = readyGateCount,
+                ["modelGateBlockedCount"] = blockedGateCount,
+                ["modelReadyForAnimationCount"] = modelReadyCount,
+                ["blockedReasonCounts"] = new JArray(reasonCounts),
+                ["rule"] = "This summarizes production animation readiness for AssetLibrary readers. Empty animation assets/candidates with capabilities.animations=false means animation is diagnostic or pending, not that model/texture/material export failed."
+            };
+        }
+
+        private static int CountCompactAnimationCandidates(JObject compact)
+        {
+            return (compact?["modelAnimationRefs"] as JArray)?
+                .OfType<JObject>()
+                .SelectMany(x => (x["candidates"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                .Count() ?? 0;
         }
 
         private static bool ShouldSkipSQLiteArtifact(string root, string fullPath, string fullDbPath)
@@ -4128,7 +4192,7 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
             }
         }
 
-        private static void WriteSummary(SqliteConnection connection, string root, string dbPath, Dictionary<string, long> counts, bool skipFileIndex, bool skipSidecarScan, string sourceIndexPath)
+        private static void WriteSummary(SqliteConnection connection, string root, string dbPath, Dictionary<string, long> counts, bool skipFileIndex, bool skipSidecarScan, string sourceIndexPath, JObject animationSupport)
         {
             var summaryPath = GetSQLiteSummaryPath(root, dbPath);
             var animationRelationCoverage = BuildAnimationRelationCoverageSummarySafely(connection, root, skipSidecarScan, sourceIndexPath);
@@ -4147,6 +4211,7 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                     : "本次包含 files 表，适合完整文件浏览和审计；大型素材库会明显增加重建时间。",
                 ["counts"] = JObject.FromObject(counts),
                 ["qualityGates"] = qualityGates,
+                ["animationSupport"] = animationSupport ?? new JObject(),
                 ["animationRelationCoverage"] = animationRelationCoverage
             };
             File.WriteAllText(summaryPath, summary.ToString(Formatting.Indented));
