@@ -1746,6 +1746,12 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
         if ($zhumuMergedAnimationCountAdded -lt 1 -or $zhumuMergedChannelCount -lt 1) {
             throw "Zhumu merged animation preview lost animation channels. animationCountAdded=$zhumuMergedAnimationCountAdded channelCount=$zhumuMergedChannelCount"
         }
+        $zhumuMergedJointCoverage = $zhumuMergedReportJson.animationJointCoverage
+        $zhumuMergedSkinJointCount = ConvertTo-SmokeInt64 $zhumuMergedJointCoverage.skinJointCount
+        $zhumuMergedAnimatedSkinJointCount = ConvertTo-SmokeInt64 $zhumuMergedJointCoverage.animatedSkinJointCount
+        if ($null -eq $zhumuMergedJointCoverage -or $zhumuMergedSkinJointCount -lt 1 -or $zhumuMergedAnimatedSkinJointCount -lt 1) {
+            throw "Zhumu merged animation preview lost skin-joint coverage diagnostic. skinJoints=$zhumuMergedSkinJointCount animatedSkinJoints=$zhumuMergedAnimatedSkinJointCount"
+        }
 
         $zhumuMergedReasonCodes = @($zhumuMergedReportJson.sourceAssessment.reasons | ForEach-Object { [string]$_.reason } | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
         foreach ($requiredReason in @("standalone_animation_not_production_ready", "standalone_animation_experimental", "humanoid_solver_known_limb_risk", "low_humanoid_channel_coverage")) {
@@ -1790,6 +1796,7 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
             gltfValidation = $zhumuMergedAnimationPreview.gltfValidation
             animationCountAdded = $zhumuMergedAnimationCountAdded
             channelCount = $zhumuMergedChannelCount
+            animationJointCoverage = $zhumuMergedJointCoverage
             sourceAssessmentStatus = [string]$zhumuMergedReportJson.sourceAssessment.status
             reasonCodes = $zhumuMergedReasonCodes
             renderProbeStatus = "ok"
@@ -2843,6 +2850,10 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationCountAdded "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.channelCount "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.sourceAssessmentStatus "unknown")))
+    $reportLines.Add(('- Skin joint coverage: animated=`{0}` / total=`{1}`, coverage=`{2}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.animatedSkinJointCount "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.skinJointCount "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.animatedSkinJointCoverage "0")))
     $reportLines.Add(('- Diagnostic reasons: `{0}`' -f (($zhumuMergedAnimationPreview.reasonCodes | ForEach-Object { [string]$_ }) -join ', ')))
     $reportLines.Add(('- Render probe: status=`{0}`, frames=`{1}`' -f `
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderProbeStatus "unknown"),

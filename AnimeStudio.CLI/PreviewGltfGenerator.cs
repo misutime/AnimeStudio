@@ -313,6 +313,7 @@ namespace AnimeStudio.CLI
             var mergedAnimations = EnsureJArray(merged, "animations");
             var missingNodes = new JArray();
             var channelCount = 0;
+            var animatedNodeIndices = new HashSet<int>();
             foreach (var sourceAnimation in animation["animations"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
                 var animationClone = (JObject)sourceAnimation.DeepClone();
@@ -357,6 +358,7 @@ namespace AnimeStudio.CLI
                     }
 
                     target["node"] = newNodeIndex;
+                    animatedNodeIndices.Add(newNodeIndex);
                 }
 
                 animationClone["extras"] ??= new JObject();
@@ -387,7 +389,8 @@ namespace AnimeStudio.CLI
             }
 
             merged["extras"] ??= new JObject();
-            var mergeAssessment = AssessStandaloneAnimationForMerge(animation, channelCount);
+            var animationJointCoverage = BuildAnimationJointCoverageReport(merged, animatedNodeIndices, channelCount);
+            var mergeAssessment = AssessStandaloneAnimationForMerge(animation, channelCount, animationJointCoverage);
             var hiddenLodMeshes = HideNonPrimaryLodMeshes(merged["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>());
             merged["extras"]["animeStudioMergedAnimation"] = new JObject
             {
@@ -396,6 +399,7 @@ namespace AnimeStudio.CLI
                 ["sourceAnimationGltf"] = animationGltfPath,
                 ["animationCountAdded"] = animation["animations"]?.Count() ?? 0,
                 ["channelCount"] = channelCount,
+                ["animationJointCoverage"] = animationJointCoverage,
                 ["hiddenNonPrimaryLodMeshCount"] = hiddenLodMeshes.Count,
                 ["validationStatus"] = mergeAssessment.Status,
                 ["validationReasons"] = mergeAssessment.Reasons,
@@ -413,6 +417,7 @@ namespace AnimeStudio.CLI
                 ["outputGltf"] = outputGltf,
                 ["animationCountAdded"] = animation["animations"]?.Count() ?? 0,
                 ["channelCount"] = channelCount,
+                ["animationJointCoverage"] = animationJointCoverage,
                 ["hiddenNonPrimaryLodMeshCount"] = hiddenLodMeshes.Count,
                 ["hiddenNonPrimaryLodMeshes"] = JArray.FromObject(hiddenLodMeshes),
                 ["sourceAssessment"] = mergeAssessment.ToJson(),
@@ -514,7 +519,58 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        private static StandaloneAnimationMergeAssessment AssessStandaloneAnimationForMerge(JObject animationGltf, int channelCount)
+        private static JObject BuildAnimationJointCoverageReport(JObject mergedGltf, IEnumerable<int> animatedNodeIndices, int channelCount)
+        {
+            var animatedNodes = new HashSet<int>(animatedNodeIndices);
+            var skinJointIndices = new HashSet<int>();
+            foreach (var skin in mergedGltf["skins"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                foreach (var joint in skin["joints"]?.Values<int>() ?? Enumerable.Empty<int>())
+                {
+                    skinJointIndices.Add(joint);
+                }
+            }
+
+            var animatedSkinJoints = skinJointIndices
+                .Where(animatedNodes.Contains)
+                .OrderBy(x => x)
+                .ToArray();
+            var unanimatedSkinJoints = skinJointIndices
+                .Where(x => !animatedNodes.Contains(x))
+                .OrderBy(x => x)
+                .ToArray();
+            var nodeNames = mergedGltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var coverage = skinJointIndices.Count == 0
+                ? 0d
+                : (double)animatedSkinJoints.Length / skinJointIndices.Count;
+
+            return new JObject
+            {
+                ["status"] = skinJointIndices.Count == 0 ? "no_skin" : "diagnostic",
+                ["channelCount"] = channelCount,
+                ["animatedNodeCount"] = animatedNodes.Count,
+                ["skinCount"] = mergedGltf["skins"]?.Count() ?? 0,
+                ["skinJointCount"] = skinJointIndices.Count,
+                ["animatedSkinJointCount"] = animatedSkinJoints.Length,
+                ["animatedSkinJointCoverage"] = Math.Round(coverage, 4),
+                ["animatedSkinJointNames"] = new JArray(animatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
+                ["unanimatedSkinJointSample"] = new JArray(unanimatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
+                ["rule"] = "这里只统计已合并 glTF 里动画 channel 直接命中的 skin joint，帮助判断覆盖范围；它不是视觉验收，也不能单独证明动画生产可用。",
+            };
+        }
+
+        private static string GetGltfNodeName(JObject[] nodes, int nodeIndex)
+        {
+            if (nodeIndex < 0 || nodeIndex >= nodes.Length)
+            {
+                return $"#{nodeIndex}";
+            }
+
+            var name = (string)nodes[nodeIndex]["name"];
+            return string.IsNullOrWhiteSpace(name) ? $"#{nodeIndex}" : name;
+        }
+
+        private static StandaloneAnimationMergeAssessment AssessStandaloneAnimationForMerge(JObject animationGltf, int channelCount, JObject animationJointCoverage)
         {
             var reasons = new JArray();
             var sourceModes = new JArray();
@@ -592,7 +648,10 @@ namespace AnimeStudio.CLI
                 {
                     ["reason"] = "low_humanoid_channel_coverage",
                     ["channelCount"] = channelCount,
-                    ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道过少，只能视为诊断预览；必须经过主体骨骼覆盖和视觉验收。",
+                    ["skinJointCount"] = (int?)animationJointCoverage?["skinJointCount"] ?? 0,
+                    ["animatedSkinJointCount"] = (int?)animationJointCoverage?["animatedSkinJointCount"] ?? 0,
+                    ["animatedSkinJointCoverage"] = (double?)animationJointCoverage?["animatedSkinJointCoverage"] ?? 0d,
+                    ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道和 skin joint 覆盖偏低，只能视为诊断预览；必须经过主体骨骼覆盖和视觉验收。",
                 });
             }
 

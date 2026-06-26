@@ -1693,6 +1693,8 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 合并前同样会先验证模型 glTF。若模型没有材质/贴图 image、材质槽覆盖不足、外部贴图或 buffer 缺失、skin 绑定异常，`merge_animation_gltf_report.json` 会写 `status=blocked`、`reason=model_not_animation_ready` 和 `modelGate.reasons`，并且不会生成 merged glTF。已经能把动画 channel 合进去，不代表模型可用；模型第一阶段不过关时必须先修模型。
 
+合并成功时，报告会写 `animationJointCoverage`，统计动画 channel 直接命中的 skin joint 数、总 skin joint 数、覆盖率和已/未驱动骨骼样本。这个字段只帮助判断当前 standalone 动画实际覆盖到哪些骨骼；它不是视觉验收，也不能单独把 Humanoid/Muscle 或 UnityBakeAccelerated 结果升级为生产可用。
+
 `--preview_output` 默认表示输出目录；如果明确传入以 `.gltf` 结尾的路径，则该路径会作为最终 glTF 文件名，`Buffers/`、`Textures/`、`AnimationBuffers/` 和 `merge_animation_gltf_report.json` 写在同级目录。显式文件模式不会清空父目录，避免覆盖同目录里的其它验收材料。
 
 ### 批量生成模型动画验证包
