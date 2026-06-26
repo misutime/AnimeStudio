@@ -5,6 +5,7 @@ param(
     [string]$AnimationSourceIndex = "D:\Assets\Naraka\SourceIndex_Naraka_TosMini_Current\unity_source_index.db",
     [string]$AnimationSidecar = "D:\Assets\Naraka\Dijiang_AttackA8_FullDecodedSidecar_Current\Animations\assets\res\animclipadapter\05\mo_pve_b_dijiang_attack_a8_01.animation_asset.json",
     [string]$AnimationPreviewAvatar = "mo_pve_b_dijiang_01_skeletonAvatar",
+    [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
@@ -77,7 +78,12 @@ function ConvertTo-SmokeJsonLiteral {
         return "null"
     }
 
-    return ($Value | ConvertTo-Json -Depth $Depth -Compress)
+    $json = $Value | ConvertTo-Json -Depth $Depth -Compress
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        return "null"
+    }
+
+    return $json
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -113,6 +119,13 @@ $libraryOutput = Join-Path $OutputRoot "RepresentativeModels"
 $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
 $representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
 $animationGltfValidationStatus = if ($SkipGltfValidation -or $SkipAnimationDiagnostic) { "skipped" } else { "toolMissing" }
+$shaderBoundaryGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+$shaderBoundaryStatus = "notChecked"
+$shaderBoundaryRule = "Naraka private/layered shader boundary: raw texture slots are preserved; glTF PBR is a degraded preview, not original game shading, and must not be treated as texture loss."
+$shaderBoundarySummaryJson = $null
+$shaderBoundaryMaterialSidecarRows = $null
+$shaderBoundaryCustomShaderRows = $null
+$shaderBoundaryGltf = $null
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
 $animationReportJson = $null
 $animationGltfPath = $null
@@ -222,6 +235,72 @@ if (!$SkipBrowserValidation) {
     }
 }
 
+if (![string]::IsNullOrWhiteSpace($ShaderBoundarySampleRoot)) {
+    if (Test-Path -LiteralPath $ShaderBoundarySampleRoot) {
+        Write-Host ""
+        Write-Host "== Validate Naraka shader boundary sample =="
+
+        $shaderBoundaryGltf = Join-Path $ShaderBoundarySampleRoot "MonoBehaviour_lod0.gltf"
+        $shaderBoundaryReport = Join-Path $ShaderBoundarySampleRoot "MATERIAL_REPORT.md"
+        $shaderBoundarySqliteSummary = Join-Path $ShaderBoundarySampleRoot "sqlite_index_summary.json"
+        $shaderBoundaryDb = Join-Path $ShaderBoundarySampleRoot "library_index.db"
+
+        Test-FileRequired -Path $shaderBoundaryGltf -Label "shader boundary glTF"
+        Test-FileRequired -Path $shaderBoundaryReport -Label "shader boundary MATERIAL_REPORT.md"
+        Test-FileRequired -Path $shaderBoundarySqliteSummary -Label "shader boundary sqlite_index_summary.json"
+        Test-FileRequired -Path $shaderBoundaryDb -Label "shader boundary library_index.db"
+
+        $shaderBoundarySummaryJson = Get-Content -LiteralPath $shaderBoundarySqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+        $shaderBoundaryQuality = $shaderBoundarySummaryJson.qualityGates
+        if ($null -eq $shaderBoundaryQuality) {
+            throw "Shader boundary sqlite_index_summary.json lost qualityGates section."
+        }
+        if ([long]$shaderBoundaryQuality.textureLinkErrors -ne 0) {
+            throw "Shader boundary sample has texture link errors: $($shaderBoundaryQuality.textureLinkErrors)"
+        }
+        if ([long]$shaderBoundaryQuality.customShaderRequiredSidecars -lt 1 -or [long]$shaderBoundaryQuality.layeredMaterialUnresolvedSidecars -lt 1) {
+            throw "Shader boundary sample did not preserve custom shader/layered material markers."
+        }
+
+        $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+        if ($null -ne $sqlite3) {
+            $shaderBoundaryMaterialSidecarRowsText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb "SELECT COUNT(*) FROM material_sidecars;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting shader boundary material_sidecars."
+            }
+            $shaderBoundaryCustomShaderRowsText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb "SELECT COUNT(*) FROM material_sidecars WHERE custom_shader_required = 1 AND layered_material_unresolved = 1 AND pbr_preview_status = 'bestEffortDegradedPreview';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking shader boundary custom shader material_sidecars."
+            }
+            $shaderBoundaryMaterialSidecarRows = [long]$shaderBoundaryMaterialSidecarRowsText
+            $shaderBoundaryCustomShaderRows = [long]$shaderBoundaryCustomShaderRowsText
+            if ($shaderBoundaryCustomShaderRows -lt 1) {
+                throw "Shader boundary material_sidecars table did not preserve degraded custom shader rows."
+            }
+        }
+        else {
+            Write-Warning "sqlite3.exe not found; shader boundary material_sidecars table check skipped."
+        }
+
+        if (!$SkipGltfValidation) {
+            $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $gltfTransform) {
+                Invoke-Checked -Label "Validate shader boundary glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $shaderBoundaryGltf)
+                $shaderBoundaryGltfValidationStatus = "ok"
+            }
+        }
+
+        $shaderBoundaryStatus = "ok"
+    }
+    else {
+        $shaderBoundaryStatus = "missing"
+        Write-Warning "Shader boundary sample not found; skipped: $ShaderBoundarySampleRoot"
+    }
+}
+else {
+    $shaderBoundaryStatus = "skipped"
+}
+
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -310,8 +389,23 @@ $summaryJsonLines += '    { "name": "ch_m_hadi_lv_s9", "role": "CharacterPart", 
 $summaryJsonLines += '    { "name": "weapon_drop_bow_dongjun", "role": "WeaponProp", "gltf": ' + (ConvertTo-SmokeJsonLiteral $bowGltf) + ' },'
 $summaryJsonLines += '    { "name": "device_hongbao_02", "role": "Prop", "gltf": ' + (ConvertTo-SmokeJsonLiteral $deviceGltf) + ' }'
 $summaryJsonLines += '  ],'
+$summaryJsonLines += '  "shaderBoundary": {'
+$summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
+$summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $ShaderBoundarySampleRoot) + ","
+$summaryJsonLines += '    "gltf": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryGltf) + ","
+$summaryJsonLines += '    "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryGltfValidationStatus) + ","
+$summaryJsonLines += '    "textureLinkErrors": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.textureLinkErrors) + ","
+$summaryJsonLines += '    "customShaderRequiredSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.customShaderRequiredSidecars) + ","
+$summaryJsonLines += '    "layeredMaterialUnresolvedSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.layeredMaterialUnresolvedSidecars) + ","
+$summaryJsonLines += '    "degradedPreviewSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.degradedPreviewSidecars) + ","
+$summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryMaterialSidecarRows) + ","
+$summaryJsonLines += '    "customShaderMaterialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderRows) + ","
+$summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryRule)
+$summaryJsonLines += '  },'
 $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
+$summaryJsonLines += '    "shaderBoundary": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
+$summaryJsonLines += '    "shaderBoundaryGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryGltfValidationStatus) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
 $summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
@@ -348,6 +442,8 @@ if ([string]::IsNullOrWhiteSpace($summaryJsonPath)) {
     throw "smoke_summary.json output path is empty. OutputRoot='$OutputRoot'"
 }
 $summaryJson | Set-Content -LiteralPath $summaryJsonPath -Encoding UTF8
+# smoke_summary.json 是后续自动验收入口，写完后立刻反读，避免报告可读但机器摘要损坏。
+$null = Get-Content -LiteralPath $summaryJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 $reportPath = [System.IO.Path]::Combine($OutputRoot, "SMOKE_REPORT.md")
 $reportLines = [System.Activator]::CreateInstance([System.Collections.Generic.List[string]])
@@ -451,6 +547,26 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     }
 }
 $reportLines.Add("")
+$reportLines.Add("## Shader Boundary Diagnostic")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $shaderBoundaryStatus))
+if ($shaderBoundaryStatus -eq "ok") {
+    $reportLines.Add(('- Sample root: `{0}`' -f $ShaderBoundarySampleRoot))
+    $reportLines.Add(('- glTF validator: `{0}`' -f $shaderBoundaryGltfValidationStatus))
+    $reportLines.Add(('- Quality gates: textureLinkErrors=`{0}`, customShaderSidecars=`{1}`, layeredMaterialUnresolvedSidecars=`{2}`, degradedPreviewSidecars=`{3}`' -f `
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.textureLinkErrors "0"),
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.customShaderRequiredSidecars "0"),
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.layeredMaterialUnresolvedSidecars "0"),
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.degradedPreviewSidecars "0")))
+    $reportLines.Add(('- material_sidecars rows=`{0}`, degraded custom shader rows=`{1}`' -f `
+        (ConvertTo-SmokeText $shaderBoundaryMaterialSidecarRows "unknown"),
+        (ConvertTo-SmokeText $shaderBoundaryCustomShaderRows "unknown")))
+    $reportLines.Add('- Rule: this is a degraded PBR preview boundary check for Naraka private/layered shaders; it preserves raw texture slots and must not be treated as texture loss or fully restored game shading.')
+}
+elseif ($shaderBoundaryStatus -eq "missing") {
+    $reportLines.Add(('- Sample root missing: `{0}`' -f $ShaderBoundarySampleRoot))
+}
+$reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
 $reportLines.Add("")
 if ($null -ne $animationReportJson) {
@@ -481,6 +597,10 @@ $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))
 $reportLines.Add(('- Bow prop glTF: `{0}`' -f $bowGltf))
 $reportLines.Add(('- Device prop glTF: `{0}`' -f $deviceGltf))
+if ($shaderBoundaryStatus -eq "ok") {
+    $reportLines.Add(('- Shader boundary glTF: `{0}`' -f $shaderBoundaryGltf))
+    $reportLines.Add(('- Shader boundary material report: `{0}`' -f (Join-Path $ShaderBoundarySampleRoot "MATERIAL_REPORT.md")))
+}
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
 }
