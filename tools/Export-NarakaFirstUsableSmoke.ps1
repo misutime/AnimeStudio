@@ -252,6 +252,84 @@ function Test-AssetLibraryV1Contract {
     }
 }
 
+function Test-ModelReportEntrypoints {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LibraryRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$AssetCatalogPath
+    )
+
+    Test-FileRequired -Path (Join-Path $LibraryRoot "LIBRARY_README.md") -Label "LIBRARY_README.md"
+    Test-FileRequired -Path (Join-Path $LibraryRoot "SQLITE_INDEX_README.md") -Label "SQLITE_INDEX_README.md"
+    Test-FileRequired -Path $AssetCatalogPath -Label "asset_catalog.jsonl"
+
+    $modelRows = @()
+    foreach ($catalogLine in Get-Content -LiteralPath $AssetCatalogPath -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($catalogLine)) {
+            continue
+        }
+
+        $catalogRow = $catalogLine | ConvertFrom-Json
+        if ([string]$catalogRow.kind -eq "Model") {
+            $modelRows += $catalogRow
+        }
+    }
+
+    if ($modelRows.Count -lt 1) {
+        throw "asset_catalog.jsonl did not contain any Model row for report entrypoint checks."
+    }
+
+    $missingAssetReadmes = @()
+    $missingMaterialReports = @()
+    $reportSamples = @()
+    foreach ($modelRow in $modelRows) {
+        $modelOutput = [string]$modelRow.output
+        if ([string]::IsNullOrWhiteSpace($modelOutput)) {
+            throw "Model catalog row has empty output: $($modelRow.name)"
+        }
+
+        $normalizedOutput = $modelOutput.Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+        $modelPath = Join-Path $LibraryRoot $normalizedOutput
+        $modelDirectory = Split-Path -Parent $modelPath
+        $assetReadme = Join-Path $modelDirectory "ASSET_README.md"
+        $materialReport = Join-Path $modelDirectory "MATERIAL_REPORT.md"
+
+        $assetReadmeOk = (Test-Path -LiteralPath $assetReadme) -and ((Get-Item -LiteralPath $assetReadme).Length -gt 0)
+        $materialReportOk = (Test-Path -LiteralPath $materialReport) -and ((Get-Item -LiteralPath $materialReport).Length -gt 0)
+        if (!$assetReadmeOk) {
+            $missingAssetReadmes += [string]$modelRow.name
+        }
+        if (!$materialReportOk) {
+            $missingMaterialReports += [string]$modelRow.name
+        }
+
+        if ($reportSamples.Count -lt 5) {
+            $reportSamples += [pscustomobject]@{
+                name = [string]$modelRow.name
+                assetReadme = $assetReadme.Substring($LibraryRoot.Length + 1)
+                materialReport = $materialReport.Substring($LibraryRoot.Length + 1)
+            }
+        }
+    }
+
+    if ($missingAssetReadmes.Count -gt 0 -or $missingMaterialReports.Count -gt 0) {
+        throw "Model report entrypoints are incomplete. missing ASSET_README=$($missingAssetReadmes -join ', ') missing MATERIAL_REPORT=$($missingMaterialReports -join ', ')"
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        modelCount = [int]$modelRows.Count
+        assetReadmeCount = [int]$modelRows.Count
+        materialReportCount = [int]$modelRows.Count
+        rootReadme = "LIBRARY_README.md"
+        sqliteReadme = "SQLITE_INDEX_README.md"
+        missingAssetReadmes = $missingAssetReadmes
+        missingMaterialReports = $missingMaterialReports
+        samples = $reportSamples
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetFramework = "net9.0-windows"
 $cli = Join-Path $repoRoot "AnimeStudio.CLI\bin\$Configuration\$targetFramework\AnimeStudio.CLI.exe"
@@ -876,6 +954,7 @@ $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | Convert
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
 $assetLibraryContract = Test-AssetLibraryV1Contract -ManifestPath $manifest -DbPath $db -AssetLibrary $assetLibrary -ExpectedGame "Naraka"
+$modelReportEntrypoints = Test-ModelReportEntrypoints -LibraryRoot $libraryOutput -AssetCatalogPath $assetCatalog
 $hadiCatalogRow = $null
 foreach ($catalogLine in Get-Content -LiteralPath $assetCatalog -Encoding UTF8) {
     if ([string]::IsNullOrWhiteSpace($catalogLine)) {
@@ -1196,6 +1275,7 @@ $summaryJsonLines += '  "outputRoot": ' + (ConvertTo-SmokeJsonLiteral $OutputRoo
 $summaryJsonLines += '  "libraryRoot": ' + (ConvertTo-SmokeJsonLiteral $libraryOutput) + ","
 $summaryJsonLines += '  "assetLibrary": ' + (ConvertTo-SmokeJsonLiteral $manifest) + ","
 $summaryJsonLines += '  "assetLibraryContract": ' + (ConvertTo-SmokeJsonLiteral $assetLibraryContract 10) + ","
+$summaryJsonLines += '  "modelReportEntrypoints": ' + (ConvertTo-SmokeJsonLiteral $modelReportEntrypoints 10) + ","
 $summaryJsonLines += '  "libraryIndex": ' + (ConvertTo-SmokeJsonLiteral $db) + ","
 $summaryJsonLines += '  "sqliteSummary": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummary) + ","
 $summaryJsonLines += '  "modelValidation": ' + (ConvertTo-SmokeJsonLiteral $validation) + ","
@@ -1347,6 +1427,11 @@ $reportLines.Add(('- AssetLibrary v1 contract: status=`{0}`, schemaVersion=`{1}`
     (ConvertTo-SmokeText $assetLibraryContract.sourceGame),
     (ConvertTo-SmokeText $assetLibraryContract.index),
     (ConvertTo-SmokeText $assetLibraryContract.sqliteTableCheck)))
+$reportLines.Add(('- Model report entrypoints: status=`{0}`, models=`{1}`, ASSET_README=`{2}`, MATERIAL_REPORT=`{3}`' -f `
+    (ConvertTo-SmokeText $modelReportEntrypoints.status),
+    (ConvertTo-SmokeText $modelReportEntrypoints.modelCount "0"),
+    (ConvertTo-SmokeText $modelReportEntrypoints.assetReadmeCount "0"),
+    (ConvertTo-SmokeText $modelReportEntrypoints.materialReportCount "0")))
 $reportLines.Add(('- Representative glTF validator: `{0}`' -f $representativeGltfValidationStatus))
 $reportLines.Add(('- AssetLibrary browser validation: `{0}`' -f $browserValidationStatus))
 $reportLines.Add(('- Thumbnail render: `{0}`, cache files=`{1}`' -f $thumbnailStatus, $thumbnailFileCount))
