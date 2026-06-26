@@ -31,6 +31,7 @@ C:\Game163\program\NarakaBladepoint_Data\StreamingAssets
 | Bow prop | `D:\Assets\Naraka\CandidateBatch_SkinRootFix\wp_bow_dongjun\Smoke_weapon_drop_bow_dongjun_root_3879445205109982761` | 非角色正样本 | 武器/道具 prefab，材质和贴图链接正常。 |
 | Device hongbao | `D:\Assets\Naraka\SourceCandidates_TextureHealthOk1\Smoke_device_hongbao_02_3817277305598733592_PropKind_Current` | 非角色正样本 | device/prop 样本，`model_validation=ok`。 |
 | Static bigtree | `D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current` | 静态场景/道具样本 | 静态 mesh/prop 样本，`model_validation=ok`。 |
+| Samurai ghost | `D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_Current` | 大型 skinned 候选样本 | 源索引由 `Animator.avatar -> GameObject -> SkinnedMeshRenderer` 关系筛出，`model_validation=ok`，bbox 与 skin 规模更接近完整人形/怪物候选；来源仍是 `skill_device_prefab`，不能单独升级为生产动画样本。 |
 
 本轮复查的 SQLite 摘要：
 
@@ -40,6 +41,7 @@ face_shader: models=1 textures=17 material_sidecars=3 texture_links=5 link_error
 weapon_bow: models=1 textures=10 material_sidecars=3 texture_links=12 link_errors=0 custom_shader_materials=0 validation=ok:1
 device_hongbao: models=1 textures=4 material_sidecars=1 texture_links=4 link_errors=0 custom_shader_materials=0 validation=ok:1
 static_bigtree: models=1 textures=12 material_sidecars=1 texture_links=13 link_errors=0 custom_shader_materials=0 validation=ok:1
+samurai_ghost: models=1 textures=11 material_sidecars=3 texture_links=13 link_errors=0 custom_shader_materials=0 validation=ok:1
 ```
 
 ## 特殊材质边界
@@ -61,12 +63,12 @@ static_bigtree: models=1 textures=12 material_sidecars=1 texture_links=13 link_e
 tools\Export-NarakaFirstUsableSmoke.ps1
 ```
 
-默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针，并用完整源索引闭包定向导出三个默认 Library 代表模型：`ch_m_hadi_lv_s9` 角色部件、`weapon_drop_bow_dongjun` 武器道具、`device_hongbao_02` 普通道具；随后重建 `library_index.db`，并在本机工具存在时执行 3 个代表模型 glTF validator、AssetLibrary Browser 验证和 3 张缩略图渲染。脚本还会默认校验 `D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current`，只把它当作 Naraka 私有 shader/分层材质边界样本，要求贴图链接为 0 错误、`material_sidecars` 保留 custom/layered/degraded 标记，并验证它不是贴图丢失或材质错绑。脚本还会只读校验 `D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current`，把它当作静态环境/道具 Mesh 的显式扩展样本，要求模型验证通过、贴图/材质 sidecar 存在、SQLite 贴图链接无错误；这个检查不改变默认 Library 仍优先 prefab/Animator/GameObject 组合模型的范围。脚本还会默认跑 Dijiang A8 独立动画 glTF 诊断，验证 `Avatar.m_TOS` 路径恢复和动画 glTF 写出；报告必须保留 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，因此它不会把当前手动动画诊断升级成生产动画库能力。只想跑 P0/P1 静态链路时传 `-SkipAnimationDiagnostic`。
+默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针，并用完整源索引闭包定向导出三个默认 Library 代表模型：`ch_m_hadi_lv_s9` 角色部件、`weapon_drop_bow_dongjun` 武器道具、`device_hongbao_02` 普通道具；随后重建 `library_index.db`，并在本机工具存在时执行 3 个代表模型 glTF validator、AssetLibrary Browser 验证和 3 张缩略图渲染。脚本还会默认校验 `D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current`，只把它当作 Naraka 私有 shader/分层材质边界样本，要求贴图链接为 0 错误、`material_sidecars` 保留 custom/layered/degraded 标记，并验证它不是贴图丢失或材质错绑。脚本还会只读校验 `D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current`，把它当作静态环境/道具 Mesh 的显式扩展样本，要求模型验证通过、贴图/材质 sidecar 存在、SQLite 贴图链接无错误；这个检查不改变默认 Library 仍优先 prefab/Animator/GameObject 组合模型的范围。脚本还会只读校验 `D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_Current`，把它当作更强的 skinned 人形/怪物候选，要求模型验证通过、skin 和贴图存在、skin joint 数量足够、bbox 不再是小挂件级别、SQLite 贴图链接无错误。脚本还会默认跑 Dijiang A8 独立动画 glTF 诊断，验证 `Avatar.m_TOS` 路径恢复和动画 glTF 写出；报告必须保留 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，因此它不会把当前手动动画诊断升级成生产动画库能力。只想跑 P0/P1 静态链路时传 `-SkipAnimationDiagnostic`。
 
 脚本结束后会在 `OutputRoot` 写出两个汇总文件：
 
-- `SMOKE_REPORT.md`：人读 smoke 结论，汇总静态模型、glTF 校验、浏览器校验、缩略图、SQLite 索引计数、贴图链接质量门槛、特殊 shader 降级计数、静态环境扩展样本、动画关系覆盖摘要和动画诊断边界。
-- `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数、`qualityGates`、`shaderBoundary`、`staticEnvironment` 和动画诊断状态。脚本写完后会立刻反读解析，避免报告可读但机器摘要损坏。
+- `SMOKE_REPORT.md`：人读 smoke 结论，汇总静态模型、glTF 校验、浏览器校验、缩略图、SQLite 索引计数、贴图链接质量门槛、特殊 shader 降级计数、静态环境扩展样本、角色候选样本、动画关系覆盖摘要和动画诊断边界。
+- `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数、`qualityGates`、`shaderBoundary`、`staticEnvironment`、`characterCandidate` 和动画诊断状态。脚本写完后会立刻反读解析，避免报告可读但机器摘要损坏。
 
 这两个文件只汇总 smoke 证据，不会改变正式 `RepresentativeModels` 素材库，也不会把诊断动画写成默认动画关系。
 脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
@@ -76,6 +78,7 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 `explicitAnimatorControllerUsages` 继续确认生产动画边界：当前 `withAvatar=15`、`withAvatarAndControllerClipEdges=0`，带 Avatar 的 Animator+Controller 样本都落在 `PreviewOrTimeline/TrackEditorPreview` 一侧，只能作为诊断线索，不能作为角色生产动画关系。
 `avatarAnimatorDomains` 进一步统计完整源索引里的 `animator.avatar`：`totalAnimators=6769`、`withController=15`，主要分布为 `WeaponOrProp=1802/0`、`DeviceOrProp=1478/6`、`UiOrPreview=817/1`、`SkeletonSource=690/0`、`VfxOrEffect=325/5`、`CharacterOrPart=228/0`（animators/withController）。这说明 Naraka 很多武器、道具、局部角色部件和骨架源对象都有 Avatar 上下文；Avatar 只能说明骨架/skin 诊断背景，不能在没有显式 clip/controller 关系和模型验收的情况下创建默认模型-动画绑定。
 2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_StaticEnvironment_Clean_Current`：默认代表模型仍是 `models=3`、`ok=3`、`withTextures=3`、`textureAssets=43`、`materialSidecars=15`、`textureLinkErrors=0`，代表模型 glTF validator、AssetLibrary Browser、缩略图和 Dijiang A8 动画诊断均通过。新增 `staticEnvironment.status=ok`，样本 `Smoke_static_jisui_device_bigtree_04_Current` 为 `models=1`、`ok=1`、`withTextures=1`、`textureAssets=12`、`textureLinks=13`、`textureLinkErrors=0`、`materialSidecars=1`，静态树 glTF validator 无 error。该样本只证明显式静态环境/道具 Mesh 扩展链路可用，不改变默认 Library 的 prefab/Animator/GameObject 主线。
+2026-06-26 源索引离线扫描 `Animator.avatar -> GameObject -> Transform tree -> SkinnedMeshRenderer`：499 个 `ch_*` Avatar 候选中，265 个层级含 SkinnedMeshRenderer。`ch_fcalw_s_tuzi` 的源索引信号很强（45 个 SkinnedMeshRenderer、45 个材质引用），但导出 bbox 只有约 `0.48 x 0.18 x 0.26`，仍像 `actor_extra_part` 小件，不能作为完整角色样本。`ch_m_japan_samurai_ghost` 导出为 `D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_Current`，`model_validation=ok`，5 个 skinned mesh、73 个 skin joints、bbox 约 `1.99 x 3.42 x 3.29`、`texture_links.link_error=0`，glTF validator 无 error，AssetLibrary Browser 校验和缩略图均通过。它是当前比 Hadi body/Xinghui 更适合继续做动画前置验证的 skinned 大型候选；但来源路径是 `skill_device_prefab`，仍必须先找到显式 clip/controller 关系和视觉验收，不能直接标成生产动画样本。
 
 输入探针：
 
@@ -114,6 +117,25 @@ AnimeStudio.CLI\bin\Release\net9.0-windows\AnimeStudio.CLI.exe `
   --source_index "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db" `
   --game Naraka `
   --skip_sqlite_file_index
+```
+
+SamuraiGhost 大型 skinned 候选导出示例：
+
+```powershell
+AnimeStudio.CLI\bin\Release\net9.0-windows\AnimeStudio.CLI.exe `
+  "C:\Game163\program\NarakaBladepoint_Data\StreamingAssets" `
+  "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_Current" `
+  --game Naraka `
+  --mode Library `
+  --group_assets ByLibrary `
+  --profile_3d Core `
+  --model_format Gltf `
+  --texture_mode Png `
+  --animation_package Separate `
+  --fbx_animation Skip `
+  --source_index "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db" `
+  --source_files "2\c\2c2d1aae0d0ed6d5" `
+  --path_ids -6988636928912937198
 ```
 
 glTF 校验：

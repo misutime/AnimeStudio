@@ -7,6 +7,7 @@ param(
     [string]$AnimationPreviewAvatar = "mo_pve_b_dijiang_01_skeletonAvatar",
     [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
     [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
+    [string]$CharacterCandidateSampleRoot = "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_Current",
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
@@ -136,6 +137,17 @@ $staticEnvironmentGltf = $null
 $staticEnvironmentTextureLinkErrors = $null
 $staticEnvironmentMaterialSidecarRows = $null
 $staticEnvironmentModelRows = $null
+$characterCandidateStatus = "notChecked"
+$characterCandidateRule = "This sample is a stronger humanoid/character candidate selected from Unity source-index Animator.avatar -> GameObject -> SkinnedMeshRenderer evidence. It proves model, skin, material and texture health for a large skinned candidate, but still does not create production animation bindings."
+$characterCandidateSummaryJson = $null
+$characterCandidateValidationJson = $null
+$characterCandidateGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+$characterCandidateGltf = $null
+$characterCandidateTextureLinkErrors = $null
+$characterCandidateMaterialSidecarRows = $null
+$characterCandidateModelRows = $null
+$characterCandidateMaxBoundsSize = $null
+$characterCandidateSkinJointCount = $null
 $sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
     status = "notChecked"
     rule = "Animator.avatar is only source-index evidence. It can explain model skeleton context, but it never creates a default model-animation binding without explicit clip/controller relation and model validation."
@@ -401,6 +413,100 @@ else {
     $staticEnvironmentStatus = "skipped"
 }
 
+if (![string]::IsNullOrWhiteSpace($CharacterCandidateSampleRoot)) {
+    if (Test-Path -LiteralPath $CharacterCandidateSampleRoot) {
+        Write-Host ""
+        Write-Host "== Validate Naraka character candidate sample =="
+
+        $characterCandidateAssetLibrary = Join-Path $CharacterCandidateSampleRoot "asset_library.json"
+        $characterCandidateValidation = Join-Path $CharacterCandidateSampleRoot "model_validation.json"
+        $characterCandidateSqliteSummary = Join-Path $CharacterCandidateSampleRoot "sqlite_index_summary.json"
+        $characterCandidateDb = Join-Path $CharacterCandidateSampleRoot "library_index.db"
+        $characterCandidateGltfs = @(Get-ChildItem -LiteralPath (Join-Path $CharacterCandidateSampleRoot "Models") -Recurse -Filter "*.gltf" -File)
+
+        Test-FileRequired -Path $characterCandidateAssetLibrary -Label "character candidate asset_library.json"
+        Test-FileRequired -Path $characterCandidateValidation -Label "character candidate model_validation.json"
+        Test-FileRequired -Path $characterCandidateSqliteSummary -Label "character candidate sqlite_index_summary.json"
+        Test-FileRequired -Path $characterCandidateDb -Label "character candidate library_index.db"
+        if ($characterCandidateGltfs.Count -lt 1) {
+            throw "Character candidate sample is missing exported glTF models."
+        }
+        $characterCandidateGltf = $characterCandidateGltfs[0].FullName
+
+        $characterCandidateValidationJson = Get-Content -LiteralPath $characterCandidateValidation -Raw -Encoding UTF8 | ConvertFrom-Json
+        $characterCandidateSummaryJson = Get-Content -LiteralPath $characterCandidateSqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([long]$characterCandidateValidationJson.totals.models -lt 1 -or [long]$characterCandidateValidationJson.totals.ok -lt 1) {
+            throw "Character candidate sample has no ok model validation result."
+        }
+        if ([long]$characterCandidateValidationJson.totals.withSkin -lt 1 -or [long]$characterCandidateValidationJson.totals.withTextures -lt 1) {
+            throw "Character candidate sample must keep both skin and texture evidence."
+        }
+        $characterCandidateModel = @($characterCandidateValidationJson.models)[0]
+        $characterCandidateSkinJointCount = [long]$characterCandidateModel.Body.SkinJointCount
+        if ($characterCandidateSkinJointCount -lt 50) {
+            throw "Character candidate sample has too few skin joints for a strong humanoid candidate: $characterCandidateSkinJointCount"
+        }
+        $boundsSize = @($characterCandidateModel.Body.Bounds.Size)
+        foreach ($sizeValue in $boundsSize) {
+            $sizeNumber = [double]$sizeValue
+            if ($null -eq $characterCandidateMaxBoundsSize -or $sizeNumber -gt $characterCandidateMaxBoundsSize) {
+                $characterCandidateMaxBoundsSize = $sizeNumber
+            }
+        }
+        if ($null -eq $characterCandidateMaxBoundsSize -or $characterCandidateMaxBoundsSize -lt 1.0) {
+            throw "Character candidate sample bbox is too small for a strong humanoid candidate: $characterCandidateMaxBoundsSize"
+        }
+        if ([long]$characterCandidateSummaryJson.counts.textureAssets -lt 1 -or [long]$characterCandidateSummaryJson.counts.materialSidecars -lt 1) {
+            throw "Character candidate sample lost texture assets or material sidecars."
+        }
+
+        $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+        if ($null -ne $sqlite3) {
+            $characterCandidateTextureLinkErrorsText = & $sqlite3.Source -readonly -batch -noheader $characterCandidateDb "SELECT COUNT(*) FROM texture_links WHERE link_error IS NOT NULL AND trim(link_error) <> '';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking character candidate texture link errors."
+            }
+            $characterCandidateMaterialSidecarRowsText = & $sqlite3.Source -readonly -batch -noheader $characterCandidateDb "SELECT COUNT(*) FROM material_sidecars;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting character candidate material_sidecars."
+            }
+            $characterCandidateModelRowsText = & $sqlite3.Source -readonly -batch -noheader $characterCandidateDb "SELECT COUNT(*) FROM assets WHERE kind = 'Model';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting character candidate model assets."
+            }
+            $characterCandidateTextureLinkErrors = [long]$characterCandidateTextureLinkErrorsText
+            $characterCandidateMaterialSidecarRows = [long]$characterCandidateMaterialSidecarRowsText
+            $characterCandidateModelRows = [long]$characterCandidateModelRowsText
+            if ($characterCandidateTextureLinkErrors -ne 0) {
+                throw "Character candidate sample has texture link errors: $characterCandidateTextureLinkErrors"
+            }
+            if ($characterCandidateMaterialSidecarRows -lt 1 -or $characterCandidateModelRows -lt 1) {
+                throw "Character candidate sample lost material sidecar or model rows in library_index.db."
+            }
+        }
+        else {
+            Write-Warning "sqlite3.exe not found; character candidate table checks skipped."
+        }
+
+        if (!$SkipGltfValidation) {
+            $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $gltfTransform) {
+                Invoke-Checked -Label "Validate character candidate glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $characterCandidateGltf)
+                $characterCandidateGltfValidationStatus = "ok"
+            }
+        }
+
+        $characterCandidateStatus = "ok"
+    }
+    else {
+        $characterCandidateStatus = "missing"
+        Write-Warning "Character candidate sample not found; skipped: $CharacterCandidateSampleRoot"
+    }
+}
+else {
+    $characterCandidateStatus = "skipped"
+}
+
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -579,12 +685,33 @@ $summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral
 $summaryJsonLines += '    "modelRows": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentModelRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "characterCandidate": {'
+$summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
+$summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $CharacterCandidateSampleRoot) + ","
+$summaryJsonLines += '    "gltf": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltf) + ","
+$summaryJsonLines += '    "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
+$summaryJsonLines += '    "models": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateValidationJson.totals.models) + ","
+$summaryJsonLines += '    "ok": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateValidationJson.totals.ok) + ","
+$summaryJsonLines += '    "withSkin": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateValidationJson.totals.withSkin) + ","
+$summaryJsonLines += '    "withTextures": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateValidationJson.totals.withTextures) + ","
+$summaryJsonLines += '    "skinJointCount": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSkinJointCount) + ","
+$summaryJsonLines += '    "maxBoundsSize": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateMaxBoundsSize) + ","
+$summaryJsonLines += '    "textureAssets": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSummaryJson.counts.textureAssets) + ","
+$summaryJsonLines += '    "textureLinks": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSummaryJson.counts.textureLinks) + ","
+$summaryJsonLines += '    "textureLinkErrors": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateTextureLinkErrors) + ","
+$summaryJsonLines += '    "materialSidecars": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSummaryJson.counts.materialSidecars) + ","
+$summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateMaterialSidecarRows) + ","
+$summaryJsonLines += '    "modelRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateModelRows) + ","
+$summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRule)
+$summaryJsonLines += '  },'
 $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
 $summaryJsonLines += '    "shaderBoundary": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
 $summaryJsonLines += '    "shaderBoundaryGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryGltfValidationStatus) + ","
 $summaryJsonLines += '    "staticEnvironment": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentStatus) + ","
 $summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
+$summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
+$summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
@@ -787,6 +914,32 @@ elseif ($staticEnvironmentStatus -eq "missing") {
     $reportLines.Add(('- Sample root missing: `{0}`' -f $StaticEnvironmentSampleRoot))
 }
 $reportLines.Add("")
+$reportLines.Add("## Character Candidate Diagnostic")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $characterCandidateStatus))
+if ($characterCandidateStatus -eq "ok") {
+    $reportLines.Add(('- Sample root: `{0}`' -f $CharacterCandidateSampleRoot))
+    $reportLines.Add(('- glTF: `{0}`' -f $characterCandidateGltf))
+    $reportLines.Add(('- glTF validator: `{0}`' -f $characterCandidateGltfValidationStatus))
+    $reportLines.Add(('- Model validation: models=`{0}`, ok=`{1}`, withSkin=`{2}`, withTextures=`{3}`, skinJoints=`{4}`, maxBoundsSize=`{5}`' -f `
+        (ConvertTo-SmokeText $characterCandidateValidationJson.totals.models "0"),
+        (ConvertTo-SmokeText $characterCandidateValidationJson.totals.ok "0"),
+        (ConvertTo-SmokeText $characterCandidateValidationJson.totals.withSkin "0"),
+        (ConvertTo-SmokeText $characterCandidateValidationJson.totals.withTextures "0"),
+        (ConvertTo-SmokeText $characterCandidateSkinJointCount "0"),
+        (ConvertTo-SmokeText $characterCandidateMaxBoundsSize "0")))
+    $reportLines.Add(('- SQLite counts: textureAssets=`{0}`, textureLinks=`{1}`, textureLinkErrors=`{2}`, materialSidecars=`{3}`, modelRows=`{4}`' -f `
+        (ConvertTo-SmokeText $characterCandidateSummaryJson.counts.textureAssets "0"),
+        (ConvertTo-SmokeText $characterCandidateSummaryJson.counts.textureLinks "0"),
+        (ConvertTo-SmokeText $characterCandidateTextureLinkErrors "unknown"),
+        (ConvertTo-SmokeText $characterCandidateSummaryJson.counts.materialSidecars "0"),
+        (ConvertTo-SmokeText $characterCandidateModelRows "unknown")))
+    $reportLines.Add('- Rule: this is a stronger skinned humanoid/character candidate selected from Unity source-index Avatar and Renderer evidence. It can guide the next animation smoke target, but it still does not create a production model-animation binding without explicit clip/controller relation and visual validation.')
+}
+elseif ($characterCandidateStatus -eq "missing") {
+    $reportLines.Add(('- Sample root missing: `{0}`' -f $CharacterCandidateSampleRoot))
+}
+$reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
 $reportLines.Add("")
 if ($null -ne $animationReportJson) {
@@ -824,6 +977,10 @@ if ($shaderBoundaryStatus -eq "ok") {
 if ($staticEnvironmentStatus -eq "ok") {
     $reportLines.Add(('- Static environment glTF: `{0}`' -f $staticEnvironmentGltf))
     $reportLines.Add(('- Static environment SQLite summary: `{0}`' -f (Join-Path $StaticEnvironmentSampleRoot "sqlite_index_summary.json")))
+}
+if ($characterCandidateStatus -eq "ok") {
+    $reportLines.Add(('- Character candidate glTF: `{0}`' -f $characterCandidateGltf))
+    $reportLines.Add(('- Character candidate SQLite summary: `{0}`' -f (Join-Path $CharacterCandidateSampleRoot "sqlite_index_summary.json")))
 }
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
