@@ -208,6 +208,8 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $subtreeTruncatedRowCount = [Convert]::ToInt64($subtreeTruncatedRows.Count)
     $animatorRowCount = [Convert]::ToInt64($animatorRows.Count)
     $summaryStatus = $null
+    $summaryProductionReadiness = $null
+    $summaryBlockedRequirements = @()
     if ($null -ne $diagnosticSummary) {
         # 新报告直接给机器摘要；旧报告没有该节点时继续使用行数组统计。
         $summaryStatus = [string](Get-SmokePropertyValue -Object $diagnosticSummary -Name "status")
@@ -220,6 +222,11 @@ function Read-SourceModelScriptAnimationDiagnostic {
         $summaryDiagnosticOnly = Get-SmokePropertyValue -Object $diagnosticSummary -Name "diagnosticOnly"
         $summaryNotDefaultRelation = Get-SmokePropertyValue -Object $diagnosticSummary -Name "notDefaultModelAnimationRelation"
         $summaryDefaultCandidateCount = Get-SmokePropertyValue -Object $diagnosticSummary -Name "defaultCandidateCount"
+        $summaryProductionReadiness = Get-SmokePropertyValue -Object $diagnosticSummary -Name "productionReadiness"
+        $summaryBlockedRequirementsValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "blockedProductionRequirements"
+        if ($null -ne $summaryBlockedRequirementsValue) {
+            $summaryBlockedRequirements = @($summaryBlockedRequirementsValue)
+        }
         if ($null -ne $summaryRowCount) {
             $scriptAnimationRows = [Convert]::ToInt64($summaryRowCount)
         }
@@ -241,6 +248,9 @@ function Read-SourceModelScriptAnimationDiagnostic {
         if ($summaryDiagnosticOnly -ne $true -or $summaryNotDefaultRelation -ne $true -or [Convert]::ToInt64($summaryDefaultCandidateCount) -ne 0) {
             $invalidBoundaryRowCount++
         }
+        if ([string]$summaryProductionReadiness -ne "blocked" -or $summaryBlockedRequirements.Count -le 0) {
+            $invalidBoundaryRowCount++
+        }
     }
     if ([string]::IsNullOrWhiteSpace($summaryStatus)) {
         $summaryStatus = if ($scriptAnimationRows -gt 0) { "diagnosticOnly" } else { "empty" }
@@ -255,6 +265,8 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryJsonLines += '  "selectedModelCount": ' + (ConvertTo-SmokeJsonLiteral $selectedModelCount) + ","
     $summaryJsonLines += '  "candidateCount": ' + (ConvertTo-SmokeJsonLiteral $candidateCount) + ","
     $summaryJsonLines += '  "diagnosticSummaryStatus": ' + (ConvertTo-SmokeJsonLiteral $summaryStatus) + ","
+    $summaryJsonLines += '  "productionReadiness": ' + (ConvertTo-SmokeJsonLiteral $summaryProductionReadiness) + ","
+    $summaryJsonLines += '  "blockedProductionRequirements": ' + (ConvertTo-SmokeJsonLiteral $summaryBlockedRequirements 10) + ","
     $summaryJsonLines += '  "scriptAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationRows) + ","
     $summaryJsonLines += '  "invalidBoundaryRows": ' + (ConvertTo-SmokeJsonLiteral $invalidBoundaryRowCount) + ","
     $summaryJsonLines += '  "visibleRendererRows": ' + (ConvertTo-SmokeJsonLiteral $visibleRendererRowCount) + ","
@@ -299,6 +311,8 @@ function Read-SourceModelAvatarAnimationDiagnostic {
     $avatarTosMaxCoverage = 0.0
     $avatarTosFullCoverageRows = 0L
     $avatarTosUnresolvedHashRows = 0L
+    $avatarTosProductionReadiness = $null
+    $avatarTosBlockedRequirements = @()
     if ($null -ne $avatarTosSummary) {
         $avatarTosStatus = [string](Get-SmokePropertyValue -Object $avatarTosSummary -Name "status")
         $avatarTosRowCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $avatarTosSummary -Name "rowCount")
@@ -308,7 +322,15 @@ function Read-SourceModelAvatarAnimationDiagnostic {
         $avatarTosUnresolvedHashRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $avatarTosSummary -Name "unresolvedHashRows")
         $avatarTosDiagnosticOnly = Get-SmokePropertyValue -Object $avatarTosSummary -Name "diagnosticOnly"
         $avatarTosNotDefaultRelation = Get-SmokePropertyValue -Object $avatarTosSummary -Name "notDefaultModelAnimationRelation"
+        $avatarTosProductionReadiness = Get-SmokePropertyValue -Object $avatarTosSummary -Name "productionReadiness"
+        $avatarTosBlockedRequirementsValue = Get-SmokePropertyValue -Object $avatarTosSummary -Name "blockedProductionRequirements"
+        if ($null -ne $avatarTosBlockedRequirementsValue) {
+            $avatarTosBlockedRequirements = @($avatarTosBlockedRequirementsValue)
+        }
         if ($avatarTosDiagnosticOnly -ne $true -or $avatarTosNotDefaultRelation -ne $true -or $avatarTosDefaultCandidateCount -ne 0) {
+            $invalidBoundaryRows++
+        }
+        if ([string]$avatarTosProductionReadiness -ne "blocked" -or $avatarTosBlockedRequirements.Count -le 0) {
             $invalidBoundaryRows++
         }
     }
@@ -325,6 +347,8 @@ function Read-SourceModelAvatarAnimationDiagnostic {
     $modelAvatarFullOverlapRows = 0L
     $modelAvatarMaxCoverage = 0.0
     $modelAvatarVisibleRendererRows = 0L
+    $modelAvatarProductionReadiness = $null
+    $modelAvatarBlockedRequirements = @()
     if ($null -ne $modelAvatarSummary) {
         $modelAvatarStatus = [string](Get-SmokePropertyValue -Object $modelAvatarSummary -Name "status")
         $modelAvatarRowCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "rowCount")
@@ -335,7 +359,15 @@ function Read-SourceModelAvatarAnimationDiagnostic {
         $modelAvatarVisibleRendererRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "visibleRendererRows")
         $modelAvatarDiagnosticOnly = Get-SmokePropertyValue -Object $modelAvatarSummary -Name "diagnosticOnly"
         $modelAvatarNotDefaultRelation = Get-SmokePropertyValue -Object $modelAvatarSummary -Name "notDefaultModelAnimationRelation"
+        $modelAvatarProductionReadiness = Get-SmokePropertyValue -Object $modelAvatarSummary -Name "productionReadiness"
+        $modelAvatarBlockedRequirementsValue = Get-SmokePropertyValue -Object $modelAvatarSummary -Name "blockedProductionRequirements"
+        if ($null -ne $modelAvatarBlockedRequirementsValue) {
+            $modelAvatarBlockedRequirements = @($modelAvatarBlockedRequirementsValue)
+        }
         if ($modelAvatarDiagnosticOnly -ne $true -or $modelAvatarNotDefaultRelation -ne $true -or $modelAvatarDefaultCandidateCount -ne 0) {
+            $invalidBoundaryRows++
+        }
+        if ([string]$modelAvatarProductionReadiness -ne "blocked" -or $modelAvatarBlockedRequirements.Count -le 0) {
             $invalidBoundaryRows++
         }
     }
@@ -356,12 +388,16 @@ function Read-SourceModelAvatarAnimationDiagnostic {
         avatarTosStatus = $avatarTosStatus
         avatarTosRows = $avatarTosRowCount
         avatarTosDefaultCandidateCount = $avatarTosDefaultCandidateCount
+        avatarTosProductionReadiness = $avatarTosProductionReadiness
+        avatarTosBlockedProductionRequirements = $avatarTosBlockedRequirements
         avatarTosMaxCoverage = $avatarTosMaxCoverage
         avatarTosFullCoverageRows = $avatarTosFullCoverageRows
         avatarTosUnresolvedHashRows = $avatarTosUnresolvedHashRows
         modelAvatarStatus = $modelAvatarStatus
         modelAvatarRows = $modelAvatarRowCount
         modelAvatarDefaultCandidateCount = $modelAvatarDefaultCandidateCount
+        modelAvatarProductionReadiness = $modelAvatarProductionReadiness
+        modelAvatarBlockedProductionRequirements = $modelAvatarBlockedRequirements
         modelAvatarHighOverlapRows = $modelAvatarHighOverlapRows
         modelAvatarFullOverlapRows = $modelAvatarFullOverlapRows
         modelAvatarMaxCoverage = $modelAvatarMaxCoverage
