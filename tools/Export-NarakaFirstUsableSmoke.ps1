@@ -2461,6 +2461,7 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
             "--output", $zhumuMergedSubjectReport,
             "--min_foreground_pixel_ratio", "0.08",
             "--min_foreground_height_ratio", "0.45",
+            "--min_motion_pixel_ratio", "0.01",
             "--images"
         ) + $zhumuMergedRenderImages
         Invoke-Checked -Label "Analyze Zhumu merged animation render subject occupancy" -FilePath (Resolve-SmokePython) -Arguments $subjectAnalyzerArgs
@@ -2468,6 +2469,10 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
         $zhumuMergedSubjectOccupancy = Get-Content -LiteralPath $zhumuMergedSubjectReport -Raw -Encoding UTF8 | ConvertFrom-Json
         if ([string]$zhumuMergedSubjectOccupancy.status -ne "ok") {
             throw "Zhumu merged animation render images do not show a visible subject. status=$($zhumuMergedSubjectOccupancy.status) failed=$($zhumuMergedSubjectOccupancy.failedCount)"
+        }
+        $zhumuMergedRenderMotion = $zhumuMergedSubjectOccupancy.motion
+        if ($null -eq $zhumuMergedRenderMotion -or [string]$zhumuMergedRenderMotion.status -ne "ok") {
+            throw "Zhumu merged animation render images do not show visible pixel motion. status=$($zhumuMergedRenderMotion.status) maxMotion=$($zhumuMergedRenderMotion.maxMotionPixelRatio)"
         }
 
         $zhumuMergedRenderSummaryText = (Get-Content -LiteralPath $zhumuMergedRenderSummary -Raw -Encoding UTF8).Trim()
@@ -2508,6 +2513,7 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
             renderFrameCount = [int]$zhumuMergedRenderLines.Count
             renderBboxMotion = $zhumuMergedRenderBboxMotion
             renderSubjectOccupancy = $zhumuMergedSubjectOccupancy
+            renderPixelMotion = $zhumuMergedRenderMotion
             renderImages = $zhumuMergedRenderImages
             renderSummary = $zhumuMergedRenderSummaryText
         }
@@ -3791,6 +3797,10 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderSubjectOccupancy.status "unknown"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderSubjectOccupancy.minForegroundPixelRatio "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderSubjectOccupancy.minForegroundHeightRatio "0")))
+    $reportLines.Add(('- Render pixel motion: status=`{0}`, maxMotionPixelRatio=`{1}`, maxForegroundMotionRatio=`{2}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderPixelMotion.status "unknown"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderPixelMotion.maxMotionPixelRatio "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderPixelMotion.maxForegroundMotionRatio "0")))
     $reportLines.Add('- Rule: merged model+animation glTF proves the diagnostic composition path can open and render, but it remains needs_review because the internal Humanoid/Muscle solver and low channel coverage are not production-validated.')
 }
 elseif ($zhumuMergedAnimationPreview.status -eq "missing") {
