@@ -8,6 +8,10 @@ param(
     [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
     [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
     [string]$CharacterCandidateSampleRoot = "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_BundleRoot_Current",
+    [string]$CharacterCandidateSourceIndexBundle = "b\6\b6449028544fa466",
+    [string]$CharacterCandidateSourceIndexSerializedFile = "CAB-43d9a2106c54892c7f775b8d7ab8b193",
+    [string]$CharacterCandidateSourceIndexAnimatorName = "ch_m_japan_samurai_ghost",
+    [long]$CharacterCandidateSourceIndexRootPathId = 7640773285473327857,
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
@@ -88,6 +92,18 @@ function ConvertTo-SmokeJsonLiteral {
     return $json
 }
 
+function ConvertTo-SqliteTextLiteral {
+    param(
+        [string]$Value
+    )
+
+    if ($null -eq $Value) {
+        return "NULL"
+    }
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetFramework = "net9.0-windows"
 $cli = Join-Path $repoRoot "AnimeStudio.CLI\bin\$Configuration\$targetFramework\AnimeStudio.CLI.exe"
@@ -110,6 +126,8 @@ if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
 
 Test-FileRequired -Path $SourceRoot -Label "Naraka source root"
 Test-FileRequired -Path $SourceIndex -Label "Naraka unity_source_index.db"
+$characterCandidateSourceIndexSource = (Join-Path $SourceRoot $CharacterCandidateSourceIndexBundle) + "|" + $CharacterCandidateSourceIndexSerializedFile
+$characterCandidateSourceIndexRelativeSource = ($CharacterCandidateSourceIndexBundle -replace "\\", "/") + "|" + $CharacterCandidateSourceIndexSerializedFile
 
 if (!$KeepExisting -and (Test-Path -LiteralPath $OutputRoot)) {
     Remove-Item -LiteralPath $OutputRoot -Recurse -Force
@@ -151,6 +169,14 @@ $characterCandidateModelAnimationRelationRows = $null
 $characterCandidateRelationAnimationRows = $null
 $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
+$characterCandidateSourceIndexBoundary = [pscustomobject]@{
+    status = "notChecked"
+    rule = "SamuraiGhost bundle source-index boundary: Animator.avatar and same-bundle Humanoid/Muscle clips are diagnostic evidence only; production animation binding still requires explicit Animator.controller, Animation.clip or AnimatorController.clip relation plus visual validation."
+    source = $characterCandidateSourceIndexSource
+    relativeSource = $characterCandidateSourceIndexRelativeSource
+    animatorName = $CharacterCandidateSourceIndexAnimatorName
+    rootPathId = $CharacterCandidateSourceIndexRootPathId
+}
 $sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
     status = "notChecked"
     rule = "Animator.avatar is only source-index evidence. It can explain model skeleton context, but it never creates a default model-animation binding without explicit clip/controller relation and model validation."
@@ -588,9 +614,68 @@ ORDER BY animators DESC;
         withController = $avatarAnimatorWithController
         domainCounts = $avatarAnimatorDomainRows
     }
+
+    $characterSourceSqlLiteral = ConvertTo-SqliteTextLiteral $characterCandidateSourceIndexSource
+    $characterRelativeSourceSqlLiteral = ConvertTo-SqliteTextLiteral $characterCandidateSourceIndexRelativeSource
+    $characterAnimatorSqlLiteral = ConvertTo-SqliteTextLiteral $CharacterCandidateSourceIndexAnimatorName
+    $characterCandidateSourceBoundarySql = @"
+SELECT
+  (SELECT COUNT(*) FROM source_relations WHERE from_source = $characterSourceSqlLiteral AND relation = 'animator.avatar') AS animatorAvatarRows,
+  (SELECT COUNT(*) FROM source_relations WHERE from_source = $characterSourceSqlLiteral AND relation = 'animator.avatar' AND from_name = $characterAnimatorSqlLiteral) AS characterAnimatorAvatarRows,
+  (SELECT COUNT(DISTINCT to_path_id) FROM source_relations WHERE from_source = $characterSourceSqlLiteral AND relation = 'animator.avatar' AND from_name = $characterAnimatorSqlLiteral) AS distinctCharacterAvatarTargets,
+  (SELECT COUNT(*) FROM source_relations WHERE from_source = $characterSourceSqlLiteral AND relation = 'animator.controller') AS animatorControllerRows,
+  (SELECT COUNT(*) FROM source_relations WHERE from_source = $characterSourceSqlLiteral AND relation = 'animation.clip') AS animationClipRows,
+  (SELECT COUNT(*) FROM source_relations WHERE from_source = $characterSourceSqlLiteral AND relation = 'animatorController.clip') AS animatorControllerClipRows,
+  (SELECT COUNT(*) FROM source_animation_bindings WHERE animation_source = $characterSourceSqlLiteral) AS animationBindings,
+  (SELECT COUNT(*) FROM source_animation_bindings WHERE animation_source = $characterSourceSqlLiteral AND has_muscle_clip = 1) AS muscleAnimationBindings,
+  (SELECT substr(group_concat(animation_name, ', '), 1, 240) FROM (
+      SELECT animation_name
+      FROM source_animation_bindings
+      WHERE animation_source = $characterSourceSqlLiteral
+      ORDER BY binding_count DESC
+      LIMIT 6
+   )) AS topAnimationNames,
+  (SELECT COUNT(*) FROM source_objects WHERE source_path = $characterRelativeSourceSqlLiteral AND type = 'SkinnedMeshRenderer') AS skinnedMeshRendererObjects,
+  (SELECT COUNT(*) FROM source_objects WHERE source_path = $characterRelativeSourceSqlLiteral AND type = 'MeshRenderer') AS meshRendererObjects;
+"@
+    $characterCandidateSourceBoundaryText = & $sqlite3ForSourceIndex.Source -readonly -batch -json $SourceIndex $characterCandidateSourceBoundarySql
+    if ($LASTEXITCODE -ne 0) {
+        throw "sqlite3 failed while querying SamuraiGhost source-index animation boundary."
+    }
+    $characterCandidateSourceBoundaryRows = ($characterCandidateSourceBoundaryText -join [Environment]::NewLine) | ConvertFrom-Json
+    $characterCandidateSourceBoundaryRow = @($characterCandidateSourceBoundaryRows)[0]
+    $characterCandidateSourceIndexBoundary = [pscustomobject]@{
+        status = "ok"
+        rule = $characterCandidateSourceIndexBoundary.rule
+        source = $characterCandidateSourceIndexSource
+        relativeSource = $characterCandidateSourceIndexRelativeSource
+        animatorName = $CharacterCandidateSourceIndexAnimatorName
+        rootPathId = $CharacterCandidateSourceIndexRootPathId
+        animatorAvatarRows = [long]$characterCandidateSourceBoundaryRow.animatorAvatarRows
+        characterAnimatorAvatarRows = [long]$characterCandidateSourceBoundaryRow.characterAnimatorAvatarRows
+        distinctCharacterAvatarTargets = [long]$characterCandidateSourceBoundaryRow.distinctCharacterAvatarTargets
+        animatorControllerRows = [long]$characterCandidateSourceBoundaryRow.animatorControllerRows
+        animationClipRows = [long]$characterCandidateSourceBoundaryRow.animationClipRows
+        animatorControllerClipRows = [long]$characterCandidateSourceBoundaryRow.animatorControllerClipRows
+        animationBindings = [long]$characterCandidateSourceBoundaryRow.animationBindings
+        muscleAnimationBindings = [long]$characterCandidateSourceBoundaryRow.muscleAnimationBindings
+        topAnimationNames = [string]$characterCandidateSourceBoundaryRow.topAnimationNames
+        skinnedMeshRendererObjects = [long]$characterCandidateSourceBoundaryRow.skinnedMeshRendererObjects
+        meshRendererObjects = [long]$characterCandidateSourceBoundaryRow.meshRendererObjects
+    }
+    if ($characterCandidateSourceIndexBoundary.animatorAvatarRows -lt 1 -or $characterCandidateSourceIndexBoundary.characterAnimatorAvatarRows -lt 1) {
+        throw "SamuraiGhost source-index boundary lost Animator.avatar evidence. animatorAvatarRows=$($characterCandidateSourceIndexBoundary.animatorAvatarRows) characterAnimatorAvatarRows=$($characterCandidateSourceIndexBoundary.characterAnimatorAvatarRows)"
+    }
+    if ($characterCandidateSourceIndexBoundary.animationBindings -lt 1 -or $characterCandidateSourceIndexBoundary.muscleAnimationBindings -lt 1) {
+        throw "SamuraiGhost source-index boundary lost same-bundle Humanoid/Muscle animation binding evidence. animationBindings=$($characterCandidateSourceIndexBoundary.animationBindings) muscleAnimationBindings=$($characterCandidateSourceIndexBoundary.muscleAnimationBindings)"
+    }
+    if ($characterCandidateSourceIndexBoundary.animatorControllerRows -ne 0 -or $characterCandidateSourceIndexBoundary.animationClipRows -ne 0 -or $characterCandidateSourceIndexBoundary.animatorControllerClipRows -ne 0) {
+        throw "SamuraiGhost source-index boundary unexpectedly found explicit production animation edges. animatorController=$($characterCandidateSourceIndexBoundary.animatorControllerRows) animationClip=$($characterCandidateSourceIndexBoundary.animationClipRows) animatorControllerClip=$($characterCandidateSourceIndexBoundary.animatorControllerClipRows)"
+    }
 }
 else {
     $sourceIndexAvatarAnimatorDomains.status = "toolMissing"
+    $characterCandidateSourceIndexBoundary.status = "toolMissing"
 }
 if ($null -eq $sqliteSummaryJson.qualityGates) {
     throw "sqlite_index_summary.json lost qualityGates section."
@@ -728,6 +813,7 @@ $summaryJsonLines += '    "modelAnimationRelationRows": ' + (ConvertTo-SmokeJson
 $summaryJsonLines += '    "relationAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRelationAnimationRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary 10) + ","
 $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
 $summaryJsonLines += '    "shaderBoundary": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
@@ -736,6 +822,7 @@ $summaryJsonLines += '    "staticEnvironment": ' + (ConvertTo-SmokeJsonLiteral $
 $summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
 $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
+$summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary.status) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
@@ -961,6 +1048,22 @@ if ($characterCandidateStatus -eq "ok") {
         (ConvertTo-SmokeText $characterCandidateModelAnimationCandidateRows "unknown"),
         (ConvertTo-SmokeText $characterCandidateModelAnimationRelationRows "unknown"),
         (ConvertTo-SmokeText $characterCandidateRelationAnimationRows "unknown")))
+    if ($characterCandidateSourceIndexBoundary.status -eq "ok") {
+        $reportLines.Add(('- Source-index boundary: animator.avatar=`{0}`, characterAnimatorAvatar=`{1}`, sameBundleAnimationBindings=`{2}`, muscleBindings=`{3}`, explicitEdges animator.controller/animation.clip/animatorController.clip=`{4}/{5}/{6}`' -f `
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.animatorAvatarRows "0"),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.characterAnimatorAvatarRows "0"),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.animationBindings "0"),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.muscleAnimationBindings "0"),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.animatorControllerRows "0"),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.animationClipRows "0"),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.animatorControllerClipRows "0")))
+        $reportLines.Add(('- Source-index boundary samples: source=`{0}`, topAnimationNames=`{1}`' -f `
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.relativeSource),
+            (ConvertTo-SmokeText $characterCandidateSourceIndexBoundary.topAnimationNames "")))
+    }
+    else {
+        $reportLines.Add(('- Source-index boundary query: `{0}`' -f $characterCandidateSourceIndexBoundary.status))
+    }
     $reportLines.Add('- Rule: this is a stronger skinned humanoid/character candidate selected from Unity source-index Avatar and Renderer evidence. It can guide the next animation smoke target, but it still does not create a production model-animation binding without explicit clip/controller relation and visual validation.')
 }
 elseif ($characterCandidateStatus -eq "missing") {
