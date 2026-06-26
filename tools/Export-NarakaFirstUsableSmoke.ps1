@@ -493,6 +493,8 @@ function Read-SourceIndexSimpleAnimationClipDomains {
             totalRelations = 0
             distinctClipBuckets = 0
             domainCounts = @()
+            probeShortlist = @()
+            probeShortlistCount = 0
             productionReadiness = "blocked"
             blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
         }
@@ -604,12 +606,137 @@ ORDER BY relations DESC;
         }
     }
 
+    # 这份短名单只用于挑后续诊断样本。它保留脚本节点、clip 和 source/pathId，
+    # 但不创建默认模型-动画关系，也不绕过模型、TRS 和视觉验收门槛。
+    $shortlistSql = @"
+CREATE TEMP TABLE simple_mb AS
+SELECT from_file, from_path_id AS mb_path_id
+FROM source_relations
+WHERE relation='monoBehaviour.script'
+  AND json_extract(raw_json,'$.details.scriptName')='SimpleAnimation';
+CREATE INDEX temp.idx_simple_mb_key ON simple_mb(from_file, mb_path_id);
+CREATE TEMP TABLE simple_clip AS
+SELECT r.from_file, r.from_path_id AS mb_path_id, r.to_file AS clip_file, r.to_path_id AS clip_path_id, c.name AS clip_name
+FROM simple_mb s
+JOIN source_relations r ON r.relation='monoBehaviour.pptr' AND r.from_file=s.from_file AND r.from_path_id=s.mb_path_id
+JOIN source_objects c ON c.serialized_file=r.to_file AND c.path_id=r.to_path_id AND c.type='AnimationClip';
+WITH classified AS (
+  SELECT
+    CASE
+      WHEN lower(clip_name) LIKE 'fx_%' THEN 'Fx'
+      WHEN lower(clip_name) LIKE 'ui_%' OR lower(clip_name) LIKE 'anim_ui%' THEN 'UI'
+      WHEN lower(clip_name) LIKE 'mo_%' THEN 'MonsterOrNpc'
+      WHEN lower(clip_name) LIKE 'ch_%' THEN 'Character'
+      WHEN lower(clip_name) LIKE '%male%' OR lower(clip_name) LIKE '%female%' THEN 'HumanNameToken'
+      ELSE 'Other'
+    END AS clip_domain,
+    from_file,
+    mb_path_id,
+    clip_file,
+    clip_path_id,
+    clip_name
+  FROM simple_clip
+),
+direct_context AS (
+  SELECT DISTINCT
+    classified.clip_domain,
+    classified.from_file,
+    classified.mb_path_id,
+    classified.clip_file,
+    classified.clip_path_id,
+    classified.clip_name,
+    goRel.to_file AS go_file,
+    goRel.to_path_id AS go_path_id,
+    COALESCE(go.name, '') AS go_name,
+    COALESCE(go.source_path, '') AS go_source_path,
+    CASE WHEN EXISTS (
+      SELECT 1
+      FROM source_relations comp
+      JOIN source_objects obj ON obj.serialized_file=comp.to_file AND obj.path_id=comp.to_path_id
+      WHERE comp.relation='gameObject.component'
+        AND comp.from_file=goRel.to_file
+        AND comp.from_path_id=goRel.to_path_id
+        AND obj.type='Animator'
+    ) THEN 1 ELSE 0 END AS has_animator,
+    CASE WHEN EXISTS (
+      SELECT 1
+      FROM source_relations comp
+      JOIN source_objects obj ON obj.serialized_file=comp.to_file AND obj.path_id=comp.to_path_id
+      WHERE comp.relation='gameObject.component'
+        AND comp.from_file=goRel.to_file
+        AND comp.from_path_id=goRel.to_path_id
+        AND obj.type IN ('MeshRenderer','SkinnedMeshRenderer')
+    ) THEN 1 ELSE 0 END AS has_direct_visible_renderer
+  FROM classified
+  LEFT JOIN source_relations goRel ON goRel.relation='component.gameObject' AND goRel.from_file=classified.from_file AND goRel.from_path_id=classified.mb_path_id
+  LEFT JOIN source_objects go ON go.serialized_file=goRel.to_file AND go.path_id=goRel.to_path_id AND go.type='GameObject'
+),
+ranked AS (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY clip_domain
+           ORDER BY has_direct_visible_renderer DESC, has_animator DESC, go_name, clip_name, mb_path_id
+         ) AS rn
+  FROM direct_context
+  WHERE clip_domain IN ('Character','MonsterOrNpc','HumanNameToken')
+)
+SELECT clip_domain,
+       go_name,
+       clip_name,
+       go_source_path,
+       go_file,
+       go_path_id,
+       mb_path_id,
+       clip_file,
+       clip_path_id,
+       has_animator,
+       has_direct_visible_renderer
+FROM ranked
+WHERE rn <= 4
+ORDER BY CASE clip_domain WHEN 'Character' THEN 1 WHEN 'MonsterOrNpc' THEN 2 WHEN 'HumanNameToken' THEN 3 ELSE 9 END, rn;
+"@
+
+    $shortlistRowsText = @(& $sqlite3.Source -readonly -batch -tabs $SourceIndexPath $shortlistSql)
+    if ($LASTEXITCODE -ne 0) {
+        throw "sqlite3 failed while reading SimpleAnimation probe shortlist from source index."
+    }
+
+    $probeShortlist = @()
+    foreach ($row in $shortlistRowsText) {
+        if ([string]::IsNullOrWhiteSpace($row)) {
+            continue
+        }
+
+        $parts = ([string]$row).Split("`t")
+        if ($parts.Count -lt 11) {
+            continue
+        }
+
+        $probeShortlist += [pscustomobject]@{
+            domain = [string]$parts[0]
+            gameObjectName = [string]$parts[1]
+            clipName = [string]$parts[2]
+            sourcePath = [string]$parts[3]
+            gameObjectFile = [string]$parts[4]
+            gameObjectPathId = ConvertTo-SmokeInt64 $parts[5]
+            monoBehaviourPathId = ConvertTo-SmokeInt64 $parts[6]
+            clipFile = [string]$parts[7]
+            clipPathId = ConvertTo-SmokeInt64 $parts[8]
+            hasAnimator = (ConvertTo-SmokeInt64 $parts[9]) -ne 0
+            hasDirectVisibleRenderer = (ConvertTo-SmokeInt64 $parts[10]) -ne 0
+            diagnosticOnly = $true
+            notDefaultModelAnimationRelation = $true
+        }
+    }
+
     return [pscustomobject]@{
         status = "ok"
-        rule = "SimpleAnimation -> AnimationClip PPtr rows are Naraka script-field evidence only. Character/HumanNameToken/MonsterOrNpc domains help pick future solver samples, but they do not create default model-animation candidates without script semantics, deterministic model relation, TRS export and visual review."
+        rule = "SimpleAnimation -> AnimationClip PPtr rows are Naraka script-field evidence only. Character/HumanNameToken/MonsterOrNpc domains and probeShortlist help pick future solver samples, but they do not create default model-animation candidates without script semantics, deterministic model relation, TRS export and visual review."
         totalRelations = $totalRelations
         distinctClipBuckets = $totalDistinctClipBuckets
         domainCounts = $domainRows
+        probeShortlist = $probeShortlist
+        probeShortlistCount = $probeShortlist.Count
         productionReadiness = "blocked"
         blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
     }
@@ -1296,6 +1423,9 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
 $sourceIndexSimpleAnimationClipDomains = Read-SourceIndexSimpleAnimationClipDomains -SourceIndexPath $SourceIndex
 if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok" -and $sourceIndexSimpleAnimationClipDomains.totalRelations -lt 1) {
     throw "SimpleAnimation clip-domain diagnostic found no AnimationClip PPtr rows."
+}
+if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok" -and $sourceIndexSimpleAnimationClipDomains.probeShortlistCount -lt 3) {
+    throw "SimpleAnimation probe shortlist lost character/monster/human-token samples. count=$($sourceIndexSimpleAnimationClipDomains.probeShortlistCount)"
 }
 
 Write-Host ""
@@ -2783,6 +2913,16 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $sourceIndexSimpleAnimationClipDomains.totalRelations "0"),
             ($simpleAnimationDomainParts -join ', ')))
         $reportLines.Add(('- SimpleAnimation direct GameObject context: `{0}`' -f ($simpleAnimationContextParts -join '; ')))
+        $shortlistPreview = @()
+        foreach ($sample in @($sourceIndexSimpleAnimationClipDomains.probeShortlist | Select-Object -First 6)) {
+            $shortlistPreview += ('{0}:{1}->{2}' -f `
+                (ConvertTo-SmokeText $sample.domain),
+                (ConvertTo-SmokeText $sample.gameObjectName ""),
+                (ConvertTo-SmokeText $sample.clipName ""))
+        }
+        $reportLines.Add(('- SimpleAnimation probe shortlist: count=`{0}`, samples=`{1}`' -f `
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationClipDomains.probeShortlistCount "0"),
+            ($shortlistPreview -join ' | ')))
         $reportLines.Add('- SimpleAnimation domain rule: Character/HumanNameToken/MonsterOrNpc rows are useful next probes, but they remain script-field diagnostics until script semantics, deterministic model relation, TRS export and visual review are proven.')
     }
     else {
