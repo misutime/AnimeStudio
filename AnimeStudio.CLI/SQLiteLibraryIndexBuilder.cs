@@ -4732,6 +4732,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     : new JArray();
                 var explicitControllerClipDomains = BuildExplicitControllerClipDomainSummary(sourceConnection);
                 var explicitAnimatorControllerUsages = BuildExplicitAnimatorControllerUsageSummary(sourceConnection);
+                var monoBehaviourAnimationClipPPtrSummary = BuildMonoBehaviourAnimationClipPPtrSummary(sourceConnection, 16);
 
                 return new JObject
                 {
@@ -4764,6 +4765,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     },
                     ["explicitControllerClipDomains"] = explicitControllerClipDomains,
                     ["explicitAnimatorControllerUsages"] = explicitAnimatorControllerUsages,
+                    ["monoBehaviourAnimationClipPPtrSummary"] = monoBehaviourAnimationClipPPtrSummary,
                     ["nonEmptyOverrideSetCount"] = nonEmptyOverrideSet,
                     ["staleOverridePairIndex"] = staleOverridePairs,
                     ["missingControllerClipTargets"] = missingControllerClipTargets,
@@ -4786,6 +4788,100 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     ["error"] = e.GetType().Name + ": " + e.Message,
                 };
             }
+        }
+
+        private static JObject BuildMonoBehaviourAnimationClipPPtrSummary(SqliteConnection connection, int limit)
+        {
+            var totals = QueryMonoBehaviourAnimationClipPPtrTotals(connection);
+            var topScripts = QueryMonoBehaviourAnimationClipPPtrScripts(connection, limit);
+
+            return new JObject
+            {
+                ["rule"] = "MonoBehaviour -> AnimationClip PPtr 是显式脚本字段引用证据，但脚本语义属于游戏运行时配置；这里只做诊断索引，不创建默认模型-动画绑定。",
+                ["totalRelations"] = totals.RelationCount,
+                ["objectCount"] = totals.ObjectCount,
+                ["distinctClipCount"] = totals.DistinctClipCount,
+                ["topScripts"] = topScripts,
+            };
+        }
+
+        private static (long RelationCount, long ObjectCount, long DistinctClipCount) QueryMonoBehaviourAnimationClipPPtrTotals(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = @"
+SELECT
+    COUNT(*) AS relation_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
+    COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count
+FROM source_objects clip
+JOIN source_relations r
+  ON r.to_path_id = clip.path_id
+ AND r.to_file = clip.serialized_file COLLATE NOCASE
+ AND r.relation = 'monoBehaviour.pptr'
+WHERE clip.type = 'AnimationClip';";
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return (0, 0, 0);
+            }
+
+            return (
+                reader.IsDBNull(0) ? 0 : reader.GetInt64(0),
+                reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                reader.IsDBNull(2) ? 0 : reader.GetInt64(2));
+        }
+
+        private static JArray QueryMonoBehaviourAnimationClipPPtrScripts(SqliteConnection connection, int limit)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = @"
+SELECT
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '') AS script_name,
+    COUNT(*) AS relation_count,
+    COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
+    COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count,
+    MIN(r.from_source) AS sample_source,
+    MIN(r.from_file) AS sample_file,
+    MIN(r.from_path_id) AS sample_path_id,
+    MIN(clip.name) AS sample_clip_name
+FROM source_objects clip
+JOIN source_relations r
+  ON r.to_path_id = clip.path_id
+ AND r.to_file = clip.serialized_file COLLATE NOCASE
+ AND r.relation = 'monoBehaviour.pptr'
+LEFT JOIN source_objects mono
+  ON mono.serialized_file = r.from_file COLLATE NOCASE
+ AND mono.path_id = r.from_path_id
+ AND mono.type = 'MonoBehaviour'
+WHERE clip.type = 'AnimationClip'
+GROUP BY COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '')
+ORDER BY relation_count DESC, object_count DESC
+LIMIT $limit;";
+            command.Parameters.AddWithValue("$limit", limit);
+
+            var result = new JArray();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new JObject
+                {
+                    ["scriptName"] = reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                    ["relationCount"] = reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                    ["objectCount"] = reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
+                    ["distinctClipCount"] = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
+                    ["sample"] = new JObject
+                    {
+                        ["source"] = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                        ["serializedFile"] = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
+                        ["pathId"] = reader.IsDBNull(6) ? 0 : reader.GetInt64(6),
+                        ["clipName"] = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                    },
+                });
+            }
+
+            return result;
         }
 
         private static JObject BuildExplicitAnimatorControllerUsageSummary(SqliteConnection connection)

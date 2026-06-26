@@ -776,6 +776,7 @@ $missingAnimatorControllerClipTargets = 0
 $missingAnimatorControllerClipTargetSamplesJson = "null"
 $explicitControllerClipDomainsJson = "null"
 $explicitAnimatorControllerUsagesJson = "null"
+$monoBehaviourAnimationClipPPtrSummaryJson = "null"
 $animatorControllerProductionGate = [pscustomobject]@{
     status = "unknown"
     rule = "Current Naraka smoke expects no Animator that has both Avatar and a Controller with resolved clip edges. If this becomes non-zero, it is a production animation candidate signal and must be re-validated instead of silently enabling animations."
@@ -797,6 +798,7 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     $missingAnimatorControllerClipTargetSamplesJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingAnimatorControllerClipTargetSamples 10
     $explicitControllerClipDomainsJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitControllerClipDomains 10
     $explicitAnimatorControllerUsagesJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages 10
+    $monoBehaviourAnimationClipPPtrSummaryJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.monoBehaviourAnimationClipPPtrSummary 10
     if ($null -ne $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages) {
         $explicitAnimatorControllerUsages = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages
         $animatorControllerProductionGate = [pscustomobject]@{
@@ -946,6 +948,7 @@ $summaryJsonLines += '    "missingAnimatorControllerClipTargets": ' + (ConvertTo
 $summaryJsonLines += '    "missingAnimatorControllerClipTargetSamples": ' + $missingAnimatorControllerClipTargetSamplesJson + ","
 $summaryJsonLines += '    "explicitControllerClipDomains": ' + $explicitControllerClipDomainsJson + ","
 $summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnimatorControllerUsagesJson + ","
+$summaryJsonLines += '    "monoBehaviourAnimationClipPPtrSummary": ' + $monoBehaviourAnimationClipPPtrSummaryJson + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
 $summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10)
@@ -1065,6 +1068,22 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $animatorControllerProductionGate.totalAnimators "0"),
             (ConvertTo-SmokeText $animatorControllerProductionGate.withControllerClipEdges "0")))
         $reportLines.Add('- Animator controller production gate rule: a non-zero Animator+Avatar+ControllerClip count is a new production-candidate signal and must trigger explicit model/clip validation before default animation capability changes.')
+    }
+    if ($null -ne $relationHealth.monoBehaviourAnimationClipPPtrSummary) {
+        $monoClipSummary = $relationHealth.monoBehaviourAnimationClipPPtrSummary
+        $reportLines.Add(('- MonoBehaviour AnimationClip PPtr diagnostic: totalRelations=`{0}`, objects=`{1}`, distinctClips=`{2}`' -f `
+            (ConvertTo-SmokeText $monoClipSummary.totalRelations "0"),
+            (ConvertTo-SmokeText $monoClipSummary.objectCount "0"),
+            (ConvertTo-SmokeText $monoClipSummary.distinctClipCount "0")))
+        foreach ($scriptRow in @($monoClipSummary.topScripts | Select-Object -First 8)) {
+            $reportLines.Add(('-   {0}: relations=`{1}`, objects=`{2}`, distinctClips=`{3}`, sampleClip=`{4}`' -f `
+                (ConvertTo-SmokeText $scriptRow.scriptName),
+                (ConvertTo-SmokeText $scriptRow.relationCount "0"),
+                (ConvertTo-SmokeText $scriptRow.objectCount "0"),
+                (ConvertTo-SmokeText $scriptRow.distinctClipCount "0"),
+                (ConvertTo-SmokeText $scriptRow.sample.clipName "")))
+        }
+        $reportLines.Add('- MonoBehaviour AnimationClip PPtr rule: these are explicit script-field references for investigation, but custom script semantics are required before any default model-animation binding can be created.')
     }
     if ($sourceIndexAvatarAnimatorDomains.status -eq "ok") {
         $reportLines.Add(('- Source-index animator.avatar domains: totalAnimators=`{0}`, withController=`{1}`' -f `
