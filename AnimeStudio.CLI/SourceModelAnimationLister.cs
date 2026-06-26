@@ -181,6 +181,7 @@ namespace AnimeStudio.CLI
                 ["models"] = new JArray(models.Select(ToJson)),
                 ["animatorDiagnostics"] = new JArray(animatorDiagnostics.Select(ToJson)),
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
+                ["scriptAnimationComponentDiagnosticSummary"] = BuildScriptAnimationComponentDiagnosticSummary(scriptAnimationComponentDiagnostics),
                 ["scriptAnimationComponentDiagnostics"] = new JArray(scriptAnimationComponentDiagnostics.Select(ToJson)),
                 ["avatarTosClipDiagnostics"] = new JArray(avatarTosClipDiagnostics.Select(ToJson)),
                 ["candidates"] = new JArray(filtered.Select(ToJson)),
@@ -3026,7 +3027,61 @@ LIMIT $limit;";
                         ["pathId"] = row.AnimationPathId,
                     },
                 },
-                ["rule"] = "This diagnostic is intentionally limited to the selected GameObject and direct children. It helps locate script-animation clues without scanning the full hierarchy or promoting script semantics to production animation bindings.",
+                ["rule"] = "This diagnostic is intentionally limited to MonoBehaviour components on the selected GameObject and direct children. The bounded subtree summary is context only; it does not promote script semantics to production animation bindings.",
+            };
+        }
+
+        private static JObject BuildScriptAnimationComponentDiagnosticSummary(IReadOnlyList<ScriptAnimationComponentDiagnosticRow> rows)
+        {
+            rows ??= Array.Empty<ScriptAnimationComponentDiagnosticRow>();
+            var topScripts = rows
+                .GroupBy(x => string.IsNullOrWhiteSpace(x.ScriptName) ? "<unknown>" : x.ScriptName, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new JObject
+                {
+                    ["scriptName"] = x.Key,
+                    ["rowCount"] = x.Count(),
+                    ["clipCount"] = x.Select(y => y.AnimationSerializedFile + ":" + y.AnimationPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                    ["gameObjectCount"] = x.Select(y => y.GameObjectSerializedFile + ":" + y.GameObjectPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                })
+                .OrderByDescending(x => x["rowCount"]?.Value<int>() ?? 0)
+                .ThenBy(x => x["scriptName"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .Take(12);
+            var topFields = rows
+                .GroupBy(x => string.IsNullOrWhiteSpace(x.ReferenceFieldPath) ? "<unknown>" : x.ReferenceFieldPath, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new JObject
+                {
+                    ["fieldPath"] = x.Key,
+                    ["rowCount"] = x.Count(),
+                })
+                .OrderByDescending(x => x["rowCount"]?.Value<int>() ?? 0)
+                .ThenBy(x => x["fieldPath"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .Take(12);
+            var animationSamples = rows
+                .Select(x => x.AnimationName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Take(16);
+
+            var subtreeVisibleRows = rows.Count(x => x.SubtreeMeshRendererCount + x.SubtreeSkinnedMeshRendererCount > 0);
+            return new JObject
+            {
+                ["status"] = rows.Count == 0 ? "empty" : "diagnosticOnly",
+                ["rowCount"] = rows.Count,
+                ["diagnosticOnly"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["defaultCandidateCount"] = 0,
+                ["localVisibleRendererRows"] = rows.Count(x => x.VisibleRendererCount > 0),
+                ["localAnimatorRows"] = rows.Count(x => x.AnimatorCount > 0),
+                ["subtreeVisibleRendererRows"] = subtreeVisibleRows,
+                ["subtreeSkinnedRendererRows"] = rows.Count(x => x.SubtreeSkinnedMeshRendererCount > 0),
+                ["subtreeAnimatorRows"] = rows.Count(x => x.SubtreeAnimatorCount > 0),
+                ["subtreeTruncatedRows"] = rows.Count(x => x.SubtreeTruncated),
+                ["maxSubtreeDepth"] = rows.Count == 0 ? 0 : rows.Max(x => x.SubtreeMaxDepth),
+                ["scriptNameCounts"] = new JArray(topScripts),
+                ["fieldPathCounts"] = new JArray(topFields),
+                ["animationNameSamples"] = new JArray(animationSamples.Select(x => new JValue(x))),
+                ["rule"] = "MonoBehaviour -> AnimationClip PPtr rows are explicit script-field evidence only. They remain diagnosticOnly/notDefaultModelAnimationRelation until script semantics, model validation, TRS export and visual review are proven.",
             };
         }
 

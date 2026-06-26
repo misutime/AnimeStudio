@@ -92,6 +92,24 @@ function ConvertTo-SmokeJsonLiteral {
     return $json
 }
 
+function Get-SmokePropertyValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+
+    return $property.Value
+}
+
 function ConvertTo-SqliteTextLiteral {
     param(
         [string]$Value
@@ -116,6 +134,7 @@ function Read-SourceModelScriptAnimationDiagnostic {
     Test-FileRequired -Path $report -Label "source_model_animation_candidates.json"
 
     $json = Get-Content -LiteralPath $report -Raw -Encoding UTF8 | ConvertFrom-Json
+    $diagnosticSummary = Get-SmokePropertyValue -Object $json -Name "scriptAnimationComponentDiagnosticSummary"
     $scriptRows = @($json.scriptAnimationComponentDiagnostics)
     $invalidBoundaryRows = @($scriptRows | Where-Object { $_.diagnosticOnly -ne $true -or $_.notDefaultModelAnimationRelation -ne $true })
     $visibleRendererRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.visibleRendererCount) -gt 0 })
@@ -150,6 +169,44 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $subtreeSkinnedRendererRowCount = [Convert]::ToInt64($subtreeSkinnedRendererRows.Count)
     $subtreeTruncatedRowCount = [Convert]::ToInt64($subtreeTruncatedRows.Count)
     $animatorRowCount = [Convert]::ToInt64($animatorRows.Count)
+    $summaryStatus = $null
+    if ($null -ne $diagnosticSummary) {
+        # 新报告直接给机器摘要；旧报告没有该节点时继续使用行数组统计。
+        $summaryStatus = [string](Get-SmokePropertyValue -Object $diagnosticSummary -Name "status")
+        $summaryRowCount = Get-SmokePropertyValue -Object $diagnosticSummary -Name "rowCount"
+        $summaryLocalVisibleRendererRows = Get-SmokePropertyValue -Object $diagnosticSummary -Name "localVisibleRendererRows"
+        $summarySubtreeVisibleRendererRows = Get-SmokePropertyValue -Object $diagnosticSummary -Name "subtreeVisibleRendererRows"
+        $summarySubtreeSkinnedRendererRows = Get-SmokePropertyValue -Object $diagnosticSummary -Name "subtreeSkinnedRendererRows"
+        $summarySubtreeTruncatedRows = Get-SmokePropertyValue -Object $diagnosticSummary -Name "subtreeTruncatedRows"
+        $summaryLocalAnimatorRows = Get-SmokePropertyValue -Object $diagnosticSummary -Name "localAnimatorRows"
+        $summaryDiagnosticOnly = Get-SmokePropertyValue -Object $diagnosticSummary -Name "diagnosticOnly"
+        $summaryNotDefaultRelation = Get-SmokePropertyValue -Object $diagnosticSummary -Name "notDefaultModelAnimationRelation"
+        $summaryDefaultCandidateCount = Get-SmokePropertyValue -Object $diagnosticSummary -Name "defaultCandidateCount"
+        if ($null -ne $summaryRowCount) {
+            $scriptAnimationRows = [Convert]::ToInt64($summaryRowCount)
+        }
+        if ($null -ne $summaryLocalVisibleRendererRows) {
+            $visibleRendererRowCount = [Convert]::ToInt64($summaryLocalVisibleRendererRows)
+        }
+        if ($null -ne $summarySubtreeVisibleRendererRows) {
+            $subtreeVisibleRendererRowCount = [Convert]::ToInt64($summarySubtreeVisibleRendererRows)
+        }
+        if ($null -ne $summarySubtreeSkinnedRendererRows) {
+            $subtreeSkinnedRendererRowCount = [Convert]::ToInt64($summarySubtreeSkinnedRendererRows)
+        }
+        if ($null -ne $summarySubtreeTruncatedRows) {
+            $subtreeTruncatedRowCount = [Convert]::ToInt64($summarySubtreeTruncatedRows)
+        }
+        if ($null -ne $summaryLocalAnimatorRows) {
+            $animatorRowCount = [Convert]::ToInt64($summaryLocalAnimatorRows)
+        }
+        if ($summaryDiagnosticOnly -ne $true -or $summaryNotDefaultRelation -ne $true -or [Convert]::ToInt64($summaryDefaultCandidateCount) -ne 0) {
+            $invalidBoundaryRowCount++
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($summaryStatus)) {
+        $summaryStatus = if ($scriptAnimationRows -gt 0) { "diagnosticOnly" } else { "empty" }
+    }
 
     # 这里只读报告并压成 smoke 摘要；脚本动画语义仍然需要游戏脚本解释，不能升级成默认候选。
     $summaryJsonLines = @()
@@ -159,6 +216,7 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryJsonLines += '  "report": ' + (ConvertTo-SmokeJsonLiteral $report) + ","
     $summaryJsonLines += '  "selectedModelCount": ' + (ConvertTo-SmokeJsonLiteral $selectedModelCount) + ","
     $summaryJsonLines += '  "candidateCount": ' + (ConvertTo-SmokeJsonLiteral $candidateCount) + ","
+    $summaryJsonLines += '  "diagnosticSummaryStatus": ' + (ConvertTo-SmokeJsonLiteral $summaryStatus) + ","
     $summaryJsonLines += '  "scriptAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationRows) + ","
     $summaryJsonLines += '  "invalidBoundaryRows": ' + (ConvertTo-SmokeJsonLiteral $invalidBoundaryRowCount) + ","
     $summaryJsonLines += '  "visibleRendererRows": ' + (ConvertTo-SmokeJsonLiteral $visibleRendererRowCount) + ","
