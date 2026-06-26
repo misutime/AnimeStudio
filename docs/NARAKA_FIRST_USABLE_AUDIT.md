@@ -54,7 +54,7 @@ samurai_ghost_bundle_root: models=1 textures=18 material_sidecars=6 texture_link
 - `pbr_preview_status=bestEffortDegradedPreview`，表示 glTF 只是降级预览，不代表原游戏最终 shader 效果。
 
 这类样本不应被归类为贴图丢失或材质错绑；它们说明 Mesh、UV、贴图引用和原始材质槽已经确定性保留，但仍需要 Naraka 私有 shader 复刻或人工材质重建。
-smoke 会额外检查 `material_sidecars` 中的自定义 shader 行是否保留 `key_texture_slots_json`、`exported_textures_json`、`unresolved_steps_json`、`raw_json` 和 Unity `m_Shader` PPtr 引用。新建索引会把 shader 引用写入 `shader_reference_json`，并用 `shader_name_status=referenceOnly` 区分“已保留原始 shader 引用但当前无法解析名称”。`shader_name` 目前在既有 Face 样本中仍为空，smoke 会记录 `missingShaderNameRows` 作为后续上游材质 sidecar 追踪项，但不把少量私有 shader 名缺失误判成贴图丢失或材质错绑。
+smoke 会额外检查 `material_sidecars` 中的自定义 shader 行是否保留 `key_texture_slots_json`、`exported_textures_json`、`unresolved_steps_json`、`raw_json` 和 Unity `m_Shader` PPtr 引用。新建索引会把 shader 引用写入 `shader_reference_json`，并用 `shader_name_status=referenceOnly` 区分“已保留原始 shader 引用但当前无法解析名称”。`sqlite_index_summary.json.qualityGates` 也会写出 `shaderReferenceSidecars`、`shaderReferenceOnlySidecars`、`customShaderReferenceSidecars` 和 `customShaderMissingNameSidecars`，方便 smoke 和人工报告直接判断。`shader_name` 目前在既有 Face 样本中仍为空，smoke 会记录 `missingShaderNameRows` 作为后续上游材质 sidecar 追踪项，但不把少量私有 shader 名缺失误判成贴图丢失或材质错绑。
 
 ## 可复现命令
 
@@ -72,7 +72,7 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 - `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数、`qualityGates`、`hadiModularBoundary`、`shaderBoundary`、`staticEnvironment`、`characterCandidate`、`characterCandidateSourceIndexBoundary`、`sourceIndexLegacyAnimationClipDomains`、`animatorControllerProductionGate`、`monoBehaviourAnimationClipPPtrSummary`、`scriptAnimationComponentDiagnostics` 和动画诊断状态。脚本写完后会立刻反读解析，避免报告可读但机器摘要损坏。
 
 这两个文件只汇总 smoke 证据，不会改变正式 `RepresentativeModels` 素材库，也不会把诊断动画写成默认动画关系。
-脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
+脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` / `customShaderReferenceSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
 2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_AvatarDomain_Clean_Current`：默认 smoke 批次生成 `models=3`、`ok=3`、`withTextures=3`、`textureAssets=43`、`materialSidecars=15`、`textureLinkErrors=0`，代表模型 glTF validator、AssetLibrary Browser 校验和 3 张缩略图均通过。`shaderBoundary.status=ok`，`customShaderRequiredSidecars=2`、`layeredMaterialUnresolvedSidecars=2`、`degradedPreviewSidecars=2`、`materialSidecarRows=3`、`customShaderMaterialSidecarRows=2`，Face 样本 glTF validator 也通过。这把一行 smoke 从单 Hadi 样本扩展为角色部件、武器、道具三类默认 Library 正样本，并把 Naraka 私有 shader 边界和 Avatar 域诊断纳入默认验证；静态树已作为显式扩展样本进入 smoke 只读质量门禁。
 2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_RelationHealth_Current`：`sourceIndexAnimationRelationHealth.status=ok`，`animatorController.clip=98`、`resolved=98`、`missing=0`。此前 `resolved=97/missing=1` 是 Library 摘要查询没有按 SerializedFile 大小写不敏感匹配造成的假 warning，不代表当前源索引缺 AnimationClip CAB。
 同一轮新增 `explicitControllerClipDomains` 诊断：当前 24 个显式 AnimatorController 中 `UiStateController=21/95`、`VfxOrEffect=3/3`（controllers/clipEdges）。这说明源索引里的 controller-clip 关系可解析，但目前主要是 UI 状态机和特效 clip，不能作为角色身体动画生产关系。

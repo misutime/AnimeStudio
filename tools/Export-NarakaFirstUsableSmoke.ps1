@@ -445,6 +445,9 @@ if (![string]::IsNullOrWhiteSpace($ShaderBoundarySampleRoot)) {
         if ([long]$shaderBoundaryQuality.customShaderRequiredSidecars -lt 1 -or [long]$shaderBoundaryQuality.layeredMaterialUnresolvedSidecars -lt 1) {
             throw "Shader boundary sample did not preserve custom shader/layered material markers."
         }
+        if ($null -ne $shaderBoundaryQuality.customShaderReferenceSidecars -and [long]$shaderBoundaryQuality.customShaderReferenceSidecars -lt 1) {
+            throw "Shader boundary sqlite_index_summary.json did not preserve custom shader reference evidence."
+        }
 
         $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
         if ($null -ne $sqlite3) {
@@ -1115,6 +1118,10 @@ $summaryJsonLines += '    "textureLinkErrors": ' + (ConvertTo-SmokeJsonLiteral $
 $summaryJsonLines += '    "customShaderRequiredSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.customShaderRequiredSidecars) + ","
 $summaryJsonLines += '    "layeredMaterialUnresolvedSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.layeredMaterialUnresolvedSidecars) + ","
 $summaryJsonLines += '    "degradedPreviewSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.degradedPreviewSidecars) + ","
+$summaryJsonLines += '    "qualityShaderReferenceSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.shaderReferenceSidecars) + ","
+$summaryJsonLines += '    "qualityShaderReferenceOnlySidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.shaderReferenceOnlySidecars) + ","
+$summaryJsonLines += '    "qualityCustomShaderReferenceSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.customShaderReferenceSidecars) + ","
+$summaryJsonLines += '    "qualityCustomShaderMissingNameSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.customShaderMissingNameSidecars) + ","
 $summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryMaterialSidecarRows) + ","
 $summaryJsonLines += '    "customShaderMaterialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderRows) + ","
 $summaryJsonLines += '    "customShaderEvidenceRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderEvidenceRows) + ","
@@ -1275,11 +1282,13 @@ if ($null -ne $sqliteSummaryJson.counts) {
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationRelations "0")))
 }
 if ($null -ne $sqliteSummaryJson.qualityGates) {
-    $reportLines.Add(('- Quality gates: textureLinkErrors=`{0}`, customShaderSidecars=`{1}`, layeredMaterialUnresolvedSidecars=`{2}`, degradedPreviewSidecars=`{3}`, modelsNeedingCustomShaderLayer=`{4}`, modelsNeedingCustomizationTint=`{5}`' -f `
+    $reportLines.Add(('- Quality gates: textureLinkErrors=`{0}`, customShaderSidecars=`{1}`, layeredMaterialUnresolvedSidecars=`{2}`, degradedPreviewSidecars=`{3}`, shaderReferenceSidecars=`{4}`, shaderReferenceOnlySidecars=`{5}`, modelsNeedingCustomShaderLayer=`{6}`, modelsNeedingCustomizationTint=`{7}`' -f `
         (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.textureLinkErrors "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.customShaderRequiredSidecars "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.layeredMaterialUnresolvedSidecars "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.degradedPreviewSidecars "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.shaderReferenceSidecars "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.shaderReferenceOnlySidecars "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.modelsNeedingCustomShaderLayer "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.qualityGates.modelsNeedingCustomizationTint "0")))
 }
@@ -1419,11 +1428,13 @@ $reportLines.Add(('- Status: `{0}`' -f $shaderBoundaryStatus))
 if ($shaderBoundaryStatus -eq "ok") {
     $reportLines.Add(('- Sample root: `{0}`' -f $ShaderBoundarySampleRoot))
     $reportLines.Add(('- glTF validator: `{0}`' -f $shaderBoundaryGltfValidationStatus))
-    $reportLines.Add(('- Quality gates: textureLinkErrors=`{0}`, customShaderSidecars=`{1}`, layeredMaterialUnresolvedSidecars=`{2}`, degradedPreviewSidecars=`{3}`' -f `
+    $reportLines.Add(('- Quality gates: textureLinkErrors=`{0}`, customShaderSidecars=`{1}`, layeredMaterialUnresolvedSidecars=`{2}`, degradedPreviewSidecars=`{3}`, customShaderReferenceSidecars=`{4}`, customShaderMissingNameSidecars=`{5}`' -f `
         (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.textureLinkErrors "0"),
         (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.customShaderRequiredSidecars "0"),
         (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.layeredMaterialUnresolvedSidecars "0"),
-        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.degradedPreviewSidecars "0")))
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.degradedPreviewSidecars "0"),
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.customShaderReferenceSidecars "unknown"),
+        (ConvertTo-SmokeText $shaderBoundarySummaryJson.qualityGates.customShaderMissingNameSidecars "unknown")))
     $reportLines.Add(('- material_sidecars rows=`{0}`, degraded custom shader rows=`{1}`' -f `
         (ConvertTo-SmokeText $shaderBoundaryMaterialSidecarRows "unknown"),
         (ConvertTo-SmokeText $shaderBoundaryCustomShaderRows "unknown")))

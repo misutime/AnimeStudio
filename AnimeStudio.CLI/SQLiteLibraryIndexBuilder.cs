@@ -4187,6 +4187,28 @@ WHERE COALESCE(layered_material_unresolved, 0) <> 0;");
 SELECT COUNT(*)
 FROM material_sidecars
 WHERE COALESCE(pbr_preview_status, '') = 'bestEffortDegradedPreview';");
+            var shaderReferenceSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(shader_reference_json, '') <> '';");
+            var shaderReferenceOnlySidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(shader_name_status, '') = 'referenceOnly';");
+            var customShaderReferenceSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(custom_shader_required, 0) <> 0
+  AND COALESCE(layered_material_unresolved, 0) <> 0
+  AND COALESCE(pbr_preview_status, '') = 'bestEffortDegradedPreview'
+  AND COALESCE(shader_reference_json, '') <> '';");
+            var customShaderMissingNameSidecars = ScalarLong(connection, @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE COALESCE(custom_shader_required, 0) <> 0
+  AND COALESCE(layered_material_unresolved, 0) <> 0
+  AND COALESCE(pbr_preview_status, '') = 'bestEffortDegradedPreview'
+  AND COALESCE(shader_name, '') = '';");
             var modelsNeedingCustomShaderLayer = ScalarLong(connection, @"
 SELECT COUNT(*)
 FROM assets
@@ -4206,9 +4228,13 @@ WHERE kind='Model'
                 ["customShaderRequiredSidecars"] = customShaderRequiredSidecars,
                 ["layeredMaterialUnresolvedSidecars"] = layeredMaterialUnresolvedSidecars,
                 ["degradedPreviewSidecars"] = degradedPreviewSidecars,
+                ["shaderReferenceSidecars"] = shaderReferenceSidecars,
+                ["shaderReferenceOnlySidecars"] = shaderReferenceOnlySidecars,
+                ["customShaderReferenceSidecars"] = customShaderReferenceSidecars,
+                ["customShaderMissingNameSidecars"] = customShaderMissingNameSidecars,
                 ["modelsNeedingCustomShaderLayer"] = modelsNeedingCustomShaderLayer,
                 ["modelsNeedingCustomizationTint"] = modelsNeedingCustomizationTint,
-                ["rule"] = "textureLinkErrors 必须为 0 才能说明当前素材库 glTF 贴图引用闭环；customShader/layered 计数表示已确定性保留但需要私有 shader 或人工材质重建，不等同于贴图丢失。"
+                ["rule"] = "textureLinkErrors 必须为 0 才能说明当前素材库 glTF 贴图引用闭环；customShader/layered 计数表示已确定性保留但需要私有 shader 或人工材质重建，不等同于贴图丢失；shaderReferenceOnly 表示 Unity m_Shader PPtr 已保留但当前名称不可解析。"
             };
         }
 

@@ -322,6 +322,7 @@ SQLITE_INDEX_README.md
 
 - `qualityGates.textureLinkErrors`：`texture_links.link_error` 非空的数量。模型 smoke 应要求它为 `0`，否则说明 glTF 贴图引用链路没有闭环。
 - `qualityGates.customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars`：需要私有 shader、分层合成或人工材质重建的材质 sidecar 数量。它们表示原始材质槽和贴图关系已保留但 PBR 预览是降级结果，不应误判成贴图丢失。
+- `qualityGates.shaderReferenceSidecars` / `shaderReferenceOnlySidecars` / `customShaderReferenceSidecars`：材质 sidecar 中已结构化保留 Unity `Material.m_Shader` PPtr 的数量；`referenceOnly` 表示引用可追溯但当前 shader 名不可解析。
 - `totals.explicitCandidates`：SQLite 中显式模型-动画候选数量，只统计 `relation_source=explicit`。
 - `totals.animationsWithExplicitCandidates` / `totals.animationExplicitCoverage`：有显式模型关系的动画资产数量和比例。
 - `totals.modelsWithExplicitCandidates` / `totals.allModelExplicitCoverage`：有显式动画候选的模型数量和比例；这个分母包含大量静态模型、场景件和暂不处理的 VFX/特效网格，不能单独当成动画关系失败率。
