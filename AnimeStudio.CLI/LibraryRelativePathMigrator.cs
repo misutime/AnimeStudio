@@ -53,6 +53,7 @@ namespace AnimeStudio.CLI
             "model_validation.json",
             "model_animations.json",
             "model_animations.compact.json",
+            "unity_relation_summary.json",
             "character_assemblies.json",
             "skeletons.json",
             "texture_library.json",
@@ -64,6 +65,7 @@ namespace AnimeStudio.CLI
         {
             "asset_catalog.jsonl",
             "animation_bindings.jsonl",
+            "unity_relations.jsonl",
             "export_manifest.jsonl",
         };
 

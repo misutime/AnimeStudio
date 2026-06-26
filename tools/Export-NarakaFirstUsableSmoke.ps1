@@ -330,6 +330,80 @@ function Test-ModelReportEntrypoints {
     }
 }
 
+function Test-LibraryCoreArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LibraryRoot
+    )
+
+    $requiredFiles = @(
+        [pscustomobject]@{ path = "asset_catalog.jsonl"; allowEmpty = $false; kind = "jsonl" },
+        [pscustomobject]@{ path = "model_animations.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "model_animations.compact.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "animation_bindings.jsonl"; allowEmpty = $true; kind = "jsonl" },
+        [pscustomobject]@{ path = "unity_relations.jsonl"; allowEmpty = $true; kind = "jsonl" },
+        [pscustomobject]@{ path = "unity_relation_summary.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "export_manifest.jsonl"; allowEmpty = $false; kind = "jsonl" },
+        [pscustomobject]@{ path = "model_validation.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "sqlite_index_summary.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "profile_summary.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "source_index_usage.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "skeletons.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "character_assemblies.json"; allowEmpty = $false; kind = "json" },
+        [pscustomobject]@{ path = "asset_summary.json"; allowEmpty = $false; kind = "json" }
+    )
+
+    $missing = @()
+    $empty = @()
+    $invalidJson = @()
+    $rows = @()
+    foreach ($requiredFile in $requiredFiles) {
+        $path = Join-Path $LibraryRoot ([string]$requiredFile.path)
+        if (!(Test-Path -LiteralPath $path)) {
+            $missing += [string]$requiredFile.path
+            continue
+        }
+
+        $item = Get-Item -LiteralPath $path
+        if (!$requiredFile.allowEmpty -and $item.Length -le 0) {
+            $empty += [string]$requiredFile.path
+        }
+
+        $lineCount = $null
+        if ([string]$requiredFile.kind -eq "json") {
+            try {
+                $null = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            catch {
+                $invalidJson += [string]$requiredFile.path
+            }
+        }
+        else {
+            $lineCount = (Get-Content -LiteralPath $path -Encoding UTF8 | Measure-Object -Line).Lines
+        }
+
+        $rows += [pscustomobject]@{
+            path = [string]$requiredFile.path
+            length = [long]$item.Length
+            lineCount = $lineCount
+            allowEmpty = [bool]$requiredFile.allowEmpty
+        }
+    }
+
+    if ($missing.Count -gt 0 -or $empty.Count -gt 0 -or $invalidJson.Count -gt 0) {
+        throw "Library core artifact contract failed. missing=$($missing -join ', ') empty=$($empty -join ', ') invalidJson=$($invalidJson -join ', ')"
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        fileCount = [int]$requiredFiles.Count
+        missing = $missing
+        empty = $empty
+        invalidJson = $invalidJson
+        files = $rows
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetFramework = "net9.0-windows"
 $cli = Join-Path $repoRoot "AnimeStudio.CLI\bin\$Configuration\$targetFramework\AnimeStudio.CLI.exe"
@@ -954,6 +1028,7 @@ $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | Convert
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
 $assetLibraryContract = Test-AssetLibraryV1Contract -ManifestPath $manifest -DbPath $db -AssetLibrary $assetLibrary -ExpectedGame "Naraka"
+$libraryCoreArtifacts = Test-LibraryCoreArtifacts -LibraryRoot $libraryOutput
 $modelReportEntrypoints = Test-ModelReportEntrypoints -LibraryRoot $libraryOutput -AssetCatalogPath $assetCatalog
 $hadiCatalogRow = $null
 foreach ($catalogLine in Get-Content -LiteralPath $assetCatalog -Encoding UTF8) {
@@ -1275,6 +1350,7 @@ $summaryJsonLines += '  "outputRoot": ' + (ConvertTo-SmokeJsonLiteral $OutputRoo
 $summaryJsonLines += '  "libraryRoot": ' + (ConvertTo-SmokeJsonLiteral $libraryOutput) + ","
 $summaryJsonLines += '  "assetLibrary": ' + (ConvertTo-SmokeJsonLiteral $manifest) + ","
 $summaryJsonLines += '  "assetLibraryContract": ' + (ConvertTo-SmokeJsonLiteral $assetLibraryContract 10) + ","
+$summaryJsonLines += '  "libraryCoreArtifacts": ' + (ConvertTo-SmokeJsonLiteral $libraryCoreArtifacts 10) + ","
 $summaryJsonLines += '  "modelReportEntrypoints": ' + (ConvertTo-SmokeJsonLiteral $modelReportEntrypoints 10) + ","
 $summaryJsonLines += '  "libraryIndex": ' + (ConvertTo-SmokeJsonLiteral $db) + ","
 $summaryJsonLines += '  "sqliteSummary": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummary) + ","
@@ -1431,6 +1507,11 @@ $reportLines.Add(('- AssetLibrary v1 contract: status=`{0}`, schemaVersion=`{1}`
     (ConvertTo-SmokeText $assetLibraryContract.sourceGame),
     (ConvertTo-SmokeText $assetLibraryContract.index),
     (ConvertTo-SmokeText $assetLibraryContract.sqliteTableCheck)))
+$reportLines.Add(('- Core artifact contract: status=`{0}`, files=`{1}`, missing=`{2}`, invalidJson=`{3}`' -f `
+    (ConvertTo-SmokeText $libraryCoreArtifacts.status),
+    (ConvertTo-SmokeText $libraryCoreArtifacts.fileCount "0"),
+    (ConvertTo-SmokeText ($libraryCoreArtifacts.missing -join ",") "0"),
+    (ConvertTo-SmokeText ($libraryCoreArtifacts.invalidJson -join ",") "0")))
 $reportLines.Add(('- Model report entrypoints: status=`{0}`, models=`{1}`, ASSET_README=`{2}`, MATERIAL_REPORT=`{3}`' -f `
     (ConvertTo-SmokeText $modelReportEntrypoints.status),
     (ConvertTo-SmokeText $modelReportEntrypoints.modelCount "0"),

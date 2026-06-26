@@ -3546,6 +3546,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 {
                     WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
                 }
+                EnsureUnityRelationIndexFiles(savePath, models.Count, animations.Count);
                 using (ProfileLogger.Measure("library_index_normalize_relative_paths", new Dictionary<string, object>
                 {
                     ["savePath"] = savePath,
@@ -3702,6 +3703,46 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             catch (Exception e) when (e is IOException || e is InvalidDataException || e is SqliteException)
             {
                 Logger.Warning($"Unable to load unity_source_index.db for rebuild. Rebuild will keep catalog-backed metadata only. {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static void EnsureUnityRelationIndexFiles(string savePath, int modelCount, int animationCount)
+        {
+            var relationGraphPath = Path.Combine(savePath, "unity_relations.jsonl");
+            if (!File.Exists(relationGraphPath))
+            {
+                // 当前 Library 主线主要使用 SQLite/source-index 关系；没有旧 JSONL 关系时也写空文件，避免索引声明悬空。
+                File.WriteAllText(relationGraphPath, string.Empty, new UTF8Encoding(false));
+            }
+
+            var relationSummaryPath = Path.Combine(savePath, "unity_relation_summary.json");
+            if (!File.Exists(relationSummaryPath))
+            {
+                var summary = new JObject
+                {
+                    ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                    ["relationGraph"] = relationGraphPath,
+                    ["status"] = "empty",
+                    ["rule"] = "当前 Library 没有写出旧式 unity_relations.jsonl 行。确定性的 Unity/source-index 关系仍保留在 library_index.db、model_animations.json、source_index_usage.json 和 smoke 报告中。",
+                    ["models"] = modelCount,
+                    ["animations"] = animationCount,
+                    ["assets"] = new JObject
+                    {
+                        ["total"] = 0,
+                        ["exported"] = 0,
+                    },
+                    ["relations"] = new JObject
+                    {
+                        ["total"] = 0,
+                    },
+                    ["animation"] = new JObject
+                    {
+                        ["clipCount"] = 0,
+                        ["bindingEntryCount"] = 0,
+                    },
+                };
+
+                File.WriteAllText(relationSummaryPath, summary.ToString(Newtonsoft.Json.Formatting.Indented), new UTF8Encoding(false));
             }
         }
 
