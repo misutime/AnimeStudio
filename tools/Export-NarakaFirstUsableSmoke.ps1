@@ -46,6 +46,24 @@ function Test-FileRequired {
     }
 }
 
+function ConvertTo-SmokeText {
+    param(
+        [object]$Value,
+        [string]$Default = "unknown"
+    )
+
+    if ($null -eq $Value) {
+        return $Default
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $Default
+    }
+
+    return $text
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetFramework = "net9.0-windows"
 $cli = Join-Path $repoRoot "AnimeStudio.CLI\bin\$Configuration\$targetFramework\AnimeStudio.CLI.exe"
@@ -77,6 +95,13 @@ New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $probeOutput = Join-Path $OutputRoot "SourceInputProbe"
 $hadiOutput = Join-Path $OutputRoot "HadiBody_s9"
 $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
+$hadiGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+$animationGltfValidationStatus = if ($SkipGltfValidation -or $SkipAnimationDiagnostic) { "skipped" } else { "toolMissing" }
+$animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
+$animationReportJson = $null
+$animationGltfPath = $null
+$browserValidationStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
+$thumbnailStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
 
 Invoke-Checked `
     -Label "Probe Naraka input" `
@@ -135,6 +160,7 @@ if (!$SkipGltfValidation) {
             -Label "Validate Hadi glTF" `
             -FilePath $gltfTransform.Source `
             -Arguments @("validate", $gltf)
+        $hadiGltfValidationStatus = "ok"
     }
     else {
         Write-Warning "gltf-transform.cmd not found; skipped glTF validator."
@@ -150,12 +176,13 @@ if (!$SkipAnimationDiagnostic) {
         -Label "Export Dijiang A8 standalone animation diagnostic" `
         -FilePath $cli `
         -Arguments @(
-            "--export_animation_gltf_from_files", $gltf,
-            "--preview_animation", $AnimationSidecar,
-            "--preview_output", $animationOutput,
-            "--source_index", $AnimationSourceIndex,
-            "--preview_avatar", $AnimationPreviewAvatar
-        )
+        "--export_animation_gltf_from_files", $gltf,
+        "--preview_animation", $AnimationSidecar,
+        "--preview_output", $animationOutput,
+        "--source_index", $AnimationSourceIndex,
+        "--preview_avatar", $AnimationPreviewAvatar
+    )
+    $animationDiagnosticStatus = "ok"
 
     $animationReport = Join-Path $animationOutput "standalone_animation_gltf_report.json"
     Test-FileRequired -Path $animationReport -Label "standalone_animation_gltf_report.json"
@@ -169,14 +196,16 @@ if (!$SkipAnimationDiagnostic) {
     }
 
     if (![string]::IsNullOrWhiteSpace($animationReportJson.gltf)) {
-        Test-FileRequired -Path $animationReportJson.gltf -Label "standalone animation glTF"
+        $animationGltfPath = [string]$animationReportJson.gltf
+        Test-FileRequired -Path $animationGltfPath -Label "standalone animation glTF"
         if (!$SkipGltfValidation) {
             $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
             if ($null -ne $gltfTransform) {
                 Invoke-Checked `
                     -Label "Validate Dijiang A8 animation glTF" `
                     -FilePath $gltfTransform.Source `
-                    -Arguments @("validate", [string]$animationReportJson.gltf)
+                    -Arguments @("validate", $animationGltfPath)
+                $animationGltfValidationStatus = "ok"
             }
         }
     }
@@ -189,11 +218,13 @@ if (!$SkipBrowserValidation) {
             -Label "Validate AssetLibrary v1" `
             -FilePath $browserCli `
             -Arguments @("validate-library", $hadiOutput)
+        $browserValidationStatus = "ok"
 
         Invoke-Checked `
             -Label "Render browser thumbnail" `
             -FilePath $browserCli `
             -Arguments @("build-thumbnails", $hadiOutput, "1", "1")
+        $thumbnailStatus = "ok"
     }
     else {
         Write-Warning "AssetLibraryBrowser.Cli not found; skipped browser validation."
@@ -202,11 +233,126 @@ if (!$SkipBrowserValidation) {
 
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw | ConvertFrom-Json
+$thumbnailCache = Join-Path $hadiOutput ".asset_browser_cache"
+$thumbnailFileCount = 0
+if (Test-Path -LiteralPath $thumbnailCache) {
+    $thumbnailFileCount = (Get-ChildItem -LiteralPath $thumbnailCache -Recurse -File | Measure-Object).Count
+}
+
+# 这两个报告只汇总已经验证过的产物，不改变正式素材库内容或动画关系结论。
+$smokeSummary = [ordered]@{
+    generatedAt = (Get-Date).ToString("o")
+    game = "Naraka"
+    sourceRoot = $SourceRoot
+    sourceIndex = $SourceIndex
+    outputRoot = $OutputRoot
+    libraryRoot = $hadiOutput
+    assetLibrary = $manifest
+    libraryIndex = $db
+    modelValidation = $validation
+    modelGltf = $gltf
+    checks = [ordered]@{
+        hadiGltfValidation = $hadiGltfValidationStatus
+        browserValidation = $browserValidationStatus
+        thumbnailRender = $thumbnailStatus
+        thumbnailFileCount = $thumbnailFileCount
+        animationDiagnostic = $animationDiagnosticStatus
+        animationGltfValidation = $animationGltfValidationStatus
+    }
+    capabilities = [ordered]@{
+        models = $assetLibrary.capabilities.models
+        animations = $assetLibrary.capabilities.animations
+        animationPreviewComposer = $assetLibrary.capabilities.animationPreviewComposer
+    }
+    modelTotals = $modelValidation.totals
+    animationDiagnostic = if ($null -ne $animationReportJson) {
+        [ordered]@{
+            status = $animationReportJson.status
+            message = $animationReportJson.message
+            gltf = $animationGltfPath
+            avatarInjectionMode = $animationReportJson.avatarInjection.mode
+            diagnosticOnly = $animationReportJson.avatarInjection.diagnosticOnly
+            notDefaultModelAnimationRelation = $animationReportJson.avatarInjection.notDefaultModelAnimationRelation
+            manualReviewRequired = $animationReportJson.avatarInjection.manualReviewRequired
+            tosCount = $animationReportJson.avatarInjection.tosCount
+        }
+    } else {
+        [ordered]@{
+            status = $animationDiagnosticStatus
+            diagnosticOnly = $true
+            notDefaultModelAnimationRelation = $true
+        }
+    }
+}
+
+$summaryJsonPath = Join-Path $OutputRoot "smoke_summary.json"
+$smokeSummary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $summaryJsonPath -Encoding UTF8
+
+$reportPath = Join-Path $OutputRoot "SMOKE_REPORT.md"
+$reportLines = [System.Collections.Generic.List[string]]::new()
+$reportLines.Add("# Naraka first usable smoke report")
+$reportLines.Add("")
+$reportLines.Add(("Generated: {0}" -f $smokeSummary.generatedAt))
+$reportLines.Add("")
+$reportLines.Add("## Summary")
+$reportLines.Add("")
+$reportLines.Add(('- Source root: `{0}`' -f $SourceRoot))
+$reportLines.Add(('- Source index: `{0}`' -f $SourceIndex))
+$reportLines.Add(('- Output root: `{0}`' -f $OutputRoot))
+$reportLines.Add(('- Library root: `{0}`' -f $hadiOutput))
+$reportLines.Add("")
+$reportLines.Add("## Static Library")
+$reportLines.Add("")
+$reportLines.Add(('- Capabilities: models=`{0}`, animations=`{1}`, animationPreviewComposer=`{2}`' -f $assetLibrary.capabilities.models, $assetLibrary.capabilities.animations, (ConvertTo-SmokeText $assetLibrary.capabilities.animationPreviewComposer "null")))
+$reportLines.Add(('- Hadi glTF validator: `{0}`' -f $hadiGltfValidationStatus))
+$reportLines.Add(('- AssetLibrary browser validation: `{0}`' -f $browserValidationStatus))
+$reportLines.Add(('- Thumbnail render: `{0}`, cache files=`{1}`' -f $thumbnailStatus, $thumbnailFileCount))
+if ($null -ne $modelValidation.totals) {
+    $reportLines.Add(('- Model totals: models=`{0}`, ok=`{1}`, warning=`{2}`, error=`{3}`' -f `
+        (ConvertTo-SmokeText $modelValidation.totals.models "0"),
+        (ConvertTo-SmokeText $modelValidation.totals.ok "0"),
+        (ConvertTo-SmokeText $modelValidation.totals.warning "0"),
+        (ConvertTo-SmokeText $modelValidation.totals.error "0")))
+}
+$reportLines.Add("")
+$reportLines.Add("## Animation Diagnostic")
+$reportLines.Add("")
+if ($null -ne $animationReportJson) {
+    $reportLines.Add(('- Diagnostic status: `{0}`' -f (ConvertTo-SmokeText $animationReportJson.status)))
+    $reportLines.Add(("- Message: {0}" -f (ConvertTo-SmokeText $animationReportJson.message)))
+    $reportLines.Add(('- Animation glTF: `{0}`' -f (ConvertTo-SmokeText $animationGltfPath)))
+    $reportLines.Add(('- Animation glTF validator: `{0}`' -f $animationGltfValidationStatus))
+    $reportLines.Add(('- Avatar injection: mode=`{0}`, diagnosticOnly=`{1}`, notDefaultModelAnimationRelation=`{2}`, manualReviewRequired=`{3}`, tosCount=`{4}`' -f `
+        (ConvertTo-SmokeText $animationReportJson.avatarInjection.mode),
+        (ConvertTo-SmokeText $animationReportJson.avatarInjection.diagnosticOnly),
+        (ConvertTo-SmokeText $animationReportJson.avatarInjection.notDefaultModelAnimationRelation),
+        (ConvertTo-SmokeText $animationReportJson.avatarInjection.manualReviewRequired),
+        (ConvertTo-SmokeText $animationReportJson.avatarInjection.tosCount "0")))
+}
+else {
+    $reportLines.Add(('- Diagnostic status: `{0}`' -f $animationDiagnosticStatus))
+}
+$reportLines.Add("")
+$reportLines.Add('This animation output is diagnostic-only. It must not be treated as a default model-animation relation, and it does not enable `asset_library.json.capabilities.animations=true`.')
+$reportLines.Add("")
+$reportLines.Add("## Artifacts")
+$reportLines.Add("")
+$reportLines.Add(('- `asset_library.json`: `{0}`' -f $manifest))
+$reportLines.Add(('- `library_index.db`: `{0}`' -f $db))
+$reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
+$reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
+$reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))
+if ($null -ne $animationGltfPath) {
+    $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
+}
+$reportLines | Set-Content -LiteralPath $reportPath -Encoding UTF8
 
 Write-Host ""
 Write-Host "Naraka first usable smoke completed."
 Write-Host "Output: $OutputRoot"
 Write-Host "Library: $hadiOutput"
+Write-Host "Report: $reportPath"
+Write-Host "Summary JSON: $summaryJsonPath"
 Write-Host ("Capabilities: models={0}, animations={1}" -f $assetLibrary.capabilities.models, $assetLibrary.capabilities.animations)
 if (!$SkipAnimationDiagnostic) {
     Write-Host "Animation diagnostic: $animationOutput"
