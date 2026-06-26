@@ -314,6 +314,8 @@ D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current
 
 该资产标记为 `resourceKind=VerifiedAnimationPreview`、`animationType=ModelAnimationPreviewGltf`、`productionReadiness=productionPreviewReady`、`productionRelationTier=VerifiedPreviewRelation`、`relationPath=NarakaSimpleAnimationCustomRuntime`、`customRuntimeRequired=true`、`standardAnimatorControllerRecovered=false`、`standaloneAnimationClip=false`、`previewOnly=true`、`embeddedModelRequired=true`。这表示它是生产可用的模型绑定预览关系，不是可任意套到其它模型的独立动画包；它也不改变默认代表库仍需继续保护“普通脚本字段不能直接升级”的规则。
 
+同一 smoke 现在提供显式刷新开关 `-RefreshZhumuVerifiedAnimationPreview`。默认 smoke 只验证既有 Zhumu 样本库；开启该开关时，脚本会用本轮生成的 Zhumu source report 和 render subject motion report 重新调用 `--apply_verified_animation_preview`，然后再执行原有 `asset_library.json`、`library_index.db`、compact index、glTF validator 和边界字段门禁。刷新会改写 `D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current`，所以没有默认开启；刷新状态会写入 `smoke_summary.json.zhumuVerifiedAnimationPreviewRefresh` 和 `SMOKE_REPORT.md`。
+
 2026-06-26 追加 SimpleAnimation 短名单首样本深查门禁：quick smoke 现在会对 `ch_f_japan_yaodaoji_lv_s14_wings` 运行定向 `--list_source_model_animations`，输出到：
 
 ```text

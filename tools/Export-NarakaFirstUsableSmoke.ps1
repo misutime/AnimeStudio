@@ -23,7 +23,8 @@ param(
     [switch]$KeepExisting,
     [switch]$SkipBrowserValidation,
     [switch]$SkipGltfValidation,
-    [switch]$SkipAnimationDiagnostic
+    [switch]$SkipAnimationDiagnostic,
+    [switch]$RefreshZhumuVerifiedAnimationPreview
 )
 
 $ErrorActionPreference = "Stop"
@@ -164,6 +165,56 @@ function Resolve-SmokePython {
     }
 
     throw "Python runtime not found; cannot run PNG render subject diagnostics."
+}
+
+function Invoke-ZhumuRenderSubjectAnalysis {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RenderRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath
+    )
+
+    $renderImages = @(
+        (Join-Path $RenderRoot "zhumu_attack_a4_rest.png"),
+        (Join-Path $RenderRoot "zhumu_attack_a4_mid.png"),
+        (Join-Path $RenderRoot "zhumu_attack_a4_end.png")
+    )
+    foreach ($renderImage in $renderImages) {
+        Test-FileRequired -Path $renderImage -Label "Zhumu merged animation render image"
+        if ((Get-Item -LiteralPath $renderImage).Length -le 0) {
+            throw "Zhumu merged animation render image is empty: $renderImage"
+        }
+    }
+
+    $subjectAnalyzer = Join-Path $PSScriptRoot "analyze_render_image_subject.py"
+    Test-FileRequired -Path $subjectAnalyzer -Label "render image subject analyzer"
+    $subjectAnalyzerArgs = @(
+        $subjectAnalyzer,
+        "--output", $OutputPath,
+        "--min_foreground_pixel_ratio", "0.08",
+        "--min_foreground_height_ratio", "0.45",
+        "--min_motion_pixel_ratio", "0.01",
+        "--images"
+    ) + $renderImages
+    Invoke-Checked -Label "Analyze Zhumu merged animation render subject occupancy" -FilePath (Resolve-SmokePython) -Arguments $subjectAnalyzerArgs
+    Test-FileRequired -Path $OutputPath -Label "Zhumu render subject occupancy report"
+
+    $subjectOccupancy = Get-Content -LiteralPath $OutputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$subjectOccupancy.status -ne "ok") {
+        throw "Zhumu merged animation render images do not show a visible subject. status=$($subjectOccupancy.status) failed=$($subjectOccupancy.failedCount)"
+    }
+    $renderMotion = $subjectOccupancy.motion
+    if ($null -eq $renderMotion -or [string]$renderMotion.status -ne "ok") {
+        throw "Zhumu merged animation render images do not show visible pixel motion. status=$($renderMotion.status) maxMotion=$($renderMotion.maxMotionPixelRatio)"
+    }
+
+    return [pscustomobject]@{
+        images = $renderImages
+        report = $OutputPath
+        subjectOccupancy = $subjectOccupancy
+        motion = $renderMotion
+    }
 }
 
 function Read-RenderProbeBboxMotion {
@@ -1283,6 +1334,16 @@ $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
 $zhumuScriptAnimationStatus = "notChecked"
 $zhumuScriptAnimationRule = "Zhumu soul is a script-animation verified-preview gate: the attack prefab model must stay statically usable, and the promoted animation relation must stay a VerifiedAnimationPreview with previewOnly=true and embeddedModelRequired=true."
+$zhumuVerifiedAnimationPreviewRefresh = [pscustomobject]@{
+    status = if ($RefreshZhumuVerifiedAnimationPreview) { "pending" } else { "skipped" }
+    explicitSwitch = [bool]$RefreshZhumuVerifiedAnimationPreview
+    libraryRoot = $ZhumuScriptAnimationSampleRoot
+    mergeReport = $null
+    renderReport = $null
+    sourceReport = $null
+    importReport = $null
+    rule = "刷新 verified preview 会改写 Zhumu 样本库并重建 library_index.db，因此默认关闭；开启后只用本轮 smoke 生成的 source report 与 render motion report 重新应用已验证预览关系。"
+}
 $narakaAnimationRelationPolicy = [pscustomobject]@{
     status = "customRuntimeLikely"
     standardAnimatorControllerIsRequired = $false
@@ -1605,6 +1666,34 @@ if ($zhumuAvatarCompatibilityDiagnostic.invalidBoundaryRows -ne 0) {
 }
 if ($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows -lt 1 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows -lt 1 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage -lt 0.9) {
     throw "Zhumu soul Avatar compatibility diagnostic lost structural overlap evidence. rows=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows) highOverlapRows=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows) maxCoverage=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage)"
+}
+if ($RefreshZhumuVerifiedAnimationPreview) {
+    Write-Host ""
+    Write-Host "== Refresh Naraka Zhumu verified animation preview relation =="
+
+    Test-FileRequired -Path $ZhumuScriptAnimationSampleRoot -Label "Zhumu verified-preview Library root"
+    Test-FileRequired -Path $ZhumuMergedAnimationProbeRoot -Label "Zhumu merged animation probe root"
+    $zhumuRefreshMergeReport = Join-Path $ZhumuMergedAnimationProbeRoot "merge_animation_gltf_report.json"
+    $zhumuRefreshRenderRoot = Join-Path $ZhumuMergedAnimationProbeRoot "RenderProbe"
+    $zhumuRefreshRenderReport = Join-Path $OutputRoot "zhumu_render_subject_occupancy.json"
+    $zhumuRefreshSourceReport = Join-Path $sourceModelZhumuOutput "source_model_animation_candidates.json"
+    Test-FileRequired -Path $zhumuRefreshMergeReport -Label "Zhumu merge_animation_gltf_report.json"
+    Test-FileRequired -Path $zhumuRefreshSourceReport -Label "Zhumu source_model_animation_candidates.json"
+
+    # 刷新关系前先用本轮 smoke 输出目录重建渲染运动报告，避免复用旧报告造成证据漂移。
+    $zhumuRefreshRender = Invoke-ZhumuRenderSubjectAnalysis -RenderRoot $zhumuRefreshRenderRoot -OutputPath $zhumuRefreshRenderReport
+    Invoke-Checked -Label "Apply Zhumu verified animation preview" -FilePath $cli -Arguments @(
+        "--apply_verified_animation_preview", $zhumuRefreshMergeReport,
+        "--verified_animation_render_report", $zhumuRefreshRender.report,
+        "--verified_animation_source_report", $zhumuRefreshSourceReport,
+        "--preview_output", $ZhumuScriptAnimationSampleRoot,
+        "--source_index", $SourceIndex,
+        "--game", "Naraka")
+
+    $zhumuVerifiedAnimationPreviewRefresh.status = "ok"
+    $zhumuVerifiedAnimationPreviewRefresh.mergeReport = $zhumuRefreshMergeReport
+    $zhumuVerifiedAnimationPreviewRefresh.renderReport = $zhumuRefreshRender.report
+    $zhumuVerifiedAnimationPreviewRefresh.sourceReport = $zhumuRefreshSourceReport
 }
 if ($yaodaojiWingsScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "Yaodaoji wings shortlist source-model diagnostic did not select any source model."
@@ -2353,6 +2442,9 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
             throw "Zhumu verified-preview sample must contain exactly one verified_animation_preview_import.json. count=$($zhumuVerifiedPreviewImportReports.Count)"
         }
         $zhumuScriptAnimationVerifiedPreviewImportReport = $zhumuVerifiedPreviewImportReports[0].FullName
+        if ($RefreshZhumuVerifiedAnimationPreview) {
+            $zhumuVerifiedAnimationPreviewRefresh.importReport = $zhumuScriptAnimationVerifiedPreviewImportReport
+        }
         $zhumuScriptAnimationVerifiedPreviewImportJson = Get-Content -LiteralPath $zhumuScriptAnimationVerifiedPreviewImportReport -Raw -Encoding UTF8 | ConvertFrom-Json
         if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.status -ne "ok" -or [string]$zhumuScriptAnimationVerifiedPreviewImportJson.source -ne "NarakaSimpleAnimationVerifiedPreview") {
             throw "Zhumu verified-preview import report lost status/source evidence. status=$($zhumuScriptAnimationVerifiedPreviewImportJson.status) source=$($zhumuScriptAnimationVerifiedPreviewImportJson.source)"
@@ -2542,33 +2634,11 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
             (Join-Path $zhumuMergedRenderRoot "zhumu_attack_a4_mid.png"),
             (Join-Path $zhumuMergedRenderRoot "zhumu_attack_a4_end.png")
         )
-        foreach ($renderImage in $zhumuMergedRenderImages) {
-            Test-FileRequired -Path $renderImage -Label "Zhumu merged animation render image"
-            if ((Get-Item -LiteralPath $renderImage).Length -le 0) {
-                throw "Zhumu merged animation render image is empty: $renderImage"
-            }
-        }
         $zhumuMergedSubjectReport = Join-Path $OutputRoot "zhumu_render_subject_occupancy.json"
-        $subjectAnalyzer = Join-Path $PSScriptRoot "analyze_render_image_subject.py"
-        Test-FileRequired -Path $subjectAnalyzer -Label "render image subject analyzer"
-        $subjectAnalyzerArgs = @(
-            $subjectAnalyzer,
-            "--output", $zhumuMergedSubjectReport,
-            "--min_foreground_pixel_ratio", "0.08",
-            "--min_foreground_height_ratio", "0.45",
-            "--min_motion_pixel_ratio", "0.01",
-            "--images"
-        ) + $zhumuMergedRenderImages
-        Invoke-Checked -Label "Analyze Zhumu merged animation render subject occupancy" -FilePath (Resolve-SmokePython) -Arguments $subjectAnalyzerArgs
-        Test-FileRequired -Path $zhumuMergedSubjectReport -Label "Zhumu render subject occupancy report"
-        $zhumuMergedSubjectOccupancy = Get-Content -LiteralPath $zhumuMergedSubjectReport -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ([string]$zhumuMergedSubjectOccupancy.status -ne "ok") {
-            throw "Zhumu merged animation render images do not show a visible subject. status=$($zhumuMergedSubjectOccupancy.status) failed=$($zhumuMergedSubjectOccupancy.failedCount)"
-        }
-        $zhumuMergedRenderMotion = $zhumuMergedSubjectOccupancy.motion
-        if ($null -eq $zhumuMergedRenderMotion -or [string]$zhumuMergedRenderMotion.status -ne "ok") {
-            throw "Zhumu merged animation render images do not show visible pixel motion. status=$($zhumuMergedRenderMotion.status) maxMotion=$($zhumuMergedRenderMotion.maxMotionPixelRatio)"
-        }
+        $zhumuMergedRenderAnalysis = Invoke-ZhumuRenderSubjectAnalysis -RenderRoot $zhumuMergedRenderRoot -OutputPath $zhumuMergedSubjectReport
+        $zhumuMergedRenderImages = $zhumuMergedRenderAnalysis.images
+        $zhumuMergedSubjectOccupancy = $zhumuMergedRenderAnalysis.subjectOccupancy
+        $zhumuMergedRenderMotion = $zhumuMergedRenderAnalysis.motion
 
         $zhumuMergedRenderSummaryText = (Get-Content -LiteralPath $zhumuMergedRenderSummary -Raw -Encoding UTF8).Trim()
         $zhumuMergedRenderLines = @($zhumuMergedRenderSummaryText -split "`r?`n" | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
@@ -3126,6 +3196,7 @@ $summaryJsonLines += '    "modelAnimationRelationRows": ' + (ConvertTo-SmokeJson
 $summaryJsonLines += '    "relationAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRelationAnimationRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "zhumuVerifiedAnimationPreviewRefresh": ' + (ConvertTo-SmokeJsonLiteral $zhumuVerifiedAnimationPreviewRefresh 10) + ","
 $summaryJsonLines += '  "narakaAnimationRelationPolicy": ' + (ConvertTo-SmokeJsonLiteral $narakaAnimationRelationPolicy 10) + ","
 $summaryJsonLines += '  "zhumuScriptAnimationProbe": {'
 $summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationStatus) + ","
@@ -3268,6 +3339,9 @@ if ($summaryJsonParsed.zhumuMergedAnimationPreview.status -eq "ok") {
         }
     }
 }
+if ($RefreshZhumuVerifiedAnimationPreview -and [string]$summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status -ne "ok") {
+    throw "smoke_summary.json Zhumu verified-preview refresh did not finish as ok. status=$($summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status)"
+}
 if ($summaryJsonParsed.zhumuScriptAnimationProbe.status -eq "ok") {
     if ($summaryJsonParsed.zhumuScriptAnimationProbe.capabilitiesAnimations -ne $true) {
         throw "smoke_summary.json Zhumu verified-preview sample must keep capabilities.animations=true."
@@ -3326,6 +3400,19 @@ $reportLines.Add(('- Status: `{0}`' -f $narakaAnimationRelationPolicy.status))
 $reportLines.Add(('- Accepted relation: `{0}` via `{1}`' -f $narakaAnimationRelationPolicy.acceptedProductionRelation, $narakaAnimationRelationPolicy.acceptedRelationPath))
 $reportLines.Add(('- Standard AnimatorController required: `{0}`' -f $narakaAnimationRelationPolicy.standardAnimatorControllerIsRequired))
 $reportLines.Add(('- Rule: {0}' -f $narakaAnimationRelationPolicy.rule))
+$reportLines.Add("")
+$reportLines.Add("## Zhumu Verified Preview Refresh")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.status))
+$reportLines.Add(('- Explicit switch: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.explicitSwitch))
+$reportLines.Add(('- Library root: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.libraryRoot))
+if ($zhumuVerifiedAnimationPreviewRefresh.status -eq "ok") {
+    $reportLines.Add(('- Merge report: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.mergeReport))
+    $reportLines.Add(('- Render report: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.renderReport))
+    $reportLines.Add(('- Source report: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.sourceReport))
+    $reportLines.Add(('- Import report: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.importReport))
+}
+$reportLines.Add(('- Rule: {0}' -f $zhumuVerifiedAnimationPreviewRefresh.rule))
 $reportLines.Add("")
 $reportLines.Add("## Static Library")
 $reportLines.Add("")
