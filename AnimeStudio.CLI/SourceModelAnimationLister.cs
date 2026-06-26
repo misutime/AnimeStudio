@@ -116,6 +116,11 @@ namespace AnimeStudio.CLI
                 animationSelector,
                 Math.Min(limit, 80)));
             var modelVisibilityDiagnostics = MeasureStage(timingPath, "load_model_visibility_diagnostics", null, () => LoadModelVisibilityDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80)));
+            var modelAvatarCompatibilityDiagnostics = MeasureStage(timingPath, "load_model_avatar_compatibility_diagnostics", null, () => LoadModelAvatarCompatibilityDiagnosticsForModels(
+                connection,
+                selectedModels,
+                modelVisibilityDiagnostics,
+                Math.Min(limit, 80)));
             if (!hasReverseRelationIndex)
             {
                 if (canScanSharedAvatarForward)
@@ -167,8 +172,10 @@ namespace AnimeStudio.CLI
                 ["monoBehaviourPPtrDiagnosticRule"] = "Diagnostics list MonoBehaviour PPtr fields that point at the selected model, plus sibling PPtr fields from the same MonoBehaviour. These are deterministic config clues only; they do not become playable animation candidates unless a model-first gate and explicit animation relation are also proven.",
                 ["avatarTosClipDiagnosticRule"] = "Diagnostics list AnimationClip binding pathHash coverage against the selected model's explicit Animator.avatar -> Avatar.m_TOS table. This is structural evidence for Naraka hash-only path recovery only; it is not a default model-animation relation and must not bypass Animator/Controller context, model validation, TRS export, or visual review.",
                 ["modelVisibilityDiagnosticRule"] = "Diagnostics count Renderer/Animator components under the selected GameObject hierarchy. They only explain whether a selected source object looks like a visible model root; real model readiness still requires exported glTF, material/texture/skin/bbox validation, and visual review.",
+                ["modelAvatarCompatibilityDiagnosticRule"] = "Diagnostics compare selected model Transform evidence against Avatar TOS/oracle paths. This is structural compatibility only: it must not create default model-animation relations, bypass explicit Animator/Controller context, or mark Humanoid/Muscle animation playable.",
                 ["selectedModels"] = new JArray(selectedModels.Select(ToJson)),
                 ["modelVisibilityDiagnostics"] = new JArray(modelVisibilityDiagnostics.Select(ToJson)),
+                ["modelAvatarCompatibilityDiagnostics"] = new JArray(modelAvatarCompatibilityDiagnostics.Select(ToJson)),
                 ["models"] = new JArray(models.Select(ToJson)),
                 ["animatorDiagnostics"] = new JArray(animatorDiagnostics.Select(ToJson)),
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
@@ -207,6 +214,13 @@ namespace AnimeStudio.CLI
                 foreach (var row in avatarTosClipDiagnostics.Take(8))
                 {
                     Logger.Info($"- avatar TOS diagnostic {row.ModelName}#{row.ModelPathId}: avatar={row.AvatarName} clip={row.AnimationName} coverage={Ratio(row.ResolvedPathHashCount, row.UniqueHashOnlyPathHashCount):0.######}");
+                }
+            }
+            if (filtered.Count == 0 && modelAvatarCompatibilityDiagnostics.Count > 0)
+            {
+                foreach (var row in modelAvatarCompatibilityDiagnostics.Take(8))
+                {
+                    Logger.Info($"- model/avatar compatibility diagnostic {row.ModelName}#{row.ModelPathId}: avatar={row.AvatarName ?? string.Empty} coverage={row.CoverageRatio:0.######} matched={row.MatchedAvatarPathCount}/{row.ComparableAvatarPathCount} reason={row.Reason}");
                 }
             }
 
@@ -665,6 +679,177 @@ LIMIT $limit;");
             return result;
         }
 
+        private static List<ModelAvatarCompatibilityDiagnosticRow> LoadModelAvatarCompatibilityDiagnosticsForModels(
+            SqliteConnection connection,
+            IReadOnlyList<ModelRow> models,
+            IReadOnlyList<ModelVisibilityDiagnosticRow> visibilityRows,
+            int limit)
+        {
+            var avatars = LoadAvatarPathSets(connection);
+            var visibilityByModel = (visibilityRows ?? Array.Empty<ModelVisibilityDiagnosticRow>())
+                .GroupBy(x => BuildObjectKey(x.ModelSerializedFile, x.ModelPathId), StringComparer.Ordinal)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.Ordinal);
+            var result = new List<ModelAvatarCompatibilityDiagnosticRow>();
+
+            foreach (var model in models ?? Array.Empty<ModelRow>())
+            {
+                visibilityByModel.TryGetValue(BuildObjectKey(model.SerializedFile, model.PathId), out var visibility);
+                var evidence = LoadModelTransformEvidence(connection, model, maxTransforms: 2048);
+                var rows = BuildModelAvatarCompatibilityRows(model, visibility, evidence, avatars, perModelLimit: 6);
+                result.AddRange(rows);
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+            }
+
+            return result
+                .OrderByDescending(x => x.CoverageRatio)
+                .ThenByDescending(x => x.MatchedAvatarPathCount)
+                .ThenByDescending(x => x.ModelPathCount)
+                .ThenBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
+                .Take(limit)
+                .ToList();
+        }
+
+        private static List<ModelAvatarCompatibilityDiagnosticRow> BuildModelAvatarCompatibilityRows(
+            ModelRow model,
+            ModelVisibilityDiagnosticRow visibility,
+            ModelTransformEvidence evidence,
+            IReadOnlyList<AvatarPathSet> avatars,
+            int perModelLimit)
+        {
+            var visibleRendererCount = (visibility?.MeshRendererCount ?? 0) + (visibility?.SkinnedMeshRendererCount ?? 0);
+            var modelComparablePaths = BuildComparablePathVariants(evidence.Paths);
+            if (modelComparablePaths.Count == 0)
+            {
+                return new List<ModelAvatarCompatibilityDiagnosticRow>
+                {
+                    new ModelAvatarCompatibilityDiagnosticRow(
+                        model.Name,
+                        model.SourcePath,
+                        model.SerializedFile,
+                        model.PathId,
+                        model.ContainerPath,
+                        string.Empty,
+                        string.Empty,
+                        string.Empty,
+                        0,
+                        evidence.Paths.Count,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        visibleRendererCount,
+                        evidence.HierarchyPathCount,
+                        evidence.TransformNodePathCount,
+                        "no_comparable_model_transform_paths",
+                        BuildSampleArray(evidence.Paths, 12),
+                        new JArray(),
+                        new JArray())
+                };
+            }
+
+            var rows = new List<ModelAvatarCompatibilityDiagnosticRow>();
+            foreach (var avatar in avatars)
+            {
+                var comparableAvatarPaths = avatar.Paths
+                    .Select(NormalizePathForCompare)
+                    .Where(x => CountPathSegments(x) >= 2)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (comparableAvatarPaths.Count == 0)
+                {
+                    continue;
+                }
+                if (comparableAvatarPaths.Count < 20 && avatar.HumanBoneCount < 20)
+                {
+                    continue;
+                }
+
+                var matched = comparableAvatarPaths
+                    .Where(modelComparablePaths.Contains)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (matched.Count == 0)
+                {
+                    continue;
+                }
+
+                var coverage = Ratio(matched.Count, comparableAvatarPaths.Count);
+                if (matched.Count < 10 && coverage < 0.5)
+                {
+                    continue;
+                }
+
+                var unmatched = comparableAvatarPaths
+                    .Where(x => !modelComparablePaths.Contains(x))
+                    .Take(12)
+                    .ToList();
+                rows.Add(new ModelAvatarCompatibilityDiagnosticRow(
+                    model.Name,
+                    model.SourcePath,
+                    model.SerializedFile,
+                    model.PathId,
+                    model.ContainerPath,
+                    avatar.Name,
+                    avatar.SourcePath,
+                    avatar.SerializedFile,
+                    avatar.PathId,
+                    evidence.Paths.Count,
+                    modelComparablePaths.Count,
+                    comparableAvatarPaths.Count,
+                    matched.Count,
+                    coverage,
+                    avatar.HumanBoneCount,
+                    avatar.TosPathCount,
+                    visibleRendererCount,
+                    evidence.HierarchyPathCount,
+                    evidence.TransformNodePathCount,
+                    coverage >= 0.8 ? "high_structural_path_overlap_diagnostic_only" : "partial_structural_path_overlap_diagnostic_only",
+                    BuildSampleArray(evidence.Paths, 12),
+                    BuildSampleArray(matched, 12),
+                    BuildSampleArray(unmatched, 12)));
+            }
+
+            if (rows.Count == 0)
+            {
+                rows.Add(new ModelAvatarCompatibilityDiagnosticRow(
+                    model.Name,
+                    model.SourcePath,
+                    model.SerializedFile,
+                    model.PathId,
+                    model.ContainerPath,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    0,
+                    evidence.Paths.Count,
+                    modelComparablePaths.Count,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    visibleRendererCount,
+                    evidence.HierarchyPathCount,
+                    evidence.TransformNodePathCount,
+                    "no_avatar_path_overlap",
+                    BuildSampleArray(evidence.Paths, 12),
+                    new JArray(),
+                    new JArray()));
+            }
+
+            return rows
+                .OrderByDescending(x => x.CoverageRatio)
+                .ThenByDescending(x => x.MatchedAvatarPathCount)
+                .ThenBy(x => x.AvatarName, StringComparer.OrdinalIgnoreCase)
+                .Take(Math.Max(1, perModelLimit))
+                .ToList();
+        }
+
         private static ModelVisibilityDiagnosticRow LoadModelVisibilityDiagnostic(SqliteConnection connection, ModelRow model)
         {
             // 大 CTE 在 Naraka 全量索引上容易被 SQLite 规划成慢查询；这里按 Unity 显式层级拆成几条小查询。
@@ -708,6 +893,207 @@ LIMIT $limit;");
                 components.Count(x => string.Equals(x.Type, "Animation", StringComparison.Ordinal)),
                 CountDistinctComponentTargets(connection, animatorComponents, "animator.avatar"),
                 CountDistinctComponentTargets(connection, animatorComponents, "animator.controller"));
+        }
+
+        private static ModelTransformEvidence LoadModelTransformEvidence(SqliteConnection connection, ModelRow model, int maxTransforms)
+        {
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var hierarchyPathCount = 0;
+            var transformNodePathCount = 0;
+            var rootTransform = LoadRootTransform(connection, model);
+            if (rootTransform != null)
+            {
+                foreach (var path in LoadHierarchyTransformPaths(connection, model, rootTransform, maxTransforms))
+                {
+                    if (!string.IsNullOrWhiteSpace(path) && paths.Add(path))
+                    {
+                        hierarchyPathCount++;
+                    }
+                }
+            }
+
+            // Naraka 的 ActorBodyVisualCell 会显式列出 transformNodes.data。
+            // 这只能作为骨骼/节点覆盖诊断，不能单独证明 Avatar 或动画绑定。
+            foreach (var transform in LoadMonoBehaviourTransformNodeRefs(connection, model, maxTransforms))
+            {
+                var path = BuildTransformPath(connection, transform, maxDepth: 64);
+                if (!string.IsNullOrWhiteSpace(path) && paths.Add(path))
+                {
+                    transformNodePathCount++;
+                }
+            }
+
+            return new ModelTransformEvidence(
+                paths.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
+                hierarchyPathCount,
+                transformNodePathCount);
+        }
+
+        private static List<string> LoadHierarchyTransformPaths(SqliteConnection connection, ModelRow model, SourceObjectKey rootTransform, int maxTransforms)
+        {
+            var result = new List<string>();
+            var visited = new HashSet<SourceObjectKey>();
+            var queue = new Queue<(SourceObjectKey Transform, string Path, int Depth)>();
+            var rootName = LoadGameObjectNameForTransform(connection, rootTransform);
+            if (string.IsNullOrWhiteSpace(rootName))
+            {
+                rootName = model.Name ?? string.Empty;
+            }
+
+            queue.Enqueue((rootTransform, rootName, 0));
+            while (queue.Count > 0 && result.Count < maxTransforms)
+            {
+                var current = queue.Dequeue();
+                if (!visited.Add(current.Transform))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(current.Path))
+                {
+                    result.Add(current.Path);
+                }
+
+                if (current.Depth >= 64)
+                {
+                    continue;
+                }
+
+                foreach (var child in LoadChildTransforms(connection, current.Transform))
+                {
+                    var childName = LoadGameObjectNameForTransform(connection, child);
+                    var childPath = string.IsNullOrWhiteSpace(childName)
+                        ? current.Path
+                        : CombineUnityPath(current.Path, childName);
+                    queue.Enqueue((child, childPath, current.Depth + 1));
+                }
+            }
+
+            return result;
+        }
+
+        private static List<SourceObjectKey> LoadMonoBehaviourTransformNodeRefs(SqliteConnection connection, ModelRow model, int maxTransforms)
+        {
+            var result = new List<SourceObjectKey>();
+            foreach (var component in LoadComponentsForGameObject(connection, new SourceObjectKey(model.SerializedFile ?? string.Empty, model.PathId)))
+            {
+                if (!string.Equals(component.Type, "MonoBehaviour", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                using var command = connection.CreateCommand();
+                command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT DISTINCT rel.to_file, rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+WHERE rel.from_file = $componentFile
+  AND rel.from_path_id = $componentPathId
+  AND rel.relation = 'monoBehaviour.pptr'
+  AND json_extract(rel.raw_json, '$.details.path') = 'transformNodes.data'
+LIMIT $limit;");
+                command.Parameters.AddWithValue("$componentFile", component.SerializedFile ?? string.Empty);
+                command.Parameters.AddWithValue("$componentPathId", component.PathId);
+                command.Parameters.AddWithValue("$limit", Math.Clamp(maxTransforms - result.Count, 1, maxTransforms));
+
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    result.Add(new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1)));
+                    if (result.Count >= maxTransforms)
+                    {
+                        return result
+                            .GroupBy(x => BuildObjectKey(x.SerializedFile, x.PathId), StringComparer.Ordinal)
+                            .Select(x => x.First())
+                            .ToList();
+                    }
+                }
+            }
+
+            return result
+                .GroupBy(x => BuildObjectKey(x.SerializedFile, x.PathId), StringComparer.Ordinal)
+                .Select(x => x.First())
+                .ToList();
+        }
+
+        private static string BuildTransformPath(SqliteConnection connection, SourceObjectKey transform, int maxDepth)
+        {
+            var names = new List<string>();
+            var visited = new HashSet<SourceObjectKey>();
+            var current = transform;
+            for (var depth = 0; depth < maxDepth && current != null && visited.Add(current); depth++)
+            {
+                var name = LoadGameObjectNameForTransform(connection, current);
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    names.Add(name);
+                }
+
+                current = LoadParentTransform(connection, current);
+            }
+
+            names.Reverse();
+            return string.Join("/", names);
+        }
+
+        private static string LoadGameObjectNameForTransform(SqliteConnection connection, SourceObjectKey transform)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT COALESCE(go.name, '')
+FROM source_relations rel INDEXED BY idx_source_relations_from
+JOIN source_objects go
+  ON go.serialized_file = rel.to_file
+ AND go.path_id = rel.to_path_id
+ AND go.type = 'GameObject'
+WHERE rel.from_file = $transformFile
+  AND rel.from_path_id = $transformPathId
+  AND rel.relation = 'component.gameObject'
+LIMIT 1;");
+            command.Parameters.AddWithValue("$transformFile", transform.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$transformPathId", transform.PathId);
+            return Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        private static SourceObjectKey LoadParentTransform(SqliteConnection connection, SourceObjectKey transform)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT rel.from_file, rel.from_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_to
+WHERE rel.to_file = $transformFile
+  AND rel.to_path_id = $transformPathId
+  AND rel.relation = 'transform.child'
+LIMIT 1;");
+            command.Parameters.AddWithValue("$transformFile", transform.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$transformPathId", transform.PathId);
+
+            using var reader = command.ExecuteReader();
+            return reader.Read()
+                ? new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1))
+                : null;
+        }
+
+        private static List<SourceObjectKey> LoadChildTransforms(SqliteConnection connection, SourceObjectKey transform)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT DISTINCT rel.to_file, rel.to_path_id
+FROM source_relations rel INDEXED BY idx_source_relations_from
+WHERE rel.from_file = $transformFile
+  AND rel.from_path_id = $transformPathId
+  AND rel.relation = 'transform.child'
+ORDER BY rel.to_path_id;");
+            command.Parameters.AddWithValue("$transformFile", transform.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$transformPathId", transform.PathId);
+
+            var result = new List<SourceObjectKey>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new SourceObjectKey(ReadString(reader, 0), ReadLong(reader, 1)));
+            }
+
+            return result;
         }
 
         private static SourceObjectKey LoadRootTransform(SqliteConnection connection, ModelRow model)
@@ -1013,6 +1399,184 @@ LIMIT $limit;";
             }
 
             return result;
+        }
+
+        private static List<AvatarPathSet> LoadAvatarPathSets(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name, source_path, serialized_file, path_id, raw_json
+FROM source_objects
+WHERE type = 'Avatar'
+ORDER BY name COLLATE NOCASE, path_id
+LIMIT 5000;";
+
+            var result = new List<AvatarPathSet>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var paths = ExtractAvatarStructuralPaths(ReadString(reader, 4), out var humanBoneCount, out var tosPathCount);
+                if (paths.Count == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new AvatarPathSet(
+                    ReadString(reader, 0),
+                    ReadString(reader, 1),
+                    ReadString(reader, 2),
+                    ReadLong(reader, 3),
+                    paths,
+                    humanBoneCount,
+                    tosPathCount));
+            }
+
+            return result;
+        }
+
+        private static HashSet<string> ExtractAvatarStructuralPaths(string rawJson, out int humanBoneCount, out int tosPathCount)
+        {
+            humanBoneCount = 0;
+            tosPathCount = 0;
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return result;
+            }
+
+            JObject raw;
+            try
+            {
+                raw = JObject.Parse(rawJson);
+            }
+            catch (JsonException)
+            {
+                return result;
+            }
+
+            humanBoneCount = ReadIntToken(raw.SelectToken("avatar.humanBoneCount"));
+            var tos = raw.SelectToken("avatar.tos") as JArray;
+            tosPathCount = CountPathItems(tos);
+            AddPathItems(result, tos);
+            AddPathItems(result, raw.SelectToken("avatar.oracle.skeleton.nodes") as JArray);
+            AddPathItems(result, raw.SelectToken("avatar.oracle.humanSkeleton.nodes") as JArray);
+            AddPathItems(result, raw.SelectToken("avatar.skeleton.nodes") as JArray);
+            AddPathItems(result, raw.SelectToken("avatar.humanSkeleton.nodes") as JArray);
+            return result;
+        }
+
+        private static void AddPathItems(HashSet<string> paths, JArray items)
+        {
+            if (items == null)
+            {
+                return;
+            }
+
+            foreach (var item in items.OfType<JObject>())
+            {
+                var path = NormalizePathForCompare(item["path"]?.ToString());
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    paths.Add(path);
+                }
+            }
+        }
+
+        private static int CountPathItems(JArray items)
+        {
+            if (items == null)
+            {
+                return 0;
+            }
+
+            return items
+                .OfType<JObject>()
+                .Count(x => !string.IsNullOrWhiteSpace(x["path"]?.ToString()));
+        }
+
+        private static int ReadIntToken(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return 0;
+            }
+
+            if (token.Type == JTokenType.Integer)
+            {
+                return token.Value<int>();
+            }
+
+            return int.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : 0;
+        }
+
+        private static HashSet<string> BuildComparablePathVariants(IEnumerable<string> paths)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in paths ?? Array.Empty<string>())
+            {
+                var normalized = NormalizePathForCompare(path);
+                var parts = normalized.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                {
+                    continue;
+                }
+
+                for (var i = 0; i <= parts.Length - 2; i++)
+                {
+                    result.Add(string.Join("/", parts.Skip(i)));
+                }
+            }
+
+            return result;
+        }
+
+        private static string NormalizePathForCompare(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var normalized = value.Replace('\\', '/').Trim();
+            while (normalized.Contains("//", StringComparison.Ordinal))
+            {
+                normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+            }
+
+            return normalized.Trim('/');
+        }
+
+        private static int CountPathSegments(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return 0;
+            }
+
+            return value.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries).Length;
+        }
+
+        private static string CombineUnityPath(string parent, string child)
+        {
+            parent = NormalizePathForCompare(parent);
+            child = NormalizePathForCompare(child);
+            if (string.IsNullOrWhiteSpace(parent))
+            {
+                return child;
+            }
+
+            return string.IsNullOrWhiteSpace(child) ? parent : parent + "/" + child;
+        }
+
+        private static JArray BuildSampleArray(IEnumerable<string> values, int limit)
+        {
+            return new JArray((values ?? Array.Empty<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Take(Math.Max(0, limit)));
         }
 
         private static HashSet<uint> ExtractHashOnlyBindingPathHashes(string rawJson, out long zeroPathHashBindingCount)
@@ -2124,6 +2688,54 @@ LIMIT $limit;";
             };
         }
 
+        private static JObject ToJson(ModelAvatarCompatibilityDiagnosticRow row)
+        {
+            return new JObject
+            {
+                ["deterministic"] = true,
+                ["diagnosticOnly"] = true,
+                ["manualReviewRequired"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["relationKind"] = "model_avatar_structural_path_overlap",
+                ["relationSource"] = "structural_source_index",
+                ["reason"] = row.Reason,
+                ["modelReadyForAnimation"] = false,
+                ["modelReadyForAnimationReason"] = "This diagnostic only compares source-index Transform paths with Avatar TOS/oracle paths. It cannot replace explicit Animator/Controller relation, exported glTF validation, TRS export, or visual review.",
+                ["coverage"] = new JObject
+                {
+                    ["modelPathCount"] = row.ModelPathCount,
+                    ["modelComparablePathVariantCount"] = row.ModelComparablePathVariantCount,
+                    ["comparableAvatarPathCount"] = row.ComparableAvatarPathCount,
+                    ["matchedAvatarPathCount"] = row.MatchedAvatarPathCount,
+                    ["coverageRatio"] = row.CoverageRatio,
+                    ["avatarHumanBoneCount"] = row.AvatarHumanBoneCount,
+                    ["avatarTosPathCount"] = row.AvatarTosPathCount,
+                    ["visibleRendererCount"] = row.VisibleRendererCount,
+                    ["hierarchyPathCount"] = row.HierarchyPathCount,
+                    ["transformNodePathCount"] = row.TransformNodePathCount,
+                    ["modelPathSamples"] = row.ModelPathSamples ?? new JArray(),
+                    ["matchedAvatarPathSamples"] = row.MatchedAvatarPathSamples ?? new JArray(),
+                    ["unmatchedAvatarPathSamples"] = row.UnmatchedAvatarPathSamples ?? new JArray(),
+                },
+                ["model"] = new JObject
+                {
+                    ["name"] = row.ModelName,
+                    ["sourcePath"] = row.ModelSourcePath,
+                    ["serializedFile"] = row.ModelSerializedFile,
+                    ["pathId"] = row.ModelPathId,
+                    ["containerPath"] = row.ModelContainerPath,
+                },
+                ["avatar"] = new JObject
+                {
+                    ["name"] = row.AvatarName,
+                    ["sourcePath"] = row.AvatarSourcePath,
+                    ["serializedFile"] = row.AvatarSerializedFile,
+                    ["pathId"] = row.AvatarPathId,
+                },
+                ["rule"] = "High overlap can guide a manual Naraka Humanoid solver/oracle probe, but it must not be written into model_animations.json as a recommended relation unless Unity explicit context or a reviewed profile rule later proves the binding.",
+            };
+        }
+
         private static string ToCsv(List<CandidateRow> rows)
         {
             var builder = new StringBuilder();
@@ -2160,6 +2772,11 @@ LIMIT $limit;";
         {
             value ??= string.Empty;
             return "\"" + value.Replace("\"", "\"\"") + "\"";
+        }
+
+        private static string BuildObjectKey(string serializedFile, long pathId)
+        {
+            return (serializedFile ?? string.Empty) + "\n" + pathId.ToString(CultureInfo.InvariantCulture);
         }
 
         private static string ReadString(SqliteDataReader reader, int ordinal)
@@ -2265,6 +2882,45 @@ LIMIT $limit;";
             long AnimationComponentCount,
             long AnimatorAvatarReferenceCount,
             long AnimatorControllerReferenceCount);
+
+        private sealed record ModelAvatarCompatibilityDiagnosticRow(
+            string ModelName,
+            string ModelSourcePath,
+            string ModelSerializedFile,
+            long ModelPathId,
+            string ModelContainerPath,
+            string AvatarName,
+            string AvatarSourcePath,
+            string AvatarSerializedFile,
+            long AvatarPathId,
+            int ModelPathCount,
+            int ModelComparablePathVariantCount,
+            int ComparableAvatarPathCount,
+            int MatchedAvatarPathCount,
+            double CoverageRatio,
+            int AvatarHumanBoneCount,
+            int AvatarTosPathCount,
+            long VisibleRendererCount,
+            int HierarchyPathCount,
+            int TransformNodePathCount,
+            string Reason,
+            JArray ModelPathSamples,
+            JArray MatchedAvatarPathSamples,
+            JArray UnmatchedAvatarPathSamples);
+
+        private sealed record ModelTransformEvidence(
+            List<string> Paths,
+            int HierarchyPathCount,
+            int TransformNodePathCount);
+
+        private sealed record AvatarPathSet(
+            string Name,
+            string SourcePath,
+            string SerializedFile,
+            long PathId,
+            HashSet<string> Paths,
+            int HumanBoneCount,
+            int TosPathCount);
 
         private sealed record SourceObjectKey(
             string SerializedFile,
