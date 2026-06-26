@@ -1990,6 +1990,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialStatus = materialSummary?.status ?? materialBinding.Status,
                 materialStatusCounts = materialSummary?.statusCounts,
                 materialNeedsCustomizationTint = materialSummary?.needsCustomizationTint ?? false,
+                materialNeedsCustomShaderLayer = materialSummary?.needsCustomShaderLayer ?? false,
                 materialMissingRendererBinding = materialSummary?.missingRendererBinding
                     ?? !string.Equals(materialBinding.Status, "boundRendererMaterial", StringComparison.OrdinalIgnoreCase),
                 materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture ?? false,
@@ -2900,6 +2901,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialStatus = materialSummary?.status,
                 materialStatusCounts = materialSummary?.statusCounts,
                 materialNeedsCustomizationTint = materialSummary?.needsCustomizationTint,
+                materialNeedsCustomShaderLayer = materialSummary?.needsCustomShaderLayer,
                 materialMissingRendererBinding = materialSummary?.missingRendererBinding,
                 materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture,
                 materialHasNormalTexture = materialSummary?.hasNormalTexture,
@@ -3614,6 +3616,7 @@ ORDER BY components.type, components.path_id;";
                 var hasBaseColorTexture = false;
                 var hasNormalTexture = false;
                 var needsCustomizationTint = false;
+                var needsCustomShaderLayer = false;
                 var missingRendererBinding = false;
 
                 foreach (var materialToken in materials.OfType<JObject>())
@@ -3635,6 +3638,11 @@ ORDER BY components.type, components.path_id;";
                     statusCounts[status] = count + 1;
                     needsCustomizationTint |= string.Equals(status, "needsCustomizationTint", StringComparison.OrdinalIgnoreCase)
                         || (bool?)anime?["needsCustomizationTint"] == true;
+                    // 私有 shader 分层是“关系已保留、PBR 只降级预览”的状态，要提升到 catalog 顶层，方便 SQL 和动画门禁直接判断。
+                    needsCustomShaderLayer |= string.Equals(status, "needsCustomShaderLayer", StringComparison.OrdinalIgnoreCase)
+                        || (bool?)anime?["needsCustomShaderLayer"] == true
+                        || (bool?)anime?["customShaderRequired"] == true
+                        || (bool?)anime?["layeredMaterialUnresolved"] == true;
                     missingRendererBinding |= string.Equals(status, "missingRendererMaterial", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(status, "needsRendererBinding", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(status, "rendererMaterialUnresolved", StringComparison.OrdinalIgnoreCase);
@@ -3650,6 +3658,7 @@ ORDER BY components.type, components.path_id;";
                         .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
                         .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase),
                     needsCustomizationTint = needsCustomizationTint,
+                    needsCustomShaderLayer = needsCustomShaderLayer,
                     missingRendererBinding = missingRendererBinding,
                     hasBaseColorTexture = hasBaseColorTexture,
                     hasNormalTexture = hasNormalTexture,
@@ -3675,6 +3684,7 @@ ORDER BY components.type, components.path_id;";
             public string status { get; init; }
             public Dictionary<string, int> statusCounts { get; init; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             public bool needsCustomizationTint { get; init; }
+            public bool needsCustomShaderLayer { get; init; }
             public bool missingRendererBinding { get; init; }
             public bool hasBaseColorTexture { get; init; }
             public bool hasNormalTexture { get; init; }
