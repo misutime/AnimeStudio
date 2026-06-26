@@ -104,6 +104,60 @@ function ConvertTo-SqliteTextLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Read-SourceModelScriptAnimationDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Selector,
+        [Parameter(Mandatory = $true)]
+        [string]$OutputRoot
+    )
+
+    $report = Join-Path $OutputRoot "source_model_animation_candidates.json"
+    Test-FileRequired -Path $report -Label "source_model_animation_candidates.json"
+
+    $json = Get-Content -LiteralPath $report -Raw -Encoding UTF8 | ConvertFrom-Json
+    $scriptRows = @($json.scriptAnimationComponentDiagnostics)
+    $invalidBoundaryRows = @($scriptRows | Where-Object { $_.diagnosticOnly -ne $true -or $_.notDefaultModelAnimationRelation -ne $true })
+    $visibleRendererRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.visibleRendererCount) -gt 0 })
+    $animatorRows = @($scriptRows | Where-Object { [Convert]::ToInt64($_.gameObject.animatorCount) -gt 0 })
+    $firstRow = $null
+    if ($scriptRows.Count -gt 0) {
+        $firstRow = $scriptRows[0]
+    }
+    $firstScriptName = $null
+    $firstFieldPath = $null
+    $firstClipName = $null
+    if ($null -ne $firstRow) {
+        $firstScriptName = [string]$firstRow.monoBehaviour.scriptName
+        $firstFieldPath = [string]$firstRow.reference.path
+        $firstClipName = [string]$firstRow.reference.animation.name
+    }
+    $selectedModelCount = [Convert]::ToInt64($json.selectedModelCount)
+    $candidateCount = [Convert]::ToInt64($json.candidateCount)
+    $scriptAnimationRows = [Convert]::ToInt64($scriptRows.Count)
+    $invalidBoundaryRowCount = [Convert]::ToInt64($invalidBoundaryRows.Count)
+    $visibleRendererRowCount = [Convert]::ToInt64($visibleRendererRows.Count)
+    $animatorRowCount = [Convert]::ToInt64($animatorRows.Count)
+
+    # 这里只读报告并压成 smoke 摘要；脚本动画语义仍然需要游戏脚本解释，不能升级成默认候选。
+    $summaryJsonLines = @()
+    $summaryJsonLines += "{"
+    $summaryJsonLines += '  "selector": ' + (ConvertTo-SmokeJsonLiteral $Selector) + ","
+    $summaryJsonLines += '  "outputRoot": ' + (ConvertTo-SmokeJsonLiteral $OutputRoot) + ","
+    $summaryJsonLines += '  "report": ' + (ConvertTo-SmokeJsonLiteral $report) + ","
+    $summaryJsonLines += '  "selectedModelCount": ' + (ConvertTo-SmokeJsonLiteral $selectedModelCount) + ","
+    $summaryJsonLines += '  "candidateCount": ' + (ConvertTo-SmokeJsonLiteral $candidateCount) + ","
+    $summaryJsonLines += '  "scriptAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationRows) + ","
+    $summaryJsonLines += '  "invalidBoundaryRows": ' + (ConvertTo-SmokeJsonLiteral $invalidBoundaryRowCount) + ","
+    $summaryJsonLines += '  "visibleRendererRows": ' + (ConvertTo-SmokeJsonLiteral $visibleRendererRowCount) + ","
+    $summaryJsonLines += '  "animatorRows": ' + (ConvertTo-SmokeJsonLiteral $animatorRowCount) + ","
+    $summaryJsonLines += '  "firstScriptName": ' + (ConvertTo-SmokeJsonLiteral $firstScriptName) + ","
+    $summaryJsonLines += '  "firstFieldPath": ' + (ConvertTo-SmokeJsonLiteral $firstFieldPath) + ","
+    $summaryJsonLines += '  "firstClipName": ' + (ConvertTo-SmokeJsonLiteral $firstClipName)
+    $summaryJsonLines += "}"
+    return (($summaryJsonLines -join [Environment]::NewLine) | ConvertFrom-Json)
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetFramework = "net9.0-windows"
 $cli = Join-Path $repoRoot "AnimeStudio.CLI\bin\$Configuration\$targetFramework\AnimeStudio.CLI.exe"
@@ -137,6 +191,8 @@ New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $probeOutput = Join-Path $OutputRoot "SourceInputProbe"
 $libraryOutput = Join-Path $OutputRoot "RepresentativeModels"
 $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
+$scriptAnimationHadiOutput = Join-Path $OutputRoot "SourceModelAnimation_HadiBody_ScriptComponentDiagnostic"
+$scriptAnimationFxOutput = Join-Path $OutputRoot "SourceModelAnimation_FxAttack_ScriptComponentDiagnostic"
 $representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
 $animationGltfValidationStatus = if ($SkipGltfValidation -or $SkipAnimationDiagnostic) { "skipped" } else { "toolMissing" }
 $shaderBoundaryGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
@@ -191,6 +247,12 @@ $sourceIndexLegacyAnimationClipDomains = [pscustomobject]@{
     resolvedTargets = 0
     unresolvedTargets = 0
     domainCounts = @()
+}
+$scriptAnimationComponentDiagnostics = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Selected-model script AnimationClip PPtr diagnostics are local evidence only. They must stay diagnosticOnly/notDefaultModelAnimationRelation and never create default model-animation candidates without script semantics, model validation and visual validation."
+    hadiBody = $null
+    fxAttack = $null
 }
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
 $animationReportJson = $null
@@ -285,6 +347,51 @@ if (!$SkipAnimationDiagnostic) {
             }
         }
     }
+}
+
+Write-Host ""
+Write-Host "== List Naraka selected-model script animation diagnostics =="
+Invoke-Checked -Label "List Hadi body source-model animations" -FilePath $cli -Arguments @(
+    "--list_source_model_animations", $SourceIndex,
+    "--preview_model", "ch_m_hadi_lv_s9",
+    "--preview_output", $scriptAnimationHadiOutput,
+    "--source_candidate_limit", "40")
+Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $cli -Arguments @(
+    "--list_source_model_animations", $SourceIndex,
+    "--preview_model", "fxattack_male_sw_attack_heavy_02",
+    "--preview_output", $scriptAnimationFxOutput,
+    "--source_candidate_limit", "20")
+
+$hadiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_m_hadi_lv_s9" -OutputRoot $scriptAnimationHadiOutput
+$fxScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "fxattack_male_sw_attack_heavy_02" -OutputRoot $scriptAnimationFxOutput
+
+if ($hadiScriptAnimationDiagnostic.selectedModelCount -lt 1) {
+    throw "Hadi body script animation diagnostic did not select any source model."
+}
+if ($hadiScriptAnimationDiagnostic.candidateCount -ne 0 -or $hadiScriptAnimationDiagnostic.scriptAnimationRows -ne 0) {
+    throw "Hadi body unexpectedly produced default or script animation rows. candidates=$($hadiScriptAnimationDiagnostic.candidateCount) scriptRows=$($hadiScriptAnimationDiagnostic.scriptAnimationRows)"
+}
+if ($fxScriptAnimationDiagnostic.selectedModelCount -lt 1) {
+    throw "FxAttack script animation diagnostic did not select any source model."
+}
+if ($fxScriptAnimationDiagnostic.candidateCount -ne 0) {
+    throw "FxAttack script diagnostic unexpectedly produced default animation candidates: $($fxScriptAnimationDiagnostic.candidateCount)"
+}
+if ($fxScriptAnimationDiagnostic.scriptAnimationRows -lt 1) {
+    throw "FxAttack script diagnostic lost local MonoBehaviour -> AnimationClip evidence."
+}
+if ($fxScriptAnimationDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "FxAttack script diagnostic lost diagnostic-only relation boundary. invalidRows=$($fxScriptAnimationDiagnostic.invalidBoundaryRows)"
+}
+if ($fxScriptAnimationDiagnostic.visibleRendererRows -ne 0 -or $fxScriptAnimationDiagnostic.animatorRows -lt 1) {
+    throw "FxAttack script diagnostic no longer looks like a non-rendered animation control node. visibleRendererRows=$($fxScriptAnimationDiagnostic.visibleRendererRows) animatorRows=$($fxScriptAnimationDiagnostic.animatorRows)"
+}
+
+$scriptAnimationComponentDiagnostics = [pscustomobject]@{
+    status = "ok"
+    rule = $scriptAnimationComponentDiagnostics.rule
+    hadiBody = $hadiScriptAnimationDiagnostic
+    fxAttack = $fxScriptAnimationDiagnostic
 }
 
 if (!$SkipBrowserValidation) {
@@ -920,6 +1027,7 @@ $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-Smo
 $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary.status) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains.status) + ","
+$summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics.status) + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
@@ -951,7 +1059,8 @@ $summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnima
 $summaryJsonLines += '    "monoBehaviourAnimationClipPPtrSummary": ' + $monoBehaviourAnimationClipPPtrSummaryJson + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
-$summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10)
+$summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
+$summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
@@ -1087,6 +1196,28 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
                 (ConvertTo-SmokeText $scriptRow.sample.clipName "")))
         }
         $reportLines.Add('- MonoBehaviour AnimationClip PPtr rule: these are explicit script-field references for investigation, but custom script semantics are required before any default model-animation binding can be created.')
+    }
+    if ($scriptAnimationComponentDiagnostics.status -eq "ok") {
+        $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
+        $fxScript = $scriptAnimationComponentDiagnostics.fxAttack
+        $reportLines.Add(('- Selected-model script AnimationClip diagnostic: Hadi selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`; Fx selected=`{3}`, candidates=`{4}`, scriptRows=`{5}`, invalidBoundaryRows=`{6}`' -f `
+            (ConvertTo-SmokeText $hadiScript.selectedModelCount "0"),
+            (ConvertTo-SmokeText $hadiScript.candidateCount "0"),
+            (ConvertTo-SmokeText $hadiScript.scriptAnimationRows "0"),
+            (ConvertTo-SmokeText $fxScript.selectedModelCount "0"),
+            (ConvertTo-SmokeText $fxScript.candidateCount "0"),
+            (ConvertTo-SmokeText $fxScript.scriptAnimationRows "0"),
+            (ConvertTo-SmokeText $fxScript.invalidBoundaryRows "0")))
+        $reportLines.Add(('-   Fx first script=`{0}`, field=`{1}`, clip=`{2}`, visibleRendererRows=`{3}`, animatorRows=`{4}`' -f `
+            (ConvertTo-SmokeText $fxScript.firstScriptName ""),
+            (ConvertTo-SmokeText $fxScript.firstFieldPath ""),
+            (ConvertTo-SmokeText $fxScript.firstClipName ""),
+            (ConvertTo-SmokeText $fxScript.visibleRendererRows "0"),
+            (ConvertTo-SmokeText $fxScript.animatorRows "0")))
+        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi proves normal visible model selection is not promoted; FxAttack proves local SimpleAnimation-style clip PPtrs are retained as diagnostic evidence only, not default model-animation candidates.')
+    }
+    else {
+        $reportLines.Add(('- Selected-model script AnimationClip diagnostic: `{0}`' -f $scriptAnimationComponentDiagnostics.status))
     }
     if ($sourceIndexAvatarAnimatorDomains.status -eq "ok") {
         $reportLines.Add(('- Source-index animator.avatar domains: totalAnimators=`{0}`, withController=`{1}`' -f `
@@ -1238,6 +1369,8 @@ $reportLines.Add(('- `library_index.db`: `{0}`' -f $db))
 $reportLines.Add(('- `sqlite_index_summary.json`: `{0}`' -f $sqliteSummary))
 $reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
 $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
+$reportLines.Add(('- Hadi script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.hadiBody.report))
+$reportLines.Add(('- FxAttack script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.fxAttack.report))
 $reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))
 $reportLines.Add(('- Bow prop glTF: `{0}`' -f $bowGltf))
 $reportLines.Add(('- Device prop glTF: `{0}`' -f $deviceGltf))

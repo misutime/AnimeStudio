@@ -68,7 +68,7 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 脚本结束后会在 `OutputRoot` 写出两个汇总文件：
 
 - `SMOKE_REPORT.md`：人读 smoke 结论，汇总静态模型、glTF 校验、浏览器校验、缩略图、SQLite 索引计数、贴图链接质量门槛、特殊 shader 降级计数、静态环境扩展样本、角色候选样本、动画关系覆盖摘要和动画诊断边界。
-- `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数、`qualityGates`、`shaderBoundary`、`staticEnvironment`、`characterCandidate`、`characterCandidateSourceIndexBoundary`、`sourceIndexLegacyAnimationClipDomains`、`animatorControllerProductionGate`、`monoBehaviourAnimationClipPPtrSummary` 和动画诊断状态。脚本写完后会立刻反读解析，避免报告可读但机器摘要损坏。
+- `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数、`qualityGates`、`shaderBoundary`、`staticEnvironment`、`characterCandidate`、`characterCandidateSourceIndexBoundary`、`sourceIndexLegacyAnimationClipDomains`、`animatorControllerProductionGate`、`monoBehaviourAnimationClipPPtrSummary`、`scriptAnimationComponentDiagnostics` 和动画诊断状态。脚本写完后会立刻反读解析，避免报告可读但机器摘要损坏。
 
 这两个文件只汇总 smoke 证据，不会改变正式 `RepresentativeModels` 素材库，也不会把诊断动画写成默认动画关系。
 脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
@@ -87,6 +87,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 同日抽样脚本动画挂载 GameObject 的直接组件：`fxattack_male_sw_attack_heavy_02`、`ani`、`node_body`、`hero_wuchen_fuchen` 等高频 `SimpleAnimation` 节点多为 `Transform + MonoBehaviour + Animator`，未在自身 GameObject 上直接出现 `MeshRenderer` / `SkinnedMeshRenderer`；`ActivityArmorHeroProgressWidget` 为 `RectTransform + CanvasRenderer + Animator`，`Gen_Anim_bow` 为 UI/RectTransform 类节点。全量“脚本动画 -> GameObject -> 组件”上下文查询若不小心走错索引会超时，后续若要固化只能做按需、分层或选中模型查询。当前样本说明脚本动画字段是重要入口，但还需要继续追层级子节点、可见 Renderer、Prefab/Avatar/Controller 上下文和模型静态验收，不能把脚本挂载关系直接当生产动画绑定。
 
 同日给 `--list_source_model_animations` 增加按需 `scriptAnimationComponentDiagnostics`：只检查选中 GameObject 和直接子节点上的 MonoBehaviour 组件是否有 AnimationClip PPtr 字段，不做全量深层扫描，也不写 CSV 候选。复验 `ch_m_hadi_lv_s9` 输出 `D:\Assets\Naraka\SourceModelAnimations_HadiBody_ScriptComponentDiag_Current`：命中 8 个同名/特效变体，`candidateCount=0`、`scriptAnimationComponentDiagnostics=0`。复验 `fxattack_male_sw_attack_heavy_02` 输出 `D:\Assets\Naraka\SourceModelAnimations_FxAttackSimpleAnimation_ScriptComponentDiag_Current`：命中 20 个同名节点，`candidateCount=0`、`scriptAnimationComponentDiagnostics=20`，样本行明确为 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，`SimpleAnimation.m_Clip -> fxattack_male_sw_attack_heavy_02_pvpve`，挂载 GameObject 自身 `visibleRendererCount=0`、`animatorCount=1`。这证明新字段能定位脚本动画入口，也证明它仍是控制节点诊断，不能升级成模型动画生产关系。
+
+同日把选中模型脚本动画组件诊断纳入 Naraka smoke 自动门禁。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_ScriptAnimationComponentDiag_Quick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）：`scriptAnimationComponentDiagnostics.status=ok`，Hadi 样本 `selectedModelCount=8`、`candidateCount=0`、`scriptAnimationRows=0`；FxAttack 样本 `selectedModelCount=20`、`candidateCount=0`、`scriptAnimationRows=20`、`invalidBoundaryRows=0`、`visibleRendererRows=0`、`animatorRows=20`，首条仍为 `SimpleAnimation.m_Clip -> fxattack_male_sw_attack_heavy_02_pvpve`。该 smoke 继续保持 `asset_library.json.capabilities.animations=false`，因此脚本动画字段只作为诊断证据，不会创建默认模型-动画关系。
 
 输入探针：
 
