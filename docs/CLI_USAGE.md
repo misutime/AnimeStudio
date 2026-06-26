@@ -609,7 +609,7 @@ Naraka 自定义脸部/眼部材质若包含 `_Iris*`、`*Decal*`、`*Wrinkle*` 
 
 同一规则也适用于普通 Renderer/StaticMesh 材质绑定路径：这些私有分层槽只作为 `preservedOnly` 原始贴图证据保留，不能抢占 glTF 标准 `baseColorTexture` 或 `normalTexture`。
 
-重建 `library_index.db` 后，`assets.material_needs_custom_shader_layer=1` 可直接筛出这类材质预览未完整的模型；`material_sidecars.layered_material_unresolved=1` 可定位到具体材质、关键贴图槽、已导出贴图、未复刻步骤、PBR 降级预览状态和置信度。动画门禁会使用 `material_custom_shader_layer_not_ready`，和缺少 customization/tint 配色的 `material_customization_tint_not_ready` 分开记录。
+重建 `library_index.db` 后，`assets.material_needs_custom_shader_layer=1` 可直接筛出这类材质预览未完整的模型；`material_sidecars.layered_material_unresolved=1` 可定位到具体材质、关键贴图槽、已导出贴图、未复刻步骤、PBR 降级预览状态和置信度。`material_sidecars.shader_reference_json` 会保存 Unity `Material.m_Shader` 的 PPtr 证据；如果当前导出的 Material JSON / 源索引都拿不到 shader 名，`shader_name_status=referenceOnly` 表示引用已保留但名称缺失，不应归类为贴图丢失或材质错绑。动画门禁会使用 `material_custom_shader_layer_not_ready`，和缺少 customization/tint 配色的 `material_customization_tint_not_ready` 分开记录。
 
 `assets/res/prefab/actor_visual_part/...` 这类 Naraka 模块化角色 body/base 可以导出为可用身体或服装部件，但如果当前 Library 没有同时导出可组装的 face/hair 模块，catalog 会标记 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，并在动画门禁中写入 `modular_character_incomplete`。这不是模型导出失败；它是在说明该 glTF 不能单独当完整角色或生产动画 smoke 样本。需要完整角色验收时，应继续通过 `character_assemblies.json` 或 Naraka 自定义 `ActorBodyVisualCell` / `AvatarPartDataAsset` 关系找到确定性 face、hair、accessory 组合。
 

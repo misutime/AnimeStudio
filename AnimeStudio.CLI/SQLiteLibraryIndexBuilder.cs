@@ -439,6 +439,8 @@ CREATE TABLE material_sidecars (
     custom_shader_required INTEGER,
     layered_material_unresolved INTEGER,
     shader_name TEXT,
+    shader_name_status TEXT,
+    shader_reference_json TEXT,
     key_texture_slots_json TEXT,
     exported_textures_json TEXT,
     unresolved_steps_json TEXT,
@@ -1202,8 +1204,8 @@ WHERE kind='Model'
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = @"
-INSERT INTO material_sidecars(asset_id, material_output, material_name, name, relative_path, size_bytes, texture_slot_count, color_count, scalar_count, switch_count, blend_mode, shading_model, source_kind, material_status, unsupported_shader, custom_shader_required, layered_material_unresolved, shader_name, key_texture_slots_json, exported_textures_json, unresolved_steps_json, pbr_preview_status, pbr_preview_confidence, raw_json)
-VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeBytes, $textureSlotCount, $colorCount, $scalarCount, $switchCount, $blendMode, $shadingModel, $sourceKind, $materialStatus, $unsupportedShader, $customShaderRequired, $layeredMaterialUnresolved, $shaderName, $keyTextureSlotsJson, $exportedTexturesJson, $unresolvedStepsJson, $pbrPreviewStatus, $pbrPreviewConfidence, $rawJson);";
+INSERT INTO material_sidecars(asset_id, material_output, material_name, name, relative_path, size_bytes, texture_slot_count, color_count, scalar_count, switch_count, blend_mode, shading_model, source_kind, material_status, unsupported_shader, custom_shader_required, layered_material_unresolved, shader_name, shader_name_status, shader_reference_json, key_texture_slots_json, exported_textures_json, unresolved_steps_json, pbr_preview_status, pbr_preview_confidence, raw_json)
+VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeBytes, $textureSlotCount, $colorCount, $scalarCount, $switchCount, $blendMode, $shadingModel, $sourceKind, $materialStatus, $unsupportedShader, $customShaderRequired, $layeredMaterialUnresolved, $shaderName, $shaderNameStatus, $shaderReferenceJson, $keyTextureSlotsJson, $exportedTexturesJson, $unresolvedStepsJson, $pbrPreviewStatus, $pbrPreviewConfidence, $rawJson);";
             var p = AddParameters(
                 insert,
                 "$assetId",
@@ -1224,6 +1226,8 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
                 "$customShaderRequired",
                 "$layeredMaterialUnresolved",
                 "$shaderName",
+                "$shaderNameStatus",
+                "$shaderReferenceJson",
                 "$keyTextureSlotsJson",
                 "$exportedTexturesJson",
                 "$unresolvedStepsJson",
@@ -1268,6 +1272,8 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
                     Set(p, "$customShaderRequired", sidecar.CustomShaderRequired);
                     Set(p, "$layeredMaterialUnresolved", sidecar.LayeredMaterialUnresolved);
                     Set(p, "$shaderName", sidecar.ShaderName);
+                    Set(p, "$shaderNameStatus", sidecar.ShaderNameStatus);
+                    Set(p, "$shaderReferenceJson", sidecar.ShaderReferenceJson);
                     Set(p, "$keyTextureSlotsJson", sidecar.KeyTextureSlotsJson);
                     Set(p, "$exportedTexturesJson", sidecar.ExportedTexturesJson);
                     Set(p, "$unresolvedStepsJson", sidecar.UnresolvedStepsJson);
@@ -1444,6 +1450,12 @@ WHERE COALESCE(NULLIF(relative_path, ''), material_output) IS NOT NULL
                     ? "needsCustomizationTint"
                     : "bestEffortPbrPreview";
             var shaderName = ReadUnityShaderName(unityMaterial);
+            var shaderReference = BuildUnityShaderReference(unityMaterial);
+            var shaderNameStatus = !string.IsNullOrWhiteSpace(shaderName)
+                ? "resolved"
+                : shaderReference != null
+                    ? "referenceOnly"
+                    : "missing";
             var raw = new JObject
             {
                 ["materialOutput"] = output,
@@ -1457,6 +1469,8 @@ WHERE COALESCE(NULLIF(relative_path, ''), material_output) IS NOT NULL
                 ["customShaderRequired"] = needsCustomShader,
                 ["layeredMaterialUnresolved"] = needsCustomShader,
                 ["shaderName"] = string.IsNullOrWhiteSpace(shaderName) ? null : shaderName,
+                ["shaderNameStatus"] = shaderNameStatus,
+                ["shaderReference"] = shaderReference?.DeepClone(),
                 ["keyTextureSlots"] = keyTextureSlots.DeepClone(),
                 ["exportedTextures"] = exportedTextures,
                 ["unityTextureSlots"] = new JArray(unityTextureSlots.Select(x => new JObject
@@ -1491,6 +1505,8 @@ WHERE COALESCE(NULLIF(relative_path, ''), material_output) IS NOT NULL
                 needsCustomShader ? 1 : 0,
                 needsCustomShader ? 1 : 0,
                 shaderName,
+                shaderNameStatus,
+                shaderReference?.ToString(Formatting.None),
                 keyTextureSlots.ToString(Formatting.None),
                 exportedTextures.ToString(Formatting.None),
                 unresolvedSteps.ToString(Formatting.None),
@@ -1532,6 +1548,33 @@ WHERE COALESCE(NULLIF(relative_path, ''), material_output) IS NOT NULL
         {
             var shader = unityMaterial?["m_Shader"] as JObject ?? unityMaterial?["unityMaterial"]?["m_Shader"] as JObject;
             return S(shader, "Name") ?? S(shader, "m_Name");
+        }
+
+        private static JObject BuildUnityShaderReference(JObject unityMaterial)
+        {
+            var shader = unityMaterial?["m_Shader"] as JObject ?? unityMaterial?["unityMaterial"]?["m_Shader"] as JObject;
+            if (shader == null)
+            {
+                return null;
+            }
+
+            var fileId = I(shader, "m_FileID") ?? I(shader, "FileID");
+            var pathId = I(shader, "m_PathID") ?? I(shader, "PathID");
+            var name = S(shader, "Name") ?? S(shader, "m_Name");
+            var isNull = IsTrue(shader, "IsNull");
+            if (isNull && fileId.GetValueOrDefault() == 0 && pathId.GetValueOrDefault() == 0 && string.IsNullOrWhiteSpace(name))
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["fileId"] = fileId,
+                ["pathId"] = pathId,
+                ["name"] = string.IsNullOrWhiteSpace(name) ? null : name,
+                ["isNull"] = isNull,
+                ["source"] = "UnityMaterial.m_Shader"
+            };
         }
 
         private static int? CountSavedPropertyObject(JObject unityMaterial, string name)
@@ -7765,6 +7808,8 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
             int? CustomShaderRequired,
             int? LayeredMaterialUnresolved,
             string ShaderName,
+            string ShaderNameStatus,
+            string ShaderReferenceJson,
             string KeyTextureSlotsJson,
             string ExportedTexturesJson,
             string UnresolvedStepsJson,

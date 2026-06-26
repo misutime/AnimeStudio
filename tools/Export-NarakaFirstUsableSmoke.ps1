@@ -203,6 +203,8 @@ $shaderBoundaryMaterialSidecarRows = $null
 $shaderBoundaryCustomShaderRows = $null
 $shaderBoundaryCustomShaderEvidenceRows = $null
 $shaderBoundaryMissingShaderNameRows = $null
+$shaderBoundaryShaderReferenceRows = $null
+$shaderBoundaryShaderReferenceMode = $null
 $shaderBoundaryCustomShaderEvidenceSamples = $null
 $shaderBoundaryGltf = $null
 $staticEnvironmentStatus = "notChecked"
@@ -481,6 +483,47 @@ WHERE custom_shader_required = 1
             if ($LASTEXITCODE -ne 0) {
                 throw "sqlite3 failed while checking shader boundary shader-name evidence."
             }
+            $shaderBoundaryColumnListText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb "SELECT name FROM pragma_table_info('material_sidecars') ORDER BY cid;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking shader boundary material_sidecars schema."
+            }
+            $shaderBoundaryColumns = @($shaderBoundaryColumnListText)
+            $shaderBoundaryHasStructuredShaderReference = $shaderBoundaryColumns -contains "shader_reference_json"
+            if ($shaderBoundaryHasStructuredShaderReference) {
+                $shaderBoundaryShaderReferenceMode = "shader_reference_json"
+                $shaderBoundaryShaderReferenceRowsSql = @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE custom_shader_required = 1
+  AND layered_material_unresolved = 1
+  AND pbr_preview_status = 'bestEffortDegradedPreview'
+  AND COALESCE(shader_reference_json, '') <> '';
+"@
+            }
+            else {
+                $shaderBoundaryShaderReferenceMode = "raw_json.unityMaterial.m_Shader"
+                $shaderBoundaryShaderReferenceRowsSql = @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE custom_shader_required = 1
+  AND layered_material_unresolved = 1
+  AND pbr_preview_status = 'bestEffortDegradedPreview'
+  AND COALESCE(
+        json_extract(raw_json, '$.shaderReference.pathId'),
+        json_extract(raw_json, '$.unityMaterial.m_Shader.m_PathID'),
+        json_extract(raw_json, '$.unityMaterial.unityMaterial.m_Shader.m_PathID')
+      ) IS NOT NULL
+  AND COALESCE(
+        json_extract(raw_json, '$.shaderReference.pathId'),
+        json_extract(raw_json, '$.unityMaterial.m_Shader.m_PathID'),
+        json_extract(raw_json, '$.unityMaterial.unityMaterial.m_Shader.m_PathID')
+      ) <> 0;
+"@
+            }
+            $shaderBoundaryShaderReferenceRowsText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb $shaderBoundaryShaderReferenceRowsSql
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking shader boundary shader reference evidence."
+            }
             $shaderBoundaryCustomShaderEvidenceSamplesSql = @"
 SELECT substr(group_concat(material_name || ': slots=' || key_texture_slots_json || '; steps=' || unresolved_steps_json, ' | '), 1, 700)
 FROM (
@@ -501,12 +544,16 @@ FROM (
             $shaderBoundaryCustomShaderRows = [long]$shaderBoundaryCustomShaderRowsText
             $shaderBoundaryCustomShaderEvidenceRows = [long]$shaderBoundaryCustomShaderEvidenceRowsText
             $shaderBoundaryMissingShaderNameRows = [long]$shaderBoundaryMissingShaderNameRowsText
+            $shaderBoundaryShaderReferenceRows = [long]$shaderBoundaryShaderReferenceRowsText
             $shaderBoundaryCustomShaderEvidenceSamples = ($shaderBoundaryCustomShaderEvidenceSamplesText -join [Environment]::NewLine).Trim()
             if ($shaderBoundaryCustomShaderRows -lt 1) {
                 throw "Shader boundary material_sidecars table did not preserve degraded custom shader rows."
             }
             if ($shaderBoundaryCustomShaderEvidenceRows -lt 1) {
                 throw "Shader boundary material_sidecars table did not preserve custom shader slots, exported textures, unresolved steps and raw sidecar evidence."
+            }
+            if ($shaderBoundaryShaderReferenceRows -lt 1) {
+                throw "Shader boundary material_sidecars table did not preserve Unity shader PPtr reference evidence."
             }
         }
         else {
@@ -1072,6 +1119,8 @@ $summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral
 $summaryJsonLines += '    "customShaderMaterialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderRows) + ","
 $summaryJsonLines += '    "customShaderEvidenceRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderEvidenceRows) + ","
 $summaryJsonLines += '    "missingShaderNameRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryMissingShaderNameRows) + ","
+$summaryJsonLines += '    "shaderReferenceRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryShaderReferenceRows) + ","
+$summaryJsonLines += '    "shaderReferenceMode": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryShaderReferenceMode) + ","
 $summaryJsonLines += '    "customShaderEvidenceSamples": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderEvidenceSamples) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryRule)
 $summaryJsonLines += '  },'
@@ -1381,6 +1430,9 @@ if ($shaderBoundaryStatus -eq "ok") {
     $reportLines.Add(('- custom shader evidence rows=`{0}`, missing shader name rows=`{1}`' -f `
         (ConvertTo-SmokeText $shaderBoundaryCustomShaderEvidenceRows "unknown"),
         (ConvertTo-SmokeText $shaderBoundaryMissingShaderNameRows "unknown")))
+    $reportLines.Add(('- shader reference rows=`{0}`, shader reference mode=`{1}`' -f `
+        (ConvertTo-SmokeText $shaderBoundaryShaderReferenceRows "unknown"),
+        (ConvertTo-SmokeText $shaderBoundaryShaderReferenceMode "unknown")))
     if (![string]::IsNullOrWhiteSpace($shaderBoundaryCustomShaderEvidenceSamples)) {
         $reportLines.Add(('- Evidence sample: `{0}`' -f $shaderBoundaryCustomShaderEvidenceSamples))
     }
