@@ -1283,6 +1283,13 @@ $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
 $zhumuScriptAnimationStatus = "notChecked"
 $zhumuScriptAnimationRule = "Zhumu soul is a script-animation verified-preview gate: the attack prefab model must stay statically usable, and the promoted animation relation must stay a VerifiedAnimationPreview with previewOnly=true and embeddedModelRequired=true."
+$narakaAnimationRelationPolicy = [pscustomobject]@{
+    status = "customRuntimeLikely"
+    standardAnimatorControllerIsRequired = $false
+    acceptedProductionRelation = "VerifiedPreviewRelation"
+    acceptedRelationPath = "NarakaSimpleAnimationCustomRuntime"
+    rule = "普通 AnimatorController 不是 Naraka 动画生产验收的唯一入口。脚本 PPtr、SimpleAnimation TypeTree 默认 state、模型静态门禁、glTF TRS 覆盖和清晰渲染运动一起通过时，可以作为生产可用的模型绑定预览关系；未验证脚本字段仍保持 blocked。"
+}
 $zhumuScriptAnimationAssetLibraryJson = $null
 $zhumuScriptAnimationSummaryJson = $null
 $zhumuScriptAnimationValidationJson = $null
@@ -2353,6 +2360,9 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
         if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.productionReadiness -ne "productionPreviewReady" -or $zhumuScriptAnimationVerifiedPreviewImportJson.previewOnly -ne $true -or $zhumuScriptAnimationVerifiedPreviewImportJson.embeddedModelRequired -ne $true) {
             throw "Zhumu verified-preview import report must stay productionPreviewReady previewOnly embedded-model. productionReadiness=$($zhumuScriptAnimationVerifiedPreviewImportJson.productionReadiness) previewOnly=$($zhumuScriptAnimationVerifiedPreviewImportJson.previewOnly) embeddedModelRequired=$($zhumuScriptAnimationVerifiedPreviewImportJson.embeddedModelRequired)"
         }
+        if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.productionRelationTier -ne "VerifiedPreviewRelation" -or [string]$zhumuScriptAnimationVerifiedPreviewImportJson.relationPath -ne "NarakaSimpleAnimationCustomRuntime" -or $zhumuScriptAnimationVerifiedPreviewImportJson.customRuntimeRequired -ne $true -or $zhumuScriptAnimationVerifiedPreviewImportJson.standardAnimatorControllerRecovered -ne $false -or $zhumuScriptAnimationVerifiedPreviewImportJson.standaloneAnimationClip -ne $false) {
+            throw "Zhumu verified-preview import report lost custom runtime relation boundary. tier=$($zhumuScriptAnimationVerifiedPreviewImportJson.productionRelationTier) path=$($zhumuScriptAnimationVerifiedPreviewImportJson.relationPath) customRuntimeRequired=$($zhumuScriptAnimationVerifiedPreviewImportJson.customRuntimeRequired) standardController=$($zhumuScriptAnimationVerifiedPreviewImportJson.standardAnimatorControllerRecovered) standalone=$($zhumuScriptAnimationVerifiedPreviewImportJson.standaloneAnimationClip)"
+        }
         $zhumuScriptAnimationVerifiedPreviewGltf = Join-Path $ZhumuScriptAnimationSampleRoot ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.animationOutput)
         Test-FileRequired -Path $zhumuScriptAnimationVerifiedPreviewGltf -Label "Zhumu verified animation preview glTF"
         if ([int64]$zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animationCountAdded -lt 1 -or [int64]$zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.channelCount -lt 1) {
@@ -3116,6 +3126,7 @@ $summaryJsonLines += '    "modelAnimationRelationRows": ' + (ConvertTo-SmokeJson
 $summaryJsonLines += '    "relationAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRelationAnimationRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "narakaAnimationRelationPolicy": ' + (ConvertTo-SmokeJsonLiteral $narakaAnimationRelationPolicy 10) + ","
 $summaryJsonLines += '  "zhumuScriptAnimationProbe": {'
 $summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationStatus) + ","
 $summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $ZhumuScriptAnimationSampleRoot) + ","
@@ -3267,6 +3278,9 @@ if ($summaryJsonParsed.zhumuScriptAnimationProbe.status -eq "ok") {
     if ([string]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.productionReadiness -ne "productionPreviewReady" -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.previewOnly -ne $true -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.embeddedModelRequired -ne $true) {
         throw "smoke_summary.json Zhumu verified-preview boundary fields are wrong."
     }
+    if ([string]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.productionRelationTier -ne "VerifiedPreviewRelation" -or [string]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.relationPath -ne "NarakaSimpleAnimationCustomRuntime" -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.customRuntimeRequired -ne $true -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.standardAnimatorControllerRecovered -ne $false -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.standaloneAnimationClip -ne $false) {
+        throw "smoke_summary.json Zhumu verified-preview custom runtime boundary fields are wrong."
+    }
 }
 if ($summaryJsonParsed.sourceIndexScriptAnimationClipScripts.status -eq "ok") {
     if ([string]$summaryJsonParsed.sourceIndexScriptAnimationClipScripts.productionReadiness -ne "blocked") {
@@ -3305,6 +3319,13 @@ $reportLines.Add(('- Source root: `{0}`' -f $SourceRoot))
 $reportLines.Add(('- Source index: `{0}`' -f $SourceIndex))
 $reportLines.Add(('- Output root: `{0}`' -f $OutputRoot))
 $reportLines.Add(('- Library root: `{0}`' -f $libraryOutput))
+$reportLines.Add("")
+$reportLines.Add("## Naraka Animation Relation Policy")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $narakaAnimationRelationPolicy.status))
+$reportLines.Add(('- Accepted relation: `{0}` via `{1}`' -f $narakaAnimationRelationPolicy.acceptedProductionRelation, $narakaAnimationRelationPolicy.acceptedRelationPath))
+$reportLines.Add(('- Standard AnimatorController required: `{0}`' -f $narakaAnimationRelationPolicy.standardAnimatorControllerIsRequired))
+$reportLines.Add(('- Rule: {0}' -f $narakaAnimationRelationPolicy.rule))
 $reportLines.Add("")
 $reportLines.Add("## Static Library")
 $reportLines.Add("")
@@ -3837,6 +3858,12 @@ if ($zhumuScriptAnimationStatus -eq "ok") {
         (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.productionReadiness "unknown"),
         (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.previewOnly "unknown"),
         (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.embeddedModelRequired "unknown")))
+    $reportLines.Add(('- Verified preview relation path: tier=`{0}`, path=`{1}`, customRuntimeRequired=`{2}`, standardAnimatorControllerRecovered=`{3}`, standaloneAnimationClip=`{4}`' -f `
+        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.productionRelationTier "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.relationPath "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.customRuntimeRequired "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.standardAnimatorControllerRecovered "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.standaloneAnimationClip "unknown")))
     $reportLines.Add(('- Verified preview coverage: animationCountAdded=`{0}`, channelCount=`{1}`, weightedVertexCoverage=`{2}`, coreBodyCoverage=`{3}`, renderMotion=`{4}`' -f `
         (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animationCountAdded "0"),
         (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.channelCount "0"),

@@ -295,7 +295,7 @@ D:\Assets\Naraka\Naraka_P2_Hadi_Hengdao_InternalHumanoid_SourceAvatarDiagnostic_
 
 因此当前动画结论是：诊断工具链可用，生产级动画库未完成。
 
-2026-06-26 继续按“不要卡死普通 AnimatorController”的方向推进：Naraka 本地游戏目录是 IL2CPP 形态，完整源索引里 `AnimatorController` 生产链路仍集中在 UI/VFX/preview 域，而大量动作关系落在 `SimpleAnimation` MonoBehaviour PPtr 与 TypeTree 配置中。结合 Unity 公开 `SimpleAnimation` 本身是基于 PlayableGraph 的轻量组件这一点，当前判断是 Naraka 很可能通过脚本/PlayableGraph/私有 IL2CPP 运行时代码驱动一部分动作，不能只等 `Animator.controller -> AnimatorController.clip`。
+2026-06-26 继续按“不要卡死普通 AnimatorController”的方向推进：Naraka 本地游戏目录是 IL2CPP 形态，完整源索引里 `AnimatorController` 生产链路仍集中在 UI/VFX/preview 域，而大量动作关系落在 `SimpleAnimation` MonoBehaviour PPtr 与 TypeTree 配置中。结合 Unity 公开 `SimpleAnimation` 本身是基于 PlayableGraph 的轻量组件这一点，当前判断是 Naraka 很可能通过脚本/PlayableGraph/私有 IL2CPP 运行时代码驱动一部分动作，不能只等 `Animator.controller -> AnimatorController.clip`。因此当前 smoke 会写 `narakaAnimationRelationPolicy.status=customRuntimeLikely`：普通 AnimatorController 不是 Naraka 动画验收唯一入口；只要脚本 PPtr、SimpleAnimation TypeTree 默认 state、模型静态门禁、glTF TRS 覆盖和清晰渲染运动共同通过，就允许作为生产可用的模型绑定预览关系继续推进。
 
 因此新增显式提升命令 `--apply_verified_animation_preview`，允许把已经过严格验证的 “模型 + 单动画” glTF 预览写回 Library 索引。已在 Zhumu A4 样本执行：
 
@@ -312,7 +312,7 @@ D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current
 - `relation_animations.is_usable_candidate=1`
 - 动画资产输出到 `Animations/VerifiedPreviews/mo_pve_b_zhumu_soul_01__mo_pve_b_zhumu2_attack_a4_01_soul/...animation.merged.gltf`
 
-该资产标记为 `resourceKind=VerifiedAnimationPreview`、`animationType=ModelAnimationPreviewGltf`、`productionReadiness=productionPreviewReady`、`previewOnly=true`、`embeddedModelRequired=true`。这表示它是生产可用的模型绑定预览关系，不是可任意套到其它模型的独立动画包；它也不改变默认代表库仍需继续保护“普通脚本字段不能直接升级”的规则。
+该资产标记为 `resourceKind=VerifiedAnimationPreview`、`animationType=ModelAnimationPreviewGltf`、`productionReadiness=productionPreviewReady`、`productionRelationTier=VerifiedPreviewRelation`、`relationPath=NarakaSimpleAnimationCustomRuntime`、`customRuntimeRequired=true`、`standardAnimatorControllerRecovered=false`、`standaloneAnimationClip=false`、`previewOnly=true`、`embeddedModelRequired=true`。这表示它是生产可用的模型绑定预览关系，不是可任意套到其它模型的独立动画包；它也不改变默认代表库仍需继续保护“普通脚本字段不能直接升级”的规则。
 
 2026-06-26 追加 SimpleAnimation 短名单首样本深查门禁：quick smoke 现在会对 `ch_f_japan_yaodaoji_lv_s14_wings` 运行定向 `--list_source_model_animations`，输出到：
 
