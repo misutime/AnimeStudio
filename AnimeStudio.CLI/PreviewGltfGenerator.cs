@@ -389,7 +389,7 @@ namespace AnimeStudio.CLI
             }
 
             merged["extras"] ??= new JObject();
-            var animationJointCoverage = BuildAnimationJointCoverageReport(merged, animatedNodeIndices, channelCount);
+            var animationJointCoverage = BuildAnimationJointCoverageReport(merged, animatedNodeIndices, channelCount, output);
             var mergeAssessment = AssessStandaloneAnimationForMerge(animation, channelCount, animationJointCoverage);
             var hiddenLodMeshes = HideNonPrimaryLodMeshes(merged["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>());
             merged["extras"]["animeStudioMergedAnimation"] = new JObject
@@ -519,7 +519,7 @@ namespace AnimeStudio.CLI
             return true;
         }
 
-        private static JObject BuildAnimationJointCoverageReport(JObject mergedGltf, IEnumerable<int> animatedNodeIndices, int channelCount)
+        private static JObject BuildAnimationJointCoverageReport(JObject mergedGltf, IEnumerable<int> animatedNodeIndices, int channelCount, string gltfDirectory)
         {
             var animatedNodes = new HashSet<int>(animatedNodeIndices);
             var skinJointIndices = new HashSet<int>();
@@ -543,6 +543,7 @@ namespace AnimeStudio.CLI
             var coverage = skinJointIndices.Count == 0
                 ? 0d
                 : (double)animatedSkinJoints.Length / skinJointIndices.Count;
+            var vertexWeightCoverage = BuildAnimationVertexWeightCoverageReport(mergedGltf, gltfDirectory, animatedNodes);
 
             return new JObject
             {
@@ -553,10 +554,199 @@ namespace AnimeStudio.CLI
                 ["skinJointCount"] = skinJointIndices.Count,
                 ["animatedSkinJointCount"] = animatedSkinJoints.Length,
                 ["animatedSkinJointCoverage"] = Math.Round(coverage, 4),
+                ["vertexWeightCoverage"] = vertexWeightCoverage,
                 ["animatedSkinJointNames"] = new JArray(animatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
                 ["unanimatedSkinJointSample"] = new JArray(unanimatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
                 ["rule"] = "这里只统计已合并 glTF 里动画 channel 直接命中的 skin joint，帮助判断覆盖范围；它不是视觉验收，也不能单独证明动画生产可用。",
             };
+        }
+
+        private static JObject BuildAnimationVertexWeightCoverageReport(JObject gltf, string gltfDirectory, ISet<int> animatedNodes)
+        {
+            try
+            {
+                var buffers = LoadMergeGltfBuffers(gltf, gltfDirectory);
+                var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var meshes = gltf["meshes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var skins = gltf["skins"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var primitiveReports = new JArray();
+                var weightedVertexCount = 0;
+                var animatedWeightedVertexCount = 0;
+                var totalWeight = 0d;
+                var animatedWeight = 0d;
+
+                for (var nodeIndex = 0; nodeIndex < nodes.Length; nodeIndex++)
+                {
+                    var meshIndex = (int?)nodes[nodeIndex]["mesh"];
+                    var skinIndex = (int?)nodes[nodeIndex]["skin"];
+                    if (meshIndex == null || skinIndex == null || meshIndex < 0 || meshIndex >= meshes.Length || skinIndex < 0 || skinIndex >= skins.Length)
+                    {
+                        continue;
+                    }
+
+                    var skinJoints = skins[skinIndex.Value]["joints"]?.Values<int>().ToArray() ?? Array.Empty<int>();
+                    var primitives = meshes[meshIndex.Value]["primitives"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                    for (var primitiveIndex = 0; primitiveIndex < primitives.Length; primitiveIndex++)
+                    {
+                        var attributes = primitives[primitiveIndex]["attributes"] as JObject;
+                        var jointsAccessor = (int?)attributes?["JOINTS_0"];
+                        var weightsAccessor = (int?)attributes?["WEIGHTS_0"];
+                        if (jointsAccessor == null || weightsAccessor == null)
+                        {
+                            continue;
+                        }
+
+                        var joints = ReadMergeGltfAccessor(gltf, buffers, jointsAccessor.Value);
+                        var weights = ReadMergeGltfAccessor(gltf, buffers, weightsAccessor.Value);
+                        var primitiveWeightedVertices = 0;
+                        var primitiveAnimatedVertices = 0;
+                        var primitiveTotalWeight = 0d;
+                        var primitiveAnimatedWeight = 0d;
+                        var vertexLimit = Math.Min(joints.Length, weights.Length);
+                        for (var vertexIndex = 0; vertexIndex < vertexLimit; vertexIndex++)
+                        {
+                            var vertexTotalWeight = 0d;
+                            var vertexAnimatedWeight = 0d;
+                            var influenceCount = Math.Min(joints[vertexIndex].Length, weights[vertexIndex].Length);
+                            for (var influenceIndex = 0; influenceIndex < influenceCount; influenceIndex++)
+                            {
+                                var weight = weights[vertexIndex][influenceIndex];
+                                if (weight <= 0.000001f)
+                                {
+                                    continue;
+                                }
+
+                                var localJoint = (int)joints[vertexIndex][influenceIndex];
+                                if (localJoint < 0 || localJoint >= skinJoints.Length)
+                                {
+                                    continue;
+                                }
+
+                                vertexTotalWeight += weight;
+                                if (animatedNodes.Contains(skinJoints[localJoint]))
+                                {
+                                    vertexAnimatedWeight += weight;
+                                }
+                            }
+
+                            if (vertexTotalWeight <= 0.000001d)
+                            {
+                                continue;
+                            }
+
+                            primitiveWeightedVertices++;
+                            weightedVertexCount++;
+                            primitiveTotalWeight += vertexTotalWeight;
+                            totalWeight += vertexTotalWeight;
+                            primitiveAnimatedWeight += vertexAnimatedWeight;
+                            animatedWeight += vertexAnimatedWeight;
+                            if (vertexAnimatedWeight > 0.000001d)
+                            {
+                                primitiveAnimatedVertices++;
+                                animatedWeightedVertexCount++;
+                            }
+                        }
+
+                        primitiveReports.Add(new JObject
+                        {
+                            ["node"] = nodeIndex,
+                            ["nodeName"] = GetGltfNodeName(nodes, nodeIndex),
+                            ["mesh"] = meshIndex.Value,
+                            ["skin"] = skinIndex.Value,
+                            ["primitive"] = primitiveIndex,
+                            ["weightedVertexCount"] = primitiveWeightedVertices,
+                            ["animatedWeightedVertexCount"] = primitiveAnimatedVertices,
+                            ["animatedWeightedVertexCoverage"] = primitiveWeightedVertices == 0 ? 0d : Math.Round((double)primitiveAnimatedVertices / primitiveWeightedVertices, 4),
+                            ["animatedWeightCoverage"] = primitiveTotalWeight <= 0 ? 0d : Math.Round(primitiveAnimatedWeight / primitiveTotalWeight, 4),
+                        });
+                    }
+                }
+
+                return new JObject
+                {
+                    ["status"] = weightedVertexCount == 0 ? "no_weighted_vertices" : "ok",
+                    ["weightedVertexCount"] = weightedVertexCount,
+                    ["animatedWeightedVertexCount"] = animatedWeightedVertexCount,
+                    ["animatedWeightedVertexCoverage"] = weightedVertexCount == 0 ? 0d : Math.Round((double)animatedWeightedVertexCount / weightedVertexCount, 4),
+                    ["animatedWeightCoverage"] = totalWeight <= 0 ? 0d : Math.Round(animatedWeight / totalWeight, 4),
+                    ["primitiveCount"] = primitiveReports.Count,
+                    ["primitives"] = primitiveReports,
+                    ["rule"] = "按 mesh 的 JOINTS_0/WEIGHTS_0 统计动画命中 joint 对顶点权重的覆盖；它比 joint 列表覆盖更接近可见网格影响范围，但仍不是视觉验收。",
+                };
+            }
+            catch (Exception e)
+            {
+                return new JObject
+                {
+                    ["status"] = "unavailable",
+                    ["reason"] = $"{e.GetType().Name}: {e.Message}",
+                    ["rule"] = "顶点权重覆盖诊断读取 glTF buffer 失败时只降级报告，不影响确定性合并结果。",
+                };
+            }
+        }
+
+        private static byte[][] LoadMergeGltfBuffers(JObject gltf, string directory)
+        {
+            return gltf["buffers"]?
+                .OfType<JObject>()
+                .Select(buffer =>
+                {
+                    var uri = (string)buffer["uri"];
+                    if (string.IsNullOrWhiteSpace(uri) || uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Array.Empty<byte>();
+                    }
+
+                    return File.ReadAllBytes(Path.Combine(directory, uri.Replace('/', Path.DirectorySeparatorChar)));
+                })
+                .ToArray() ?? Array.Empty<byte[]>();
+        }
+
+        private static float[][] ReadMergeGltfAccessor(JObject gltf, byte[][] buffers, int accessorIndex)
+        {
+            var accessor = (JObject)gltf["accessors"][accessorIndex];
+            var view = (JObject)gltf["bufferViews"][(int)accessor["bufferView"]];
+            var buffer = buffers[(int)view["buffer"]];
+            var offset = ((int?)view["byteOffset"] ?? 0) + ((int?)accessor["byteOffset"] ?? 0);
+            var count = (int)accessor["count"];
+            var components = ((string)accessor["type"]) switch
+            {
+                "SCALAR" => 1,
+                "VEC2" => 2,
+                "VEC3" => 3,
+                "VEC4" => 4,
+                "MAT4" => 16,
+                _ => 1,
+            };
+            var componentType = (int)accessor["componentType"];
+            var bytes = componentType switch
+            {
+                5126 => 4,
+                5125 => 4,
+                5123 => 2,
+                5121 => 1,
+                _ => 4,
+            };
+            var stride = (int?)view["byteStride"] ?? components * bytes;
+            var rows = new float[count][];
+            for (var i = 0; i < count; i++)
+            {
+                rows[i] = new float[components];
+                for (var c = 0; c < components; c++)
+                {
+                    var at = offset + i * stride + c * bytes;
+                    rows[i][c] = componentType switch
+                    {
+                        5126 => BitConverter.ToSingle(buffer, at),
+                        5125 => BitConverter.ToUInt32(buffer, at),
+                        5123 => BitConverter.ToUInt16(buffer, at),
+                        5121 => buffer[at],
+                        _ => 0,
+                    };
+                }
+            }
+
+            return rows;
         }
 
         private static string GetGltfNodeName(JObject[] nodes, int nodeIndex)
@@ -651,6 +841,9 @@ namespace AnimeStudio.CLI
                     ["skinJointCount"] = (int?)animationJointCoverage?["skinJointCount"] ?? 0,
                     ["animatedSkinJointCount"] = (int?)animationJointCoverage?["animatedSkinJointCount"] ?? 0,
                     ["animatedSkinJointCoverage"] = (double?)animationJointCoverage?["animatedSkinJointCoverage"] ?? 0d,
+                    ["weightedVertexCount"] = (int?)animationJointCoverage?["vertexWeightCoverage"]?["weightedVertexCount"] ?? 0,
+                    ["animatedWeightedVertexCount"] = (int?)animationJointCoverage?["vertexWeightCoverage"]?["animatedWeightedVertexCount"] ?? 0,
+                    ["animatedWeightCoverage"] = (double?)animationJointCoverage?["vertexWeightCoverage"]?["animatedWeightCoverage"] ?? 0d,
                     ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道和 skin joint 覆盖偏低，只能视为诊断预览；必须经过主体骨骼覆盖和视觉验收。",
                 });
             }

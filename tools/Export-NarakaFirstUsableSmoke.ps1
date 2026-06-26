@@ -1752,6 +1752,11 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
         if ($null -eq $zhumuMergedJointCoverage -or $zhumuMergedSkinJointCount -lt 1 -or $zhumuMergedAnimatedSkinJointCount -lt 1) {
             throw "Zhumu merged animation preview lost skin-joint coverage diagnostic. skinJoints=$zhumuMergedSkinJointCount animatedSkinJoints=$zhumuMergedAnimatedSkinJointCount"
         }
+        $zhumuMergedVertexCoverage = $zhumuMergedJointCoverage.vertexWeightCoverage
+        $zhumuMergedWeightedVertexCount = ConvertTo-SmokeInt64 $zhumuMergedVertexCoverage.weightedVertexCount
+        if ([string]$zhumuMergedVertexCoverage.status -ne "ok" -or $zhumuMergedWeightedVertexCount -lt 1) {
+            throw "Zhumu merged animation preview lost vertex-weight coverage diagnostic. status=$($zhumuMergedVertexCoverage.status) weightedVertices=$zhumuMergedWeightedVertexCount"
+        }
 
         $zhumuMergedReasonCodes = @($zhumuMergedReportJson.sourceAssessment.reasons | ForEach-Object { [string]$_.reason } | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
         foreach ($requiredReason in @("standalone_animation_not_production_ready", "standalone_animation_experimental", "humanoid_solver_known_limb_risk", "low_humanoid_channel_coverage")) {
@@ -2854,6 +2859,11 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.animatedSkinJointCount "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.skinJointCount "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.animatedSkinJointCoverage "0")))
+    $reportLines.Add(('- Vertex weight coverage: animatedVertices=`{0}` / weightedVertices=`{1}`, vertexCoverage=`{2}`, weightCoverage=`{3}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.vertexWeightCoverage.animatedWeightedVertexCount "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.vertexWeightCoverage.weightedVertexCount "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.vertexWeightCoverage.animatedWeightedVertexCoverage "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.vertexWeightCoverage.animatedWeightCoverage "0")))
     $reportLines.Add(('- Diagnostic reasons: `{0}`' -f (($zhumuMergedAnimationPreview.reasonCodes | ForEach-Object { [string]$_ }) -join ', ')))
     $reportLines.Add(('- Render probe: status=`{0}`, frames=`{1}`' -f `
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderProbeStatus "unknown"),
