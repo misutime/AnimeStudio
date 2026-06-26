@@ -361,6 +361,24 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.ApplyVerifiedAnimationPreview != null)
+                {
+                    var libraryRoot = o.PreviewOutput?.FullName ?? o.Output?.FullName;
+                    if (string.IsNullOrWhiteSpace(libraryRoot))
+                    {
+                        throw new InvalidOperationException("--apply_verified_animation_preview requires --preview_output <LibraryRoot>.");
+                    }
+
+                    VerifiedAnimationPreviewImporter.Apply(
+                        libraryRoot,
+                        o.ApplyVerifiedAnimationPreview.FullName,
+                        o.VerifiedAnimationRenderReport?.FullName,
+                        o.VerifiedAnimationSourceReport?.FullName,
+                        o.SourceIndex?.FullName,
+                        o.GameName);
+                    return;
+                }
+
                 if (o.PackModelAnimations != null)
                 {
                     PreviewGltfGenerator.GeneratePack(

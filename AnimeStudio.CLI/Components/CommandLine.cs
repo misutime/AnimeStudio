@@ -129,6 +129,9 @@ namespace AnimeStudio.CLI
                 optionsBinder.ExportAnimationGltfFromLibrary,
                 optionsBinder.ExportAnimationGltfFromFiles,
                 optionsBinder.MergeAnimationGltf,
+                optionsBinder.ApplyVerifiedAnimationPreview,
+                optionsBinder.VerifiedAnimationRenderReport,
+                optionsBinder.VerifiedAnimationSourceReport,
                 optionsBinder.ValidateAnimationPreviewsFromLibrary,
                 optionsBinder.GenerateAssembledPreviewGltf,
                 optionsBinder.PreviewModel,
@@ -295,6 +298,9 @@ namespace AnimeStudio.CLI
         public DirectoryInfo ExportAnimationGltfFromLibrary { get; set; }
         public FileInfo ExportAnimationGltfFromFiles { get; set; }
         public FileInfo MergeAnimationGltf { get; set; }
+        public FileInfo ApplyVerifiedAnimationPreview { get; set; }
+        public FileInfo VerifiedAnimationRenderReport { get; set; }
+        public FileInfo VerifiedAnimationSourceReport { get; set; }
         public DirectoryInfo ValidateAnimationPreviewsFromLibrary { get; set; }
         public FileInfo GenerateAssembledPreviewGltf { get; set; }
         public string PreviewModel { get; set; }
@@ -456,6 +462,9 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> ExportAnimationGltfFromLibrary;
         public readonly Option<FileInfo> ExportAnimationGltfFromFiles;
         public readonly Option<FileInfo> MergeAnimationGltf;
+        public readonly Option<FileInfo> ApplyVerifiedAnimationPreview;
+        public readonly Option<FileInfo> VerifiedAnimationRenderReport;
+        public readonly Option<FileInfo> VerifiedAnimationSourceReport;
         public readonly Option<DirectoryInfo> ValidateAnimationPreviewsFromLibrary;
         public readonly Option<FileInfo> GenerateAssembledPreviewGltf;
         public readonly Option<string> PreviewModel;
@@ -615,6 +624,9 @@ namespace AnimeStudio.CLI
             ExportAnimationGltfFromLibrary = new Option<DirectoryInfo>("--export_animation_gltf_from_library", "Export a skinless standalone glTF animation asset from a deterministic library_index.db model-animation candidate.").LegalFilePathsOnly();
             ExportAnimationGltfFromFiles = new Option<FileInfo>("--export_animation_gltf_from_files", "Export a skinless standalone glTF animation asset from a model glTF and an explicit animation sidecar passed with --preview_animation. This does not create a model-animation recommendation.").LegalFilePathsOnly();
             MergeAnimationGltf = new Option<FileInfo>("--merge_animation_gltf", "Merge a clean model glTF with a previously exported skinless standalone animation glTF. Pass the model glTF here and the animation glTF with --preview_animation.").LegalFilePathsOnly();
+            ApplyVerifiedAnimationPreview = new Option<FileInfo>("--apply_verified_animation_preview", "Promote an already validated merged model+animation glTF report into a Library as a verified preview animation relation. Requires --preview_output, --verified_animation_render_report, and --verified_animation_source_report.").LegalFilePathsOnly();
+            VerifiedAnimationRenderReport = new Option<FileInfo>("--verified_animation_render_report", "Render/motion validation report required by --apply_verified_animation_preview.").LegalFilePathsOnly();
+            VerifiedAnimationSourceReport = new Option<FileInfo>("--verified_animation_source_report", "Source relation report required by --apply_verified_animation_preview, usually from --list_source_model_animations.").LegalFilePathsOnly();
             ValidateAnimationPreviewsFromLibrary = new Option<DirectoryInfo>("--validate_animation_previews_from_library", "Generate and validate a limited batch of deterministic SQLite model-animation preview glTFs, then write animation_preview_cache.").LegalFilePathsOnly();
             GenerateAssembledPreviewGltf = new Option<FileInfo>("--generate_assembled_preview_gltf", "Generate a playable preview glTF and non-destructively add compatible modular character parts such as face, hair, or accessories when their Unity joints can be remapped.").LegalFilePathsOnly();
             PreviewModel = new Option<string>("--preview_model", "Model name, output path, or regex used with preview commands.");
@@ -867,6 +879,9 @@ namespace AnimeStudio.CLI
                 ExportAnimationGltfFromLibrary = bindingContext.ParseResult.GetValueForOption(ExportAnimationGltfFromLibrary),
                 ExportAnimationGltfFromFiles = bindingContext.ParseResult.GetValueForOption(ExportAnimationGltfFromFiles),
                 MergeAnimationGltf = bindingContext.ParseResult.GetValueForOption(MergeAnimationGltf),
+                ApplyVerifiedAnimationPreview = bindingContext.ParseResult.GetValueForOption(ApplyVerifiedAnimationPreview),
+                VerifiedAnimationRenderReport = bindingContext.ParseResult.GetValueForOption(VerifiedAnimationRenderReport),
+                VerifiedAnimationSourceReport = bindingContext.ParseResult.GetValueForOption(VerifiedAnimationSourceReport),
                 ValidateAnimationPreviewsFromLibrary = bindingContext.ParseResult.GetValueForOption(ValidateAnimationPreviewsFromLibrary),
                 GenerateAssembledPreviewGltf = bindingContext.ParseResult.GetValueForOption(GenerateAssembledPreviewGltf),
                 PreviewModel = bindingContext.ParseResult.GetValueForOption(PreviewModel),
