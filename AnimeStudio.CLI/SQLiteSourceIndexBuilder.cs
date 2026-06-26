@@ -2915,12 +2915,13 @@ VALUES ($animationName, $animationSource, $animationFile, $animationPathId, $bin
         private static (long RelationCount, long ObjectCount, long DistinctClipCount) QueryMonoBehaviourAnimationClipPPtrTotals(SqliteConnection connection)
         {
             using var command = connection.CreateCommand();
+            // 从 AnimationClip 反查脚本 PPtr，避免先扫全量 monoBehaviour.pptr 关系。
             command.CommandText = @"
 SELECT
     COUNT(*) AS relation_count,
     COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
     COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count
-FROM source_objects clip
+FROM source_objects clip INDEXED BY idx_source_objects_type
 JOIN source_relations r
   ON r.to_path_id = clip.path_id
  AND r.to_file = clip.serialized_file COLLATE NOCASE
@@ -2941,6 +2942,7 @@ WHERE clip.type = 'AnimationClip';";
         private static JArray QueryMonoBehaviourAnimationClipPPtrScripts(SqliteConnection connection, int limit)
         {
             using var command = connection.CreateCommand();
+            // 从 AnimationClip 反查脚本 PPtr，保留字段路径和挂载 GameObject 诊断但不放大默认摘要成本。
             command.CommandText = @"
 SELECT
     COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '') AS script_name,
@@ -2955,7 +2957,7 @@ SELECT
     MIN(COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS sample_field_path,
     MIN(go.name) AS sample_gameobject_name,
     MIN(clip.name) AS sample_clip_name
-FROM source_objects clip
+FROM source_objects clip INDEXED BY idx_source_objects_type
 JOIN source_relations r
   ON r.to_path_id = clip.path_id
  AND r.to_file = clip.serialized_file COLLATE NOCASE
