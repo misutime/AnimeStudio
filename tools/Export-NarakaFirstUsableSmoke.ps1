@@ -978,9 +978,18 @@ $zhumuScriptAnimationModelAnimationRelationRows = $null
 $zhumuScriptAnimationRelationAnimationRows = $null
 $zhumuScriptAnimationMaxBoundsSize = $null
 $zhumuScriptAnimationSkinJointCount = $null
+$zhumuMergedBlockedProductionRequirements = @(
+    "explicitModelAnimationRelation",
+    "scriptSemanticsOrControllerContext",
+    "productionHumanoidSolverValidation",
+    "subjectBoneCoverage",
+    "visualReview"
+)
 $zhumuMergedAnimationPreview = [pscustomobject]@{
     status = "notChecked"
     rule = "Zhumu merged animation preview is a read-only diagnostic gate. It proves model+single-animation glTF composition can open and render, but must stay needs_review and must not enable production animation capability."
+    productionReadiness = "blocked"
+    blockedProductionRequirements = $zhumuMergedBlockedProductionRequirements
     sampleRoot = $ZhumuMergedAnimationProbeRoot
     report = $null
     gltf = $null
@@ -1886,6 +1895,8 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
         $zhumuMergedAnimationPreview = [pscustomobject]@{
             status = "ok"
             rule = $zhumuMergedAnimationPreview.rule
+            productionReadiness = "blocked"
+            blockedProductionRequirements = $zhumuMergedBlockedProductionRequirements
             sampleRoot = $ZhumuMergedAnimationProbeRoot
             report = $zhumuMergedReport
             gltf = $zhumuMergedGltf
@@ -2960,6 +2971,9 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.vertexWeightCoverage.animatedWeightedVertexCoverage "0"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationJointCoverage.vertexWeightCoverage.animatedWeightCoverage "0")))
     $reportLines.Add(('- Diagnostic reasons: `{0}`' -f (($zhumuMergedAnimationPreview.reasonCodes | ForEach-Object { [string]$_ }) -join ', ')))
+    $reportLines.Add(('- Production readiness: `{0}`; blocked requirements: `{1}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.productionReadiness "unknown"),
+        (($zhumuMergedAnimationPreview.blockedProductionRequirements | ForEach-Object { [string]$_ }) -join ', ')))
     $reportLines.Add(('- Render probe: status=`{0}`, frames=`{1}`' -f `
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderProbeStatus "unknown"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderFrameCount "0")))
