@@ -110,6 +110,7 @@ namespace AnimeStudio.CLI
             var monoBehaviourPPtrDiagnostics = hasReverseRelationIndex
                 ? MeasureStage(timingPath, "load_mono_behaviour_pptr_diagnostics", null, () => LoadMonoBehaviourPPtrDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80)))
                 : new List<MonoBehaviourPPtrDiagnosticRow>();
+            var scriptAnimationComponentDiagnostics = MeasureStage(timingPath, "load_script_animation_component_diagnostics", null, () => LoadScriptAnimationComponentDiagnosticsForModels(connection, selectedModels, Math.Min(limit, 80)));
             var avatarTosClipDiagnostics = MeasureStage(timingPath, "load_avatar_tos_clip_diagnostics", null, () => LoadAvatarTosClipDiagnosticsForModels(
                 connection,
                 selectedModels,
@@ -170,6 +171,7 @@ namespace AnimeStudio.CLI
                 ["sharedAvatarBridgeRule"] = "sharedAvatarController rows require a MonoBehaviour config that points to the selected prefab and an Avatar, plus an Animator that explicitly uses the same Avatar and controller clips. They are deterministic candidates, not visual proof; model gate, TRS export and screenshots must still pass.",
                 ["animatorDiagnosticRule"] = "Diagnostics list matching GameObjects and their Animator/Controller/Clip state. They explain why explicit candidates may be zero, but they do not create or imply a model-animation binding.",
                 ["monoBehaviourPPtrDiagnosticRule"] = "Diagnostics list MonoBehaviour PPtr fields that point at the selected model, plus sibling PPtr fields from the same MonoBehaviour. These are deterministic config clues only; they do not become playable animation candidates unless a model-first gate and explicit animation relation are also proven.",
+                ["scriptAnimationComponentDiagnosticRule"] = "Diagnostics list AnimationClip PPtr fields on MonoBehaviour components attached to the selected GameObject and its direct children only. These rows are local script-animation clues, not default model-animation candidates; deeper hierarchy scans must stay explicit and bounded.",
                 ["avatarTosClipDiagnosticRule"] = "Diagnostics list AnimationClip binding pathHash coverage against the selected model's explicit Animator.avatar -> Avatar.m_TOS table. This is structural evidence for Naraka hash-only path recovery only; it is not a default model-animation relation and must not bypass Animator/Controller context, model validation, TRS export, or visual review.",
                 ["modelVisibilityDiagnosticRule"] = "Diagnostics count Renderer/Animator components under the selected GameObject hierarchy. They only explain whether a selected source object looks like a visible model root; real model readiness still requires exported glTF, material/texture/skin/bbox validation, and visual review.",
                 ["modelAvatarCompatibilityDiagnosticRule"] = "Diagnostics compare selected model Transform evidence against Avatar TOS/oracle paths. This is structural compatibility only: it must not create default model-animation relations, bypass explicit Animator/Controller context, or mark Humanoid/Muscle animation playable.",
@@ -179,6 +181,7 @@ namespace AnimeStudio.CLI
                 ["models"] = new JArray(models.Select(ToJson)),
                 ["animatorDiagnostics"] = new JArray(animatorDiagnostics.Select(ToJson)),
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
+                ["scriptAnimationComponentDiagnostics"] = new JArray(scriptAnimationComponentDiagnostics.Select(ToJson)),
                 ["avatarTosClipDiagnostics"] = new JArray(avatarTosClipDiagnostics.Select(ToJson)),
                 ["candidates"] = new JArray(filtered.Select(ToJson)),
             };
@@ -853,21 +856,8 @@ LIMIT $limit;");
         private static ModelVisibilityDiagnosticRow LoadModelVisibilityDiagnostic(SqliteConnection connection, ModelRow model)
         {
             // 大 CTE 在 Naraka 全量索引上容易被 SQLite 规划成慢查询；这里按 Unity 显式层级拆成几条小查询。
-            var hierarchyGameObjects = new List<SourceObjectKey>
-            {
-                new SourceObjectKey(model.SerializedFile ?? string.Empty, model.PathId),
-            };
             var rootTransform = LoadRootTransform(connection, model);
-            if (rootTransform != null)
-            {
-                hierarchyGameObjects.AddRange(LoadDirectChildGameObjects(connection, rootTransform));
-            }
-
-            hierarchyGameObjects = hierarchyGameObjects
-                .GroupBy(x => (x.SerializedFile ?? string.Empty) + "\n" + x.PathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
-                .Select(x => x.First())
-                .ToList();
-
+            var hierarchyGameObjects = LoadModelAndDirectChildGameObjects(connection, model, rootTransform);
             var components = new List<ComponentRow>();
             foreach (var gameObject in hierarchyGameObjects)
             {
@@ -893,6 +883,172 @@ LIMIT $limit;");
                 components.Count(x => string.Equals(x.Type, "Animation", StringComparison.Ordinal)),
                 CountDistinctComponentTargets(connection, animatorComponents, "animator.avatar"),
                 CountDistinctComponentTargets(connection, animatorComponents, "animator.controller"));
+        }
+
+        private static List<ScriptAnimationComponentDiagnosticRow> LoadScriptAnimationComponentDiagnosticsForModels(SqliteConnection connection, IReadOnlyList<ModelRow> models, int limit)
+        {
+            var result = new List<ScriptAnimationComponentDiagnosticRow>();
+            foreach (var model in models ?? Array.Empty<ModelRow>())
+            {
+                result.AddRange(LoadScriptAnimationComponentDiagnosticsForModel(connection, model, Math.Max(1, limit - result.Count)));
+                if (result.Count >= limit)
+                {
+                    break;
+                }
+            }
+
+            return result
+                .GroupBy(x => string.Join("\n",
+                    x.ModelSerializedFile ?? string.Empty,
+                    x.ModelPathId.ToString(CultureInfo.InvariantCulture),
+                    x.GameObjectSerializedFile ?? string.Empty,
+                    x.GameObjectPathId.ToString(CultureInfo.InvariantCulture),
+                    x.MonoBehaviourSerializedFile ?? string.Empty,
+                    x.MonoBehaviourPathId.ToString(CultureInfo.InvariantCulture),
+                    x.ReferenceFieldPath ?? string.Empty,
+                    x.AnimationSerializedFile ?? string.Empty,
+                    x.AnimationPathId.ToString(CultureInfo.InvariantCulture)), StringComparer.Ordinal)
+                .Select(x => x.First())
+                .OrderBy(x => x.GameObjectDepth)
+                .ThenBy(x => x.GameObjectName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.ScriptName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.AnimationName, StringComparer.OrdinalIgnoreCase)
+                .Take(limit)
+                .ToList();
+        }
+
+        private static List<ScriptAnimationComponentDiagnosticRow> LoadScriptAnimationComponentDiagnosticsForModel(SqliteConnection connection, ModelRow model, int limit)
+        {
+            var result = new List<ScriptAnimationComponentDiagnosticRow>();
+            var rootTransform = LoadRootTransform(connection, model);
+            var gameObjects = LoadModelAndDirectChildGameObjects(connection, model, rootTransform);
+            foreach (var gameObject in gameObjects)
+            {
+                var gameObjectName = LoadSourceObjectName(connection, gameObject);
+                var gameObjectDepth = gameObject.PathId == model.PathId && string.Equals(gameObject.SerializedFile, model.SerializedFile, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                var components = LoadComponentsForGameObject(connection, gameObject);
+                var visibleRendererCount = components.Count(x => string.Equals(x.Type, "MeshRenderer", StringComparison.Ordinal) || string.Equals(x.Type, "SkinnedMeshRenderer", StringComparison.Ordinal));
+                var animatorCount = components.Count(x => string.Equals(x.Type, "Animator", StringComparison.Ordinal));
+                var rectTransformCount = components.Count(x => string.Equals(x.Type, "RectTransform", StringComparison.Ordinal));
+                foreach (var component in components.Where(x => string.Equals(x.Type, "MonoBehaviour", StringComparison.Ordinal)))
+                {
+                    result.AddRange(LoadScriptAnimationClipRefsForMonoBehaviour(
+                        connection,
+                        model,
+                        gameObject,
+                        gameObjectName,
+                        gameObjectDepth,
+                        visibleRendererCount,
+                        animatorCount,
+                        rectTransformCount,
+                        component,
+                        Math.Max(1, limit - result.Count)));
+                    if (result.Count >= limit)
+                    {
+                        return result;
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static List<ScriptAnimationComponentDiagnosticRow> LoadScriptAnimationClipRefsForMonoBehaviour(
+            SqliteConnection connection,
+            ModelRow model,
+            SourceObjectKey gameObject,
+            string gameObjectName,
+            int gameObjectDepth,
+            int visibleRendererCount,
+            int animatorCount,
+            int rectTransformCount,
+            ComponentRow monoBehaviour,
+            int limit)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT
+    COALESCE(mono.name, '') AS mono_name,
+    COALESCE(mono.source_path, '') AS mono_source_path,
+    COALESCE(script.name, '') AS script_name,
+    COALESCE(json_extract(pptr.raw_json, '$.details.path'), '') AS field_path,
+    COALESCE(json_extract(pptr.raw_json, '$.details.field'), '') AS field_name,
+    clip.name AS clip_name,
+    clip.source_path AS clip_source_path,
+    clip.serialized_file AS clip_file,
+    clip.path_id AS clip_path_id
+FROM source_relations pptr INDEXED BY idx_source_relations_from
+JOIN source_objects clip
+  ON clip.serialized_file = pptr.to_file
+ AND clip.path_id = pptr.to_path_id
+ AND clip.type = 'AnimationClip'
+LEFT JOIN source_objects mono
+  ON mono.serialized_file = pptr.from_file
+ AND mono.path_id = pptr.from_path_id
+LEFT JOIN source_relations scriptRel INDEXED BY idx_source_relations_from
+  ON scriptRel.from_file = pptr.from_file
+ AND scriptRel.from_path_id = pptr.from_path_id
+ AND scriptRel.relation = 'monoBehaviour.script'
+LEFT JOIN source_objects script
+  ON script.serialized_file = scriptRel.to_file
+ AND script.path_id = scriptRel.to_path_id
+WHERE pptr.from_file = $monoFile
+  AND pptr.from_path_id = $monoPathId
+  AND pptr.relation = 'monoBehaviour.pptr'
+ORDER BY script_name COLLATE NOCASE, field_path COLLATE NOCASE, clip_name COLLATE NOCASE
+LIMIT $limit;");
+            command.Parameters.AddWithValue("$monoFile", monoBehaviour.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$monoPathId", monoBehaviour.PathId);
+            command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 128));
+
+            var rows = new List<ScriptAnimationComponentDiagnosticRow>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add(new ScriptAnimationComponentDiagnosticRow(
+                    model.Name,
+                    model.SourcePath,
+                    model.SerializedFile,
+                    model.PathId,
+                    model.ContainerPath,
+                    gameObject.SerializedFile,
+                    gameObject.PathId,
+                    gameObjectName,
+                    gameObjectDepth,
+                    visibleRendererCount,
+                    animatorCount,
+                    rectTransformCount,
+                    monoBehaviour.SerializedFile,
+                    monoBehaviour.PathId,
+                    ReadString(reader, 0),
+                    ReadString(reader, 1),
+                    ReadString(reader, 2),
+                    ReadString(reader, 3),
+                    ReadString(reader, 4),
+                    ReadString(reader, 5),
+                    ReadString(reader, 6),
+                    ReadString(reader, 7),
+                    ReadLong(reader, 8)));
+            }
+
+            return rows;
+        }
+
+        private static List<SourceObjectKey> LoadModelAndDirectChildGameObjects(SqliteConnection connection, ModelRow model, SourceObjectKey rootTransform)
+        {
+            var hierarchyGameObjects = new List<SourceObjectKey>
+            {
+                new SourceObjectKey(model.SerializedFile ?? string.Empty, model.PathId),
+            };
+            if (rootTransform != null)
+            {
+                hierarchyGameObjects.AddRange(LoadDirectChildGameObjects(connection, rootTransform));
+            }
+
+            return hierarchyGameObjects
+                .GroupBy(x => (x.SerializedFile ?? string.Empty) + "\n" + x.PathId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .Select(x => x.First())
+                .ToList();
         }
 
         private static ModelTransformEvidence LoadModelTransformEvidence(SqliteConnection connection, ModelRow model, int maxTransforms)
@@ -1051,6 +1207,20 @@ WHERE rel.from_file = $transformFile
 LIMIT 1;");
             command.Parameters.AddWithValue("$transformFile", transform.SerializedFile ?? string.Empty);
             command.Parameters.AddWithValue("$transformPathId", transform.PathId);
+            return Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        private static string LoadSourceObjectName(SqliteConnection connection, SourceObjectKey sourceObject)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = ApplyOptionalIndexHints(connection, @"
+SELECT COALESCE(name, '')
+FROM source_objects
+WHERE serialized_file = $file
+  AND path_id = $pathId
+LIMIT 1;");
+            command.Parameters.AddWithValue("$file", sourceObject.SerializedFile ?? string.Empty);
+            command.Parameters.AddWithValue("$pathId", sourceObject.PathId);
             return Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
         }
 
@@ -2599,6 +2769,58 @@ LIMIT $limit;";
             };
         }
 
+        private static JObject ToJson(ScriptAnimationComponentDiagnosticRow row)
+        {
+            return new JObject
+            {
+                ["deterministic"] = true,
+                ["diagnosticOnly"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["relationKind"] = "monoBehaviour.componentAnimationClipPPtr",
+                ["modelReadyForAnimation"] = false,
+                ["modelReadyForAnimationReason"] = "This row only proves a local script field points to an AnimationClip. It does not prove the selected model is valid or that the script clip drives the visible model.",
+                ["model"] = new JObject
+                {
+                    ["name"] = row.ModelName,
+                    ["sourcePath"] = row.ModelSourcePath,
+                    ["serializedFile"] = row.ModelSerializedFile,
+                    ["pathId"] = row.ModelPathId,
+                    ["containerPath"] = row.ModelContainerPath,
+                },
+                ["gameObject"] = new JObject
+                {
+                    ["name"] = row.GameObjectName,
+                    ["serializedFile"] = row.GameObjectSerializedFile,
+                    ["pathId"] = row.GameObjectPathId,
+                    ["depthFromSelectedModel"] = row.GameObjectDepth,
+                    ["visibleRendererCount"] = row.VisibleRendererCount,
+                    ["animatorCount"] = row.AnimatorCount,
+                    ["rectTransformCount"] = row.RectTransformCount,
+                },
+                ["monoBehaviour"] = new JObject
+                {
+                    ["name"] = row.MonoBehaviourName,
+                    ["sourcePath"] = row.MonoBehaviourSourcePath,
+                    ["serializedFile"] = row.MonoBehaviourSerializedFile,
+                    ["pathId"] = row.MonoBehaviourPathId,
+                    ["scriptName"] = row.ScriptName,
+                },
+                ["reference"] = new JObject
+                {
+                    ["path"] = row.ReferenceFieldPath,
+                    ["field"] = row.ReferenceFieldName,
+                    ["animation"] = new JObject
+                    {
+                        ["name"] = row.AnimationName,
+                        ["sourcePath"] = row.AnimationSourcePath,
+                        ["serializedFile"] = row.AnimationSerializedFile,
+                        ["pathId"] = row.AnimationPathId,
+                    },
+                },
+                ["rule"] = "This diagnostic is intentionally limited to the selected GameObject and direct children. It helps locate script-animation clues without scanning the full hierarchy or promoting script semantics to production animation bindings.",
+            };
+        }
+
         private static JObject ToJson(AvatarTosClipDiagnosticRow row)
         {
             return new JObject
@@ -2866,6 +3088,31 @@ LIMIT $limit;";
             string TargetName,
             string TargetSourcePath,
             bool IsSelectedModel);
+
+        private sealed record ScriptAnimationComponentDiagnosticRow(
+            string ModelName,
+            string ModelSourcePath,
+            string ModelSerializedFile,
+            long ModelPathId,
+            string ModelContainerPath,
+            string GameObjectSerializedFile,
+            long GameObjectPathId,
+            string GameObjectName,
+            int GameObjectDepth,
+            int VisibleRendererCount,
+            int AnimatorCount,
+            int RectTransformCount,
+            string MonoBehaviourSerializedFile,
+            long MonoBehaviourPathId,
+            string MonoBehaviourName,
+            string MonoBehaviourSourcePath,
+            string ScriptName,
+            string ReferenceFieldPath,
+            string ReferenceFieldName,
+            string AnimationName,
+            string AnimationSourcePath,
+            string AnimationSerializedFile,
+            long AnimationPathId);
 
         private sealed record ModelVisibilityDiagnosticRow(
             string ModelName,

@@ -86,6 +86,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 同日抽样脚本动画挂载 GameObject 的直接组件：`fxattack_male_sw_attack_heavy_02`、`ani`、`node_body`、`hero_wuchen_fuchen` 等高频 `SimpleAnimation` 节点多为 `Transform + MonoBehaviour + Animator`，未在自身 GameObject 上直接出现 `MeshRenderer` / `SkinnedMeshRenderer`；`ActivityArmorHeroProgressWidget` 为 `RectTransform + CanvasRenderer + Animator`，`Gen_Anim_bow` 为 UI/RectTransform 类节点。全量“脚本动画 -> GameObject -> 组件”上下文查询若不小心走错索引会超时，后续若要固化只能做按需、分层或选中模型查询。当前样本说明脚本动画字段是重要入口，但还需要继续追层级子节点、可见 Renderer、Prefab/Avatar/Controller 上下文和模型静态验收，不能把脚本挂载关系直接当生产动画绑定。
 
+同日给 `--list_source_model_animations` 增加按需 `scriptAnimationComponentDiagnostics`：只检查选中 GameObject 和直接子节点上的 MonoBehaviour 组件是否有 AnimationClip PPtr 字段，不做全量深层扫描，也不写 CSV 候选。复验 `ch_m_hadi_lv_s9` 输出 `D:\Assets\Naraka\SourceModelAnimations_HadiBody_ScriptComponentDiag_Current`：命中 8 个同名/特效变体，`candidateCount=0`、`scriptAnimationComponentDiagnostics=0`。复验 `fxattack_male_sw_attack_heavy_02` 输出 `D:\Assets\Naraka\SourceModelAnimations_FxAttackSimpleAnimation_ScriptComponentDiag_Current`：命中 20 个同名节点，`candidateCount=0`、`scriptAnimationComponentDiagnostics=20`，样本行明确为 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，`SimpleAnimation.m_Clip -> fxattack_male_sw_attack_heavy_02_pvpve`，挂载 GameObject 自身 `visibleRendererCount=0`、`animatorCount=1`。这证明新字段能定位脚本动画入口，也证明它仍是控制节点诊断，不能升级成模型动画生产关系。
+
 输入探针：
 
 ```powershell
