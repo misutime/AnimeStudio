@@ -152,6 +152,62 @@ function ConvertTo-SmokeDouble {
     }
 }
 
+function Read-RenderProbeBboxMotion {
+    param(
+        [string[]]$Lines
+    )
+
+    $frames = @{}
+    foreach ($line in @($Lines)) {
+        $match = [regex]::Match($line, '^(?<label>rest|mid|end):\s+frame=(?<frame>\d+)\s+bboxMin=\((?<min>[^)]+)\)\s+bboxMax=\((?<max>[^)]+)\)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (!$match.Success) {
+            continue
+        }
+
+        $mins = @($match.Groups["min"].Value -split "," | ForEach-Object { ConvertTo-SmokeDouble $_ })
+        $maxs = @($match.Groups["max"].Value -split "," | ForEach-Object { ConvertTo-SmokeDouble $_ })
+        if ($mins.Count -ne 3 -or $maxs.Count -ne 3) {
+            continue
+        }
+
+        $frames[$match.Groups["label"].Value.ToLowerInvariant()] = [pscustomobject]@{
+            frame = ConvertTo-SmokeInt64 $match.Groups["frame"].Value
+            min = $mins
+            max = $maxs
+        }
+    }
+
+    foreach ($required in @("rest", "mid", "end")) {
+        if (!$frames.ContainsKey($required)) {
+            return [pscustomobject]@{
+                status = "missingFrame"
+                missingFrame = $required
+                maxCoordinateDelta = 0.0
+                rule = "三帧 bbox 运动诊断只能证明合并动画产生了几何包围盒变化，不能替代视觉验收。"
+            }
+        }
+    }
+
+    $rest = $frames["rest"]
+    $maxDelta = 0.0
+    foreach ($label in @("mid", "end")) {
+        $frame = $frames[$label]
+        for ($i = 0; $i -lt 3; $i++) {
+            $maxDelta = [Math]::Max($maxDelta, [Math]::Abs([double]$frame.min[$i] - [double]$rest.min[$i]))
+            $maxDelta = [Math]::Max($maxDelta, [Math]::Abs([double]$frame.max[$i] - [double]$rest.max[$i]))
+        }
+    }
+
+    return [pscustomobject]@{
+        status = if ($maxDelta -gt 0.01) { "ok" } else { "static" }
+        maxCoordinateDelta = [Math]::Round($maxDelta, 4)
+        rest = $frames["rest"]
+        mid = $frames["mid"]
+        end = $frames["end"]
+        rule = "三帧 bbox 运动诊断只能证明合并动画产生了几何包围盒变化，不能替代视觉验收。"
+    }
+}
+
 function ConvertTo-SqliteTextLiteral {
     param(
         [string]$Value
@@ -1783,6 +1839,10 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
                 throw "Zhumu merged animation render summary lost frame entry: $requiredFrame"
             }
         }
+        $zhumuMergedRenderBboxMotion = Read-RenderProbeBboxMotion -Lines $zhumuMergedRenderLines
+        if ([string]$zhumuMergedRenderBboxMotion.status -ne "ok") {
+            throw "Zhumu merged animation render probe did not show bbox motion. status=$($zhumuMergedRenderBboxMotion.status) maxDelta=$($zhumuMergedRenderBboxMotion.maxCoordinateDelta)"
+        }
 
         if (!$SkipGltfValidation) {
             $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
@@ -1806,6 +1866,7 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
             reasonCodes = $zhumuMergedReasonCodes
             renderProbeStatus = "ok"
             renderFrameCount = [int]$zhumuMergedRenderLines.Count
+            renderBboxMotion = $zhumuMergedRenderBboxMotion
             renderImages = $zhumuMergedRenderImages
             renderSummary = $zhumuMergedRenderSummaryText
         }
@@ -2868,6 +2929,9 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
     $reportLines.Add(('- Render probe: status=`{0}`, frames=`{1}`' -f `
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderProbeStatus "unknown"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderFrameCount "0")))
+    $reportLines.Add(('- Render bbox motion: status=`{0}`, maxCoordinateDelta=`{1}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderBboxMotion.status "unknown"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderBboxMotion.maxCoordinateDelta "0")))
     $reportLines.Add('- Rule: merged model+animation glTF proves the diagnostic composition path can open and render, but it remains needs_review because the internal Humanoid/Muscle solver and low channel coverage are not production-validated.')
 }
 elseif ($zhumuMergedAnimationPreview.status -eq "missing") {
