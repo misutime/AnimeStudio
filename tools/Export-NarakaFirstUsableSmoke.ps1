@@ -201,6 +201,9 @@ $shaderBoundaryRule = "Naraka private/layered shader boundary: raw texture slots
 $shaderBoundarySummaryJson = $null
 $shaderBoundaryMaterialSidecarRows = $null
 $shaderBoundaryCustomShaderRows = $null
+$shaderBoundaryCustomShaderEvidenceRows = $null
+$shaderBoundaryMissingShaderNameRows = $null
+$shaderBoundaryCustomShaderEvidenceSamples = $null
 $shaderBoundaryGltf = $null
 $staticEnvironmentStatus = "notChecked"
 $staticEnvironmentRule = "Static environment/prop meshes are an explicit extension sample. They prove mesh, UV, material slots, textures and AssetLibrary index health, but they do not change the default prefab/Animator-focused Library scope."
@@ -451,10 +454,59 @@ if (![string]::IsNullOrWhiteSpace($ShaderBoundarySampleRoot)) {
             if ($LASTEXITCODE -ne 0) {
                 throw "sqlite3 failed while checking shader boundary custom shader material_sidecars."
             }
+            $shaderBoundaryCustomShaderEvidenceRowsSql = @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE custom_shader_required = 1
+  AND layered_material_unresolved = 1
+  AND pbr_preview_status = 'bestEffortDegradedPreview'
+  AND COALESCE(key_texture_slots_json, '') <> ''
+  AND COALESCE(exported_textures_json, '') <> ''
+  AND COALESCE(unresolved_steps_json, '') <> ''
+  AND COALESCE(raw_json, '') <> '';
+"@
+            $shaderBoundaryCustomShaderEvidenceRowsText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb $shaderBoundaryCustomShaderEvidenceRowsSql
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking shader boundary custom shader evidence fields."
+            }
+            $shaderBoundaryMissingShaderNameRowsSql = @"
+SELECT COUNT(*)
+FROM material_sidecars
+WHERE custom_shader_required = 1
+  AND layered_material_unresolved = 1
+  AND pbr_preview_status = 'bestEffortDegradedPreview'
+  AND COALESCE(shader_name, '') = '';
+"@
+            $shaderBoundaryMissingShaderNameRowsText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb $shaderBoundaryMissingShaderNameRowsSql
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking shader boundary shader-name evidence."
+            }
+            $shaderBoundaryCustomShaderEvidenceSamplesSql = @"
+SELECT substr(group_concat(material_name || ': slots=' || key_texture_slots_json || '; steps=' || unresolved_steps_json, ' | '), 1, 700)
+FROM (
+    SELECT material_name, key_texture_slots_json, unresolved_steps_json
+    FROM material_sidecars
+    WHERE custom_shader_required = 1
+      AND layered_material_unresolved = 1
+      AND pbr_preview_status = 'bestEffortDegradedPreview'
+    ORDER BY material_name
+    LIMIT 4
+);
+"@
+            $shaderBoundaryCustomShaderEvidenceSamplesText = & $sqlite3.Source -readonly -batch -noheader $shaderBoundaryDb $shaderBoundaryCustomShaderEvidenceSamplesSql
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while sampling shader boundary custom shader evidence fields."
+            }
             $shaderBoundaryMaterialSidecarRows = [long]$shaderBoundaryMaterialSidecarRowsText
             $shaderBoundaryCustomShaderRows = [long]$shaderBoundaryCustomShaderRowsText
+            $shaderBoundaryCustomShaderEvidenceRows = [long]$shaderBoundaryCustomShaderEvidenceRowsText
+            $shaderBoundaryMissingShaderNameRows = [long]$shaderBoundaryMissingShaderNameRowsText
+            $shaderBoundaryCustomShaderEvidenceSamples = ($shaderBoundaryCustomShaderEvidenceSamplesText -join [Environment]::NewLine).Trim()
             if ($shaderBoundaryCustomShaderRows -lt 1) {
                 throw "Shader boundary material_sidecars table did not preserve degraded custom shader rows."
+            }
+            if ($shaderBoundaryCustomShaderEvidenceRows -lt 1) {
+                throw "Shader boundary material_sidecars table did not preserve custom shader slots, exported textures, unresolved steps and raw sidecar evidence."
             }
         }
         else {
@@ -1018,6 +1070,9 @@ $summaryJsonLines += '    "layeredMaterialUnresolvedSidecars": ' + (ConvertTo-Sm
 $summaryJsonLines += '    "degradedPreviewSidecars": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundarySummaryJson.qualityGates.degradedPreviewSidecars) + ","
 $summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryMaterialSidecarRows) + ","
 $summaryJsonLines += '    "customShaderMaterialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderRows) + ","
+$summaryJsonLines += '    "customShaderEvidenceRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderEvidenceRows) + ","
+$summaryJsonLines += '    "missingShaderNameRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryMissingShaderNameRows) + ","
+$summaryJsonLines += '    "customShaderEvidenceSamples": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderEvidenceSamples) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryRule)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "staticEnvironment": {'
@@ -1323,6 +1378,12 @@ if ($shaderBoundaryStatus -eq "ok") {
     $reportLines.Add(('- material_sidecars rows=`{0}`, degraded custom shader rows=`{1}`' -f `
         (ConvertTo-SmokeText $shaderBoundaryMaterialSidecarRows "unknown"),
         (ConvertTo-SmokeText $shaderBoundaryCustomShaderRows "unknown")))
+    $reportLines.Add(('- custom shader evidence rows=`{0}`, missing shader name rows=`{1}`' -f `
+        (ConvertTo-SmokeText $shaderBoundaryCustomShaderEvidenceRows "unknown"),
+        (ConvertTo-SmokeText $shaderBoundaryMissingShaderNameRows "unknown")))
+    if (![string]::IsNullOrWhiteSpace($shaderBoundaryCustomShaderEvidenceSamples)) {
+        $reportLines.Add(('- Evidence sample: `{0}`' -f $shaderBoundaryCustomShaderEvidenceSamples))
+    }
     $reportLines.Add('- Rule: this is a degraded PBR preview boundary check for Naraka private/layered shaders; it preserves raw texture slots and must not be treated as texture loss or fully restored game shading.')
 }
 elseif ($shaderBoundaryStatus -eq "missing") {
