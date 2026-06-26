@@ -152,6 +152,20 @@ function ConvertTo-SmokeDouble {
     }
 }
 
+function Resolve-SmokePython {
+    $python = Get-Command "python" -ErrorAction SilentlyContinue
+    if ($null -ne $python) {
+        return $python.Source
+    }
+
+    $fallback = "C:\Users\Misu\AppData\Local\Programs\Python\Python313\python.exe"
+    if (Test-Path -LiteralPath $fallback) {
+        return $fallback
+    }
+
+    throw "Python runtime not found; cannot run PNG render subject diagnostics."
+}
+
 function Read-RenderProbeBboxMotion {
     param(
         [string[]]$Lines
@@ -1832,6 +1846,23 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
                 throw "Zhumu merged animation render image is empty: $renderImage"
             }
         }
+        $zhumuMergedSubjectReport = Join-Path $OutputRoot "zhumu_render_subject_occupancy.json"
+        $subjectAnalyzer = Join-Path $PSScriptRoot "analyze_render_image_subject.py"
+        Test-FileRequired -Path $subjectAnalyzer -Label "render image subject analyzer"
+        $subjectAnalyzerArgs = @(
+            $subjectAnalyzer,
+            "--output", $zhumuMergedSubjectReport,
+            "--min_foreground_pixel_ratio", "0.015",
+            "--min_foreground_height_ratio", "0.12",
+            "--images"
+        ) + $zhumuMergedRenderImages
+        Invoke-Checked -Label "Analyze Zhumu merged animation render subject occupancy" -FilePath (Resolve-SmokePython) -Arguments $subjectAnalyzerArgs
+        Test-FileRequired -Path $zhumuMergedSubjectReport -Label "Zhumu render subject occupancy report"
+        $zhumuMergedSubjectOccupancy = Get-Content -LiteralPath $zhumuMergedSubjectReport -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([string]$zhumuMergedSubjectOccupancy.status -ne "ok") {
+            throw "Zhumu merged animation render images do not show a visible subject. status=$($zhumuMergedSubjectOccupancy.status) failed=$($zhumuMergedSubjectOccupancy.failedCount)"
+        }
+
         $zhumuMergedRenderSummaryText = (Get-Content -LiteralPath $zhumuMergedRenderSummary -Raw -Encoding UTF8).Trim()
         $zhumuMergedRenderLines = @($zhumuMergedRenderSummaryText -split "`r?`n" | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
         foreach ($requiredFrame in @("rest:", "mid:", "end:")) {
@@ -1867,6 +1898,7 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
             renderProbeStatus = "ok"
             renderFrameCount = [int]$zhumuMergedRenderLines.Count
             renderBboxMotion = $zhumuMergedRenderBboxMotion
+            renderSubjectOccupancy = $zhumuMergedSubjectOccupancy
             renderImages = $zhumuMergedRenderImages
             renderSummary = $zhumuMergedRenderSummaryText
         }
@@ -2932,6 +2964,10 @@ if ($zhumuMergedAnimationPreview.status -eq "ok") {
     $reportLines.Add(('- Render bbox motion: status=`{0}`, maxCoordinateDelta=`{1}`' -f `
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderBboxMotion.status "unknown"),
         (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderBboxMotion.maxCoordinateDelta "0")))
+    $reportLines.Add(('- Render subject occupancy: status=`{0}`, minPixelRatio=`{1}`, minHeightRatio=`{2}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderSubjectOccupancy.status "unknown"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderSubjectOccupancy.minForegroundPixelRatio "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderSubjectOccupancy.minForegroundHeightRatio "0")))
     $reportLines.Add('- Rule: merged model+animation glTF proves the diagnostic composition path can open and render, but it remains needs_review because the internal Humanoid/Muscle solver and low channel coverage are not production-validated.')
 }
 elseif ($zhumuMergedAnimationPreview.status -eq "missing") {

@@ -266,6 +266,25 @@ def serializable_bounds(objects):
     }
 
 
+def camera_ortho_scale_for_objects(objects, cam, margin=1.16):
+    points = []
+    camera_to_world = cam.matrix_world.inverted()
+    for obj in objects:
+        for corner in obj.bound_box:
+            points.append(camera_to_world @ (obj.matrix_world @ Vector(corner)))
+    if not points:
+        return None
+
+    min_x = min(point.x for point in points)
+    max_x = max(point.x for point in points)
+    min_y = min(point.y for point in points)
+    max_y = max(point.y for point in points)
+    width = max_x - min_x
+    height = max_y - min_y
+    # 验收截图优先保证主体占画面，而不是按世界空间球半径保守拉远。
+    return max(width, height) * margin
+
+
 def ensure_camera():
     existing = bpy.data.objects.get("Camera")
     if existing:
@@ -325,7 +344,9 @@ def update_camera(cam, view="full"):
     cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     cam_data = cam.data
     cam_data.type = "ORTHO"
-    cam_data.ortho_scale = max(radius * 2.35, 0.1)
+    fit_scale = camera_ortho_scale_for_objects(mesh_objects(), cam)
+    fallback_scale = radius * 2.35
+    cam_data.ortho_scale = max(fit_scale or fallback_scale, 0.1)
     bpy.context.scene.camera = cam
 
     light = bpy.data.objects.get("Key")
