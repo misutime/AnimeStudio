@@ -1056,6 +1056,12 @@ $sourceModelAvatarDiagnostics = [pscustomobject]@{
     samuraiGhostCompatibility = $null
 }
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
+$animationDiagnosticBlockedRequirements = @(
+    "explicitModelAnimationRelation",
+    "validatedModelGltf",
+    "productionHumanoidSolverValidation",
+    "visualReview"
+)
 $animationReportJson = $null
 $animationGltfPath = $null
 $browserValidationStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
@@ -1142,6 +1148,12 @@ if (!$SkipAnimationDiagnostic) {
     }
     if ($animationReportJson.avatarInjection.diagnosticOnly -ne $true -or $animationReportJson.avatarInjection.notDefaultModelAnimationRelation -ne $true) {
         throw "Animation diagnostic report lost diagnostic-only relation boundary."
+    }
+    $animationDiagnosticActualBlockedRequirements = @($animationDiagnosticBlockedRequirements | ForEach-Object { [string]$_ })
+    foreach ($requiredRequirement in @("explicitModelAnimationRelation", "validatedModelGltf", "productionHumanoidSolverValidation", "visualReview")) {
+        if ($animationDiagnosticActualBlockedRequirements -notcontains $requiredRequirement) {
+            throw "Animation diagnostic lost production blocked requirement: $requiredRequirement"
+        }
     }
 
     if (![string]::IsNullOrWhiteSpace($animationReportJson.gltf)) {
@@ -2309,6 +2321,8 @@ if ($null -ne $animationReportJson) {
     $animationDiagnosticLines += '  "message": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.message) + ","
     $animationDiagnosticLines += '  "gltf": ' + (ConvertTo-SmokeJsonLiteral $animationGltfPath) + ","
     $animationDiagnosticLines += '  "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $animationGltfValidationStatus) + ","
+    $animationDiagnosticLines += '  "productionReadiness": "blocked",'
+    $animationDiagnosticLines += '  "blockedProductionRequirements": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticBlockedRequirements 10) + ","
     $animationDiagnosticLines += '  "avatarInjectionMode": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.mode) + ","
     $animationDiagnosticLines += '  "diagnosticOnly": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.diagnosticOnly) + ","
     $animationDiagnosticLines += '  "notDefaultModelAnimationRelation": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.notDefaultModelAnimationRelation) + ","
@@ -2321,6 +2335,8 @@ if ($null -ne $animationReportJson) {
     $animationDiagnosticLines += "{"
     $animationDiagnosticLines += '  "status": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticStatus) + ","
     $animationDiagnosticLines += '  "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $animationGltfValidationStatus) + ","
+    $animationDiagnosticLines += '  "productionReadiness": "blocked",'
+    $animationDiagnosticLines += '  "blockedProductionRequirements": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticBlockedRequirements 10) + ","
     $animationDiagnosticLines += '  "diagnosticOnly": true,'
     $animationDiagnosticLines += '  "notDefaultModelAnimationRelation": true'
     $animationDiagnosticLines += "}"
@@ -3009,6 +3025,7 @@ if ($null -ne $animationReportJson) {
     $reportLines.Add(("- Message: {0}" -f (ConvertTo-SmokeText $animationReportJson.message)))
     $reportLines.Add(('- Animation glTF: `{0}`' -f (ConvertTo-SmokeText $animationGltfPath)))
     $reportLines.Add(('- Animation glTF validator: `{0}`' -f $animationGltfValidationStatus))
+    $reportLines.Add(('- Production readiness: `blocked`; blocked requirements: `{0}`' -f (($animationDiagnosticBlockedRequirements | ForEach-Object { [string]$_ }) -join ', ')))
     $reportLines.Add(('- Avatar injection: mode=`{0}`, diagnosticOnly=`{1}`, notDefaultModelAnimationRelation=`{2}`, manualReviewRequired=`{3}`, tosCount=`{4}`' -f `
         (ConvertTo-SmokeText $animationReportJson.avatarInjection.mode),
         (ConvertTo-SmokeText $animationReportJson.avatarInjection.diagnosticOnly),
