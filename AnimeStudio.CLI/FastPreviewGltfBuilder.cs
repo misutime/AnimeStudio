@@ -469,6 +469,7 @@ namespace AnimeStudio.CLI
             var result = new List<CurveData>();
             AddVector3Curves(result, decoded["translations"] as JArray, "translation", ConvertUnityPositionToGltf);
             AddQuaternionCurves(result, decoded["rotations"] as JArray);
+            AddEulerCurves(result, decoded["eulers"] as JArray);
             AddVector3Curves(result, decoded["scales"] as JArray, "scale");
             return result;
         }
@@ -2666,9 +2667,9 @@ namespace AnimeStudio.CLI
         {
             foreach (var curve in curves?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
-                var path = (string)curve["path"];
+                var path = (string)curve["path"] ?? string.Empty;
                 var keys = ReadKeys(curve["keyframes"] as JArray, 3, convert);
-                if (!string.IsNullOrWhiteSpace(path) && keys.Times.Length > 0)
+                if (keys.Times.Length > 0)
                 {
                     result.Add(new CurveData(path, targetPath, 3, keys.Times, keys.Values));
                 }
@@ -2679,11 +2680,40 @@ namespace AnimeStudio.CLI
         {
             foreach (var curve in curves?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
-                var path = (string)curve["path"];
+                var path = (string)curve["path"] ?? string.Empty;
                 var keys = ReadKeys(curve["keyframes"] as JArray, 4, ConvertUnityRotationToGltf);
-                if (!string.IsNullOrWhiteSpace(path) && keys.Times.Length > 0)
+                if (keys.Times.Length > 0)
                 {
                     result.Add(new CurveData(path, "rotation", 4, keys.Times, keys.Values));
+                }
+            }
+        }
+
+        private static void AddEulerCurves(List<CurveData> result, JArray curves)
+        {
+            foreach (var curve in curves?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var path = (string)curve["path"] ?? string.Empty;
+                var times = new List<float>();
+                var values = new List<float>();
+                foreach (var key in curve["keyframes"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var value = key["value"] as JArray;
+                    if (value == null || value.Count < 3)
+                    {
+                        continue;
+                    }
+
+                    times.Add(F(key["time"]));
+                    var unityRotation = UnityEulerDegreesToQuaternion(F(value[0]), F(value[1]), F(value[2]));
+                    values.AddRange(ConvertUnityRotationToGltf(new[] { unityRotation.X, unityRotation.Y, unityRotation.Z, unityRotation.W }));
+                }
+
+                if (times.Count > 0)
+                {
+                    var quaternionValues = values.ToArray();
+                    KeepQuaternionCurveContinuous(quaternionValues);
+                    result.Add(new CurveData(path, "rotation", 4, times.ToArray(), quaternionValues));
                 }
             }
         }
@@ -2724,6 +2754,16 @@ namespace AnimeStudio.CLI
         private static float[] ConvertUnityPositionToGltf(float[] value) => new[] { -value[0], value[1], value[2] };
 
         private static float[] ConvertUnityRotationToGltf(float[] value) => new[] { value[0], -value[1], -value[2], value[3] };
+
+        private static QuaternionData UnityEulerDegreesToQuaternion(float x, float y, float z)
+        {
+            // Unity Quaternion.Euler(x, y, z) 按 Z -> X -> Y 组合欧拉角。
+            // 这里先得到 Unity 本地 quaternion，再复用统一的 Unity->glTF 轴转换。
+            var qx = AxisAngleRadiansToQuaternion(1, 0, 0, DegreesToRadians(x));
+            var qy = AxisAngleRadiansToQuaternion(0, 1, 0, DegreesToRadians(y));
+            var qz = AxisAngleRadiansToQuaternion(0, 0, 1, DegreesToRadians(z));
+            return NormalizeQuaternion(Multiply(Multiply(qy, qx), qz));
+        }
 
         private static QuaternionData ConvertGltfRotationToUnity(QuaternionData value)
         {
@@ -2832,6 +2872,12 @@ namespace AnimeStudio.CLI
             var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var sceneNodes = gltf["scenes"]?[(int?)gltf["scene"] ?? 0]?["nodes"]?.Values<int>().ToArray()
                 ?? Enumerable.Range(0, nodes.Count).ToArray();
+            if (sceneNodes.Length == 1)
+            {
+                // Unity AnimationClip 的空 binding path 表示被动画组件驱动的当前根对象。
+                // glTF 只有一个 scene root 时，这个根对象可以确定性映射到该节点。
+                map.TryAdd(string.Empty, sceneNodes[0]);
+            }
             foreach (var root in sceneNodes)
             {
                 AddNodePath(nodes, root, "", map);
