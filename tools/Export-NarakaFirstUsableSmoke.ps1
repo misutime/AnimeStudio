@@ -758,6 +758,10 @@ $hadiModularBoundary = [pscustomobject]@{
     status = "notChecked"
     rule = "Hadi body is a usable modular body/clothing asset, not a complete character. It must stay marked modular_incomplete and blocked from production animation smoke until deterministic Face/Hair assembly is available."
 }
+$formalSkinnedRepresentativeBoundary = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Jiantianshi is the formal actor_visual_part skinned representative. Model, material and skin gates must stay ok, while default animation candidates remain zero until explicit Unity animation relations are proven."
+}
 $characterCandidateSourceIndexBoundary = [pscustomobject]@{
     status = "notChecked"
     rule = "SamuraiGhost bundle source-index boundary: Animator.avatar and same-bundle Humanoid/Muscle clips are diagnostic evidence only; production animation binding still requires explicit Animator.controller, Animation.clip or AnimatorController.clip relation plus visual validation."
@@ -827,6 +831,7 @@ $db = Join-Path $libraryOutput "library_index.db"
 $sqliteSummary = Join-Path $libraryOutput "sqlite_index_summary.json"
 $validation = Join-Path $libraryOutput "model_validation.json"
 $assetCatalog = Join-Path $libraryOutput "asset_catalog.jsonl"
+$modelAnimationsCompact = Join-Path $libraryOutput "model_animations.compact.json"
 $gltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
 $jiantianshiGltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_f_jiantianshi\ch_f_jiantianshi_lv_s1\ch_f_jiantianshi_lv_s1.gltf"
 $bowGltf = Join-Path $libraryOutput "Models\assets\res\prefab\drop_item_generate\weapon\weapon_drop_bow_dongjun\weapon_drop_bow_dongjun.gltf"
@@ -838,6 +843,7 @@ Test-FileRequired -Path $db -Label "library_index.db"
 Test-FileRequired -Path $sqliteSummary -Label "sqlite_index_summary.json"
 Test-FileRequired -Path $validation -Label "model_validation.json"
 Test-FileRequired -Path $assetCatalog -Label "asset_catalog.jsonl"
+Test-FileRequired -Path $modelAnimationsCompact -Label "model_animations.compact.json"
 Test-FileRequired -Path $gltf -Label "Hadi glTF"
 Test-FileRequired -Path $jiantianshiGltf -Label "Jiantianshi glTF"
 Test-FileRequired -Path $bowGltf -Label "Bow prop glTF"
@@ -1407,6 +1413,75 @@ $hadiModularBoundary = [pscustomobject]@{
     missingRoles = $hadiMissingRoles
     modelCompletenessRule = [string]$hadiCatalogRow.modelCompletenessRule
 }
+
+$expectedJiantianshiOutput = "Models/assets/res/prefab/actor_visual_part/ch_f_jiantianshi/ch_f_jiantianshi_lv_s1/ch_f_jiantianshi_lv_s1.gltf"
+$jiantianshiCatalogRow = $null
+foreach ($catalogLine in Get-Content -LiteralPath $assetCatalog -Encoding UTF8) {
+    if ([string]::IsNullOrWhiteSpace($catalogLine)) {
+        continue
+    }
+
+    $catalogRow = $catalogLine | ConvertFrom-Json
+    if ($catalogRow.name -eq "ch_f_jiantianshi_lv_s1") {
+        $jiantianshiCatalogRow = $catalogRow
+        break
+    }
+}
+if ($null -eq $jiantianshiCatalogRow) {
+    throw "asset_catalog.jsonl lost Jiantianshi formal skinned representative row."
+}
+
+$jiantianshiSource = [string]$jiantianshiCatalogRow.source
+$jiantianshiPrimitiveCount = [long]$jiantianshiCatalogRow.materialPrimitiveCount
+$jiantianshiPrimitivesWithMaterial = [long]$jiantianshiCatalogRow.materialPrimitivesWithMaterial
+if ($jiantianshiCatalogRow.libraryRole -ne "PrefabPrimary" -or
+    $jiantianshiCatalogRow.resourceKind -ne "Character" -or
+    $jiantianshiCatalogRow.modelValidationStatus -ne "ok" -or
+    $jiantianshiCatalogRow.modelBodyStatus -ne "ok" -or
+    $jiantianshiCatalogRow.materialMissingRendererBinding -ne $false -or
+    $jiantianshiPrimitiveCount -le 0 -or
+    $jiantianshiPrimitiveCount -ne $jiantianshiPrimitivesWithMaterial -or
+    [long]$jiantianshiCatalogRow.boneCount -le 0 -or
+    [long]$jiantianshiCatalogRow.pathId -ne $FormalSkinnedRepresentativeRootPathId -or
+    [string]$jiantianshiCatalogRow.output -ne $expectedJiantianshiOutput -or
+    $jiantianshiSource -notlike "*$FormalSkinnedRepresentativeBundle*") {
+    throw "Jiantianshi formal skinned representative gate failed. libraryRole=$($jiantianshiCatalogRow.libraryRole) resourceKind=$($jiantianshiCatalogRow.resourceKind) validation=$($jiantianshiCatalogRow.modelValidationStatus) body=$($jiantianshiCatalogRow.modelBodyStatus) missingRendererBinding=$($jiantianshiCatalogRow.materialMissingRendererBinding) primitives=$jiantianshiPrimitivesWithMaterial/$jiantianshiPrimitiveCount bones=$($jiantianshiCatalogRow.boneCount) pathId=$($jiantianshiCatalogRow.pathId) output=$($jiantianshiCatalogRow.output) source=$jiantianshiSource"
+}
+
+$compactAnimationIndex = Get-Content -LiteralPath $modelAnimationsCompact -Raw -Encoding UTF8 | ConvertFrom-Json
+$jiantianshiCompactModel = @($compactAnimationIndex.models | Where-Object { $_.output -eq $expectedJiantianshiOutput }) | Select-Object -First 1
+if ($null -eq $jiantianshiCompactModel) {
+    throw "model_animations.compact.json lost Jiantianshi model row."
+}
+$jiantianshiCompactRef = @($compactAnimationIndex.modelAnimationRefs | Where-Object { $_.modelId -eq $jiantianshiCompactModel.id }) | Select-Object -First 1
+if ($null -eq $jiantianshiCompactRef) {
+    throw "model_animations.compact.json lost Jiantianshi model animation ref row."
+}
+if ($jiantianshiCompactModel.modelAnimationGate.status -ne "ready" -or
+    $jiantianshiCompactModel.modelReadyForAnimation -ne $true -or
+    [long]$jiantianshiCompactRef.candidateCount -ne 0 -or
+    [long]$jiantianshiCompactRef.usableCandidateCount -ne 0) {
+    throw "Jiantianshi animation gate must be model-ready but without default animation candidates. gate=$($jiantianshiCompactModel.modelAnimationGate.status) ready=$($jiantianshiCompactModel.modelReadyForAnimation) candidates=$($jiantianshiCompactRef.candidateCount) usable=$($jiantianshiCompactRef.usableCandidateCount)"
+}
+$formalSkinnedRepresentativeBoundary = [pscustomobject]@{
+    status = "ok"
+    rule = $formalSkinnedRepresentativeBoundary.rule
+    name = [string]$jiantianshiCatalogRow.name
+    libraryRole = [string]$jiantianshiCatalogRow.libraryRole
+    resourceKind = [string]$jiantianshiCatalogRow.resourceKind
+    output = [string]$jiantianshiCatalogRow.output
+    source = $jiantianshiSource
+    pathId = [long]$jiantianshiCatalogRow.pathId
+    modelValidationStatus = [string]$jiantianshiCatalogRow.modelValidationStatus
+    modelBodyStatus = [string]$jiantianshiCatalogRow.modelBodyStatus
+    materialMissingRendererBinding = [bool]$jiantianshiCatalogRow.materialMissingRendererBinding
+    materialPrimitiveCount = $jiantianshiPrimitiveCount
+    materialPrimitivesWithMaterial = $jiantianshiPrimitivesWithMaterial
+    boneCount = [long]$jiantianshiCatalogRow.boneCount
+    modelAnimationGate = [string]$jiantianshiCompactModel.modelAnimationGate.status
+    modelReadyForAnimation = [bool]$jiantianshiCompactModel.modelReadyForAnimation
+    defaultCandidateCount = [long]$jiantianshiCompactRef.candidateCount
+}
 $sqlite3ForSourceIndex = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
 if ($null -ne $sqlite3ForSourceIndex) {
     $avatarAnimatorDomainSql = @"
@@ -1710,6 +1785,7 @@ $summaryJsonLines += '    { "name": "weapon_drop_bow_dongjun", "role": "WeaponPr
 $summaryJsonLines += '    { "name": "device_hongbao_02", "role": "Prop", "gltf": ' + (ConvertTo-SmokeJsonLiteral $deviceGltf) + ' }'
 $summaryJsonLines += '  ],'
 $summaryJsonLines += '  "hadiModularBoundary": ' + (ConvertTo-SmokeJsonLiteral $hadiModularBoundary 10) + ","
+$summaryJsonLines += '  "formalSkinnedRepresentativeBoundary": ' + (ConvertTo-SmokeJsonLiteral $formalSkinnedRepresentativeBoundary 10) + ","
 $summaryJsonLines += '  "shaderBoundary": {'
 $summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
 $summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $ShaderBoundarySampleRoot) + ","
@@ -1779,6 +1855,7 @@ $summaryJsonLines += '    "staticEnvironment": ' + (ConvertTo-SmokeJsonLiteral $
 $summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
 $summaryJsonLines += '    "hadiModularBoundary": ' + (ConvertTo-SmokeJsonLiteral $hadiModularBoundary.status) + ","
+$summaryJsonLines += '    "formalSkinnedRepresentativeBoundary": ' + (ConvertTo-SmokeJsonLiteral $formalSkinnedRepresentativeBoundary.status) + ","
 $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary.status) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
@@ -1881,6 +1958,20 @@ if ($null -ne $modelValidation.totals) {
 }
 $reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `ch_f_jiantianshi_lv_s1` (SkinnedActorVisualPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
 $reportLines.Add('- Representative boundary: `ch_m_japan_samurai_ghost` stays in the read-only skinned candidate gate because it comes from an effect/battle bundle and still has no explicit production model-animation relation.')
+if ($formalSkinnedRepresentativeBoundary.status -eq "ok") {
+    $reportLines.Add(('- Jiantianshi formal skinned representative: validation=`{0}`, body=`{1}`, resourceKind=`{2}`, materials=`{3}/{4}`, bones=`{5}`, animationGate=`{6}`, defaultCandidates=`{7}`' -f `
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.modelValidationStatus),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.modelBodyStatus),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.resourceKind),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.materialPrimitivesWithMaterial "0"),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.materialPrimitiveCount "0"),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.boneCount "0"),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.modelAnimationGate),
+        (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.defaultCandidateCount "0")))
+}
+else {
+    $reportLines.Add(('- Jiantianshi formal skinned representative: `{0}`' -f $formalSkinnedRepresentativeBoundary.status))
+}
 if ($hadiModularBoundary.status -eq "ok") {
     $reportLines.Add(('- Hadi modular boundary: libraryRole=`{0}`, resourceKind=`{1}`, completeness=`{2}`, missingRoles=`{3}`' -f `
         (ConvertTo-SmokeText $hadiModularBoundary.libraryRole),
