@@ -993,7 +993,8 @@ namespace AnimeStudio.CLI
                         message = $"asset_catalog.jsonl was found, but no Model row matches {fullModelPath}.";
                         return false;
                     }
-                    if (model["avatar"]?["internalSolver"] == null)
+                    var avatar = model["avatar"] as JObject;
+                    if (avatar?["internalSolver"] == null)
                     {
                         message = "Forced internal Humanoid/Muscle preview needs model.avatar.internalSolver from asset_catalog.jsonl. Re-export the model with current Avatar metadata first.";
                         return false;
