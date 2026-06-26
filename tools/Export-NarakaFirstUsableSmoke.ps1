@@ -2526,7 +2526,27 @@ if ([string]::IsNullOrWhiteSpace($summaryJsonPath)) {
 }
 $summaryJson | Set-Content -LiteralPath $summaryJsonPath -Encoding UTF8
 # smoke_summary.json 是后续自动验收入口，写完后立刻反读，避免报告可读但机器摘要损坏。
-$null = Get-Content -LiteralPath $summaryJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$summaryJsonParsed = Get-Content -LiteralPath $summaryJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([string]$summaryJsonParsed.animationDiagnostic.productionReadiness -ne "blocked") {
+    throw "smoke_summary.json animationDiagnostic must stay production-blocked. productionReadiness=$($summaryJsonParsed.animationDiagnostic.productionReadiness)"
+}
+$summaryAnimationBlockedRequirements = @($summaryJsonParsed.animationDiagnostic.blockedProductionRequirements | ForEach-Object { [string]$_ })
+foreach ($requiredRequirement in $animationDiagnosticBlockedRequirements) {
+    if ($summaryAnimationBlockedRequirements -notcontains [string]$requiredRequirement) {
+        throw "smoke_summary.json animationDiagnostic lost production blocked requirement: $requiredRequirement"
+    }
+}
+if ($summaryJsonParsed.zhumuMergedAnimationPreview.status -eq "ok") {
+    if ([string]$summaryJsonParsed.zhumuMergedAnimationPreview.productionReadiness -ne "blocked") {
+        throw "smoke_summary.json zhumuMergedAnimationPreview must stay production-blocked. productionReadiness=$($summaryJsonParsed.zhumuMergedAnimationPreview.productionReadiness)"
+    }
+    $summaryZhumuBlockedRequirements = @($summaryJsonParsed.zhumuMergedAnimationPreview.blockedProductionRequirements | ForEach-Object { [string]$_ })
+    foreach ($requiredRequirement in $zhumuMergedBlockedProductionRequirements) {
+        if ($summaryZhumuBlockedRequirements -notcontains [string]$requiredRequirement) {
+            throw "smoke_summary.json zhumuMergedAnimationPreview lost production blocked requirement: $requiredRequirement"
+        }
+    }
+}
 
 $reportPath = [System.IO.Path]::Combine($OutputRoot, "SMOKE_REPORT.md")
 $reportLines = [System.Activator]::CreateInstance([System.Collections.Generic.List[string]])
