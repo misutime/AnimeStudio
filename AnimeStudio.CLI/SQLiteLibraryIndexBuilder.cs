@@ -4843,10 +4843,12 @@ SELECT
     COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
     COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count,
     GROUP_CONCAT(DISTINCT COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS field_paths,
+    COUNT(DISTINCT goRel.to_file || ':' || goRel.to_path_id) AS attached_gameobject_count,
     MIN(r.from_source) AS sample_source,
     MIN(r.from_file) AS sample_file,
     MIN(r.from_path_id) AS sample_path_id,
     MIN(COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS sample_field_path,
+    MIN(go.name) AS sample_gameobject_name,
     MIN(clip.name) AS sample_clip_name
 FROM source_objects clip
 JOIN source_relations r
@@ -4857,6 +4859,13 @@ LEFT JOIN source_objects mono
   ON mono.serialized_file = r.from_file COLLATE NOCASE
  AND mono.path_id = r.from_path_id
  AND mono.type = 'MonoBehaviour'
+LEFT JOIN source_relations goRel
+  ON goRel.from_file = r.from_file COLLATE NOCASE
+ AND goRel.from_path_id = r.from_path_id
+ AND goRel.relation = 'component.gameObject'
+LEFT JOIN source_objects go
+  ON go.serialized_file = goRel.to_file COLLATE NOCASE
+ AND go.path_id = goRel.to_path_id
 WHERE clip.type = 'AnimationClip'
 GROUP BY COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '')
 ORDER BY relation_count DESC, object_count DESC
@@ -4874,13 +4883,15 @@ LIMIT $limit;";
                     ["objectCount"] = reader.IsDBNull(2) ? 0 : reader.GetInt64(2),
                     ["distinctClipCount"] = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
                     ["fieldPaths"] = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                    ["attachedGameObjectCount"] = reader.IsDBNull(5) ? 0 : reader.GetInt64(5),
                     ["sample"] = new JObject
                     {
-                        ["source"] = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                        ["serializedFile"] = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
-                        ["pathId"] = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
-                        ["fieldPath"] = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                        ["clipName"] = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                        ["source"] = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                        ["serializedFile"] = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                        ["pathId"] = reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                        ["fieldPath"] = reader.IsDBNull(9) ? string.Empty : reader.GetString(9),
+                        ["gameObjectName"] = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                        ["clipName"] = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
                     },
                 });
             }

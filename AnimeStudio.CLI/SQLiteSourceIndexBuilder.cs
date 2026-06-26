@@ -2948,10 +2948,12 @@ SELECT
     COUNT(DISTINCT r.from_file || ':' || r.from_path_id) AS object_count,
     COUNT(DISTINCT r.to_file || ':' || r.to_path_id) AS distinct_clip_count,
     GROUP_CONCAT(DISTINCT COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS field_paths,
+    COUNT(DISTINCT goRel.to_file || ':' || goRel.to_path_id) AS attached_gameobject_count,
     MIN(r.from_source) AS sample_source,
     MIN(r.from_file) AS sample_file,
     MIN(r.from_path_id) AS sample_path_id,
     MIN(COALESCE(json_extract(r.raw_json, '$.details.path'), '')) AS sample_field_path,
+    MIN(go.name) AS sample_gameobject_name,
     MIN(clip.name) AS sample_clip_name
 FROM source_objects clip
 JOIN source_relations r
@@ -2962,6 +2964,13 @@ LEFT JOIN source_objects mono
   ON mono.serialized_file = r.from_file COLLATE NOCASE
  AND mono.path_id = r.from_path_id
  AND mono.type = 'MonoBehaviour'
+LEFT JOIN source_relations goRel
+  ON goRel.from_file = r.from_file COLLATE NOCASE
+ AND goRel.from_path_id = r.from_path_id
+ AND goRel.relation = 'component.gameObject'
+LEFT JOIN source_objects go
+  ON go.serialized_file = goRel.to_file COLLATE NOCASE
+ AND go.path_id = goRel.to_path_id
 WHERE clip.type = 'AnimationClip'
 GROUP BY COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.scriptName'), '')
 ORDER BY relation_count DESC, object_count DESC
@@ -2979,12 +2988,14 @@ LIMIT $limit;";
                     ["objectCount"] = ReadInt64(reader, "object_count"),
                     ["distinctClipCount"] = ReadInt64(reader, "distinct_clip_count"),
                     ["fieldPaths"] = ReadString(reader, "field_paths"),
+                    ["attachedGameObjectCount"] = ReadInt64(reader, "attached_gameobject_count"),
                     ["sample"] = new JObject
                     {
                         ["source"] = ReadString(reader, "sample_source"),
                         ["serializedFile"] = ReadString(reader, "sample_file"),
                         ["pathId"] = ReadInt64(reader, "sample_path_id"),
                         ["fieldPath"] = ReadString(reader, "sample_field_path"),
+                        ["gameObjectName"] = ReadString(reader, "sample_gameobject_name"),
                         ["clipName"] = ReadString(reader, "sample_clip_name"),
                     },
                 });
