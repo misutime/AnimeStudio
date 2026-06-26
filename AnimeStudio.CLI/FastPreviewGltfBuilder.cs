@@ -230,7 +230,7 @@ namespace AnimeStudio.CLI
             }
 
             var nodeMap = BuildNodePathMap(source, nodes);
-            var pathMap = BuildAnimationPathMap(animationJson, source, nodes, nodeMap);
+            var pathMap = BuildAnimationPathMap(animationJson, source, nodes, nodeMap, model["avatar"] as JObject);
             var gltf = BuildSkinlessAnimationGltf(source);
             var curves = LoadCurves(decoded);
             curves = ResolveCurvePaths(curves, pathMap);
@@ -357,7 +357,9 @@ namespace AnimeStudio.CLI
 
             if (matched == 0)
             {
-                message = "独立动画曲线没有匹配到 glTF 节点；请检查 AnimationClip binding path 和模型骨架路径。";
+                message = "独立动画曲线没有匹配到 glTF 节点；请检查 AnimationClip binding path、模型骨架路径，或确认该 sidecar 是否真的包含身体 TRS/Humanoid 曲线。"
+                    + BuildHumanoidDiagnosticHint(internalDiagnostic)
+                    + BuildDecodedHint(decoded);
                 return false;
             }
 
@@ -517,7 +519,8 @@ namespace AnimeStudio.CLI
             JObject animationJson,
             JObject gltf,
             JArray nodes,
-            Dictionary<string, int> nodeMap)
+            Dictionary<string, int> nodeMap,
+            JObject avatar = null)
         {
             var map = new Dictionary<uint, string>();
             foreach (var binding in animationJson?["bindings"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
@@ -527,6 +530,20 @@ namespace AnimeStudio.CLI
                 if (hash.HasValue && !string.IsNullOrWhiteSpace(path))
                 {
                     map[hash.Value] = path;
+                }
+            }
+
+            foreach (var item in avatar?["tos"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                if (!TryReadUInt32(item["pathHash"], out var hash) || hash == 0)
+                {
+                    continue;
+                }
+
+                var path = ((string)item["path"])?.Replace('\\', '/').Trim();
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    map.TryAdd(hash, path);
                 }
             }
 
@@ -541,6 +558,36 @@ namespace AnimeStudio.CLI
             }
 
             return map;
+        }
+
+        private static bool TryReadUInt32(JToken token, out uint value)
+        {
+            value = 0;
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return false;
+            }
+
+            if (token.Type == JTokenType.Integer)
+            {
+                var number = token.Value<long>();
+                if (number < 0 || number > uint.MaxValue)
+                {
+                    return false;
+                }
+
+                value = (uint)number;
+                return true;
+            }
+
+            var text = token.ToString().Trim();
+            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                text = text[2..];
+                return uint.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
+            }
+
+            return uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
         }
 
         private static IEnumerable<string> EnumerateComparableNodePaths(JObject gltf, JArray nodes, Dictionary<string, int> nodeMap)

@@ -616,7 +616,9 @@ namespace AnimeStudio.CLI
             string animationSidecarPath,
             string outputDirectory,
             bool forceInternalHumanoidSolve = false,
-            string additionalLayerSidecars = null)
+            string additionalLayerSidecars = null,
+            string sourceIndexPath = null,
+            string previewAvatarSelector = null)
         {
             if (string.IsNullOrWhiteSpace(modelGltfPath) || !File.Exists(modelGltfPath))
             {
@@ -679,17 +681,41 @@ namespace AnimeStudio.CLI
                     animationSidecarPath,
                     sidecar,
                     animationName,
-                    outputDirectory);
+                    outputDirectory,
+                    sourceIndexPath,
+                    previewAvatarSelector);
             }
 
-            var modelEntry = new JObject
+            JObject modelEntry;
+            JObject avatarInjection = null;
+            if (!string.IsNullOrWhiteSpace(previewAvatarSelector))
             {
-                ["model"] = new JObject
+                if (!TryBuildModelEntryFromCatalog(
+                        modelGltfPath,
+                        sourceIndexPath,
+                        previewAvatarSelector,
+                        requireInternalSolver: false,
+                        out modelEntry,
+                        out _,
+                        out avatarInjection,
+                        out var modelMessage))
                 {
-                    ["name"] = Path.GetFileNameWithoutExtension(modelGltfPath),
-                    ["output"] = modelGltfPath,
-                },
-            };
+                    Logger.Error(modelMessage);
+                    return null;
+                }
+            }
+            else
+            {
+                modelEntry = new JObject
+                {
+                    ["model"] = new JObject
+                    {
+                        ["name"] = Path.GetFileNameWithoutExtension(modelGltfPath),
+                        ["output"] = modelGltfPath,
+                    },
+                };
+            }
+
             var animationEntry = new JObject
             {
                 ["name"] = animationName,
@@ -722,6 +748,7 @@ namespace AnimeStudio.CLI
                     ["animationName"] = animationName,
                     ["gltf"] = gltfPath,
                     ["message"] = message,
+                    ["avatarInjection"] = avatarInjection,
                     ["rule"] = "手动文件入口只把已选择的 animation_asset.json decoded TRS 写成独立动画 glTF，不创建默认模型-动画推荐关系；可信关系仍应来自 Unity 显式引用或后续验证索引。",
                 }.ToString(Formatting.Indented));
                 Logger.Info(message);
@@ -730,7 +757,22 @@ namespace AnimeStudio.CLI
                 return gltfPath;
             }
 
+            var failureReportPath = Path.Combine(output, "standalone_animation_gltf_report.json");
+            Directory.CreateDirectory(output);
+            File.WriteAllText(failureReportPath, new JObject
+            {
+                ["status"] = "failed",
+                ["reason"] = "standalone_animation_gltf_export_failed",
+                ["modelGltf"] = modelGltfPath,
+                ["animationSidecar"] = animationSidecarPath,
+                ["additionalLayerSidecars"] = new JArray(SplitManualAdditionalLayerSidecars(additionalLayerSidecars)),
+                ["animationName"] = animationName,
+                ["message"] = message,
+                ["avatarInjection"] = avatarInjection,
+                ["rule"] = "手动文件入口失败也写报告。显式 Avatar TOS 只用于 hash-only 路径解析诊断；失败不代表模型贴图或材质关系丢失。",
+            }.ToString(Formatting.Indented));
             Logger.Error($"Standalone animation glTF export failed: {message}");
+            Logger.Error($"Standalone animation failure report: {failureReportPath}");
             return null;
         }
 
@@ -902,9 +944,19 @@ namespace AnimeStudio.CLI
             string animationSidecarPath,
             JObject sidecar,
             string animationName,
-            string outputDirectory)
+            string outputDirectory,
+            string sourceIndexPath,
+            string previewAvatarSelector)
         {
-            if (!TryBuildModelEntryFromCatalog(modelGltfPath, out var modelEntry, out var libraryRoot, out var modelMessage))
+            if (!TryBuildModelEntryFromCatalog(
+                    modelGltfPath,
+                    sourceIndexPath,
+                    previewAvatarSelector,
+                    requireInternalSolver: true,
+                    out var modelEntry,
+                    out var libraryRoot,
+                    out var avatarInjection,
+                    out var modelMessage))
             {
                 Logger.Error(modelMessage);
                 return null;
@@ -939,7 +991,22 @@ namespace AnimeStudio.CLI
                     out var message,
                     forceInternalHumanoidSolve: true))
             {
+                var failureReportPath = Path.Combine(output, "standalone_animation_gltf_report.json");
+                Directory.CreateDirectory(output);
+                File.WriteAllText(failureReportPath, new JObject
+                {
+                    ["status"] = "failed",
+                    ["reason"] = "forced_internal_humanoid_export_failed",
+                    ["modelGltf"] = modelGltfPath,
+                    ["animationSidecar"] = animationSidecarPath,
+                    ["animationName"] = animationName,
+                    ["message"] = message,
+                    ["libraryRoot"] = libraryRoot,
+                    ["avatarInjection"] = avatarInjection,
+                    ["rule"] = "手动文件入口强制 Humanoid/Muscle 求解失败时也写报告。显式 Avatar oracle 注入只证明诊断输入被采用，不代表该 clip 含有人形身体曲线或可作为生产动画。",
+                }.ToString(Formatting.Indented));
                 Logger.Error($"Forced internal Humanoid/Muscle standalone animation export failed: {message}");
+                Logger.Error($"Standalone animation failure report: {failureReportPath}");
                 return null;
             }
 
@@ -953,6 +1020,7 @@ namespace AnimeStudio.CLI
                 ["gltf"] = gltfPath,
                 ["message"] = message,
                 ["libraryRoot"] = libraryRoot,
+                ["avatarInjection"] = avatarInjection,
                 ["rule"] = "手动文件入口强制使用 AnimeStudio 内部 Humanoid/Muscle 求解器生成无 mesh/skin 的独立动画 glTF；只用于直接 TRS 求解验证，不创建默认模型-动画推荐关系，也不替代视觉验收。",
             }.ToString(Formatting.Indented));
 
@@ -962,10 +1030,19 @@ namespace AnimeStudio.CLI
             return gltfPath;
         }
 
-        private static bool TryBuildModelEntryFromCatalog(string modelGltfPath, out JObject modelEntry, out string libraryRoot, out string message)
+        private static bool TryBuildModelEntryFromCatalog(
+            string modelGltfPath,
+            string sourceIndexPath,
+            string previewAvatarSelector,
+            bool requireInternalSolver,
+            out JObject modelEntry,
+            out string libraryRoot,
+            out JObject avatarInjection,
+            out string message)
         {
             modelEntry = null;
             libraryRoot = null;
+            avatarInjection = null;
             message = null;
 
             var fullModelPath = Path.GetFullPath(modelGltfPath);
@@ -993,8 +1070,32 @@ namespace AnimeStudio.CLI
                         message = $"asset_catalog.jsonl was found, but no Model row matches {fullModelPath}.";
                         return false;
                     }
+                    if (!string.IsNullOrWhiteSpace(previewAvatarSelector))
+                    {
+                        if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+                        {
+                            message = "--preview_avatar for manual animation preview requires a readable --source_index unity_source_index.db.";
+                            return false;
+                        }
+
+                        if (!TryLoadDiagnosticAvatarFromSourceIndex(
+                                sourceIndexPath,
+                                previewAvatarSelector,
+                                requireInternalSolver,
+                                out var injectedAvatar,
+                                out avatarInjection,
+                                out var avatarMessage))
+                        {
+                            message = avatarMessage;
+                            return false;
+                        }
+
+                        // 这里只修改本次内存里的 model entry，正式 asset_catalog.jsonl 不会被回写。
+                        model["avatar"] = injectedAvatar;
+                    }
+
                     var avatar = model["avatar"] as JObject;
-                    if (avatar?["internalSolver"] == null)
+                    if (requireInternalSolver && avatar?["internalSolver"] == null)
                     {
                         message = "Forced internal Humanoid/Muscle preview needs model.avatar.internalSolver from asset_catalog.jsonl. Re-export the model with current Avatar metadata first.";
                         return false;
@@ -1012,6 +1113,290 @@ namespace AnimeStudio.CLI
 
             message = $"Cannot find asset_catalog.jsonl by walking up from model glTF: {fullModelPath}";
             return false;
+        }
+
+        private static bool TryLoadDiagnosticAvatarFromSourceIndex(
+            string sourceIndexPath,
+            string selector,
+            bool requireInternalSolver,
+            out JObject avatar,
+            out JObject injectionReport,
+            out string message)
+        {
+            avatar = null;
+            injectionReport = null;
+            message = null;
+
+            SQLitePCL.Batteries_V2.Init();
+            using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
+            connection.Open();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT name, source_path, serialized_file, path_id, raw_json
+FROM source_objects
+WHERE type='Avatar'
+ORDER BY name COLLATE NOCASE, path_id;";
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = ReadString(reader, 0);
+                var sourcePath = ReadString(reader, 1);
+                var serializedFile = ReadString(reader, 2);
+                var pathId = ReadLong(reader, 3);
+                if (!MatchesAvatarSelector(selector, name, sourcePath, serializedFile, pathId))
+                {
+                    continue;
+                }
+
+                JObject raw;
+                try
+                {
+                    raw = JObject.Parse(ReadString(reader, 4));
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+
+                var rawAvatar = raw["avatar"] as JObject;
+                var tos = CloneArray(rawAvatar?["tos"] as JArray);
+                var oracle = rawAvatar?["oracle"] as JObject;
+                var oracleMessage = string.Empty;
+                var hasCompleteOracle = oracle != null && HasCompleteSourceAvatarOracle(oracle, out oracleMessage);
+                if (requireInternalSolver && oracle == null)
+                {
+                    message = $"Selected Avatar does not contain a complete AvatarConstant oracle: {name}#{pathId}. missing oracle";
+                    return false;
+                }
+                if (requireInternalSolver && !hasCompleteOracle)
+                {
+                    message = $"Selected Avatar does not contain a complete AvatarConstant oracle: {name}#{pathId}. {oracleMessage}";
+                    return false;
+                }
+                if (!requireInternalSolver && tos.Count == 0 && !hasCompleteOracle)
+                {
+                    message = $"Selected Avatar cannot be used for direct TRS path diagnostics: {name}#{pathId}. missing Avatar.m_TOS and complete AvatarConstant oracle";
+                    return false;
+                }
+
+                avatar = new JObject
+                {
+                    ["name"] = string.IsNullOrWhiteSpace(name) ? $"Avatar_{pathId}" : name,
+                    ["source"] = sourcePath,
+                    ["serializedFile"] = serializedFile,
+                    ["pathId"] = pathId,
+                    ["hasHumanDescription"] = rawAvatar?["hasHumanDescription"] ?? false,
+                    ["humanBoneCount"] = rawAvatar?["humanBoneCount"] ?? 0,
+                    ["skeletonBoneCount"] = rawAvatar?["skeletonBoneCount"] ?? 0,
+                    ["avatarSkeletonNodeCount"] = rawAvatar?["avatarSkeletonNodeCount"] ?? 0,
+                    ["oracleSource"] = "unity_source_index.avatar.oracle",
+                    ["diagnosticOnly"] = true,
+                    ["tos"] = tos,
+                };
+                if (hasCompleteOracle)
+                {
+                    avatar["internalSolver"] = BuildInternalSolverFromSourceAvatarOracle(oracle);
+                }
+                injectionReport = new JObject
+                {
+                    ["status"] = "ok",
+                    ["diagnosticOnly"] = true,
+                    ["manualReviewRequired"] = true,
+                    ["notDefaultModelAnimationRelation"] = true,
+                    ["mode"] = requireInternalSolver ? "internalHumanoidSolver" : "directTrsPathHashMapping",
+                    ["internalSolverInjected"] = hasCompleteOracle,
+                    ["tosCount"] = tos.Count,
+                    ["sourceIndex"] = Path.GetFullPath(sourceIndexPath),
+                    ["selector"] = selector,
+                    ["avatar"] = new JObject
+                    {
+                        ["name"] = avatar["name"],
+                        ["sourcePath"] = sourcePath,
+                        ["serializedFile"] = serializedFile,
+                        ["pathId"] = pathId,
+                        ["humanBoneCount"] = avatar["humanBoneCount"],
+                        ["skeletonBoneCount"] = avatar["skeletonBoneCount"],
+                        ["avatarSkeletonNodeCount"] = avatar["avatarSkeletonNodeCount"],
+                    },
+                    ["rule"] = requireInternalSolver
+                        ? "显式手动预览把源索引 Avatar oracle 临时装入 model.avatar.internalSolver，只用于 Humanoid/Muscle 求解诊断；不会回写 asset_catalog.jsonl，也不会创建默认模型-动画关系。"
+                        : "显式手动预览把源索引 Avatar.m_TOS 临时装入 model.avatar.tos，只用于 hash-only AnimationClip 路径解析诊断；不会回写 asset_catalog.jsonl，也不会创建默认模型-动画关系。",
+                };
+                return true;
+            }
+
+            message = $"No Avatar in source index matched --preview_avatar selector: {selector}";
+            return false;
+        }
+
+        private static JObject BuildInternalSolverFromSourceAvatarOracle(JObject oracle)
+        {
+            var human = oracle["human"] as JObject;
+            var humanSkeleton = oracle["humanSkeleton"] as JObject;
+            var avatarSkeleton = oracle["avatarSkeleton"] as JObject;
+            var humanNodes = CloneNodeArrayWithNames(humanSkeleton?["nodes"] as JArray);
+            var avatarNodes = CloneNodeArrayWithNames(avatarSkeleton?["nodes"] as JArray);
+            var avatarDefaultPose = CloneArray(avatarSkeleton?["defaultPose"] as JArray);
+
+            return new JObject
+            {
+                ["version"] = 1,
+                ["source"] = "Unity AvatarConstant via unity_source_index.avatar.oracle",
+                ["rule"] = "Diagnostic-only manual preview input. It is deterministic Avatar metadata, but it is not a Unity explicit model-animation relation and must not be treated as production animation readiness.",
+                ["humanBoneIndex"] = CloneArray(oracle["humanBoneIndex"] as JArray),
+                ["scale"] = human?["scale"] ?? 1.0,
+                ["hasTranslationDoF"] = human?["hasTDoF"] ?? false,
+                ["root"] = CloneObject(human?["root"] as JObject),
+                ["human"] = new JObject
+                {
+                    ["hasLeftHand"] = human?["hasLeftHand"] ?? false,
+                    ["hasRightHand"] = human?["hasRightHand"] ?? false,
+                    ["leftHandBoneIndex"] = CloneArray(human?["leftHandBoneIndex"] as JArray),
+                    ["rightHandBoneIndex"] = CloneArray(human?["rightHandBoneIndex"] as JArray),
+                    ["humanBoneMass"] = CloneArray(oracle["humanBoneMass"] as JArray),
+                },
+                ["twist"] = new JObject
+                {
+                    ["arm"] = human?["armTwist"] ?? 0.5,
+                    ["foreArm"] = human?["foreArmTwist"] ?? 0.5,
+                    ["upperLeg"] = human?["upperLegTwist"] ?? 0.5,
+                    ["leg"] = human?["legTwist"] ?? 0.5,
+                    ["armStretch"] = human?["armStretch"] ?? 0.05,
+                    ["legStretch"] = human?["legStretch"] ?? 0.05,
+                    ["feetSpacing"] = human?["feetSpacing"] ?? 0.0,
+                },
+                ["humanBoneLimits"] = new JObject(),
+                ["humanSkeletonIndexArray"] = CloneArray(oracle["humanSkeletonIndexArray"] as JArray),
+                ["humanSkeletonReverseIndexArray"] = CloneArray(oracle["humanSkeletonReverseIndexArray"] as JArray),
+                ["skeleton"] = new JObject
+                {
+                    ["nodeCount"] = humanSkeleton?["nodeCount"] ?? humanNodes.Count,
+                    ["axesCount"] = humanSkeleton?["axesCount"] ?? JsonArrayCount(humanSkeleton?["axes"]),
+                    ["humanSkeletonPoseCount"] = JsonArrayCount(humanSkeleton?["pose"]),
+                    ["avatarDefaultPoseCount"] = avatarDefaultPose.Count,
+                    ["nodes"] = humanNodes,
+                    ["axes"] = CloneArray(humanSkeleton?["axes"] as JArray),
+                    ["humanSkeletonPose"] = CloneArray(humanSkeleton?["pose"] as JArray),
+                    ["avatarDefaultPose"] = avatarDefaultPose,
+                },
+                ["avatarSkeleton"] = new JObject
+                {
+                    ["nodeCount"] = avatarSkeleton?["nodeCount"] ?? avatarNodes.Count,
+                    ["axesCount"] = avatarSkeleton?["axesCount"] ?? JsonArrayCount(avatarSkeleton?["axes"]),
+                    ["poseCount"] = JsonArrayCount(avatarSkeleton?["pose"]),
+                    ["defaultPoseCount"] = avatarDefaultPose.Count,
+                    ["nodes"] = avatarNodes,
+                    ["axes"] = CloneArray(avatarSkeleton?["axes"] as JArray),
+                    ["pose"] = CloneArray(avatarSkeleton?["pose"] as JArray),
+                    ["defaultPose"] = avatarDefaultPose,
+                },
+                ["rootMotion"] = CloneObject(oracle["rootMotion"] as JObject),
+            };
+        }
+
+        private static bool HasCompleteSourceAvatarOracle(JObject oracle, out string message)
+        {
+            message = null;
+            var humanBoneIndex = oracle?["humanBoneIndex"] as JArray;
+            var humanSkeleton = oracle?["humanSkeleton"] as JObject;
+            var humanNodes = humanSkeleton?["nodes"] as JArray;
+            var humanPose = humanSkeleton?["pose"] as JArray;
+            var avatarSkeleton = oracle?["avatarSkeleton"] as JObject;
+            var avatarNodes = avatarSkeleton?["nodes"] as JArray;
+            var defaultPose = avatarSkeleton?["defaultPose"] as JArray;
+            if (humanBoneIndex == null || humanBoneIndex.Count == 0)
+            {
+                message = "missing humanBoneIndex";
+                return false;
+            }
+            if (humanNodes == null || humanNodes.Count == 0 || humanPose == null || humanPose.Count < humanNodes.Count)
+            {
+                message = "missing complete humanSkeleton nodes/pose";
+                return false;
+            }
+            if (avatarNodes == null || avatarNodes.Count == 0 || defaultPose == null || defaultPose.Count < avatarNodes.Count)
+            {
+                message = "missing complete avatarSkeleton nodes/defaultPose";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static JArray CloneNodeArrayWithNames(JArray nodes)
+        {
+            var result = new JArray();
+            foreach (var node in nodes?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                var clone = (JObject)node.DeepClone();
+                var path = (string)clone["path"];
+                if (string.IsNullOrWhiteSpace((string)clone["name"]))
+                {
+                    clone["name"] = GetLastPathSegment(path);
+                }
+                result.Add(clone);
+            }
+            return result;
+        }
+
+        private static string GetLastPathSegment(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+
+            path = path.Replace('\\', '/').Trim('/');
+            var index = path.LastIndexOf('/');
+            return index < 0 ? path : path[(index + 1)..];
+        }
+
+        private static bool MatchesAvatarSelector(string selector, string name, string sourcePath, string serializedFile, long pathId)
+        {
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return false;
+            }
+
+            var trimmed = selector.Trim();
+            return string.Equals(pathId.ToString(CultureInfo.InvariantCulture), trimmed, StringComparison.OrdinalIgnoreCase)
+                || ContainsIgnoreCase(name, trimmed)
+                || ContainsIgnoreCase(sourcePath, trimmed)
+                || ContainsIgnoreCase(serializedFile, trimmed);
+        }
+
+        private static bool ContainsIgnoreCase(string value, string token)
+        {
+            return !string.IsNullOrWhiteSpace(value)
+                && !string.IsNullOrWhiteSpace(token)
+                && value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static JArray CloneArray(JArray array)
+        {
+            return array == null ? new JArray() : (JArray)array.DeepClone();
+        }
+
+        private static JObject CloneObject(JObject value)
+        {
+            return value == null ? new JObject() : (JObject)value.DeepClone();
+        }
+
+        private static int JsonArrayCount(JToken token)
+        {
+            return token is JArray array ? array.Count : 0;
+        }
+
+        private static string ReadString(SqliteDataReader reader, int ordinal)
+        {
+            return reader.IsDBNull(ordinal) ? string.Empty : reader.GetString(ordinal);
+        }
+
+        private static long ReadLong(SqliteDataReader reader, int ordinal)
+        {
+            return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
         }
 
         private static string GenerateSelection(

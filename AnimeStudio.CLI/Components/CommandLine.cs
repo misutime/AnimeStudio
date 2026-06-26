@@ -136,6 +136,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.PreviewOutput,
                 optionsBinder.PreviewSourceRoot,
                 optionsBinder.PreviewForceInternalHumanoidSolve,
+                optionsBinder.PreviewAvatar,
                 optionsBinder.AssemblyModules,
                 optionsBinder.PackModelAnimations,
                 optionsBinder.PackModelAnimationsFromLibrary,
@@ -300,6 +301,7 @@ namespace AnimeStudio.CLI
         public DirectoryInfo PreviewOutput { get; set; }
         public DirectoryInfo PreviewSourceRoot { get; set; }
         public bool PreviewForceInternalHumanoidSolve { get; set; }
+        public string PreviewAvatar { get; set; }
         public string AssemblyModules { get; set; }
         public FileInfo PackModelAnimations { get; set; }
         public DirectoryInfo PackModelAnimationsFromLibrary { get; set; }
@@ -459,6 +461,7 @@ namespace AnimeStudio.CLI
         public readonly Option<DirectoryInfo> PreviewOutput;
         public readonly Option<DirectoryInfo> PreviewSourceRoot;
         public readonly Option<bool> PreviewForceInternalHumanoidSolve;
+        public readonly Option<string> PreviewAvatar;
         public readonly Option<string> AssemblyModules;
         public readonly Option<FileInfo> PackModelAnimations;
         public readonly Option<DirectoryInfo> PackModelAnimationsFromLibrary;
@@ -616,6 +619,7 @@ namespace AnimeStudio.CLI
             PreviewOutput = new Option<DirectoryInfo>("--preview_output", "Output folder for preview commands. Defaults to Previews/<model>__<animation> next to the index or Library root.");
             PreviewSourceRoot = new Option<DirectoryInfo>("--preview_source_root", "Full Unity game/source root used by preview and animation-pack commands to resolve dependencies instead of reusing possibly incomplete indexed sample paths.").LegalFilePathsOnly();
             PreviewForceInternalHumanoidSolve = new Option<bool>("--preview_force_internal_humanoid_solve", "Force file-based preview/standalone animation export to use AnimeStudio's internal Humanoid/Muscle solver. Diagnostic validation only; it does not create model-animation recommendations.");
+            PreviewAvatar = new Option<string>("--preview_avatar", "Explicit Avatar selector for diagnostic manual preview. With --source_index it can inject Avatar.m_TOS for hash-only TRS path mapping, or Avatar oracle for --preview_force_internal_humanoid_solve; it does not create default model-animation relations.");
             AssemblyModules = new Option<string>("--assembly_modules", "Comma-separated module roles or selectors for --generate_assembled_preview_gltf. Defaults to Face,Hair,Accessory.");
             PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
             PackModelAnimationsFromLibrary = new Option<DirectoryInfo>("--pack_model_animations_from_library", "Generate a reusable animation asset pack directly from library_index.db in a Library root.").LegalFilePathsOnly();
@@ -866,6 +870,7 @@ namespace AnimeStudio.CLI
                 PreviewOutput = bindingContext.ParseResult.GetValueForOption(PreviewOutput),
                 PreviewSourceRoot = bindingContext.ParseResult.GetValueForOption(PreviewSourceRoot),
                 PreviewForceInternalHumanoidSolve = bindingContext.ParseResult.GetValueForOption(PreviewForceInternalHumanoidSolve),
+                PreviewAvatar = bindingContext.ParseResult.GetValueForOption(PreviewAvatar),
                 AssemblyModules = bindingContext.ParseResult.GetValueForOption(AssemblyModules),
                 PackModelAnimations = bindingContext.ParseResult.GetValueForOption(PackModelAnimations),
                 PackModelAnimationsFromLibrary = bindingContext.ParseResult.GetValueForOption(PackModelAnimationsFromLibrary),

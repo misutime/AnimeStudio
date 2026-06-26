@@ -1130,6 +1130,19 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 这个命令只用于直接求解器和动画资产格式验证：它不会创建默认模型-动画推荐关系，也不会把 `experimental_internal_solver` 自动升级为生产可复用动画。验收仍必须把 standalone 动画合回模型，检查 glTF animation extras、合成结果和 rest/mid/end 清晰截图。skinless glTF 不写 mesh/morph target，所以 BlendShape weights 仍需要带目标模型的预览/合成路径单独验收。
 
+Naraka 这类游戏的 `AnimationClip` binding 可能只有 `pathHash`。手动文件入口可以额外传 `--source_index` 和 `--preview_avatar`，把源索引里的 `Avatar.m_TOS` 临时注入到本次内存模型，用于 hash-only 直接 TRS 路径解析；如果同时传 `--preview_force_internal_humanoid_solve`，则还会要求该 Avatar 有完整 `AvatarConstant oracle` 和 `internalSolver` 所需参考姿态。这个注入只用于诊断，不回写 `asset_catalog.jsonl`，不创建 `model_animations.json` / SQLite 默认候选，也不能把跨模型、跨怪物或语义不一致的手动组合标成生产可播放。
+
+```powershell
+AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
+  --export_animation_gltf_from_files "D:\Assets\Naraka\SomeLibrary\Models\ch_m_hadi_lv_s9.gltf" `
+  --preview_animation "D:\Assets\Naraka\SomeDecoded\Animations\mo_pve_b_dijiang_attack_a8_01.animation_asset.json" `
+  --preview_output "D:\Assets\Naraka\ManualAnimationTosPreview" `
+  --source_index "D:\Assets\Naraka\SourceIndex_Naraka_TosMini_Current\unity_source_index.db" `
+  --preview_avatar "mo_pve_b_dijiang_01_skeletonAvatar"
+```
+
+这类报告会写 `avatarInjection.mode`：`directTrsPathHashMapping` 表示只用 `Avatar.m_TOS` 解路径，`internalHumanoidSolver` 表示显式注入 Avatar oracle 参与 Humanoid/Muscle 诊断。即使输出 glTF validator 无 error，也仍需看 `diagnosticOnly`、`manualReviewRequired`、模型 gate、Unity 显式关系和清晰视觉验收，不能把它当成默认动画能力完成证据。
+
 如果候选来自 `unity_source_index.db` 的显式 `Animator -> AnimatorController -> AnimationClip` 链，但模型缺完整 `HumanDescription.humanBones` 或 `humanBoneIndex`，SQLite 会把生产状态继续阻断为 `NeedsDirectTrsAnimation` / `missing_human_bone_index`。只要 `experimentalInternalHumanoidSolverReady=true`，CLI/Browser 可以把它放入内部求解器实验预览队列；但报告、索引和截图都必须保留 `experimental` / `notProductionReady` 语义，直到跨样本视觉验收和公式校准完成。
 
 内部 Humanoid/Muscle 求解器会把每个 Humanoid 骨骼的 3 个 muscle DoF 按 Unity AvatarLimit 的 X/Y/Z 轴直通还原，再用 `preQ * swing(Y/Z) * axisX(X) * inverse(postQ)` 写回骨骼本地旋转；不能因为肉眼觉得某个属性像 twist，就把 `Down-Up/Stretch` 和 `Twist` 全局调换。求解器也会读取 `model.avatar.internalSolver.twist` / `HumanDescription` 的 `armTwist`、`foreArmTwist`、`upperLegTwist`、`legTwist`，按 Unity Avatar 的父/子骨 twist share 分配长骨 twist。Endfield 当前常见配置是 `arm=1, foreArm=0, upperLeg=1, leg=0`，也就是上臂/上腿 twist 写到远端，前臂/小腿 twist 留在近端。这个修正只解决确定性的轴映射和 twist 分配，不等于 Forearm/LowerLeg stretch 成对 delta 公式已经完全复现；只要报告里还有 `experimental_solved_known_limb_formula_risk` 或 `notProductionReady=true`，仍不能当作生产验收通过。

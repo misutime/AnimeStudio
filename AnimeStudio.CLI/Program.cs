@@ -336,7 +336,9 @@ namespace AnimeStudio.CLI
                         o.PreviewAnimation,
                         o.PreviewOutput?.FullName,
                         o.PreviewForceInternalHumanoidSolve,
-                        o.PackAnimations
+                        o.PackAnimations,
+                        o.SourceIndex?.FullName,
+                        o.PreviewAvatar
                     );
                     if (string.IsNullOrWhiteSpace(animationGltfPath))
                     {
