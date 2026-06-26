@@ -1079,6 +1079,7 @@ $scriptAnimationHadiOutput = Join-Path $OutputRoot "SourceModelAnimation_HadiBod
 $scriptAnimationFxOutput = Join-Path $OutputRoot "SourceModelAnimation_FxAttack_ScriptComponentDiagnostic"
 $sourceModelJiantianshiOutput = Join-Path $OutputRoot "SourceModelAnimation_Jiantianshi_FormalModelDiagnostic"
 $sourceModelZhumuOutput = Join-Path $OutputRoot "SourceModelAnimation_ZhumuSoul_ScriptAvatarDiagnostic"
+$sourceModelYaodaojiWingsOutput = Join-Path $OutputRoot "SourceModelAnimation_YaodaojiWings_ShortlistProbe"
 $avatarTosDijiangOutput = Join-Path $OutputRoot "SourceModelAnimation_Dijiang_AvatarTosDiagnostic"
 $avatarCompatibilitySamuraiOutput = Join-Path $OutputRoot "SourceModelAnimation_SamuraiGhost_AvatarCompatibilityDiagnostic"
 $representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
@@ -1193,6 +1194,7 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     rule = "Selected-model script AnimationClip PPtr diagnostics are local evidence only. They must stay diagnosticOnly/notDefaultModelAnimationRelation and never create default model-animation candidates without script semantics, model validation and visual validation."
     hadiBody = $null
     jiantianshiFormal = $null
+    yaodaojiWings = $null
     fxAttack = $null
 }
 $sourceIndexSimpleAnimationClipDomains = [pscustomobject]@{
@@ -1207,6 +1209,7 @@ $sourceModelAvatarDiagnostics = [pscustomobject]@{
     rule = "Avatar.m_TOS hash coverage and model-avatar structural overlap are source-index diagnostics only. They can guide solver/oracle probes, but must stay defaultCandidateCount=0 until explicit Unity animation context, model validation, TRS export and visual validation are proven."
     dijiangTos = $null
     jiantianshiFormalCompatibility = $null
+    yaodaojiWingsCompatibility = $null
     samuraiGhostCompatibility = $null
 }
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
@@ -1341,6 +1344,11 @@ Invoke-Checked -Label "List Zhumu soul source-model animations" -FilePath $cli -
     "--preview_model", "mo_pve_b_zhumu_soul_01",
     "--preview_output", $sourceModelZhumuOutput,
     "--source_candidate_limit", "40")
+Invoke-Checked -Label "List Yaodaoji wings shortlist source-model animations" -FilePath $cli -Arguments @(
+    "--list_source_model_animations", $SourceIndex,
+    "--preview_model", "ch_f_japan_yaodaoji_lv_s14_wings",
+    "--preview_output", $sourceModelYaodaojiWingsOutput,
+    "--source_candidate_limit", "80")
 Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $cli -Arguments @(
     "--list_source_model_animations", $SourceIndex,
     "--preview_model", "fxattack_male_sw_attack_heavy_02",
@@ -1350,9 +1358,11 @@ Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $
 $hadiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_m_hadi_lv_s9" -OutputRoot $scriptAnimationHadiOutput
 $jiantianshiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_f_jiantianshi_lv_s1" -OutputRoot $sourceModelJiantianshiOutput
 $zhumuScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "mo_pve_b_zhumu_soul_01" -OutputRoot $sourceModelZhumuOutput
+$yaodaojiWingsScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_f_japan_yaodaoji_lv_s14_wings" -OutputRoot $sourceModelYaodaojiWingsOutput
 $fxScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "fxattack_male_sw_attack_heavy_02" -OutputRoot $scriptAnimationFxOutput
 $jiantianshiAvatarCompatibilityDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector "ch_f_jiantianshi_lv_s1" -OutputRoot $sourceModelJiantianshiOutput
 $zhumuAvatarCompatibilityDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector "mo_pve_b_zhumu_soul_01" -OutputRoot $sourceModelZhumuOutput
+$yaodaojiWingsAvatarCompatibilityDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector "ch_f_japan_yaodaoji_lv_s14_wings" -OutputRoot $sourceModelYaodaojiWingsOutput
 
 if ($hadiScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "Hadi body script animation diagnostic did not select any source model."
@@ -1393,6 +1403,24 @@ if ($zhumuAvatarCompatibilityDiagnostic.invalidBoundaryRows -ne 0) {
 if ($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows -lt 1 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows -lt 1 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage -lt 0.9) {
     throw "Zhumu soul Avatar compatibility diagnostic lost structural overlap evidence. rows=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows) highOverlapRows=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows) maxCoverage=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage)"
 }
+if ($yaodaojiWingsScriptAnimationDiagnostic.selectedModelCount -lt 1) {
+    throw "Yaodaoji wings shortlist source-model diagnostic did not select any source model."
+}
+if ($yaodaojiWingsScriptAnimationDiagnostic.candidateCount -ne 0 -or $yaodaojiWingsScriptAnimationDiagnostic.scriptAnimationRows -lt 1 -or $yaodaojiWingsScriptAnimationDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "Yaodaoji wings shortlist script diagnostic must stay diagnostic-only without default candidates. candidates=$($yaodaojiWingsScriptAnimationDiagnostic.candidateCount) scriptRows=$($yaodaojiWingsScriptAnimationDiagnostic.scriptAnimationRows) invalidRows=$($yaodaojiWingsScriptAnimationDiagnostic.invalidBoundaryRows)"
+}
+if ($yaodaojiWingsScriptAnimationDiagnostic.subtreeVisibleRendererRows -lt 1 -or $yaodaojiWingsScriptAnimationDiagnostic.subtreeSkinnedRendererRows -lt 1 -or $yaodaojiWingsScriptAnimationDiagnostic.animatorRows -lt 1) {
+    throw "Yaodaoji wings shortlist script diagnostic lost visible subtree, skinned renderer, or Animator context. subtreeVisibleRows=$($yaodaojiWingsScriptAnimationDiagnostic.subtreeVisibleRendererRows) subtreeSkinnedRows=$($yaodaojiWingsScriptAnimationDiagnostic.subtreeSkinnedRendererRows) animatorRows=$($yaodaojiWingsScriptAnimationDiagnostic.animatorRows)"
+}
+if ($yaodaojiWingsScriptAnimationDiagnostic.subtreeTruncatedRows -ne 0) {
+    throw "Yaodaoji wings shortlist bounded script-animation subtree diagnostic was truncated. truncatedRows=$($yaodaojiWingsScriptAnimationDiagnostic.subtreeTruncatedRows)"
+}
+if ($yaodaojiWingsAvatarCompatibilityDiagnostic.candidateCount -ne 0 -or $yaodaojiWingsAvatarCompatibilityDiagnostic.avatarTosDefaultCandidateCount -ne 0 -or $yaodaojiWingsAvatarCompatibilityDiagnostic.modelAvatarDefaultCandidateCount -ne 0) {
+    throw "Yaodaoji wings Avatar compatibility diagnostic unexpectedly produced default candidates. candidates=$($yaodaojiWingsAvatarCompatibilityDiagnostic.candidateCount) avatarTosDefault=$($yaodaojiWingsAvatarCompatibilityDiagnostic.avatarTosDefaultCandidateCount) modelAvatarDefault=$($yaodaojiWingsAvatarCompatibilityDiagnostic.modelAvatarDefaultCandidateCount)"
+}
+if ($yaodaojiWingsAvatarCompatibilityDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "Yaodaoji wings Avatar compatibility diagnostic lost diagnostic-only boundary. invalidRows=$($yaodaojiWingsAvatarCompatibilityDiagnostic.invalidBoundaryRows)"
+}
 if ($fxScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "FxAttack script animation diagnostic did not select any source model."
 }
@@ -1418,6 +1446,7 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     hadiBody = $hadiScriptAnimationDiagnostic
     jiantianshiFormal = $jiantianshiScriptAnimationDiagnostic
     zhumuSoul = $zhumuScriptAnimationDiagnostic
+    yaodaojiWings = $yaodaojiWingsScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
 }
 $sourceIndexSimpleAnimationClipDomains = Read-SourceIndexSimpleAnimationClipDomains -SourceIndexPath $SourceIndex
@@ -1479,6 +1508,7 @@ $sourceModelAvatarDiagnostics = [pscustomobject]@{
     dijiangTos = if ($null -ne $dijiangAvatarDiagnostic) { $dijiangAvatarDiagnostic } else { [pscustomobject]@{ status = "skipped"; reason = "SkipAnimationDiagnostic" } }
     jiantianshiFormalCompatibility = $jiantianshiAvatarCompatibilityDiagnostic
     zhumuSoulCompatibility = $zhumuAvatarCompatibilityDiagnostic
+    yaodaojiWingsCompatibility = $yaodaojiWingsAvatarCompatibilityDiagnostic
     samuraiGhostCompatibility = $samuraiAvatarDiagnostic
 }
 
@@ -2932,6 +2962,7 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
         $jiantianshiScript = $scriptAnimationComponentDiagnostics.jiantianshiFormal
         $zhumuScript = $scriptAnimationComponentDiagnostics.zhumuSoul
+        $yaodaojiWingsScript = $scriptAnimationComponentDiagnostics.yaodaojiWings
         $fxScript = $scriptAnimationComponentDiagnostics.fxAttack
         $reportLines.Add(('- Selected-model script AnimationClip diagnostic: Hadi selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`; Jiantianshi selected=`{3}`, candidates=`{4}`, scriptRows=`{5}`, invalidBoundaryRows=`{6}`; Zhumu selected=`{7}`, candidates=`{8}`, scriptRows=`{9}`, subtreeVisibleRows=`{10}`, invalidBoundaryRows=`{11}`; Fx selected=`{12}`, candidates=`{13}`, scriptRows=`{14}`, invalidBoundaryRows=`{15}`' -f `
             (ConvertTo-SmokeText $hadiScript.selectedModelCount "0"),
@@ -2950,6 +2981,18 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $fxScript.candidateCount "0"),
             (ConvertTo-SmokeText $fxScript.scriptAnimationRows "0"),
             (ConvertTo-SmokeText $fxScript.invalidBoundaryRows "0")))
+        $reportLines.Add(('-   Yaodaoji wings shortlist probe: selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`, script=`{3}`, field=`{4}`, clip=`{5}`, subtreeVisibleRows=`{6}`, subtreeSkinnedRows=`{7}`, subtreeTruncatedRows=`{8}`, animatorRows=`{9}`, production=`{10}`' -f `
+            (ConvertTo-SmokeText $yaodaojiWingsScript.selectedModelCount "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.candidateCount "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.scriptAnimationRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.firstScriptName ""),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.firstFieldPath ""),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.firstClipName ""),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.subtreeVisibleRendererRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.subtreeSkinnedRendererRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.subtreeTruncatedRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.animatorRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsScript.productionReadiness "")))
         $reportLines.Add(('-   Fx first script=`{0}`, field=`{1}`, clip=`{2}`, visibleRendererRows=`{3}`, subtreeVisibleRows=`{4}`, subtreeSkinnedRows=`{5}`, subtreeTruncatedRows=`{6}`, animatorRows=`{7}`' -f `
             (ConvertTo-SmokeText $fxScript.firstScriptName ""),
             (ConvertTo-SmokeText $fxScript.firstFieldPath ""),
@@ -2959,7 +3002,7 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $fxScript.subtreeSkinnedRendererRows "0"),
             (ConvertTo-SmokeText $fxScript.subtreeTruncatedRows "0"),
             (ConvertTo-SmokeText $fxScript.animatorRows "0")))
-        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi and Jiantianshi prove visible/formal model selection is not promoted by name or skeleton alone; Zhumu and FxAttack prove local SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
+        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi and Jiantianshi prove visible/formal model selection is not promoted by name or skeleton alone; Zhumu, Yaodaoji wings and FxAttack prove SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
     }
     else {
         $reportLines.Add(('- Selected-model script AnimationClip diagnostic: `{0}`' -f $scriptAnimationComponentDiagnostics.status))
@@ -2968,6 +3011,7 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         $samuraiAvatar = $sourceModelAvatarDiagnostics.samuraiGhostCompatibility
         $jiantianshiAvatar = $sourceModelAvatarDiagnostics.jiantianshiFormalCompatibility
         $zhumuAvatar = $sourceModelAvatarDiagnostics.zhumuSoulCompatibility
+        $yaodaojiWingsAvatar = $sourceModelAvatarDiagnostics.yaodaojiWingsCompatibility
         $reportLines.Add(('- Source-model Avatar/TOS diagnostics: status=`{0}`, Jiantianshi selected=`{1}`, candidates=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`; Zhumu selected=`{7}`, candidates=`{8}`, modelAvatarRows=`{9}`, highOverlapRows=`{10}`, maxCoverage=`{11}`, invalidBoundaryRows=`{12}`; Samurai selected=`{13}`, candidates=`{14}`, modelAvatarRows=`{15}`, highOverlapRows=`{16}`, maxCoverage=`{17}`, invalidBoundaryRows=`{18}`' -f `
             (ConvertTo-SmokeText $sourceModelAvatarDiagnostics.status),
             (ConvertTo-SmokeText $jiantianshiAvatar.selectedModelCount "0"),
@@ -2988,6 +3032,14 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $samuraiAvatar.modelAvatarHighOverlapRows "0"),
             (ConvertTo-SmokeText $samuraiAvatar.modelAvatarMaxCoverage "0"),
             (ConvertTo-SmokeText $samuraiAvatar.invalidBoundaryRows "0")))
+        $reportLines.Add(('-   Yaodaoji wings Avatar compatibility: selected=`{0}`, candidates=`{1}`, avatarTosRows=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`' -f `
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.selectedModelCount "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.candidateCount "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.avatarTosRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.modelAvatarRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.modelAvatarHighOverlapRows "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.modelAvatarMaxCoverage "0"),
+            (ConvertTo-SmokeText $yaodaojiWingsAvatar.invalidBoundaryRows "0")))
         if ($null -ne $sourceModelAvatarDiagnostics.dijiangTos -and $sourceModelAvatarDiagnostics.dijiangTos.status -ne "skipped") {
             $dijiangTos = $sourceModelAvatarDiagnostics.dijiangTos
             $reportLines.Add(('-   Dijiang TOS hash coverage: selected=`{0}`, candidates=`{1}`, avatarTosRows=`{2}`, fullCoverageRows=`{3}`, maxCoverage=`{4}`, unresolvedHashRows=`{5}`' -f `
@@ -3255,6 +3307,7 @@ $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.hadiBody.report))
 $reportLines.Add(('- Jiantianshi formal source-model diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.jiantianshiFormal.report))
 $reportLines.Add(('- Zhumu script/avatar diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.zhumuSoul.report))
+$reportLines.Add(('- Yaodaoji wings shortlist diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.yaodaojiWings.report))
 $reportLines.Add(('- FxAttack script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.fxAttack.report))
 if ($sourceModelAvatarDiagnostics.status -eq "ok") {
     if ($null -ne $sourceModelAvatarDiagnostics.dijiangTos -and $sourceModelAvatarDiagnostics.dijiangTos.status -ne "skipped") {

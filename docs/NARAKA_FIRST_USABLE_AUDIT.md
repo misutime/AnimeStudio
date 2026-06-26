@@ -263,6 +263,14 @@ D:\Assets\Naraka\Naraka_P2_Hadi_Hengdao_InternalHumanoid_SourceAvatarDiagnostic_
 
 因此当前动画结论是：诊断工具链可用，生产级动画库未完成。
 
+2026-06-26 追加 SimpleAnimation 短名单首样本深查门禁：quick smoke 现在会对 `ch_f_japan_yaodaoji_lv_s14_wings` 运行定向 `--list_source_model_animations`，输出到：
+
+```text
+D:\Assets\Naraka\Naraka_FirstUsableSmoke_SimpleAnimationShortlistProbe_Quick_Current\SourceModelAnimation_YaodaojiWings_ShortlistProbe\source_model_animation_candidates.json
+```
+
+本轮验证结果：`selectedModelCount=14`、`candidateCount=0`、`scriptAnimationRows=4`、`subtreeVisibleRendererRows=4`、`subtreeSkinnedRendererRows=4`、`subtreeTruncatedRows=0`、`animatorRows=4`，首条脚本为 `SimpleAnimation`，字段 `m_Clip` 指向 `ch_f_japan_yaodaoji_lv_s14_wings_idle`。Avatar 兼容诊断也保持 `candidateCount=0`、`avatarTosRows=0`、`modelAvatarRows=14`、`highOverlapRows=0`、`invalidBoundaryRows=0`。这说明短名单首样本确实有“脚本 Clip 引用 + 可见 skinned 子树 + Animator/Avatar 上下文”的后续求解价值，但当前仍是 `diagnosticOnly` / `productionReadiness=blocked`，不能升级成默认 `model_animations.json` 推荐关系，也不能改变 `asset_library.json.capabilities.animations=false`。
+
 ## 风险和下一步
 
 - Hadi body 是模块化角色 body/服装部件，当前 `modelCompletenessStatus=modular_incomplete`，不能单独作为完整角色动画 smoke。
