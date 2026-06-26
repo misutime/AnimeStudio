@@ -3565,7 +3565,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             }
         }
 
-        public static void RebuildLibraryIndexes(string savePath, string sourceGame = null)
+        public static void RebuildLibraryIndexes(string savePath, string sourceGame = null, string sourceIndexPath = null)
         {
             var catalogPath = Path.Combine(savePath, "asset_catalog.jsonl");
             if (!File.Exists(catalogPath))
@@ -3573,7 +3573,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 throw new FileNotFoundException("asset_catalog.jsonl was not found. Rebuild requires a previous Library export.", catalogPath);
             }
 
-            EnsureSourceIndexLoadedForRebuild(savePath);
+            EnsureSourceIndexLoadedForRebuild(savePath, sourceIndexPath);
             if (IncludeVfx)
             {
                 NormalizePathPollutedModelResourceKinds(savePath);
@@ -3600,8 +3600,8 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
             WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
             LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
-            BuildDefaultLibrarySqliteIndex(savePath, sourceGame);
-            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). If unity_source_index.db exists beside the Library, SQLite rebuild restores deterministic Animator/Animation/Controller/PPtr candidates without full re-export.");
+            BuildDefaultLibrarySqliteIndex(savePath, sourceGame, sourceIndexPath);
+            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). If --source_index is supplied or unity_source_index.db exists beside the Library, SQLite rebuild restores deterministic Animator/Animation/Controller/PPtr candidates without full re-export.");
         }
 
         private static void NormalizePathPollutedModelResourceKinds(string savePath)
@@ -3678,23 +3678,25 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             });
         }
 
-        private static void EnsureSourceIndexLoadedForRebuild(string savePath)
+        private static void EnsureSourceIndexLoadedForRebuild(string savePath, string sourceIndexPath = null)
         {
             if (SQLiteSourceIndexRuntime.CurrentLoadResult != null || string.IsNullOrWhiteSpace(savePath))
             {
                 return;
             }
 
-            var sourceIndexPath = Path.Combine(savePath, "unity_source_index.db");
-            if (!File.Exists(sourceIndexPath))
+            var resolvedSourceIndexPath = string.IsNullOrWhiteSpace(sourceIndexPath)
+                ? Path.Combine(savePath, "unity_source_index.db")
+                : Path.GetFullPath(sourceIndexPath);
+            if (!File.Exists(resolvedSourceIndexPath))
             {
-                Logger.Warning("No unity_source_index.db was found beside the Library. Rebuild will keep catalog-backed metadata only; Unity component VFX and dependency relations may be incomplete.");
+                Logger.Warning("No usable unity_source_index.db was supplied or found beside the Library. Rebuild will keep catalog-backed metadata only; Unity component VFX and dependency relations may be incomplete.");
                 return;
             }
 
             try
             {
-                SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(sourceIndexPath, null, null);
+                SQLiteSourceIndexRuntime.LoadIntoAssetsHelper(resolvedSourceIndexPath, null, null);
                 SQLiteSourceIndexRuntime.WriteUsageReport(savePath, SQLiteSourceIndexRuntime.CurrentLoadResult);
             }
             catch (Exception e) when (e is IOException || e is InvalidDataException || e is SqliteException)

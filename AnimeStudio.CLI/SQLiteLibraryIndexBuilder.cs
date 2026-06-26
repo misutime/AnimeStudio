@@ -2075,65 +2075,153 @@ VALUES ($modelOutput, $animationOutput, 'explicit', 'explicit_unity_source_index
                 yield break;
             }
 
-            using var command = sourceConnection.CreateCommand();
-            command.CommandText = @"
-SELECT controllerClip.to_file, controllerClip.to_path_id,
-       'gameObject.hierarchy.animator.controller.clip' AS relation_kind,
-       controllerClip.raw_json,
-       animator.from_name
-FROM source_relations animator INDEXED BY idx_source_relations_to
-JOIN source_relations controllerRel INDEXED BY idx_source_relations_from
-  ON controllerRel.from_file = animator.from_file
- AND controllerRel.from_path_id = animator.from_path_id
- AND controllerRel.relation = 'animator.controller'
-JOIN source_objects controller
-  ON controller.serialized_file = controllerRel.to_file
- AND controller.path_id = controllerRel.to_path_id
- AND controller.type = 'AnimatorController'
-JOIN source_relations controllerClip INDEXED BY idx_source_relations_from
-  ON controllerClip.from_file = controller.serialized_file
- AND controllerClip.from_path_id = controller.path_id
- AND controllerClip.relation = 'animatorController.clip'
-WHERE animator.to_file = $modelFile
-  AND animator.to_path_id = $modelPathId
-  AND animator.relation = 'component.gameObject'
-  AND animator.from_type = 'Animator'
-UNION ALL
-SELECT clipRel.to_file, clipRel.to_path_id,
-       'gameObject.hierarchy.animation.clip' AS relation_kind,
-       NULL AS raw_json,
-       animation.from_name
-FROM source_relations animation INDEXED BY idx_source_relations_to
-JOIN source_relations clipRel INDEXED BY idx_source_relations_from
-  ON clipRel.from_file = animation.from_file
- AND clipRel.from_path_id = animation.from_path_id
- AND clipRel.relation = 'animation.clip'
-WHERE animation.to_file = $modelFile
-  AND animation.to_path_id = $modelPathId
-  AND animation.relation = 'component.gameObject'
-  AND animation.from_type = 'Animation';";
-            command.Parameters.AddWithValue("$modelFile", modelKey.File);
-            command.Parameters.AddWithValue("$modelPathId", modelKey.PathId);
-            using (var reader = command.ExecuteReader())
+            foreach (var gameObject in LoadTargetedHierarchyGameObjects(sourceConnection, modelKey))
             {
-                while (reader.Read())
+                foreach (var component in LoadTargetedComponentsForGameObject(sourceConnection, gameObject))
                 {
-                    var relationKind = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
-                    var componentName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
-                    var reason = relationKind.Contains(".animation.", StringComparison.OrdinalIgnoreCase)
-                        ? $"Animation component '{componentName}' explicitly references this clip."
-                        : $"Animator '{componentName}' is attached to the exported GameObject hierarchy.";
-                    yield return new SourceAnimationRelation(
-                        KeyFromRelation(reader, 0, 1).Normalize(),
-                        relationKind,
-                        reason,
-                        TryReadAnimatorControllerContextForCandidate(reader.IsDBNull(3) ? null : reader.GetString(3)));
+                    if (string.Equals(component.Type, "Animator", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (var relation in LoadTargetedAnimatorRelations(
+                            sourceConnection,
+                            component.Key,
+                            "gameObject.hierarchy.animator.controller.clip",
+                            $"Animator '{component.Name}' is attached to the exported GameObject hierarchy."))
+                        {
+                            yield return relation;
+                        }
+                    }
+                    else if (string.Equals(component.Type, "Animation", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (var relation in LoadTargetedAnimationComponentRelations(sourceConnection, component.Key, component.Name))
+                        {
+                            yield return relation;
+                        }
+                    }
                 }
             }
 
             foreach (var relation in LoadTargetedSharedAvatarControllerRelations(sourceConnection, modelKey))
             {
                 yield return relation;
+            }
+        }
+
+        private static IReadOnlyList<SourceKey> LoadTargetedHierarchyGameObjects(SqliteConnection sourceConnection, SourceKey rootGameObject)
+        {
+            const int maxHierarchyGameObjects = 4096;
+            var gameObjects = new List<SourceKey> { rootGameObject };
+            var seenGameObjects = new HashSet<SourceKey> { rootGameObject };
+            var seenTransforms = new HashSet<SourceKey>();
+            var pendingTransforms = new Queue<SourceKey>();
+
+            // 只沿 Unity 显式关系走：GameObject -> Transform -> child Transform -> child GameObject。
+            foreach (var transform in LoadTargetedComponentsForGameObject(sourceConnection, rootGameObject, "Transform"))
+            {
+                if (seenTransforms.Add(transform.Key))
+                {
+                    pendingTransforms.Enqueue(transform.Key);
+                }
+            }
+
+            while (pendingTransforms.Count > 0 && gameObjects.Count < maxHierarchyGameObjects)
+            {
+                var transform = pendingTransforms.Dequeue();
+                foreach (var childTransform in LoadTargetedRelationTargets(sourceConnection, transform, "transform.child"))
+                {
+                    if (!seenTransforms.Add(childTransform))
+                    {
+                        continue;
+                    }
+
+                    pendingTransforms.Enqueue(childTransform);
+                    foreach (var childGameObject in LoadTargetedGameObjectsForComponent(sourceConnection, childTransform))
+                    {
+                        if (seenGameObjects.Add(childGameObject))
+                        {
+                            gameObjects.Add(childGameObject);
+                            if (gameObjects.Count >= maxHierarchyGameObjects)
+                            {
+                                Logger.Warning($"Targeted source-index hierarchy scan reached {maxHierarchyGameObjects} GameObjects; animation candidate import will keep the scanned subset to avoid an unexpectedly large rebuild query.");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return gameObjects;
+        }
+
+        private static IEnumerable<SourceComponentRef> LoadTargetedComponentsForGameObject(SqliteConnection sourceConnection, SourceKey gameObject, string componentType = null)
+        {
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+SELECT from_file, from_path_id, from_type, from_name
+FROM source_relations INDEXED BY idx_source_relations_to
+WHERE relation = 'component.gameObject'
+  AND to_file = $gameObjectFile
+  AND to_path_id = $gameObjectPathId
+  AND ($componentType = '' OR from_type = $componentType);";
+            command.Parameters.AddWithValue("$gameObjectFile", gameObject.File);
+            command.Parameters.AddWithValue("$gameObjectPathId", gameObject.PathId);
+            command.Parameters.AddWithValue("$componentType", componentType ?? string.Empty);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var key = KeyFromRelation(reader, 0, 1);
+                if (!key.IsValid)
+                {
+                    continue;
+                }
+
+                yield return new SourceComponentRef(
+                    key,
+                    reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    reader.IsDBNull(3) ? string.Empty : reader.GetString(3));
+            }
+        }
+
+        private static IEnumerable<SourceKey> LoadTargetedGameObjectsForComponent(SqliteConnection sourceConnection, SourceKey component)
+        {
+            foreach (var gameObject in LoadTargetedRelationTargets(sourceConnection, component, "component.gameObject"))
+            {
+                yield return gameObject;
+            }
+        }
+
+        private static IEnumerable<SourceKey> LoadTargetedRelationTargets(SqliteConnection sourceConnection, SourceKey source, string relation)
+        {
+            using var command = sourceConnection.CreateCommand();
+            command.CommandText = @"
+SELECT to_file, to_path_id
+FROM source_relations INDEXED BY idx_source_relations_from
+WHERE from_file = $sourceFile
+  AND from_path_id = $sourcePathId
+  AND relation = $relation;";
+            command.Parameters.AddWithValue("$sourceFile", source.File);
+            command.Parameters.AddWithValue("$sourcePathId", source.PathId);
+            command.Parameters.AddWithValue("$relation", relation);
+
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var target = KeyFromRelation(reader, 0, 1);
+                if (target.IsValid)
+                {
+                    yield return target;
+                }
+            }
+        }
+
+        private static IEnumerable<SourceAnimationRelation> LoadTargetedAnimationComponentRelations(SqliteConnection sourceConnection, SourceKey animationKey, string animationName)
+        {
+            foreach (var clip in LoadTargetedRelationTargets(sourceConnection, animationKey, "animation.clip"))
+            {
+                yield return new SourceAnimationRelation(
+                    clip,
+                    "gameObject.hierarchy.animation.clip",
+                    $"Animation component '{animationName}' explicitly references this clip.");
             }
         }
 
@@ -6104,6 +6192,7 @@ WHERE s.explicit_model_count > 0;";
         private sealed record ModelAnimationGate(bool Ready, string Status, string[] Reasons, JObject Evidence);
 
         private sealed record SourceObject(string Type, string Name);
+        private sealed record SourceComponentRef(SourceKey Key, string Type, string Name);
 
         private sealed record SourceAnimationRelation(SourceKey ClipKey, string Relation, string Reason, JObject AnimatorControllerContext = null, JObject RelationEvidence = null);
 

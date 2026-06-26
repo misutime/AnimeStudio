@@ -588,11 +588,11 @@ namespace AnimeStudio.CLI
                 {
                     if (o.RequireFreshSourceAnimationRelations)
                     {
-                        var strictSourceIndex = Path.Combine(o.RebuildLibraryIndexes.FullName, "unity_source_index.db");
+                        var strictSourceIndex = o.SourceIndex?.FullName ?? Path.Combine(o.RebuildLibraryIndexes.FullName, "unity_source_index.db");
                         SQLiteSourceIndexBuilder.WriteAnimationRelationHealthReport(strictSourceIndex, requireHealthy: true);
                     }
 
-                    Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName, o.GameName);
+                    Studio.RebuildLibraryIndexes(o.RebuildLibraryIndexes.FullName, o.GameName, o.SourceIndex?.FullName);
                     return;
                 }
 
