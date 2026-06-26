@@ -158,6 +158,100 @@ function Read-SourceModelScriptAnimationDiagnostic {
     return (($summaryJsonLines -join [Environment]::NewLine) | ConvertFrom-Json)
 }
 
+function Test-AssetLibraryV1Contract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory = $true)]
+        [string]$DbPath,
+        [Parameter(Mandatory = $true)]
+        [object]$AssetLibrary,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedGame
+    )
+
+    $manifestDirectory = Split-Path -Parent $ManifestPath
+    if ([int]$AssetLibrary.schemaVersion -ne 1) {
+        throw "asset_library.json schemaVersion must be 1. Actual=$($AssetLibrary.schemaVersion)"
+    }
+    if ([string]$AssetLibrary.libraryKind -ne "AssetLibrary") {
+        throw "asset_library.json libraryKind must be AssetLibrary. Actual=$($AssetLibrary.libraryKind)"
+    }
+    if ([string]$AssetLibrary.sourceTool -ne "AnimeStudio") {
+        throw "asset_library.json sourceTool must be AnimeStudio. Actual=$($AssetLibrary.sourceTool)"
+    }
+    if ([string]$AssetLibrary.sourceGame -ne $ExpectedGame) {
+        throw "asset_library.json sourceGame must be $ExpectedGame. Actual=$($AssetLibrary.sourceGame)"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$AssetLibrary.index)) {
+        throw "asset_library.json index must be library_index.db. Actual=<empty>"
+    }
+    if ([string]$AssetLibrary.index -ne "library_index.db") {
+        throw "asset_library.json index must be library_index.db. Actual=$($AssetLibrary.index)"
+    }
+    $expectedIndexPath = Join-Path $manifestDirectory ([string]$AssetLibrary.index)
+    if ((Resolve-Path -LiteralPath $expectedIndexPath).Path -ne (Resolve-Path -LiteralPath $DbPath).Path) {
+        throw "asset_library.json index does not point to the smoke library_index.db. Index=$expectedIndexPath Db=$DbPath"
+    }
+    if ($AssetLibrary.capabilities.models -ne $true) {
+        throw "asset_library.json capabilities.models must be true for Naraka model smoke."
+    }
+    if ($AssetLibrary.capabilities.animations -ne $false) {
+        throw "asset_library.json capabilities.animations must stay false until production model-animation relations are verified."
+    }
+
+    $requiredTables = @(
+        "metadata",
+        "assets",
+        "model_validation",
+        "texture_links",
+        "material_sidecars",
+        "library_reports"
+    )
+    $sqliteStatus = "toolMissing"
+    $missingTables = @()
+    $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $sqlite3) {
+        $tableRows = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT name FROM sqlite_master WHERE type='table';"
+        if ($LASTEXITCODE -ne 0) {
+            throw "sqlite3 failed while checking AssetLibrary v1 required tables."
+        }
+        $tableSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($table in @($tableRows)) {
+            if (![string]::IsNullOrWhiteSpace($table)) {
+                [void]$tableSet.Add([string]$table)
+            }
+        }
+        foreach ($requiredTable in $requiredTables) {
+            if (!$tableSet.Contains($requiredTable)) {
+                $missingTables += $requiredTable
+            }
+        }
+        if ($missingTables.Count -gt 0) {
+            throw "AssetLibrary v1 SQLite index is missing required table(s): $($missingTables -join ', ')"
+        }
+        $sqliteStatus = "ok"
+    }
+    else {
+        Write-Warning "sqlite3.exe not found; AssetLibrary v1 required table check skipped."
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        schemaVersion = [int]$AssetLibrary.schemaVersion
+        libraryKind = [string]$AssetLibrary.libraryKind
+        libraryName = [string]$AssetLibrary.libraryName
+        sourceTool = [string]$AssetLibrary.sourceTool
+        sourceGame = [string]$AssetLibrary.sourceGame
+        index = [string]$AssetLibrary.index
+        capabilitiesModels = [bool]$AssetLibrary.capabilities.models
+        capabilitiesAnimations = [bool]$AssetLibrary.capabilities.animations
+        sqliteTableCheck = $sqliteStatus
+        requiredTables = $requiredTables
+        missingTables = $missingTables
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetFramework = "net9.0-windows"
 $cli = Join-Path $repoRoot "AnimeStudio.CLI\bin\$Configuration\$targetFramework\AnimeStudio.CLI.exe"
@@ -268,6 +362,7 @@ $animationReportJson = $null
 $animationGltfPath = $null
 $browserValidationStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
 $thumbnailStatus = if ($SkipBrowserValidation) { "skipped" } else { "toolMissing" }
+$assetLibraryContract = $null
 
 Write-Host ""
 Write-Host "== Probe Naraka input =="
@@ -780,6 +875,7 @@ else {
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+$assetLibraryContract = Test-AssetLibraryV1Contract -ManifestPath $manifest -DbPath $db -AssetLibrary $assetLibrary -ExpectedGame "Naraka"
 $hadiCatalogRow = $null
 foreach ($catalogLine in Get-Content -LiteralPath $assetCatalog -Encoding UTF8) {
     if ([string]::IsNullOrWhiteSpace($catalogLine)) {
@@ -1099,6 +1195,7 @@ $summaryJsonLines += '  "sourceIndex": ' + (ConvertTo-SmokeJsonLiteral $SourceIn
 $summaryJsonLines += '  "outputRoot": ' + (ConvertTo-SmokeJsonLiteral $OutputRoot) + ","
 $summaryJsonLines += '  "libraryRoot": ' + (ConvertTo-SmokeJsonLiteral $libraryOutput) + ","
 $summaryJsonLines += '  "assetLibrary": ' + (ConvertTo-SmokeJsonLiteral $manifest) + ","
+$summaryJsonLines += '  "assetLibraryContract": ' + (ConvertTo-SmokeJsonLiteral $assetLibraryContract 10) + ","
 $summaryJsonLines += '  "libraryIndex": ' + (ConvertTo-SmokeJsonLiteral $db) + ","
 $summaryJsonLines += '  "sqliteSummary": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummary) + ","
 $summaryJsonLines += '  "modelValidation": ' + (ConvertTo-SmokeJsonLiteral $validation) + ","
@@ -1244,6 +1341,12 @@ $reportLines.Add("")
 $reportLines.Add("## Static Library")
 $reportLines.Add("")
 $reportLines.Add(('- Capabilities: models=`{0}`, animations=`{1}`, animationPreviewComposer=`{2}`' -f $assetLibrary.capabilities.models, $assetLibrary.capabilities.animations, (ConvertTo-SmokeText $assetLibrary.capabilities.animationPreviewComposer "null")))
+$reportLines.Add(('- AssetLibrary v1 contract: status=`{0}`, schemaVersion=`{1}`, sourceGame=`{2}`, index=`{3}`, sqliteTableCheck=`{4}`' -f `
+    (ConvertTo-SmokeText $assetLibraryContract.status),
+    (ConvertTo-SmokeText $assetLibraryContract.schemaVersion),
+    (ConvertTo-SmokeText $assetLibraryContract.sourceGame),
+    (ConvertTo-SmokeText $assetLibraryContract.index),
+    (ConvertTo-SmokeText $assetLibraryContract.sqliteTableCheck)))
 $reportLines.Add(('- Representative glTF validator: `{0}`' -f $representativeGltfValidationStatus))
 $reportLines.Add(('- AssetLibrary browser validation: `{0}`' -f $browserValidationStatus))
 $reportLines.Add(('- Thumbnail render: `{0}`, cache files=`{1}`' -f $thumbnailStatus, $thumbnailFileCount))
