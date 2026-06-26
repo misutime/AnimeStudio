@@ -25,6 +25,10 @@ def parse_args():
     parser.add_argument("--clay_if_untextured", action="store_true", help="Use a neutral gray material when imported meshes have no material.")
     parser.add_argument("--exposure", type=float, default=-0.5, help="Validation render exposure. Lower values keep pale skin/material details visible.")
     parser.add_argument("--light_energy", type=float, default=180.0, help="Area light strength used by validation renders.")
+    parser.add_argument("--frames", default="", help="Comma-separated frame numbers. Empty means first/mid/end action frames.")
+    parser.add_argument("--frame_labels", default="", help="Comma-separated frame labels. Empty defaults to first,mid,end.")
+    parser.add_argument("--file_prefix", default="", help="Optional file prefix for single-view smoke outputs, for example zhumu_attack_a4.")
+    parser.add_argument("--summary_text", default="", help="Optional bbox summary text path. Relative paths are written under --output.")
     return parser.parse_args(argv)
 
 
@@ -355,7 +359,10 @@ def update_camera(cam, view="full"):
         light.data.size = max(radius, 1.0)
 
 
-def animation_frames():
+def animation_frames(explicit=""):
+    if explicit:
+        return [int(value.strip()) for value in explicit.split(",") if value.strip()]
+
     actions = [a for a in bpy.data.actions if a.frame_range[1] > a.frame_range[0]]
     if not actions:
         return [1, 1, 1]
@@ -363,6 +370,39 @@ def animation_frames():
     end = max(a.frame_range[1] for a in actions)
     mid = start + (end - start) * 0.5
     return [math.floor(start), math.floor(mid), math.floor(end)]
+
+
+def frame_labels(explicit, frame_count):
+    labels = [label.strip() for label in (explicit or "").split(",") if label.strip()]
+    if not labels:
+        labels = ["first", "mid", "end"]
+    if len(labels) != frame_count:
+        raise ValueError(f"Frame label count {len(labels)} does not match frame count {frame_count}.")
+    return labels
+
+
+def output_file_name(view, label, frame, prefix, view_count):
+    if prefix:
+        if view_count == 1:
+            return f"{prefix}_{label}.png"
+        return f"{prefix}_{view}_{label}.png"
+    return f"{view}_{label}_frame_{frame}.png"
+
+
+def format_bbox_tuple(values):
+    return ",".join(f"{float(value):.4f}" for value in values)
+
+
+def write_summary_text(path, frame_rows):
+    lines = []
+    for row in frame_rows:
+        bounds = row.get("bounds") or {}
+        lines.append(
+            f"{row['label']}: frame={row['frame']} "
+            f"bboxMin=({format_bbox_tuple(bounds.get('min') or [0, 0, 0])}) "
+            f"bboxMax=({format_bbox_tuple(bounds.get('max') or [0, 0, 0])})"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main():
@@ -407,22 +447,34 @@ def main():
         views = [view.strip() for view in args.views.split(",") if view.strip()]
         # 对动画 glTF 来说第 1 张是动画首帧，不等于模型真正 rest pose。
         # 真正 rest pose 应该单独渲染干净模型 glTF。
-        labels = ["first", "mid", "end"]
+        frames = animation_frames(args.frames)
+        labels = frame_labels(args.frame_labels, len(frames))
         frame_report = []
+        summary_rows = []
         for view in views:
-            for label, frame in zip(labels, animation_frames()):
+            for label, frame in zip(labels, frames):
                 scene.frame_set(frame)
                 bpy.context.view_layer.update()
                 update_camera(cam, view)
-                scene.render.filepath = str(out_dir / f"{view}_{label}_frame_{frame}.png")
+                scene.render.filepath = str(out_dir / output_file_name(view, label, frame, args.file_prefix, len(views)))
                 bpy.ops.render.render(write_still=True)
-                frame_report.append({
+                bounds = serializable_bounds(mesh_objects())
+                row = {
                     "view": view,
                     "label": label,
                     "frame": frame,
-                    "bounds": serializable_bounds(mesh_objects()),
+                    "bounds": bounds,
                     "file": scene.render.filepath,
-                })
+                }
+                frame_report.append(row)
+                if view == views[0]:
+                    summary_rows.append(row)
+
+        if args.summary_text:
+            summary_path = Path(args.summary_text)
+            if not summary_path.is_absolute():
+                summary_path = out_dir / summary_path
+            write_summary_text(summary_path, summary_rows)
 
         report = {
             "input": args.input,
