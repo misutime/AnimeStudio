@@ -1499,6 +1499,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             };
             JObject normalTexture = null;
             var textureExtras = new JArray();
+            var customShaderLayerSlots = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var texEnv in material.m_SavedProperties?.m_TexEnvs ?? new List<KeyValuePair<string, UnityTexEnv>>())
             {
@@ -1507,7 +1508,12 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     continue;
                 }
 
-                var destination = GetStaticMeshTextureDestination(texEnv.Key);
+                var isCustomShaderLayerSlot = IsCustomShaderLayerTextureSlot(texEnv.Key);
+                if (isCustomShaderLayerSlot)
+                {
+                    customShaderLayerSlots.Add(texEnv.Key);
+                }
+                var destination = isCustomShaderLayerSlot ? -1 : GetStaticMeshTextureDestination(texEnv.Key);
                 var textureInfo = new JObject
                 {
                     ["slot"] = texEnv.Key,
@@ -1516,6 +1522,11 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     ["source"] = texture.assetsFile?.originalPath ?? texture.assetsFile?.fileName,
                     ["pathId"] = texture.m_PathID,
                 };
+                if (isCustomShaderLayerSlot)
+                {
+                    // 私有分层槽只保留证据，不参与标准 PBR 贴图选择。
+                    textureInfo["previewUsage"] = "preservedOnly";
+                }
                 if (TryExportStaticMeshTexture(gltfPath, texture, out var textureUri, out var exportName))
                 {
                     var imageIndex = images.Count;
@@ -1534,14 +1545,24 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     textureInfo["exportName"] = exportName;
                     textureInfo["gltfTextureIndex"] = textureIndex;
 
-                    if (destination == 0 && pbr["baseColorTexture"] == null)
+                    if (isCustomShaderLayerSlot)
+                    {
+                        textureInfo["previewUsage"] = "preservedOnly";
+                    }
+                    else if (destination == 0 && pbr["baseColorTexture"] == null)
                     {
                         pbr["baseColorTexture"] = new JObject { ["index"] = textureIndex };
                         hasBaseColorTexture = true;
+                        textureInfo["previewUsage"] = "baseColorTexture";
                     }
                     else if ((destination == 1 || destination == 3) && normalTexture == null)
                     {
                         normalTexture = new JObject { ["index"] = textureIndex };
+                        textureInfo["previewUsage"] = "normalTexture";
+                    }
+                    else
+                    {
+                        textureInfo["previewUsage"] = "preservedOnly";
                     }
                 }
                 else
@@ -1551,13 +1572,31 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 textureExtras.Add(textureInfo);
             }
 
+            var needsCustomShaderLayer = customShaderLayerSlots.Count > 0;
+            var animeMaterial = binding.ToJson(materialInfo, textureExtras);
+            animeMaterial["needsCustomShaderLayer"] = needsCustomShaderLayer;
+            animeMaterial["customShaderLayerSlots"] = new JArray(customShaderLayerSlots.Select(x => new JValue(x)));
+            animeMaterial["unsupportedShader"] = needsCustomShaderLayer;
+            animeMaterial["customShaderRequired"] = needsCustomShaderLayer;
+            animeMaterial["layeredMaterialUnresolved"] = needsCustomShaderLayer;
+            animeMaterial["pbrPreviewStatus"] = needsCustomShaderLayer ? "bestEffortDegradedPreview" : "bestEffortPbrPreview";
+            animeMaterial["pbrPreviewConfidence"] = needsCustomShaderLayer ? "partial" : "standard";
+            animeMaterial["unresolvedShaderSteps"] = needsCustomShaderLayer
+                ? new JArray("privateLayeredTextureComposite", "privateMaskBlend", "runtimeShaderParameterEvaluation")
+                : new JArray();
+            if (needsCustomShaderLayer)
+            {
+                animeMaterial["customShaderLayerRule"] = "这些 Unity 材质槽需要游戏 shader 分层合成。当前 glTF 只做保守 PBR 预览并保留原始贴图引用，不能把它当作完整 shader 复刻。";
+                animeMaterial["note"] = "通用 base color/normal 可写入 glTF 预览；customShaderLayerSlots 仍需要后续 shader/烘焙管线处理，不能硬猜合成方式。";
+            }
+
             var gltfMaterial = new JObject
             {
                 ["name"] = string.IsNullOrWhiteSpace(materialInfo.Name) ? "StaticMesh_Material" : materialInfo.Name,
                 ["pbrMetallicRoughness"] = pbr,
                 ["extras"] = new JObject
                 {
-                    ["animeStudioMaterial"] = binding.ToJson(materialInfo, textureExtras),
+                    ["animeStudioMaterial"] = animeMaterial,
                 },
             };
             if (normalTexture != null)
@@ -1571,6 +1610,19 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             }
 
             return gltfMaterial;
+        }
+
+        private static bool IsCustomShaderLayerTextureSlot(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return false;
+            }
+
+            return key.IndexOf("Iris", StringComparison.OrdinalIgnoreCase) >= 0
+                || key.IndexOf("Wrinkle", StringComparison.OrdinalIgnoreCase) >= 0
+                || key.IndexOf("Decal", StringComparison.OrdinalIgnoreCase) >= 0
+                || key.IndexOf("Layer", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool TryExportStaticMeshTexture(string gltfPath, Texture2D texture, out string textureUri, out string exportName)
