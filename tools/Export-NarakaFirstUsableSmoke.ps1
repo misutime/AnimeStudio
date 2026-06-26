@@ -1085,7 +1085,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "== Rebuild AssetLibrary v1 index =="
-& $cli "--build_sqlite_index" $libraryOutput "--source_index" $SourceIndex "--game" "Naraka" "--skip_sqlite_file_index"
+& $cli "--build_sqlite_index" $libraryOutput "--source_index" $SourceIndex "--game" "Naraka"
 if ($LASTEXITCODE -ne 0) {
     throw "Rebuild AssetLibrary v1 index failed with exit code $LASTEXITCODE"
 }
@@ -2259,6 +2259,14 @@ if ($null -eq $sqliteSummaryJson.animationSupport) {
 if ($sqliteSummaryJson.animationSupport.productionReady -ne $false -or [long]$sqliteSummaryJson.animationSupport.defaultModelAnimationCandidateCount -ne 0) {
     throw "sqlite_index_summary.json animationSupport must stay non-production for Naraka smoke. productionReady=$($sqliteSummaryJson.animationSupport.productionReady) candidates=$($sqliteSummaryJson.animationSupport.defaultModelAnimationCandidateCount)"
 }
+if ($null -eq $sqliteSummaryJson.counts) {
+    throw "sqlite_index_summary.json lost counts section."
+}
+$sqliteFiles = ConvertTo-SmokeInt64 $sqliteSummaryJson.counts.files
+$sqliteFilesSkipped = ConvertTo-SmokeInt64 $sqliteSummaryJson.counts.filesSkipped
+if ($sqliteFiles -le 0 -or $sqliteFilesSkipped -ne 0) {
+    throw "Representative Library SQLite must keep the files table for AssetLibrary browsing/audit. files=$sqliteFiles filesSkipped=$sqliteFilesSkipped"
+}
 $thumbnailCache = Join-Path $libraryOutput ".asset_browser_cache"
 $thumbnailFileCount = 0
 if (Test-Path -LiteralPath $thumbnailCache) {
@@ -2628,13 +2636,14 @@ $reportLines.Add("")
 $reportLines.Add("## SQLite Index")
 $reportLines.Add("")
 if ($null -ne $sqliteSummaryJson.counts) {
-    $reportLines.Add(('- Assets=`{0}`, assetCatalog=`{1}`, textureAssets=`{2}`, textureLinks=`{3}`, materialSidecars=`{4}`, modelValidation=`{5}`' -f `
+    $reportLines.Add(('- Assets=`{0}`, assetCatalog=`{1}`, textureAssets=`{2}`, textureLinks=`{3}`, materialSidecars=`{4}`, modelValidation=`{5}`, files=`{6}`' -f `
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.assets "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.assetCatalog "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.textureAssets "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.textureLinks "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.materialSidecars "0"),
-        (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelValidation "0")))
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelValidation "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.files "0")))
     $reportLines.Add(('- Model animation candidates=`{0}`, model animation relations=`{1}`' -f `
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationCandidates "0"),
         (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationRelations "0")))
