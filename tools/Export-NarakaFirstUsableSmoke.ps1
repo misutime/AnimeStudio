@@ -1101,6 +1101,7 @@ $jiantianshiGltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visu
 $bowGltf = Join-Path $libraryOutput "Models\assets\res\prefab\drop_item_generate\weapon\weapon_drop_bow_dongjun\weapon_drop_bow_dongjun.gltf"
 $deviceGltf = Join-Path $libraryOutput "Models\assets\res\prefab\device_generate\device_hongbao_02\device_hongbao_02.gltf"
 $representativeGltfs = @($gltf, $jiantianshiGltf, $bowGltf, $deviceGltf)
+$expectedThumbnailCount = [int]$representativeGltfs.Count
 
 Test-FileRequired -Path $manifest -Label "asset_library.json"
 Test-FileRequired -Path $db -Label "library_index.db"
@@ -1330,7 +1331,8 @@ if (!$SkipBrowserValidation) {
         Invoke-Checked -Label "Validate AssetLibrary v1" -FilePath $browserCli -Arguments @("validate-library", $libraryOutput)
         $browserValidationStatus = "ok"
 
-        Invoke-Checked -Label "Render browser thumbnail" -FilePath $browserCli -Arguments @("build-thumbnails", $libraryOutput, "1", "3")
+        # 代表库当前有 4 个模型，缩略图 smoke 也必须覆盖同一批模型，不能只渲染前三个。
+        Invoke-Checked -Label "Render browser thumbnail" -FilePath $browserCli -Arguments @("build-thumbnails", $libraryOutput, "1", ([string]$expectedThumbnailCount))
         $thumbnailStatus = "ok"
     }
     else {
@@ -2262,6 +2264,9 @@ $thumbnailFileCount = 0
 if (Test-Path -LiteralPath $thumbnailCache) {
     $thumbnailFileCount = (Get-ChildItem -LiteralPath $thumbnailCache -Recurse -File | Measure-Object).Count
 }
+if ($thumbnailStatus -eq "ok" -and $thumbnailFileCount -lt $expectedThumbnailCount) {
+    throw "Browser thumbnail smoke did not cover all representative models. expected>=$expectedThumbnailCount actual=$thumbnailFileCount"
+}
 
 $generatedAt = (Get-Date).ToString("o")
 $coverageModels = 0
@@ -2477,6 +2482,7 @@ $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJs
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
+$summaryJsonLines += '    "thumbnailExpectedCount": ' + (ConvertTo-SmokeJsonLiteral $expectedThumbnailCount) + ","
 $summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
 $summaryJsonLines += '    "animationDiagnostic": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticStatus) + ","
 $summaryJsonLines += '    "animationGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $animationGltfValidationStatus)
@@ -2582,7 +2588,7 @@ $reportLines.Add(('- Model report entrypoints: status=`{0}`, models=`{1}`, ASSET
     (ConvertTo-SmokeText $modelReportEntrypoints.materialReportCount "0")))
 $reportLines.Add(('- Representative glTF validator: `{0}`' -f $representativeGltfValidationStatus))
 $reportLines.Add(('- AssetLibrary browser validation: `{0}`' -f $browserValidationStatus))
-$reportLines.Add(('- Thumbnail render: `{0}`, cache files=`{1}`' -f $thumbnailStatus, $thumbnailFileCount))
+$reportLines.Add(('- Thumbnail render: `{0}`, expected>=`{1}`, cache files=`{2}`' -f $thumbnailStatus, $expectedThumbnailCount, $thumbnailFileCount))
 if ($null -ne $modelValidation.totals) {
     $reportLines.Add(('- Model totals: models=`{0}`, ok=`{1}`, warning=`{2}`, error=`{3}`' -f `
         (ConvertTo-SmokeText $modelValidation.totals.models "0"),
