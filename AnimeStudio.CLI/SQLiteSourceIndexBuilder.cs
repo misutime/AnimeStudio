@@ -1,4 +1,6 @@
 using System;
+using System.Collections;
+using System.Collections.Specialized;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -1173,12 +1175,18 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                     };
                     break;
                 case MonoBehaviour monoBehaviour:
-                    raw["monoBehaviour"] = new JObject
+                    var monoBehaviourJson = new JObject
                     {
                         ["script"] = BuildPPtrJson(monoBehaviour.m_Script?.m_FileID ?? 0, monoBehaviour.m_Script?.m_PathID ?? 0),
                         ["scriptName"] = monoBehaviour.m_Script?.Name,
                         ["enabled"] = monoBehaviour.m_Enabled != 0,
                     };
+                    var simpleAnimationJson = BuildSimpleAnimationTypeTreeJson(monoBehaviour);
+                    if (simpleAnimationJson != null)
+                    {
+                        monoBehaviourJson["simpleAnimation"] = simpleAnimationJson;
+                    }
+                    raw["monoBehaviour"] = monoBehaviourJson;
                     break;
                 case Renderer renderer:
                     raw["renderer"] = new JObject
@@ -1227,6 +1235,152 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
             }
 
             return raw;
+        }
+
+        private static JObject BuildSimpleAnimationTypeTreeJson(MonoBehaviour monoBehaviour)
+        {
+            if (monoBehaviour == null || !string.Equals(monoBehaviour.m_Script?.Name, "SimpleAnimation", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            try
+            {
+                var typeData = monoBehaviour.ToType();
+                if (typeData == null)
+                {
+                    return new JObject
+                    {
+                        ["typeTreeStatus"] = "unavailable",
+                        ["diagnosticOnly"] = true,
+                        ["rule"] = "SimpleAnimation TypeTree 元数据只用于诊断脚本状态，不会直接生成默认模型-动画绑定。",
+                    };
+                }
+
+                var states = ReadTypeTreeArray(typeData, "m_States");
+                var stateJson = new JArray();
+                var stateClipPathIds = new JArray();
+                var defaultStateNames = new JArray();
+                var stateNames = new JArray();
+                var defaultStateCount = 0;
+
+                foreach (var state in states)
+                {
+                    if (state is not OrderedDictionary stateMap)
+                    {
+                        continue;
+                    }
+
+                    var clip = BuildTypeTreePPtrJson(ReadTypeTreeValue(stateMap, "clip"));
+                    var name = Convert.ToString(ReadTypeTreeValue(stateMap, "name"), CultureInfo.InvariantCulture) ?? string.Empty;
+                    var defaultState = ReadTypeTreeBool(stateMap, "defaultState");
+                    if (defaultState)
+                    {
+                        defaultStateCount++;
+                        defaultStateNames.Add(name);
+                    }
+                    stateNames.Add(name);
+                    var clipPathId = clip?["pathId"]?.Value<long>() ?? 0;
+                    if (clipPathId != 0)
+                    {
+                        stateClipPathIds.Add(clipPathId);
+                    }
+
+                    // 状态列表可能很多，源索引只保留诊断摘要和少量样本。
+                    if (stateJson.Count < 32)
+                    {
+                        stateJson.Add(new JObject
+                        {
+                            ["name"] = name,
+                            ["defaultState"] = defaultState,
+                            ["clip"] = clip,
+                        });
+                    }
+                }
+
+                return new JObject
+                {
+                    ["typeTreeStatus"] = "ok",
+                    ["diagnosticOnly"] = true,
+                    ["notDefaultModelAnimationRelation"] = true,
+                    ["needUseV2"] = ReadTypeTreeInt(typeData, "m_need_use_v2"),
+                    ["playAutomatically"] = ReadTypeTreeBool(typeData, "m_PlayAutomatically"),
+                    ["animatePhysics"] = ReadTypeTreeBool(typeData, "m_AnimatePhysics"),
+                    ["cullingMode"] = ReadTypeTreeInt(typeData, "m_CullingMode"),
+                    ["wrapMode"] = ReadTypeTreeInt(typeData, "m_WrapMode"),
+                    ["clip"] = BuildTypeTreePPtrJson(ReadTypeTreeValue(typeData, "m_Clip")),
+                    ["stateCount"] = states.Count,
+                    ["defaultStateCount"] = defaultStateCount,
+                    ["stateNames"] = stateNames,
+                    ["defaultStateNames"] = defaultStateNames,
+                    ["stateClipPathIds"] = stateClipPathIds,
+                    ["states"] = stateJson,
+                    ["statesTruncated"] = states.Count > stateJson.Count,
+                    ["rule"] = "SimpleAnimation TypeTree 只证明 m_Clip/m_States/defaultState/playAutomatically 等脚本配置；运行时 Play/Stop 调用、PlayableGraph 组合、TRS 写出和视觉验收未通过前，不能升级为生产动画绑定。",
+                };
+            }
+            catch (Exception ex)
+            {
+                return new JObject
+                {
+                    ["typeTreeStatus"] = "readFailed",
+                    ["diagnosticOnly"] = true,
+                    ["error"] = ex.GetType().Name,
+                    ["message"] = ex.Message,
+                    ["rule"] = "SimpleAnimation TypeTree 读取失败时只记录诊断状态，不影响源索引和默认导出。",
+                };
+            }
+        }
+
+        private static object ReadTypeTreeValue(OrderedDictionary data, string key)
+        {
+            return data != null && data.Contains(key) ? data[key] : null;
+        }
+
+        private static int ReadTypeTreeInt(OrderedDictionary data, string key)
+        {
+            var value = ReadTypeTreeValue(data, key);
+            return value == null ? 0 : Convert.ToInt32(value, CultureInfo.InvariantCulture);
+        }
+
+        private static bool ReadTypeTreeBool(OrderedDictionary data, string key)
+        {
+            var value = ReadTypeTreeValue(data, key);
+            return value switch
+            {
+                bool b => b,
+                byte b => b != 0,
+                short s => s != 0,
+                int i => i != 0,
+                long l => l != 0,
+                _ => bool.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), out var parsed)
+                    ? parsed
+                    : !string.IsNullOrWhiteSpace(Convert.ToString(value, CultureInfo.InvariantCulture)) &&
+                      Convert.ToString(value, CultureInfo.InvariantCulture) != "0",
+            };
+        }
+
+        private static List<object> ReadTypeTreeArray(OrderedDictionary data, string key)
+        {
+            var value = ReadTypeTreeValue(data, key);
+            if (value is IEnumerable enumerable && value is not string)
+            {
+                return enumerable.Cast<object>().ToList();
+            }
+
+            return new List<object>();
+        }
+
+        private static JObject BuildTypeTreePPtrJson(object value)
+        {
+            if (value is not OrderedDictionary pptr)
+            {
+                return null;
+            }
+
+            return BuildPPtrJson(
+                ReadTypeTreeInt(pptr, "m_FileID"),
+                Convert.ToInt64(ReadTypeTreeValue(pptr, "m_PathID") ?? 0, CultureInfo.InvariantCulture));
         }
 
         private static JArray BuildAvatarTosJson(IReadOnlyDictionary<uint, string> tos)

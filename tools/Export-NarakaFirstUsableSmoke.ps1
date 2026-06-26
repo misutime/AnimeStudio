@@ -1709,8 +1709,13 @@ foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
     $simpleRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "simpleAnimationRows")
     $knownRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "knownFieldRows")
     $pairedRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "pairedDefaultStateClipRows")
+    $typeTreeRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "typeTreeMetadataRows")
+    $typeTreeNotIndexedRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "typeTreeMetadataNotIndexedRows")
     if ($simpleRows -lt 1 -or $knownRows -ne $simpleRows -or $pairedRows -lt 1) {
         throw "SimpleAnimation visible-subtree probe lost default/state semantic pairing: selector=$($probe.selector) simpleRows=$simpleRows knownRows=$knownRows pairedRows=$pairedRows"
+    }
+    if (($typeTreeRows + $typeTreeNotIndexedRows) -lt $simpleRows) {
+        throw "SimpleAnimation TypeTree metadata status no longer covers all rows. selector=$($probe.selector) simpleRows=$simpleRows typeTreeRows=$typeTreeRows notIndexed=$typeTreeNotIndexedRows"
     }
 }
 $simpleAnimationProbeReadinessRows = @(
@@ -1754,6 +1759,10 @@ foreach ($probeRow in $simpleAnimationProbeReadinessRows) {
         simpleAnimationDefaultClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "defaultClipRows")
         simpleAnimationStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "stateClipRows")
         simpleAnimationPairedDefaultStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "pairedDefaultStateClipRows")
+        simpleAnimationTypeTreeMetadataRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "typeTreeMetadataRows")
+        simpleAnimationTypeTreeMetadataNotIndexedRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "typeTreeMetadataNotIndexedRows")
+        simpleAnimationTypeTreePlayAutomaticallyRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "typeTreePlayAutomaticallyRows")
+        simpleAnimationTypeTreeDefaultStateRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "typeTreeDefaultStateRows")
         simpleAnimationPairedClipSamples = @((Get-SmokePropertyValue -Object $semanticSummary -Name "pairedClipSamples") | Select-Object -First 8)
         subtreeVisibleRendererRows = $scriptProbe.subtreeVisibleRendererRows
         subtreeSkinnedRendererRows = $scriptProbe.subtreeSkinnedRendererRows
@@ -3421,11 +3430,15 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             else {
                 ""
             }
-            $readinessParts += ('{0}:next={1},scriptRows={2},pairedDefaultState={3},firstPairedClip={4},subtreeSkinned={5},avatarRows={6},highOverlap={7},maxCoverage={8}' -f `
+            $readinessParts += ('{0}:next={1},scriptRows={2},pairedDefaultState={3},typeTree={4}/notIndexed:{5},playAuto={6},defaultState={7},firstPairedClip={8},subtreeSkinned={9},avatarRows={10},highOverlap={11},maxCoverage={12}' -f `
                 (ConvertTo-SmokeText $probe.selector),
                 (ConvertTo-SmokeText $probe.nextStep),
                 (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
                 (ConvertTo-SmokeText $probe.simpleAnimationPairedDefaultStateClipRows "0"),
+                (ConvertTo-SmokeText $probe.simpleAnimationTypeTreeMetadataRows "0"),
+                (ConvertTo-SmokeText $probe.simpleAnimationTypeTreeMetadataNotIndexedRows "0"),
+                (ConvertTo-SmokeText $probe.simpleAnimationTypeTreePlayAutomaticallyRows "0"),
+                (ConvertTo-SmokeText $probe.simpleAnimationTypeTreeDefaultStateRows "0"),
                 (ConvertTo-SmokeText $firstPairedClip ""),
                 (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
                 (ConvertTo-SmokeText $probe.modelAvatarRows "0"),

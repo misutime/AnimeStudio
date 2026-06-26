@@ -990,7 +990,15 @@ SELECT
     clip.name AS clip_name,
     clip.source_path AS clip_source_path,
     clip.serialized_file AS clip_file,
-    clip.path_id AS clip_path_id
+    clip.path_id AS clip_path_id,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.typeTreeStatus'), 'notIndexed') AS simple_type_tree_status,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.playAutomatically'), -1) AS simple_play_automatically,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.stateCount'), 0) AS simple_state_count,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.defaultStateCount'), 0) AS simple_default_state_count,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.defaultStateNames'), '[]') AS simple_default_state_names_json,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.stateNames'), '[]') AS simple_state_names_json,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.clip.pathId'), 0) AS simple_default_clip_path_id,
+    COALESCE(json_extract(mono.raw_json, '$.monoBehaviour.simpleAnimation.stateClipPathIds'), '[]') AS simple_state_clip_path_ids_json
 FROM source_relations pptr INDEXED BY idx_source_relations_from
 JOIN source_objects clip
   ON clip.serialized_file = pptr.to_file
@@ -1050,7 +1058,15 @@ LIMIT $limit;");
                     ReadString(reader, 5),
                     ReadString(reader, 6),
                     ReadString(reader, 7),
-                    ReadLong(reader, 8)));
+                    ReadLong(reader, 8),
+                    ReadString(reader, 9),
+                    ReadLong(reader, 10),
+                    ReadLong(reader, 11),
+                    ReadLong(reader, 12),
+                    ReadString(reader, 13),
+                    ReadString(reader, 14),
+                    ReadLong(reader, 15),
+                    ReadString(reader, 16)));
             }
 
             return rows;
@@ -3018,6 +3034,7 @@ LIMIT $limit;";
                     ["pathId"] = row.MonoBehaviourPathId,
                     ["pathIdString"] = row.MonoBehaviourPathId.ToString(CultureInfo.InvariantCulture),
                     ["scriptName"] = row.ScriptName,
+                    ["simpleAnimationTypeTree"] = BuildSimpleAnimationTypeTreeDiagnosticJson(row),
                 },
                 ["reference"] = new JObject
                 {
@@ -3035,6 +3052,47 @@ LIMIT $limit;";
                 },
                 ["rule"] = "This diagnostic is intentionally limited to MonoBehaviour components on the selected GameObject and direct children. The bounded subtree summary is context only; it does not promote script semantics to production animation bindings.",
             };
+        }
+
+        private static JObject BuildSimpleAnimationTypeTreeDiagnosticJson(ScriptAnimationComponentDiagnosticRow row)
+        {
+            if (!string.Equals(row.ScriptName, "SimpleAnimation", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return new JObject
+            {
+                ["status"] = string.IsNullOrWhiteSpace(row.SimpleAnimationTypeTreeStatus) ? "notIndexed" : row.SimpleAnimationTypeTreeStatus,
+                ["diagnosticOnly"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["playAutomatically"] = row.SimpleAnimationPlayAutomatically < 0 ? null : row.SimpleAnimationPlayAutomatically != 0,
+                ["stateCount"] = row.SimpleAnimationStateCount,
+                ["defaultStateCount"] = row.SimpleAnimationDefaultStateCount,
+                ["defaultStateNames"] = ParseJsonArrayOrEmpty(row.SimpleAnimationDefaultStateNamesJson),
+                ["stateNames"] = ParseJsonArrayOrEmpty(row.SimpleAnimationStateNamesJson),
+                ["defaultClipPathId"] = row.SimpleAnimationDefaultClipPathId,
+                ["defaultClipPathIdString"] = row.SimpleAnimationDefaultClipPathId == 0 ? null : row.SimpleAnimationDefaultClipPathId.ToString(CultureInfo.InvariantCulture),
+                ["stateClipPathIds"] = ParseJsonArrayOrEmpty(row.SimpleAnimationStateClipPathIdsJson),
+                ["rule"] = "这些字段来自 MonoBehaviour TypeTree，只证明 SimpleAnimation 配置；运行时调用、TRS 写出和视觉验收未完成前，仍不能生成默认生产绑定。",
+            };
+        }
+
+        private static JArray ParseJsonArrayOrEmpty(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new JArray();
+            }
+
+            try
+            {
+                return JToken.Parse(json) as JArray ?? new JArray();
+            }
+            catch
+            {
+                return new JArray();
+            }
         }
 
         private static JObject BuildScriptAnimationComponentDiagnosticSummary(IReadOnlyList<ScriptAnimationComponentDiagnosticRow> rows)
@@ -3146,6 +3204,10 @@ LIMIT $limit;";
                 ["defaultClipRows"] = simpleRows.Count(x => string.Equals(GetSimpleAnimationRole(x.ScriptName, x.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)),
                 ["stateClipRows"] = simpleRows.Count(x => string.Equals(GetSimpleAnimationRole(x.ScriptName, x.ReferenceFieldPath), "stateClip", StringComparison.Ordinal)),
                 ["pairedDefaultStateClipRows"] = pairedRows.Count,
+                ["typeTreeMetadataRows"] = simpleRows.Count(x => string.Equals(x.SimpleAnimationTypeTreeStatus, "ok", StringComparison.OrdinalIgnoreCase)),
+                ["typeTreeMetadataNotIndexedRows"] = simpleRows.Count(x => string.Equals(x.SimpleAnimationTypeTreeStatus, "notIndexed", StringComparison.OrdinalIgnoreCase)),
+                ["typeTreePlayAutomaticallyRows"] = simpleRows.Count(x => x.SimpleAnimationPlayAutomatically > 0),
+                ["typeTreeDefaultStateRows"] = simpleRows.Count(x => x.SimpleAnimationDefaultStateCount > 0),
                 ["defaultOnlyRows"] = defaultOnlyRows.Count,
                 ["stateOnlyRows"] = stateOnlyRows.Count,
                 ["unresolvedFieldRows"] = simpleRows.Count - knownRows.Count,
@@ -3195,6 +3257,7 @@ LIMIT $limit;";
                         ["clipPathId"] = first.AnimationPathId,
                         ["clipPathIdString"] = first.AnimationPathId.ToString(CultureInfo.InvariantCulture),
                         ["roles"] = new JArray(roles.Select(x => new JValue(x))),
+                        ["simpleAnimationTypeTree"] = BuildSimpleAnimationTypeTreeDiagnosticJson(first),
                         ["diagnosticOnly"] = true,
                         ["notDefaultModelAnimationRelation"] = true,
                     };
@@ -3660,7 +3723,15 @@ LIMIT $limit;";
             string AnimationName,
             string AnimationSourcePath,
             string AnimationSerializedFile,
-            long AnimationPathId);
+            long AnimationPathId,
+            string SimpleAnimationTypeTreeStatus,
+            long SimpleAnimationPlayAutomatically,
+            long SimpleAnimationStateCount,
+            long SimpleAnimationDefaultStateCount,
+            string SimpleAnimationDefaultStateNamesJson,
+            string SimpleAnimationStateNamesJson,
+            long SimpleAnimationDefaultClipPathId,
+            string SimpleAnimationStateClipPathIdsJson);
 
         private sealed record ScriptAnimationSubtreeVisibility(
             int GameObjectCount,
