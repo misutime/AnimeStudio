@@ -1333,6 +1333,15 @@ $sourceIndexSimpleAnimationClipDomains = [pscustomobject]@{
     distinctClipBuckets = 0
     domainCounts = @()
 }
+$sourceIndexSimpleAnimationVisibleSubtreeProbes = [pscustomobject]@{
+    status = "notChecked"
+    rule = "SimpleAnimation visible-subtree probes reuse selected-model diagnostics to show whether script clip nodes have nearby visible/skinned model context. They remain diagnostics and do not create model-animation bindings."
+    probeCount = 0
+    visibleSubtreeProbeCount = 0
+    skinnedSubtreeProbeCount = 0
+    animatorProbeCount = 0
+    probes = @()
+}
 $sourceIndexScriptAnimationClipScripts = [pscustomobject]@{
     status = "notChecked"
     rule = "MonoBehaviour script AnimationClip PPtr summary is a source-index diagnostic only. It reveals script-owned clip references, but does not create model-animation bindings."
@@ -1585,6 +1594,65 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     zhumuSoul = $zhumuScriptAnimationDiagnostic
     yaodaojiWings = $yaodaojiWingsScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
+}
+$simpleAnimationVisibleSubtreeProbeRows = @(
+    [pscustomobject]@{
+        selector = "mo_pve_b_zhumu_soul_01"
+        role = "MonsterOrNpcSimpleAnimationProbe"
+        diagnostic = $zhumuScriptAnimationDiagnostic
+    },
+    [pscustomobject]@{
+        selector = "ch_f_japan_yaodaoji_lv_s14_wings"
+        role = "CharacterSimpleAnimationShortlistProbe"
+        diagnostic = $yaodaojiWingsScriptAnimationDiagnostic
+    }
+)
+$simpleAnimationVisibleSubtreeProbes = @()
+foreach ($probeRow in $simpleAnimationVisibleSubtreeProbeRows) {
+    $diagnostic = $probeRow.diagnostic
+    $simpleAnimationVisibleSubtreeProbes += [pscustomobject]@{
+        selector = $probeRow.selector
+        role = $probeRow.role
+        selectedModelCount = $diagnostic.selectedModelCount
+        candidateCount = $diagnostic.candidateCount
+        scriptAnimationRows = $diagnostic.scriptAnimationRows
+        firstScriptName = $diagnostic.firstScriptName
+        firstClipName = $diagnostic.firstClipName
+        firstFieldPath = $diagnostic.firstFieldPath
+        visibleRendererRows = $diagnostic.visibleRendererRows
+        subtreeVisibleRendererRows = $diagnostic.subtreeVisibleRendererRows
+        subtreeSkinnedRendererRows = $diagnostic.subtreeSkinnedRendererRows
+        subtreeTruncatedRows = $diagnostic.subtreeTruncatedRows
+        animatorRows = $diagnostic.animatorRows
+        firstSubtreeVisibleRendererCount = $diagnostic.firstSubtreeVisibleRendererCount
+        firstSubtreeSkinnedMeshRendererCount = $diagnostic.firstSubtreeSkinnedMeshRendererCount
+        firstSubtreeVisibleSamples = $diagnostic.firstSubtreeVisibleSamples
+        diagnosticOnly = $true
+        notDefaultModelAnimationRelation = $true
+        productionReadiness = $diagnostic.productionReadiness
+        blockedProductionRequirements = $diagnostic.blockedProductionRequirements
+    }
+}
+$sourceIndexSimpleAnimationVisibleSubtreeProbes = [pscustomobject]@{
+    status = "ok"
+    rule = $sourceIndexSimpleAnimationVisibleSubtreeProbes.rule
+    probeCount = $simpleAnimationVisibleSubtreeProbes.Count
+    visibleSubtreeProbeCount = @($simpleAnimationVisibleSubtreeProbes | Where-Object { $_.subtreeVisibleRendererRows -gt 0 }).Count
+    skinnedSubtreeProbeCount = @($simpleAnimationVisibleSubtreeProbes | Where-Object { $_.subtreeSkinnedRendererRows -gt 0 }).Count
+    animatorProbeCount = @($simpleAnimationVisibleSubtreeProbes | Where-Object { $_.animatorRows -gt 0 }).Count
+    probes = $simpleAnimationVisibleSubtreeProbes
+    diagnosticOnly = $true
+    notDefaultModelAnimationRelation = $true
+    productionReadiness = "blocked"
+    blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+}
+if ($sourceIndexSimpleAnimationVisibleSubtreeProbes.probeCount -lt 2 -or $sourceIndexSimpleAnimationVisibleSubtreeProbes.visibleSubtreeProbeCount -lt 2 -or $sourceIndexSimpleAnimationVisibleSubtreeProbes.skinnedSubtreeProbeCount -lt 2 -or $sourceIndexSimpleAnimationVisibleSubtreeProbes.animatorProbeCount -lt 2) {
+    throw "SimpleAnimation visible-subtree probes lost visible/skinned/Animator context. probes=$($sourceIndexSimpleAnimationVisibleSubtreeProbes.probeCount) visible=$($sourceIndexSimpleAnimationVisibleSubtreeProbes.visibleSubtreeProbeCount) skinned=$($sourceIndexSimpleAnimationVisibleSubtreeProbes.skinnedSubtreeProbeCount) animator=$($sourceIndexSimpleAnimationVisibleSubtreeProbes.animatorProbeCount)"
+}
+foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
+    if ($probe.diagnosticOnly -ne $true -or $probe.notDefaultModelAnimationRelation -ne $true -or [string]$probe.productionReadiness -ne "blocked") {
+        throw "SimpleAnimation visible-subtree probe lost diagnostic-only production boundary: $($probe.selector)"
+    }
 }
 $sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex
 if ($sourceIndexScriptAnimationClipScripts.status -eq "ok" -and $sourceIndexScriptAnimationClipScripts.totalRelations -lt 1) {
@@ -2827,6 +2895,7 @@ $summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertT
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics.status) + ","
 $summaryJsonLines += '    "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts.status) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains.status) + ","
+$summaryJsonLines += '    "sourceIndexSimpleAnimationVisibleSubtreeProbes": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationVisibleSubtreeProbes.status) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics.status) + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
@@ -2865,6 +2934,7 @@ $summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJson
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
 $summaryJsonLines += '    "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts 10) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
+$summaryJsonLines += '    "sourceIndexSimpleAnimationVisibleSubtreeProbes": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationVisibleSubtreeProbes 10) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
@@ -2873,6 +2943,7 @@ $summaryJsonLines += '  "monoBehaviourAnimationClipPPtrSummary": ' + $monoBehavi
 $summaryJsonLines += '  "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
 $summaryJsonLines += '  "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts 10) + ","
 $summaryJsonLines += '  "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
+$summaryJsonLines += '  "sourceIndexSimpleAnimationVisibleSubtreeProbes": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationVisibleSubtreeProbes 10) + ","
 $summaryJsonLines += '  "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10) + ","
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
@@ -2910,6 +2981,14 @@ if ($summaryJsonParsed.sourceIndexScriptAnimationClipScripts.status -eq "ok") {
     }
     if ([int64]$summaryJsonParsed.sourceIndexScriptAnimationClipScripts.totalRelations -lt [int64]$summaryJsonParsed.sourceIndexSimpleAnimationClipDomains.totalRelations) {
         throw "smoke_summary.json script AnimationClip PPtr total is smaller than SimpleAnimation subset."
+    }
+}
+if ($summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.status -eq "ok") {
+    if ([string]$summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.productionReadiness -ne "blocked") {
+        throw "smoke_summary.json sourceIndexSimpleAnimationVisibleSubtreeProbes must stay production-blocked. productionReadiness=$($summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.productionReadiness)"
+    }
+    if ([int64]$summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.visibleSubtreeProbeCount -lt 2 -or [int64]$summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.skinnedSubtreeProbeCount -lt 2) {
+        throw "smoke_summary.json SimpleAnimation visible-subtree probes lost visible/skinned evidence."
     }
 }
 
@@ -3140,6 +3219,28 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     }
     else {
         $reportLines.Add(('- SimpleAnimation clip domains: `{0}`' -f $sourceIndexSimpleAnimationClipDomains.status))
+    }
+    if ($sourceIndexSimpleAnimationVisibleSubtreeProbes.status -eq "ok") {
+        $visibleProbeParts = @()
+        foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
+            $visibleProbeParts += ('{0}:scriptRows={1},subtreeVisible={2},subtreeSkinned={3},animatorRows={4},firstClip={5}' -f `
+                (ConvertTo-SmokeText $probe.selector),
+                (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
+                (ConvertTo-SmokeText $probe.subtreeVisibleRendererRows "0"),
+                (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
+                (ConvertTo-SmokeText $probe.animatorRows "0"),
+                (ConvertTo-SmokeText $probe.firstClipName ""))
+        }
+        $reportLines.Add(('- SimpleAnimation visible-subtree probes: probes=`{0}`, visible=`{1}`, skinned=`{2}`, animator=`{3}`, samples=`{4}`' -f `
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationVisibleSubtreeProbes.probeCount "0"),
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationVisibleSubtreeProbes.visibleSubtreeProbeCount "0"),
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationVisibleSubtreeProbes.skinnedSubtreeProbeCount "0"),
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationVisibleSubtreeProbes.animatorProbeCount "0"),
+            ($visibleProbeParts -join ' | ')))
+        $reportLines.Add('- SimpleAnimation visible-subtree rule: these probes prove selected script nodes can sit above visible skinned model subtrees, but script semantics, deterministic model relation, TRS export and visual review are still required before production binding.')
+    }
+    else {
+        $reportLines.Add(('- SimpleAnimation visible-subtree probes: `{0}`' -f $sourceIndexSimpleAnimationVisibleSubtreeProbes.status))
     }
     if ($scriptAnimationComponentDiagnostics.status -eq "ok") {
         $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
