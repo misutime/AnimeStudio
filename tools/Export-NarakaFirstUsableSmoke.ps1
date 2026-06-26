@@ -14,6 +14,8 @@ param(
     [string]$CharacterCandidateSourceIndexSerializedFile = "CAB-43d9a2106c54892c7f775b8d7ab8b193",
     [string]$CharacterCandidateSourceIndexAnimatorName = "ch_m_japan_samurai_ghost",
     [long]$CharacterCandidateSourceIndexRootPathId = 7640773285473327857,
+    [string]$FormalSkinnedRepresentativeBundle = "c\8\c8f77e18090d4d34",
+    [long]$FormalSkinnedRepresentativeRootPathId = 2767142543816441398,
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
@@ -805,10 +807,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Probe Naraka input failed with exit code $LASTEXITCODE"
 }
 
-# 这些样本来自完整源索引的确定性闭包，用来同时覆盖角色部件、武器和普通道具。
+# 这些样本来自完整源索引的确定性闭包，用来同时覆盖角色部件、正式路径带骨骼模型、武器和普通道具。
 Write-Host ""
 Write-Host "== Export Naraka representative model smoke =="
-& $cli $SourceRoot $libraryOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Separate" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" "d\1\d1d0bc7b6c107e00" "0\f\0f2ab2b1ab070ac0" "--path_ids" "-6619473669887381141" "3879445205109982761" "3817277305598733592"
+& $cli $SourceRoot $libraryOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Separate" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" $FormalSkinnedRepresentativeBundle "d\1\d1d0bc7b6c107e00" "0\f\0f2ab2b1ab070ac0" "--path_ids" "-6619473669887381141" $FormalSkinnedRepresentativeRootPathId "3879445205109982761" "3817277305598733592"
 if ($LASTEXITCODE -ne 0) {
     throw "Export Naraka representative model smoke failed with exit code $LASTEXITCODE"
 }
@@ -826,9 +828,10 @@ $sqliteSummary = Join-Path $libraryOutput "sqlite_index_summary.json"
 $validation = Join-Path $libraryOutput "model_validation.json"
 $assetCatalog = Join-Path $libraryOutput "asset_catalog.jsonl"
 $gltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
+$jiantianshiGltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_f_jiantianshi\ch_f_jiantianshi_lv_s1\ch_f_jiantianshi_lv_s1.gltf"
 $bowGltf = Join-Path $libraryOutput "Models\assets\res\prefab\drop_item_generate\weapon\weapon_drop_bow_dongjun\weapon_drop_bow_dongjun.gltf"
 $deviceGltf = Join-Path $libraryOutput "Models\assets\res\prefab\device_generate\device_hongbao_02\device_hongbao_02.gltf"
-$representativeGltfs = @($gltf, $bowGltf, $deviceGltf)
+$representativeGltfs = @($gltf, $jiantianshiGltf, $bowGltf, $deviceGltf)
 
 Test-FileRequired -Path $manifest -Label "asset_library.json"
 Test-FileRequired -Path $db -Label "library_index.db"
@@ -836,6 +839,7 @@ Test-FileRequired -Path $sqliteSummary -Label "sqlite_index_summary.json"
 Test-FileRequired -Path $validation -Label "model_validation.json"
 Test-FileRequired -Path $assetCatalog -Label "asset_catalog.jsonl"
 Test-FileRequired -Path $gltf -Label "Hadi glTF"
+Test-FileRequired -Path $jiantianshiGltf -Label "Jiantianshi glTF"
 Test-FileRequired -Path $bowGltf -Label "Bow prop glTF"
 Test-FileRequired -Path $deviceGltf -Label "Device prop glTF"
 
@@ -1701,6 +1705,7 @@ $summaryJsonLines += '  "modelValidation": ' + (ConvertTo-SmokeJsonLiteral $vali
 $summaryJsonLines += '  "modelGltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ","
 $summaryJsonLines += '  "representativeModels": ['
 $summaryJsonLines += '    { "name": "ch_m_hadi_lv_s9", "role": "CharacterPart", "gltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ' },'
+$summaryJsonLines += '    { "name": "ch_f_jiantianshi_lv_s1", "role": "SkinnedActorVisualPart", "gltf": ' + (ConvertTo-SmokeJsonLiteral $jiantianshiGltf) + ' },'
 $summaryJsonLines += '    { "name": "weapon_drop_bow_dongjun", "role": "WeaponProp", "gltf": ' + (ConvertTo-SmokeJsonLiteral $bowGltf) + ' },'
 $summaryJsonLines += '    { "name": "device_hongbao_02", "role": "Prop", "gltf": ' + (ConvertTo-SmokeJsonLiteral $deviceGltf) + ' }'
 $summaryJsonLines += '  ],'
@@ -1874,7 +1879,7 @@ if ($null -ne $modelValidation.totals) {
         (ConvertTo-SmokeText $modelValidation.totals.warning "0"),
         (ConvertTo-SmokeText $modelValidation.totals.error "0")))
 }
-$reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
+$reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `ch_f_jiantianshi_lv_s1` (SkinnedActorVisualPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
 $reportLines.Add('- Representative boundary: `ch_m_japan_samurai_ghost` stays in the read-only skinned candidate gate because it comes from an effect/battle bundle and still has no explicit production model-animation relation.')
 if ($hadiModularBoundary.status -eq "ok") {
     $reportLines.Add(('- Hadi modular boundary: libraryRole=`{0}`, resourceKind=`{1}`, completeness=`{2}`, missingRoles=`{3}`' -f `
