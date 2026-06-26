@@ -126,6 +126,13 @@ $shaderBoundarySummaryJson = $null
 $shaderBoundaryMaterialSidecarRows = $null
 $shaderBoundaryCustomShaderRows = $null
 $shaderBoundaryGltf = $null
+$sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Animator.avatar is only source-index evidence. It can explain model skeleton context, but it never creates a default model-animation binding without explicit clip/controller relation and model validation."
+    totalAnimators = 0
+    withController = 0
+    domainCounts = @()
+}
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
 $animationReportJson = $null
 $animationGltfPath = $null
@@ -304,6 +311,67 @@ else {
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+$sqlite3ForSourceIndex = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+if ($null -ne $sqlite3ForSourceIndex) {
+    $avatarAnimatorDomainSql = @"
+WITH avatar AS (
+  SELECT from_source, from_name, from_path_id
+  FROM source_relations
+  WHERE relation='animator.avatar'
+),
+ctrl AS (
+  SELECT from_source, from_path_id
+  FROM source_relations
+  WHERE relation='animator.controller'
+),
+classified AS (
+  SELECT a.from_name,
+    CASE
+      WHEN lower(a.from_name) LIKE '%ui%' OR lower(a.from_source) LIKE '%/ui/%' THEN 'UiOrPreview'
+      WHEN lower(a.from_name) LIKE '%cutscene%' OR lower(a.from_name) LIKE '%preview%' THEN 'PreviewOrTimeline'
+      WHEN lower(a.from_name) LIKE 'fx\_%' ESCAPE '\' OR lower(a.from_name) LIKE '%effect%' THEN 'VfxOrEffect'
+      WHEN lower(a.from_name) LIKE 'device\_%' ESCAPE '\' THEN 'DeviceOrProp'
+      WHEN lower(a.from_name) LIKE 'wp\_%' ESCAPE '\' THEN 'WeaponOrProp'
+      WHEN lower(a.from_name) LIKE '%skeleton%' THEN 'SkeletonSource'
+      WHEN lower(a.from_name) LIKE 'ch\_%' ESCAPE '\' THEN 'CharacterOrPart'
+      ELSE 'Other'
+    END AS domain,
+    CASE WHEN c.from_path_id IS NULL THEN 0 ELSE 1 END AS has_controller
+  FROM avatar a
+  LEFT JOIN ctrl c ON c.from_source = a.from_source AND c.from_path_id = a.from_path_id
+)
+SELECT domain, COUNT(*) AS animators, SUM(has_controller) AS withController,
+       substr(group_concat(from_name, ', '), 1, 180) AS samples
+FROM classified
+GROUP BY domain
+ORDER BY animators DESC;
+"@
+    $avatarAnimatorDomainRowsText = & $sqlite3ForSourceIndex.Source -readonly -batch -json $SourceIndex $avatarAnimatorDomainSql
+    if ($LASTEXITCODE -ne 0) {
+        throw "sqlite3 failed while querying Naraka source-index animator.avatar domains."
+    }
+    $avatarAnimatorDomainRowsParsed = ($avatarAnimatorDomainRowsText -join [Environment]::NewLine) | ConvertFrom-Json
+    $avatarAnimatorDomainRows = @()
+    foreach ($row in $avatarAnimatorDomainRowsParsed) {
+        $avatarAnimatorDomainRows += $row
+    }
+    $avatarAnimatorTotal = 0L
+    $avatarAnimatorWithController = 0L
+    foreach ($row in $avatarAnimatorDomainRows) {
+        $avatarAnimatorTotal += [long]$row.animators
+        $avatarAnimatorWithController += [long]$row.withController
+    }
+    $sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
+        status = "ok"
+        rule = $sourceIndexAvatarAnimatorDomains.rule
+        totalAnimators = $avatarAnimatorTotal
+        withController = $avatarAnimatorWithController
+        domainCounts = $avatarAnimatorDomainRows
+    }
+}
+else {
+    $sourceIndexAvatarAnimatorDomains.status = "toolMissing"
+}
 if ($null -eq $sqliteSummaryJson.qualityGates) {
     throw "sqlite_index_summary.json lost qualityGates section."
 }
@@ -406,6 +474,7 @@ $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
 $summaryJsonLines += '    "shaderBoundary": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
 $summaryJsonLines += '    "shaderBoundaryGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryGltfValidationStatus) + ","
+$summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
 $summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
@@ -432,7 +501,8 @@ $summaryJsonLines += '    "resolvedAnimatorControllerClipTargets": ' + (ConvertT
 $summaryJsonLines += '    "missingAnimatorControllerClipTargets": ' + (ConvertTo-SmokeJsonLiteral $missingAnimatorControllerClipTargets) + ","
 $summaryJsonLines += '    "missingAnimatorControllerClipTargetSamples": ' + $missingAnimatorControllerClipTargetSamplesJson + ","
 $summaryJsonLines += '    "explicitControllerClipDomains": ' + $explicitControllerClipDomainsJson + ","
-$summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnimatorControllerUsagesJson
+$summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnimatorControllerUsagesJson + ","
+$summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
@@ -544,6 +614,22 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         $reportLines.Add(('- Animator controller production gate: withAvatar=`{0}`, withAvatarAndControllerClipEdges=`{1}`' -f `
             (ConvertTo-SmokeText $relationHealth.explicitAnimatorControllerUsages.withAvatar "0"),
             (ConvertTo-SmokeText $relationHealth.explicitAnimatorControllerUsages.withAvatarAndControllerClipEdges "0")))
+    }
+    if ($sourceIndexAvatarAnimatorDomains.status -eq "ok") {
+        $reportLines.Add(('- Source-index animator.avatar domains: totalAnimators=`{0}`, withController=`{1}`' -f `
+            (ConvertTo-SmokeText $sourceIndexAvatarAnimatorDomains.totalAnimators "0"),
+            (ConvertTo-SmokeText $sourceIndexAvatarAnimatorDomains.withController "0")))
+        foreach ($domainRow in @($sourceIndexAvatarAnimatorDomains.domainCounts | Select-Object -First 8)) {
+            $reportLines.Add(('-   {0}: animators=`{1}`, withController=`{2}`, samples=`{3}`' -f `
+                (ConvertTo-SmokeText $domainRow.domain),
+                (ConvertTo-SmokeText $domainRow.animators "0"),
+                (ConvertTo-SmokeText $domainRow.withController "0"),
+                (ConvertTo-SmokeText $domainRow.samples "")))
+        }
+        $reportLines.Add('- Avatar-domain rule: animator.avatar alone is diagnostic skeleton context; it is not a default model-animation binding without explicit clip/controller relation and model validation.')
+    }
+    else {
+        $reportLines.Add(('- Source-index animator.avatar domain query: `{0}`' -f $sourceIndexAvatarAnimatorDomains.status))
     }
 }
 $reportLines.Add("")

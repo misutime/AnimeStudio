@@ -70,10 +70,11 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 这两个文件只汇总 smoke 证据，不会改变正式 `RepresentativeModels` 素材库，也不会把诊断动画写成默认动画关系。
 脚本会要求 `qualityGates.textureLinkErrors=0`；如果 glTF 贴图引用链路断开，smoke 会直接失败。`customShaderRequiredSidecars` / `layeredMaterialUnresolvedSidecars` 只作为 Naraka 私有 shader 边界证据记录，不会被当成贴图丢失。
-2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_ShaderBoundary_Clean_Current`：默认 smoke 批次生成 `models=3`、`ok=3`、`withTextures=3`、`textureAssets=43`、`materialSidecars=15`、`textureLinkErrors=0`，代表模型 glTF validator、AssetLibrary Browser 校验和 3 张缩略图均通过。`shaderBoundary.status=ok`，`customShaderRequiredSidecars=2`、`layeredMaterialUnresolvedSidecars=2`、`degradedPreviewSidecars=2`、`materialSidecarRows=3`、`customShaderMaterialSidecarRows=2`，Face 样本 glTF validator 也通过。这把一行 smoke 从单 Hadi 样本扩展为角色部件、武器、道具三类默认 Library 正样本，并把 Naraka 私有 shader 边界纳入默认验证；静态树仍作为独立扩展样本记录。
+2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_AvatarDomain_Clean_Current`：默认 smoke 批次生成 `models=3`、`ok=3`、`withTextures=3`、`textureAssets=43`、`materialSidecars=15`、`textureLinkErrors=0`，代表模型 glTF validator、AssetLibrary Browser 校验和 3 张缩略图均通过。`shaderBoundary.status=ok`，`customShaderRequiredSidecars=2`、`layeredMaterialUnresolvedSidecars=2`、`degradedPreviewSidecars=2`、`materialSidecarRows=3`、`customShaderMaterialSidecarRows=2`，Face 样本 glTF validator 也通过。这把一行 smoke 从单 Hadi 样本扩展为角色部件、武器、道具三类默认 Library 正样本，并把 Naraka 私有 shader 边界和 Avatar 域诊断纳入默认验证；静态树仍作为独立扩展样本记录。
 2026-06-26 复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_RelationHealth_Current`：`sourceIndexAnimationRelationHealth.status=ok`，`animatorController.clip=98`、`resolved=98`、`missing=0`。此前 `resolved=97/missing=1` 是 Library 摘要查询没有按 SerializedFile 大小写不敏感匹配造成的假 warning，不代表当前源索引缺 AnimationClip CAB。
 同一轮新增 `explicitControllerClipDomains` 诊断：当前 24 个显式 AnimatorController 中 `UiStateController=21/95`、`VfxOrEffect=3/3`（controllers/clipEdges）。这说明源索引里的 controller-clip 关系可解析，但目前主要是 UI 状态机和特效 clip，不能作为角色身体动画生产关系。
 `explicitAnimatorControllerUsages` 继续确认生产动画边界：当前 `withAvatar=15`、`withAvatarAndControllerClipEdges=0`，带 Avatar 的 Animator+Controller 样本都落在 `PreviewOrTimeline/TrackEditorPreview` 一侧，只能作为诊断线索，不能作为角色生产动画关系。
+`avatarAnimatorDomains` 进一步统计完整源索引里的 `animator.avatar`：`totalAnimators=6769`、`withController=15`，主要分布为 `WeaponOrProp=1802/0`、`DeviceOrProp=1478/6`、`UiOrPreview=817/1`、`SkeletonSource=690/0`、`VfxOrEffect=325/5`、`CharacterOrPart=228/0`（animators/withController）。这说明 Naraka 很多武器、道具、局部角色部件和骨架源对象都有 Avatar 上下文；Avatar 只能说明骨架/skin 诊断背景，不能在没有显式 clip/controller 关系和模型验收的情况下创建默认模型-动画绑定。
 
 输入探针：
 
@@ -149,6 +150,7 @@ D:\Assets\Naraka\Naraka_P2_Hadi_Hengdao_InternalHumanoid_SourceAvatarDiagnostic_
 
 - Hadi body 是模块化角色 body/服装部件，当前 `modelCompletenessStatus=modular_incomplete`，不能单独作为完整角色动画 smoke。
 - Face/hair 等 Naraka 自定义网格还需要正式装配、skin、tint/custom shader 复刻或人工材质重建；这些问题应被报告和索引标记，不阻塞其它静态模型主线。
+- `D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_Xinghui_Current` 验证了一个带 Avatar 的 `ch_f_fcalw_a_xinghui` 候选：模型本体 `ok`，但来源是 `actor_extra_part`，bbox 很小，只有局部挂件/绳带骨骼，材质 `needsCustomizationTint`；它不能替代完整角色 smoke。
 - 下一步优先找完整角色 prefab/配置、Avatar、Controller/Clip 的 Unity 显式关系；不要按角色名、骨架兼容或动作名硬绑定动画。
 - 扩大 smoke 时应继续覆盖角色、武器、道具、建筑/环境和静态场景物，并用 SQLite、glTF validator、浏览器缩略图和清晰截图共同验收。
 
