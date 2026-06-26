@@ -1852,8 +1852,8 @@ if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
         $subjectAnalyzerArgs = @(
             $subjectAnalyzer,
             "--output", $zhumuMergedSubjectReport,
-            "--min_foreground_pixel_ratio", "0.015",
-            "--min_foreground_height_ratio", "0.12",
+            "--min_foreground_pixel_ratio", "0.08",
+            "--min_foreground_height_ratio", "0.45",
             "--images"
         ) + $zhumuMergedRenderImages
         Invoke-Checked -Label "Analyze Zhumu merged animation render subject occupancy" -FilePath (Resolve-SmokePython) -Arguments $subjectAnalyzerArgs
