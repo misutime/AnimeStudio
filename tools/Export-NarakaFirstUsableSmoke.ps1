@@ -287,6 +287,7 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryScriptNameCounts = @()
     $summaryFieldPathCounts = @()
     $summaryAnimationNameSamples = @()
+    $summarySimpleAnimationSemantic = $null
     if ($null -ne $diagnosticSummary) {
         # 新报告直接给机器摘要；旧报告没有该节点时继续使用行数组统计。
         $summaryStatus = [string](Get-SmokePropertyValue -Object $diagnosticSummary -Name "status")
@@ -304,6 +305,7 @@ function Read-SourceModelScriptAnimationDiagnostic {
         $summaryScriptNameCountsValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "scriptNameCounts"
         $summaryFieldPathCountsValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "fieldPathCounts"
         $summaryAnimationNameSamplesValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "animationNameSamples"
+        $summarySimpleAnimationSemanticValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "simpleAnimationSemanticSummary"
         if ($null -ne $summaryBlockedRequirementsValue) {
             $summaryBlockedRequirements = @($summaryBlockedRequirementsValue)
         }
@@ -315,6 +317,9 @@ function Read-SourceModelScriptAnimationDiagnostic {
         }
         if ($null -ne $summaryAnimationNameSamplesValue) {
             $summaryAnimationNameSamples = @($summaryAnimationNameSamplesValue)
+        }
+        if ($null -ne $summarySimpleAnimationSemanticValue) {
+            $summarySimpleAnimationSemantic = $summarySimpleAnimationSemanticValue
         }
         if ($null -ne $summaryRowCount) {
             $scriptAnimationRows = [Convert]::ToInt64($summaryRowCount)
@@ -339,6 +344,15 @@ function Read-SourceModelScriptAnimationDiagnostic {
         }
         if ([string]$summaryProductionReadiness -ne "blocked" -or $summaryBlockedRequirements.Count -le 0) {
             $invalidBoundaryRowCount++
+        }
+        if ($null -ne $summarySimpleAnimationSemantic) {
+            $semanticDefaultCandidateCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $summarySimpleAnimationSemantic -Name "defaultCandidateCount")
+            $semanticDiagnosticOnly = Get-SmokePropertyValue -Object $summarySimpleAnimationSemantic -Name "diagnosticOnly"
+            $semanticNotDefaultRelation = Get-SmokePropertyValue -Object $summarySimpleAnimationSemantic -Name "notDefaultModelAnimationRelation"
+            $semanticProductionReadiness = [string](Get-SmokePropertyValue -Object $summarySimpleAnimationSemantic -Name "productionReadiness")
+            if ($semanticDefaultCandidateCount -ne 0 -or $semanticDiagnosticOnly -ne $true -or $semanticNotDefaultRelation -ne $true -or $semanticProductionReadiness -ne "blocked") {
+                $invalidBoundaryRowCount++
+            }
         }
     }
     if ([string]::IsNullOrWhiteSpace($summaryStatus)) {
@@ -366,6 +380,7 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryJsonLines += '  "scriptNameCounts": ' + (ConvertTo-SmokeJsonLiteral ($summaryScriptNameCounts | Select-Object -First 8) 10) + ","
     $summaryJsonLines += '  "fieldPathCounts": ' + (ConvertTo-SmokeJsonLiteral ($summaryFieldPathCounts | Select-Object -First 8) 10) + ","
     $summaryJsonLines += '  "animationNameSamples": ' + (ConvertTo-SmokeJsonLiteral ($summaryAnimationNameSamples | Select-Object -First 12) 10) + ","
+    $summaryJsonLines += '  "simpleAnimationSemanticSummary": ' + (ConvertTo-SmokeJsonLiteral $summarySimpleAnimationSemantic 10) + ","
     $summaryJsonLines += '  "firstScriptName": ' + (ConvertTo-SmokeJsonLiteral $firstScriptName) + ","
     $summaryJsonLines += '  "firstFieldPath": ' + (ConvertTo-SmokeJsonLiteral $firstFieldPath) + ","
     $summaryJsonLines += '  "firstClipName": ' + (ConvertTo-SmokeJsonLiteral $firstClipName) + ","
@@ -1646,6 +1661,7 @@ foreach ($probeRow in $simpleAnimationVisibleSubtreeProbeRows) {
         scriptNameCounts = @($diagnostic.scriptNameCounts)
         fieldPathCounts = @($diagnostic.fieldPathCounts)
         animationNameSamples = @($diagnostic.animationNameSamples)
+        simpleAnimationSemanticSummary = $diagnostic.simpleAnimationSemanticSummary
         visibleRendererRows = $diagnostic.visibleRendererRows
         subtreeVisibleRendererRows = $diagnostic.subtreeVisibleRendererRows
         subtreeSkinnedRendererRows = $diagnostic.subtreeSkinnedRendererRows
@@ -1686,6 +1702,16 @@ foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
             throw "SimpleAnimation visible-subtree probe lost expected field path '$requiredFieldPath': $($probe.selector)"
         }
     }
+    $semanticSummary = Get-SmokePropertyValue -Object $probe -Name "simpleAnimationSemanticSummary"
+    if ($null -eq $semanticSummary -or [string](Get-SmokePropertyValue -Object $semanticSummary -Name "productionReadiness") -ne "blocked") {
+        throw "SimpleAnimation visible-subtree probe lost semantic blocked summary: $($probe.selector)"
+    }
+    $simpleRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "simpleAnimationRows")
+    $knownRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "knownFieldRows")
+    $pairedRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "pairedDefaultStateClipRows")
+    if ($simpleRows -lt 1 -or $knownRows -ne $simpleRows -or $pairedRows -lt 1) {
+        throw "SimpleAnimation visible-subtree probe lost default/state semantic pairing: selector=$($probe.selector) simpleRows=$simpleRows knownRows=$knownRows pairedRows=$pairedRows"
+    }
 }
 $simpleAnimationProbeReadinessRows = @(
     [pscustomobject]@{
@@ -1709,6 +1735,7 @@ foreach ($probeRow in $simpleAnimationProbeReadinessRows) {
         throw "SimpleAnimation readiness probe is incomplete. selector=$($probeRow.selector) hasScriptProbe=$($null -ne $scriptProbe) hasAvatarProbe=$($null -ne $avatarProbe)"
     }
     # 这里只做下一步诊断排序，不能把脚本字段或 Avatar 重叠直接升级成生产动画绑定。
+    $semanticSummary = Get-SmokePropertyValue -Object $scriptProbe -Name "simpleAnimationSemanticSummary"
     $nextStep = if ($avatarProbe.modelAvatarMaxCoverage -ge 0.9 -and $avatarProbe.modelAvatarHighOverlapRows -gt 0) {
         "humanoidSolverProbeCandidate"
     }
@@ -1723,6 +1750,10 @@ foreach ($probeRow in $simpleAnimationProbeReadinessRows) {
         scriptAnimationRows = $scriptProbe.scriptAnimationRows
         fieldPathCounts = @($scriptProbe.fieldPathCounts)
         animationNameSamples = @($scriptProbe.animationNameSamples)
+        simpleAnimationSemanticSummary = $semanticSummary
+        simpleAnimationDefaultClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "defaultClipRows")
+        simpleAnimationStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "stateClipRows")
+        simpleAnimationPairedDefaultStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "pairedDefaultStateClipRows")
         subtreeVisibleRendererRows = $scriptProbe.subtreeVisibleRendererRows
         subtreeSkinnedRendererRows = $scriptProbe.subtreeSkinnedRendererRows
         subtreeTruncatedRows = $scriptProbe.subtreeTruncatedRows
@@ -1755,8 +1786,14 @@ $yaodaojiReadiness = @($sourceIndexSimpleAnimationProbeReadiness.rows | Where-Ob
 if ($zhumuReadiness.modelAvatarMaxCoverage -lt 0.9 -or $zhumuReadiness.modelAvatarHighOverlapRows -lt 1 -or $zhumuReadiness.nextStep -ne "humanoidSolverProbeCandidate") {
     throw "SimpleAnimation readiness lost Zhumu Humanoid solver probe evidence. maxCoverage=$($zhumuReadiness.modelAvatarMaxCoverage) highOverlap=$($zhumuReadiness.modelAvatarHighOverlapRows) nextStep=$($zhumuReadiness.nextStep)"
 }
+if ($zhumuReadiness.simpleAnimationPairedDefaultStateClipRows -lt 20) {
+    throw "SimpleAnimation readiness lost Zhumu default/state clip pairing evidence. paired=$($zhumuReadiness.simpleAnimationPairedDefaultStateClipRows)"
+}
 if ($yaodaojiReadiness.modelAvatarMaxCoverage -ne 0.0 -or $yaodaojiReadiness.nextStep -ne "avatarOverlapBlockedAttachmentOrCustomSkeletonProbe") {
     throw "SimpleAnimation readiness lost Yaodaoji attachment/custom-skeleton boundary. maxCoverage=$($yaodaojiReadiness.modelAvatarMaxCoverage) nextStep=$($yaodaojiReadiness.nextStep)"
+}
+if ($yaodaojiReadiness.simpleAnimationPairedDefaultStateClipRows -lt 1) {
+    throw "SimpleAnimation readiness lost Yaodaoji default/state clip pairing evidence. paired=$($yaodaojiReadiness.simpleAnimationPairedDefaultStateClipRows)"
 }
 $sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex
 if ($sourceIndexScriptAnimationClipScripts.status -eq "ok" -and $sourceIndexScriptAnimationClipScripts.totalRelations -lt 1) {
@@ -3342,9 +3379,12 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
                 ('{0}:{1}' -f (ConvertTo-SmokeText $_.fieldPath), (ConvertTo-SmokeText $_.rowCount "0"))
             })
             $animationSamples = @($probe.animationNameSamples | Select-Object -First 3 | ForEach-Object { ConvertTo-SmokeText $_ })
-            $visibleProbeParts += ('{0}:scriptRows={1},subtreeVisible={2},subtreeSkinned={3},animatorRows={4},fields={5},sampleClips={6}' -f `
+            $semanticSummary = Get-SmokePropertyValue -Object $probe -Name "simpleAnimationSemanticSummary"
+            $pairedDefaultStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "pairedDefaultStateClipRows")
+            $visibleProbeParts += ('{0}:scriptRows={1},pairedDefaultState={2},subtreeVisible={3},subtreeSkinned={4},animatorRows={5},fields={6},sampleClips={7}' -f `
                 (ConvertTo-SmokeText $probe.selector),
                 (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
+                (ConvertTo-SmokeText $pairedDefaultStateClipRows "0"),
                 (ConvertTo-SmokeText $probe.subtreeVisibleRendererRows "0"),
                 (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
                 (ConvertTo-SmokeText $probe.animatorRows "0"),
@@ -3365,10 +3405,11 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     if ($sourceIndexSimpleAnimationProbeReadiness.status -eq "ok") {
         $readinessParts = @()
         foreach ($probe in @($sourceIndexSimpleAnimationProbeReadiness.rows)) {
-            $readinessParts += ('{0}:next={1},scriptRows={2},subtreeSkinned={3},avatarRows={4},highOverlap={5},maxCoverage={6}' -f `
+            $readinessParts += ('{0}:next={1},scriptRows={2},pairedDefaultState={3},subtreeSkinned={4},avatarRows={5},highOverlap={6},maxCoverage={7}' -f `
                 (ConvertTo-SmokeText $probe.selector),
                 (ConvertTo-SmokeText $probe.nextStep),
                 (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
+                (ConvertTo-SmokeText $probe.simpleAnimationPairedDefaultStateClipRows "0"),
                 (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
                 (ConvertTo-SmokeText $probe.modelAvatarRows "0"),
                 (ConvertTo-SmokeText $probe.modelAvatarHighOverlapRows "0"),

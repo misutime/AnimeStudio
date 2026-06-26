@@ -3021,6 +3021,7 @@ LIMIT $limit;";
                 {
                     ["path"] = row.ReferenceFieldPath,
                     ["field"] = row.ReferenceFieldName,
+                    ["simpleAnimationRole"] = GetSimpleAnimationRole(row.ScriptName, row.ReferenceFieldPath),
                     ["animation"] = new JObject
                     {
                         ["name"] = row.AnimationName,
@@ -3089,7 +3090,85 @@ LIMIT $limit;";
                 ["scriptNameCounts"] = new JArray(topScripts),
                 ["fieldPathCounts"] = new JArray(topFields),
                 ["animationNameSamples"] = new JArray(animationSamples.Select(x => new JValue(x))),
+                ["simpleAnimationSemanticSummary"] = BuildSimpleAnimationSemanticSummary(rows),
                 ["rule"] = "MonoBehaviour -> AnimationClip PPtr rows are explicit script-field evidence only. They remain diagnosticOnly/notDefaultModelAnimationRelation until script semantics, model validation, TRS export and visual review are proven.",
+            };
+        }
+
+        private static JObject BuildSimpleAnimationSemanticSummary(IReadOnlyList<ScriptAnimationComponentDiagnosticRow> rows)
+        {
+            rows ??= Array.Empty<ScriptAnimationComponentDiagnosticRow>();
+            // 只解释 Unity SimpleAnimation 的稳定字段角色，不在这里推断运行时播放状态。
+            var simpleRows = rows
+                .Where(x => string.Equals(x.ScriptName, "SimpleAnimation", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var knownRows = simpleRows
+                .Where(x => !string.IsNullOrWhiteSpace(GetSimpleAnimationRole(x.ScriptName, x.ReferenceFieldPath)))
+                .ToList();
+            var groupedByComponentClip = knownRows
+                .GroupBy(x => string.Join("\n",
+                    x.MonoBehaviourSerializedFile ?? string.Empty,
+                    x.MonoBehaviourPathId.ToString(CultureInfo.InvariantCulture),
+                    x.AnimationSerializedFile ?? string.Empty,
+                    x.AnimationPathId.ToString(CultureInfo.InvariantCulture)), StringComparer.Ordinal)
+                .ToList();
+            var pairedRows = groupedByComponentClip
+                .Where(x =>
+                    x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)) &&
+                    x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "stateClip", StringComparison.Ordinal)))
+                .ToList();
+            var defaultOnlyRows = groupedByComponentClip
+                .Where(x =>
+                    x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)) &&
+                    !x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "stateClip", StringComparison.Ordinal)))
+                .ToList();
+            var stateOnlyRows = groupedByComponentClip
+                .Where(x =>
+                    !x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)) &&
+                    x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "stateClip", StringComparison.Ordinal)))
+                .ToList();
+
+            return new JObject
+            {
+                ["status"] = simpleRows.Count == 0 ? "empty" : "diagnosticOnly",
+                ["diagnosticOnly"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["defaultCandidateCount"] = 0,
+                ["simpleAnimationRows"] = simpleRows.Count,
+                ["knownFieldRows"] = knownRows.Count,
+                ["componentCount"] = simpleRows
+                    .Select(x => x.MonoBehaviourSerializedFile + ":" + x.MonoBehaviourPathId.ToString(CultureInfo.InvariantCulture))
+                    .Distinct(StringComparer.Ordinal)
+                    .Count(),
+                ["defaultClipRows"] = simpleRows.Count(x => string.Equals(GetSimpleAnimationRole(x.ScriptName, x.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)),
+                ["stateClipRows"] = simpleRows.Count(x => string.Equals(GetSimpleAnimationRole(x.ScriptName, x.ReferenceFieldPath), "stateClip", StringComparison.Ordinal)),
+                ["pairedDefaultStateClipRows"] = pairedRows.Count,
+                ["defaultOnlyRows"] = defaultOnlyRows.Count,
+                ["stateOnlyRows"] = stateOnlyRows.Count,
+                ["unresolvedFieldRows"] = simpleRows.Count - knownRows.Count,
+                ["productionReadiness"] = "blocked",
+                ["blockedProductionRequirements"] = new JArray(
+                    "scriptRuntimeSemantics",
+                    "selectedStateOrPlayCall",
+                    "validatedModelGltf",
+                    "animationTrsExport",
+                    "visualReview"),
+                ["rule"] = "SimpleAnimation public source shows m_Clip is the default clip and m_States.data.clip are state clips played through an Animator-backed PlayableGraph. This summary only explains script-field semantics; it does not prove which state is selected at runtime or create a production model-animation binding.",
+            };
+        }
+
+        private static string GetSimpleAnimationRole(string scriptName, string fieldPath)
+        {
+            if (!string.Equals(scriptName, "SimpleAnimation", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            return fieldPath switch
+            {
+                "m_Clip" => "defaultClip",
+                "m_States.data.clip" => "stateClip",
+                _ => string.Empty,
             };
         }
 
