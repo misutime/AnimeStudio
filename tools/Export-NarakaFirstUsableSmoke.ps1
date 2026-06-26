@@ -407,6 +407,100 @@ function Read-SourceModelAvatarAnimationDiagnostic {
     }
 }
 
+function Read-SourceIndexSimpleAnimationClipDomains {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceIndexPath
+    )
+
+    $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $sqlite3) {
+        return [pscustomobject]@{
+            status = "toolMissing"
+            rule = "sqlite3.exe missing; SimpleAnimation clip-domain diagnostic was skipped."
+            totalRelations = 0
+            distinctClipBuckets = 0
+            domainCounts = @()
+            productionReadiness = "blocked"
+            blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+        }
+    }
+
+    # 这里只做源索引诊断：按 SimpleAnimation 的脚本字段聚合 clip 域，不能生成默认模型-动画绑定。
+    $sql = @"
+CREATE TEMP TABLE simple_mb AS
+SELECT from_file, from_path_id AS mb_path_id
+FROM source_relations
+WHERE relation='monoBehaviour.script'
+  AND json_extract(raw_json,'$.details.scriptName')='SimpleAnimation';
+CREATE INDEX temp.idx_simple_mb_key ON simple_mb(from_file, mb_path_id);
+CREATE TEMP TABLE simple_clip AS
+SELECT r.from_file, r.from_path_id AS mb_path_id, r.to_file AS clip_file, r.to_path_id AS clip_path_id, c.name AS clip_name
+FROM simple_mb s
+JOIN source_relations r ON r.relation='monoBehaviour.pptr' AND r.from_file=s.from_file AND r.from_path_id=s.mb_path_id
+JOIN source_objects c ON c.serialized_file=r.to_file AND c.path_id=r.to_path_id AND c.type='AnimationClip';
+WITH classified AS (
+  SELECT
+    CASE
+      WHEN lower(clip_name) LIKE 'fx_%' THEN 'Fx'
+      WHEN lower(clip_name) LIKE 'ui_%' OR lower(clip_name) LIKE 'anim_ui%' THEN 'UI'
+      WHEN lower(clip_name) LIKE 'mo_%' THEN 'MonsterOrNpc'
+      WHEN lower(clip_name) LIKE 'ch_%' THEN 'Character'
+      WHEN lower(clip_name) LIKE '%male%' OR lower(clip_name) LIKE '%female%' THEN 'HumanNameToken'
+      ELSE 'Other'
+    END AS clip_domain,
+    clip_file,
+    clip_path_id,
+    clip_name
+  FROM simple_clip
+)
+SELECT clip_domain, COUNT(*) AS relations, COUNT(DISTINCT clip_file || '#' || clip_path_id) AS distinct_clips, substr(group_concat(DISTINCT clip_name),1,220) AS sample_clips
+FROM classified
+GROUP BY clip_domain
+ORDER BY relations DESC;
+"@
+
+    $rows = @(& $sqlite3.Source -readonly -batch -tabs $SourceIndexPath $sql)
+    if ($LASTEXITCODE -ne 0) {
+        throw "sqlite3 failed while reading SimpleAnimation clip-domain diagnostic from source index."
+    }
+
+    $domainRows = @()
+    $totalRelations = 0L
+    $totalDistinctClipBuckets = 0L
+    foreach ($row in $rows) {
+        if ([string]::IsNullOrWhiteSpace($row)) {
+            continue
+        }
+
+        $parts = ([string]$row).Split("`t")
+        if ($parts.Count -lt 4) {
+            continue
+        }
+
+        $relations = ConvertTo-SmokeInt64 $parts[1]
+        $distinctClips = ConvertTo-SmokeInt64 $parts[2]
+        $totalRelations += $relations
+        $totalDistinctClipBuckets += $distinctClips
+        $domainRows += [pscustomobject]@{
+            domain = [string]$parts[0]
+            relations = $relations
+            distinctClips = $distinctClips
+            sampleClips = [string]$parts[3]
+        }
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        rule = "SimpleAnimation -> AnimationClip PPtr rows are Naraka script-field evidence only. Character/HumanNameToken/MonsterOrNpc domains help pick future solver samples, but they do not create default model-animation candidates without script semantics, deterministic model relation, TRS export and visual review."
+        totalRelations = $totalRelations
+        distinctClipBuckets = $totalDistinctClipBuckets
+        domainCounts = $domainRows
+        productionReadiness = "blocked"
+        blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+    }
+}
+
 function Test-AssetLibraryV1Contract {
     param(
         [Parameter(Mandatory = $true)]
@@ -793,6 +887,13 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     jiantianshiFormal = $null
     fxAttack = $null
 }
+$sourceIndexSimpleAnimationClipDomains = [pscustomobject]@{
+    status = "notChecked"
+    rule = "SimpleAnimation clip-domain summary is a source-index script-field diagnostic only. It helps pick future Naraka animation probes, but does not create model-animation bindings."
+    totalRelations = 0
+    distinctClipBuckets = 0
+    domainCounts = @()
+}
 $sourceModelAvatarDiagnostics = [pscustomobject]@{
     status = "notChecked"
     rule = "Avatar.m_TOS hash coverage and model-avatar structural overlap are source-index diagnostics only. They can guide solver/oracle probes, but must stay defaultCandidateCount=0 until explicit Unity animation context, model validation, TRS export and visual validation are proven."
@@ -971,6 +1072,10 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     hadiBody = $hadiScriptAnimationDiagnostic
     jiantianshiFormal = $jiantianshiScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
+}
+$sourceIndexSimpleAnimationClipDomains = Read-SourceIndexSimpleAnimationClipDomains -SourceIndexPath $SourceIndex
+if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok" -and $sourceIndexSimpleAnimationClipDomains.totalRelations -lt 1) {
+    throw "SimpleAnimation clip-domain diagnostic found no AnimationClip PPtr rows."
 }
 
 Write-Host ""
@@ -1888,6 +1993,7 @@ $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertT
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics.status) + ","
+$summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics.status) + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
@@ -1923,12 +2029,14 @@ $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-Smo
 $summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
 $summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
+$summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
 $summaryJsonLines += '  "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '  "monoBehaviourAnimationClipPPtrSummary": ' + $monoBehaviourAnimationClipPPtrSummaryJson + ","
 $summaryJsonLines += '  "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
+$summaryJsonLines += '  "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
 $summaryJsonLines += '  "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10) + ","
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
@@ -2108,6 +2216,22 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
                 (ConvertTo-SmokeText $scriptRow.sample.clipName "")))
         }
         $reportLines.Add('- MonoBehaviour AnimationClip PPtr rule: these are explicit script-field references for investigation, but custom script semantics are required before any default model-animation binding can be created.')
+    }
+    if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok") {
+        $simpleAnimationDomainParts = @()
+        foreach ($domainRow in @($sourceIndexSimpleAnimationClipDomains.domainCounts)) {
+            $simpleAnimationDomainParts += ('{0}={1}/{2}' -f `
+                (ConvertTo-SmokeText $domainRow.domain),
+                (ConvertTo-SmokeText $domainRow.relations "0"),
+                (ConvertTo-SmokeText $domainRow.distinctClips "0"))
+        }
+        $reportLines.Add(('- SimpleAnimation clip domains: totalRelations=`{0}`, domain relations/distinctClips=`{1}`' -f `
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationClipDomains.totalRelations "0"),
+            ($simpleAnimationDomainParts -join ', ')))
+        $reportLines.Add('- SimpleAnimation domain rule: Character/HumanNameToken/MonsterOrNpc rows are useful next probes, but they remain script-field diagnostics until script semantics, deterministic model relation, TRS export and visual review are proven.')
+    }
+    else {
+        $reportLines.Add(('- SimpleAnimation clip domains: `{0}`' -f $sourceIndexSimpleAnimationClipDomains.status))
     }
     if ($scriptAnimationComponentDiagnostics.status -eq "ok") {
         $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
