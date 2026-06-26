@@ -334,6 +334,14 @@ tools\Export-NarakaFirstUsableSmoke.ps1 -OutputRoot "D:\Assets\Naraka\Naraka_Fir
 
 本次未跳过浏览器或动画诊断，完整闭环通过：默认代表库保持 `models=4`、`ok=4`、`withSkin=3`、`withTextures=4`、`textureLinkErrors=0`；`AssetLibrary Browser` 校验为 `ok`，缩略图为 `thumbnailExpectedCount=4` / `thumbnailFileCount=4`；Dijiang A8 独立动画诊断和 glTF validator 均为 `ok`；Zhumu 合并预览保持 `status=ok`、`renderProbeStatus=ok`、`productionReadiness=blocked`；Yaodaoji wings 短名单首样本保持 `scriptAnimationRows=4`、`subtreeSkinnedRendererRows=4`、`productionReadiness=blocked`。同时 `capabilities.animations=false`、`animationSupport.defaultModelAnimationCandidateCount=0`、`modelAnimationRelations=0`、`relationAnimationRows=0` 不变，说明当前一行 smoke 已覆盖模型、贴图、材质、索引、报告、浏览器预览和诊断动画边界，但生产动画库仍未启用。
 
+2026-06-26 又复验一次当前收口用完整 smoke，并显式刷新 Zhumu verified preview 关系：
+
+```powershell
+tools\Export-NarakaFirstUsableSmoke.ps1 -OutputRoot "D:\Assets\Naraka\Naraka_FirstUsableSmoke_FinalFull_Current" -RefreshZhumuVerifiedAnimationPreview
+```
+
+本次未跳过浏览器和动画诊断，`smoke_summary.json.firstUsableReadiness` 为 `status=usableWithDegradedAnimation`、`firstUsable=true`、`productionReady=false`、`blockedAreas=[]`、`degradedAreas=["animationRelation"]`、`skippedAreas=[]`。代表库保持 `models=4`、`ok=4`、`withSkin=3`、`withTextures=4`，AssetLibrary Browser 校验为 `ok`，缩略图为 `thumbnailExpectedCount=4` / `thumbnailFileCount=4`；动画诊断和 glTF validator 均为 `ok`，Zhumu verified preview 刷新为 `ok`，`usableRelationAnimationRows=1`。这说明当前 Naraka 第一版可以按“模型、贴图、材质、骨骼、索引、报告完整可用，动画以已验证模型绑定预览降级交付”收口；普通 `AnimatorController` 仍不是 Naraka 的生产动画入口，后续应继续沿 `NarakaSimpleAnimationCustomRuntime` / SimpleAnimation TypeTree / 脚本 PPtr / 可见 skinned 子树 / glTF TRS / 渲染运动这条证据链扩展样本，而不是在标准 Controller 关系上继续卡死。
+
 ## 风险和下一步
 
 - Hadi body 是模块化角色 body/服装部件，当前 `modelCompletenessStatus=modular_incomplete`，不能单独作为完整角色动画 smoke。
