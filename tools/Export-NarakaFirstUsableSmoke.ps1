@@ -4,6 +4,8 @@ param(
     [string]$SourceIndex = "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db",
     [string]$AnimationSourceIndex = "D:\Assets\Naraka\SourceIndex_Naraka_TosMini_Current\unity_source_index.db",
     [string]$AnimationSidecar = "D:\Assets\Naraka\Dijiang_AttackA8_FullDecodedSidecar_Current\Animations\assets\res\animclipadapter\05\mo_pve_b_dijiang_attack_a8_01.animation_asset.json",
+    [string]$AnimationPreviewModel = "mo_pve_b_dijiang_01_skeleton",
+    [string]$AnimationPreviewClip = "mo_pve_b_dijiang_attack_a8_01",
     [string]$AnimationPreviewAvatar = "mo_pve_b_dijiang_01_skeletonAvatar",
     [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
     [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
@@ -108,6 +110,42 @@ function Get-SmokePropertyValue {
     }
 
     return $property.Value
+}
+
+function ConvertTo-SmokeInt64 {
+    param(
+        [object]$Value,
+        [long]$Default = 0
+    )
+
+    if ($null -eq $Value) {
+        return $Default
+    }
+
+    try {
+        return [Convert]::ToInt64($Value)
+    }
+    catch {
+        return $Default
+    }
+}
+
+function ConvertTo-SmokeDouble {
+    param(
+        [object]$Value,
+        [double]$Default = 0.0
+    )
+
+    if ($null -eq $Value) {
+        return $Default
+    }
+
+    try {
+        return [Convert]::ToDouble($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    catch {
+        return $Default
+    }
 }
 
 function ConvertTo-SqliteTextLiteral {
@@ -232,6 +270,103 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryJsonLines += '  "firstSubtreeVisibleSamples": ' + (ConvertTo-SmokeJsonLiteral $firstSubtreeVisibleSamples 5)
     $summaryJsonLines += "}"
     return (($summaryJsonLines -join [Environment]::NewLine) | ConvertFrom-Json)
+}
+
+function Read-SourceModelAvatarAnimationDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Selector,
+        [Parameter(Mandatory = $true)]
+        [string]$OutputRoot
+    )
+
+    $report = Join-Path $OutputRoot "source_model_animation_candidates.json"
+    Test-FileRequired -Path $report -Label "source_model_animation_candidates.json"
+
+    $json = Get-Content -LiteralPath $report -Raw -Encoding UTF8 | ConvertFrom-Json
+    $avatarTosSummary = Get-SmokePropertyValue -Object $json -Name "avatarTosClipDiagnosticSummary"
+    $modelAvatarSummary = Get-SmokePropertyValue -Object $json -Name "modelAvatarCompatibilityDiagnosticSummary"
+    $avatarTosRows = @($json.avatarTosClipDiagnostics)
+    $modelAvatarRows = @($json.modelAvatarCompatibilityDiagnostics)
+
+    $selectedModelCount = ConvertTo-SmokeInt64 $json.selectedModelCount
+    $candidateCount = ConvertTo-SmokeInt64 $json.candidateCount
+    $invalidBoundaryRows = 0L
+
+    $avatarTosStatus = if ($avatarTosRows.Count -gt 0) { "diagnosticOnly" } else { "empty" }
+    $avatarTosRowCount = [long]$avatarTosRows.Count
+    $avatarTosDefaultCandidateCount = 0L
+    $avatarTosMaxCoverage = 0.0
+    $avatarTosFullCoverageRows = 0L
+    $avatarTosUnresolvedHashRows = 0L
+    if ($null -ne $avatarTosSummary) {
+        $avatarTosStatus = [string](Get-SmokePropertyValue -Object $avatarTosSummary -Name "status")
+        $avatarTosRowCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $avatarTosSummary -Name "rowCount")
+        $avatarTosDefaultCandidateCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $avatarTosSummary -Name "defaultCandidateCount")
+        $avatarTosMaxCoverage = ConvertTo-SmokeDouble (Get-SmokePropertyValue -Object $avatarTosSummary -Name "maxCoverageRatio")
+        $avatarTosFullCoverageRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $avatarTosSummary -Name "fullCoverageRows")
+        $avatarTosUnresolvedHashRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $avatarTosSummary -Name "unresolvedHashRows")
+        $avatarTosDiagnosticOnly = Get-SmokePropertyValue -Object $avatarTosSummary -Name "diagnosticOnly"
+        $avatarTosNotDefaultRelation = Get-SmokePropertyValue -Object $avatarTosSummary -Name "notDefaultModelAnimationRelation"
+        if ($avatarTosDiagnosticOnly -ne $true -or $avatarTosNotDefaultRelation -ne $true -or $avatarTosDefaultCandidateCount -ne 0) {
+            $invalidBoundaryRows++
+        }
+    }
+    foreach ($row in $avatarTosRows) {
+        if ($row.diagnosticOnly -ne $true -or $row.notDefaultModelAnimationRelation -ne $true) {
+            $invalidBoundaryRows++
+        }
+    }
+
+    $modelAvatarStatus = if ($modelAvatarRows.Count -gt 0) { "diagnosticOnly" } else { "empty" }
+    $modelAvatarRowCount = [long]$modelAvatarRows.Count
+    $modelAvatarDefaultCandidateCount = 0L
+    $modelAvatarHighOverlapRows = 0L
+    $modelAvatarFullOverlapRows = 0L
+    $modelAvatarMaxCoverage = 0.0
+    $modelAvatarVisibleRendererRows = 0L
+    if ($null -ne $modelAvatarSummary) {
+        $modelAvatarStatus = [string](Get-SmokePropertyValue -Object $modelAvatarSummary -Name "status")
+        $modelAvatarRowCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "rowCount")
+        $modelAvatarDefaultCandidateCount = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "defaultCandidateCount")
+        $modelAvatarHighOverlapRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "highOverlapRows")
+        $modelAvatarFullOverlapRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "fullOverlapRows")
+        $modelAvatarMaxCoverage = ConvertTo-SmokeDouble (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "maxCoverageRatio")
+        $modelAvatarVisibleRendererRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $modelAvatarSummary -Name "visibleRendererRows")
+        $modelAvatarDiagnosticOnly = Get-SmokePropertyValue -Object $modelAvatarSummary -Name "diagnosticOnly"
+        $modelAvatarNotDefaultRelation = Get-SmokePropertyValue -Object $modelAvatarSummary -Name "notDefaultModelAnimationRelation"
+        if ($modelAvatarDiagnosticOnly -ne $true -or $modelAvatarNotDefaultRelation -ne $true -or $modelAvatarDefaultCandidateCount -ne 0) {
+            $invalidBoundaryRows++
+        }
+    }
+    foreach ($row in $modelAvatarRows) {
+        if ($row.diagnosticOnly -ne $true -or $row.notDefaultModelAnimationRelation -ne $true) {
+            $invalidBoundaryRows++
+        }
+    }
+
+    # 这里只压缩 Avatar/TOS 与结构兼容证据。它们是后续求解选点，不是默认动画绑定。
+    return [pscustomobject]@{
+        selector = $Selector
+        outputRoot = $OutputRoot
+        report = $report
+        selectedModelCount = $selectedModelCount
+        candidateCount = $candidateCount
+        invalidBoundaryRows = $invalidBoundaryRows
+        avatarTosStatus = $avatarTosStatus
+        avatarTosRows = $avatarTosRowCount
+        avatarTosDefaultCandidateCount = $avatarTosDefaultCandidateCount
+        avatarTosMaxCoverage = $avatarTosMaxCoverage
+        avatarTosFullCoverageRows = $avatarTosFullCoverageRows
+        avatarTosUnresolvedHashRows = $avatarTosUnresolvedHashRows
+        modelAvatarStatus = $modelAvatarStatus
+        modelAvatarRows = $modelAvatarRowCount
+        modelAvatarDefaultCandidateCount = $modelAvatarDefaultCandidateCount
+        modelAvatarHighOverlapRows = $modelAvatarHighOverlapRows
+        modelAvatarFullOverlapRows = $modelAvatarFullOverlapRows
+        modelAvatarMaxCoverage = $modelAvatarMaxCoverage
+        modelAvatarVisibleRendererRows = $modelAvatarVisibleRendererRows
+    }
 }
 
 function Test-AssetLibraryV1Contract {
@@ -515,6 +650,8 @@ $libraryOutput = Join-Path $OutputRoot "RepresentativeModels"
 $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
 $scriptAnimationHadiOutput = Join-Path $OutputRoot "SourceModelAnimation_HadiBody_ScriptComponentDiagnostic"
 $scriptAnimationFxOutput = Join-Path $OutputRoot "SourceModelAnimation_FxAttack_ScriptComponentDiagnostic"
+$avatarTosDijiangOutput = Join-Path $OutputRoot "SourceModelAnimation_Dijiang_AvatarTosDiagnostic"
+$avatarCompatibilitySamuraiOutput = Join-Path $OutputRoot "SourceModelAnimation_SamuraiGhost_AvatarCompatibilityDiagnostic"
 $representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
 $animationGltfValidationStatus = if ($SkipGltfValidation -or $SkipAnimationDiagnostic) { "skipped" } else { "toolMissing" }
 $shaderBoundaryGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
@@ -584,6 +721,12 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     rule = "Selected-model script AnimationClip PPtr diagnostics are local evidence only. They must stay diagnosticOnly/notDefaultModelAnimationRelation and never create default model-animation candidates without script semantics, model validation and visual validation."
     hadiBody = $null
     fxAttack = $null
+}
+$sourceModelAvatarDiagnostics = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Avatar.m_TOS hash coverage and model-avatar structural overlap are source-index diagnostics only. They can guide solver/oracle probes, but must stay defaultCandidateCount=0 until explicit Unity animation context, model validation, TRS export and visual validation are proven."
+    dijiangTos = $null
+    samuraiGhostCompatibility = $null
 }
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
 $animationReportJson = $null
@@ -729,6 +872,58 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     rule = $scriptAnimationComponentDiagnostics.rule
     hadiBody = $hadiScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
+}
+
+Write-Host ""
+Write-Host "== List Naraka Avatar/TOS animation diagnostics =="
+$dijiangAvatarDiagnostic = $null
+if (!$SkipAnimationDiagnostic) {
+    Invoke-Checked -Label "List Dijiang Avatar TOS source-model animations" -FilePath $cli -Arguments @(
+        "--list_source_model_animations", $AnimationSourceIndex,
+        "--preview_model", $AnimationPreviewModel,
+        "--preview_animation", $AnimationPreviewClip,
+        "--preview_output", $avatarTosDijiangOutput,
+        "--source_candidate_limit", "30")
+    $dijiangAvatarDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector $AnimationPreviewModel -OutputRoot $avatarTosDijiangOutput
+    if ($dijiangAvatarDiagnostic.selectedModelCount -lt 1) {
+        throw "Dijiang Avatar/TOS diagnostic did not select any source model."
+    }
+    if ($dijiangAvatarDiagnostic.candidateCount -ne 0 -or $dijiangAvatarDiagnostic.avatarTosDefaultCandidateCount -ne 0 -or $dijiangAvatarDiagnostic.modelAvatarDefaultCandidateCount -ne 0) {
+        throw "Dijiang Avatar/TOS diagnostic unexpectedly produced default candidates. candidates=$($dijiangAvatarDiagnostic.candidateCount) avatarTosDefault=$($dijiangAvatarDiagnostic.avatarTosDefaultCandidateCount) modelAvatarDefault=$($dijiangAvatarDiagnostic.modelAvatarDefaultCandidateCount)"
+    }
+    if ($dijiangAvatarDiagnostic.invalidBoundaryRows -ne 0) {
+        throw "Dijiang Avatar/TOS diagnostic lost diagnostic-only boundary. invalidRows=$($dijiangAvatarDiagnostic.invalidBoundaryRows)"
+    }
+    if ($dijiangAvatarDiagnostic.avatarTosRows -lt 1 -or $dijiangAvatarDiagnostic.avatarTosMaxCoverage -lt 0.99) {
+        throw "Dijiang Avatar/TOS diagnostic lost hash coverage evidence. rows=$($dijiangAvatarDiagnostic.avatarTosRows) maxCoverage=$($dijiangAvatarDiagnostic.avatarTosMaxCoverage)"
+    }
+}
+
+$samuraiAvatarDiagnosticSelector = "^" + [Regex]::Escape($CharacterCandidateSourceIndexAnimatorName) + "$"
+Invoke-Checked -Label "List SamuraiGhost Avatar compatibility source-model animations" -FilePath $cli -Arguments @(
+    "--list_source_model_animations", $SourceIndex,
+    "--preview_model", $samuraiAvatarDiagnosticSelector,
+    "--preview_output", $avatarCompatibilitySamuraiOutput,
+    "--source_candidate_limit", "30")
+$samuraiAvatarDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector $CharacterCandidateSourceIndexAnimatorName -OutputRoot $avatarCompatibilitySamuraiOutput
+if ($samuraiAvatarDiagnostic.selectedModelCount -lt 1) {
+    throw "SamuraiGhost Avatar compatibility diagnostic did not select any source model."
+}
+if ($samuraiAvatarDiagnostic.candidateCount -ne 0 -or $samuraiAvatarDiagnostic.avatarTosDefaultCandidateCount -ne 0 -or $samuraiAvatarDiagnostic.modelAvatarDefaultCandidateCount -ne 0) {
+    throw "SamuraiGhost Avatar compatibility diagnostic unexpectedly produced default candidates. candidates=$($samuraiAvatarDiagnostic.candidateCount) avatarTosDefault=$($samuraiAvatarDiagnostic.avatarTosDefaultCandidateCount) modelAvatarDefault=$($samuraiAvatarDiagnostic.modelAvatarDefaultCandidateCount)"
+}
+if ($samuraiAvatarDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "SamuraiGhost Avatar compatibility diagnostic lost diagnostic-only boundary. invalidRows=$($samuraiAvatarDiagnostic.invalidBoundaryRows)"
+}
+if ($samuraiAvatarDiagnostic.modelAvatarRows -lt 1 -or $samuraiAvatarDiagnostic.modelAvatarHighOverlapRows -lt 1 -or $samuraiAvatarDiagnostic.modelAvatarMaxCoverage -lt 0.9) {
+    throw "SamuraiGhost Avatar compatibility diagnostic lost structural overlap evidence. rows=$($samuraiAvatarDiagnostic.modelAvatarRows) highOverlapRows=$($samuraiAvatarDiagnostic.modelAvatarHighOverlapRows) maxCoverage=$($samuraiAvatarDiagnostic.modelAvatarMaxCoverage)"
+}
+
+$sourceModelAvatarDiagnostics = [pscustomobject]@{
+    status = "ok"
+    rule = $sourceModelAvatarDiagnostics.rule
+    dijiangTos = if ($null -ne $dijiangAvatarDiagnostic) { $dijiangAvatarDiagnostic } else { [pscustomobject]@{ status = "skipped"; reason = "SkipAnimationDiagnostic" } }
+    samuraiGhostCompatibility = $samuraiAvatarDiagnostic
 }
 
 if (!$SkipBrowserValidation) {
@@ -1515,6 +1710,7 @@ $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertT
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics.status) + ","
+$summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics.status) + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
@@ -1547,12 +1743,14 @@ $summaryJsonLines += '    "monoBehaviourAnimationClipPPtrSummary": ' + $monoBeha
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
 $summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
-$summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10)
+$summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
+$summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
 $summaryJsonLines += '  "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '  "monoBehaviourAnimationClipPPtrSummary": ' + $monoBehaviourAnimationClipPPtrSummaryJson + ","
 $summaryJsonLines += '  "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
+$summaryJsonLines += '  "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10) + ","
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
 $summaryJson = $summaryJsonLines -join [Environment]::NewLine
@@ -1742,6 +1940,34 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     else {
         $reportLines.Add(('- Selected-model script AnimationClip diagnostic: `{0}`' -f $scriptAnimationComponentDiagnostics.status))
     }
+    if ($sourceModelAvatarDiagnostics.status -eq "ok") {
+        $samuraiAvatar = $sourceModelAvatarDiagnostics.samuraiGhostCompatibility
+        $reportLines.Add(('- Source-model Avatar/TOS diagnostics: status=`{0}`, Samurai selected=`{1}`, candidates=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`' -f `
+            (ConvertTo-SmokeText $sourceModelAvatarDiagnostics.status),
+            (ConvertTo-SmokeText $samuraiAvatar.selectedModelCount "0"),
+            (ConvertTo-SmokeText $samuraiAvatar.candidateCount "0"),
+            (ConvertTo-SmokeText $samuraiAvatar.modelAvatarRows "0"),
+            (ConvertTo-SmokeText $samuraiAvatar.modelAvatarHighOverlapRows "0"),
+            (ConvertTo-SmokeText $samuraiAvatar.modelAvatarMaxCoverage "0"),
+            (ConvertTo-SmokeText $samuraiAvatar.invalidBoundaryRows "0")))
+        if ($null -ne $sourceModelAvatarDiagnostics.dijiangTos -and $sourceModelAvatarDiagnostics.dijiangTos.status -ne "skipped") {
+            $dijiangTos = $sourceModelAvatarDiagnostics.dijiangTos
+            $reportLines.Add(('-   Dijiang TOS hash coverage: selected=`{0}`, candidates=`{1}`, avatarTosRows=`{2}`, fullCoverageRows=`{3}`, maxCoverage=`{4}`, unresolvedHashRows=`{5}`' -f `
+                (ConvertTo-SmokeText $dijiangTos.selectedModelCount "0"),
+                (ConvertTo-SmokeText $dijiangTos.candidateCount "0"),
+                (ConvertTo-SmokeText $dijiangTos.avatarTosRows "0"),
+                (ConvertTo-SmokeText $dijiangTos.avatarTosFullCoverageRows "0"),
+                (ConvertTo-SmokeText $dijiangTos.avatarTosMaxCoverage "0"),
+                (ConvertTo-SmokeText $dijiangTos.avatarTosUnresolvedHashRows "0")))
+        }
+        else {
+            $reportLines.Add('-   Dijiang TOS hash coverage: `skipped` by -SkipAnimationDiagnostic')
+        }
+        $reportLines.Add('- Source-model Avatar/TOS rule: Avatar.m_TOS coverage and model-avatar path overlap are solver/oracle selection evidence only. They must stay defaultCandidateCount=0 and cannot enable production animation without explicit Unity animation context, model validation, TRS export and visual review.')
+    }
+    else {
+        $reportLines.Add(('- Source-model Avatar/TOS diagnostics: `{0}`' -f $sourceModelAvatarDiagnostics.status))
+    }
     if ($sourceIndexAvatarAnimatorDomains.status -eq "ok") {
         $reportLines.Add(('- Source-index animator.avatar domains: totalAnimators=`{0}`, withController=`{1}`' -f `
             (ConvertTo-SmokeText $sourceIndexAvatarAnimatorDomains.totalAnimators "0"),
@@ -1905,6 +2131,12 @@ $reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
 $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.hadiBody.report))
 $reportLines.Add(('- FxAttack script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.fxAttack.report))
+if ($sourceModelAvatarDiagnostics.status -eq "ok") {
+    if ($null -ne $sourceModelAvatarDiagnostics.dijiangTos -and $sourceModelAvatarDiagnostics.dijiangTos.status -ne "skipped") {
+        $reportLines.Add(('- Dijiang Avatar/TOS diagnostic JSON: `{0}`' -f $sourceModelAvatarDiagnostics.dijiangTos.report))
+    }
+    $reportLines.Add(('- SamuraiGhost Avatar compatibility diagnostic JSON: `{0}`' -f $sourceModelAvatarDiagnostics.samuraiGhostCompatibility.report))
+}
 $reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))
 $reportLines.Add(('- Bow prop glTF: `{0}`' -f $bowGltf))
 $reportLines.Add(('- Device prop glTF: `{0}`' -f $deviceGltf))
