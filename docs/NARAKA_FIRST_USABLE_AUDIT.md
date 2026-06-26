@@ -61,7 +61,7 @@ static_bigtree: models=1 textures=12 material_sidecars=1 texture_links=13 link_e
 tools\Export-NarakaFirstUsableSmoke.ps1
 ```
 
-默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针、导出 Hadi body s9、重建 `library_index.db`，并在本机工具存在时执行 glTF validator、AssetLibrary Browser 验证和 1 张缩略图渲染。
+默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针、导出 Hadi body s9、重建 `library_index.db`，并在本机工具存在时执行 glTF validator、AssetLibrary Browser 验证和 1 张缩略图渲染。脚本还会默认跑 Dijiang A8 独立动画 glTF 诊断，验证 `Avatar.m_TOS` 路径恢复和动画 glTF 写出；报告必须保留 `diagnosticOnly=true` / `notDefaultModelAnimationRelation=true`，因此它不会把当前手动动画诊断升级成生产动画库能力。只想跑 P0/P1 静态链路时传 `-SkipAnimationDiagnostic`。
 
 输入探针：
 

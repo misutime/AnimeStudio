@@ -2,11 +2,15 @@ param(
     [string]$GameRoot = "C:\Game163\program",
     [string]$SourceRoot = "",
     [string]$SourceIndex = "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db",
+    [string]$AnimationSourceIndex = "D:\Assets\Naraka\SourceIndex_Naraka_TosMini_Current\unity_source_index.db",
+    [string]$AnimationSidecar = "D:\Assets\Naraka\Dijiang_AttackA8_FullDecodedSidecar_Current\Animations\assets\res\animclipadapter\05\mo_pve_b_dijiang_attack_a8_01.animation_asset.json",
+    [string]$AnimationPreviewAvatar = "mo_pve_b_dijiang_01_skeletonAvatar",
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
     [switch]$SkipBrowserValidation,
-    [switch]$SkipGltfValidation
+    [switch]$SkipGltfValidation,
+    [switch]$SkipAnimationDiagnostic
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +76,7 @@ New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 
 $probeOutput = Join-Path $OutputRoot "SourceInputProbe"
 $hadiOutput = Join-Path $OutputRoot "HadiBody_s9"
+$animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
 
 Invoke-Checked `
     -Label "Probe Naraka input" `
@@ -136,6 +141,47 @@ if (!$SkipGltfValidation) {
     }
 }
 
+if (!$SkipAnimationDiagnostic) {
+    Test-FileRequired -Path $AnimationSourceIndex -Label "Naraka animation diagnostic source index"
+    Test-FileRequired -Path $AnimationSidecar -Label "Naraka animation sidecar"
+
+    # 手动动画诊断只证明路径恢复和独立 glTF 写出，不创建默认模型-动画推荐关系。
+    Invoke-Checked `
+        -Label "Export Dijiang A8 standalone animation diagnostic" `
+        -FilePath $cli `
+        -Arguments @(
+            "--export_animation_gltf_from_files", $gltf,
+            "--preview_animation", $AnimationSidecar,
+            "--preview_output", $animationOutput,
+            "--source_index", $AnimationSourceIndex,
+            "--preview_avatar", $AnimationPreviewAvatar
+        )
+
+    $animationReport = Join-Path $animationOutput "standalone_animation_gltf_report.json"
+    Test-FileRequired -Path $animationReport -Label "standalone_animation_gltf_report.json"
+    $animationReportJson = Get-Content -LiteralPath $animationReport -Raw | ConvertFrom-Json
+
+    if ($animationReportJson.status -ne "ok") {
+        throw "Animation diagnostic did not finish as ok: $($animationReportJson.status) $($animationReportJson.reason)"
+    }
+    if ($animationReportJson.avatarInjection.diagnosticOnly -ne $true -or $animationReportJson.avatarInjection.notDefaultModelAnimationRelation -ne $true) {
+        throw "Animation diagnostic report lost diagnostic-only relation boundary."
+    }
+
+    if (![string]::IsNullOrWhiteSpace($animationReportJson.gltf)) {
+        Test-FileRequired -Path $animationReportJson.gltf -Label "standalone animation glTF"
+        if (!$SkipGltfValidation) {
+            $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $gltfTransform) {
+                Invoke-Checked `
+                    -Label "Validate Dijiang A8 animation glTF" `
+                    -FilePath $gltfTransform.Source `
+                    -Arguments @("validate", [string]$animationReportJson.gltf)
+            }
+        }
+    }
+}
+
 if (!$SkipBrowserValidation) {
     $browserCli = "D:\misutime\UnrealExporter\dist\AssetLibraryBrowser.Cli\AssetLibraryBrowser.Cli.exe"
     if (Test-Path -LiteralPath $browserCli) {
@@ -162,6 +208,9 @@ Write-Host "Naraka first usable smoke completed."
 Write-Host "Output: $OutputRoot"
 Write-Host "Library: $hadiOutput"
 Write-Host ("Capabilities: models={0}, animations={1}" -f $assetLibrary.capabilities.models, $assetLibrary.capabilities.animations)
+if (!$SkipAnimationDiagnostic) {
+    Write-Host "Animation diagnostic: $animationOutput"
+}
 if ($null -ne $modelValidation.totals) {
     $modelValidation.totals | Format-List
 }
