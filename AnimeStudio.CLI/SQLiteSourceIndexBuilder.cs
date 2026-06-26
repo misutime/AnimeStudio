@@ -104,6 +104,234 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
             Logger.Info($"SQLite source query indexes are ready: {dbPath}");
         }
 
+        public static string RefreshSimpleAnimationTypeTreeMetadata(
+            string sourceIndexPath,
+            string sourceRootOverride = null,
+            string outputRoot = null,
+            string[] sourceFileFilters = null,
+            int sourceCandidateLimit = 0,
+            string unityVersionOverride = null)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath) || !File.Exists(sourceIndexPath))
+            {
+                throw new FileNotFoundException($"Unity source index not found: {sourceIndexPath}", sourceIndexPath);
+            }
+
+            SQLitePCL.Batteries_V2.Init();
+            var dbPath = Path.GetFullPath(sourceIndexPath);
+            using var connection = new SqliteConnection($"Data Source={dbPath}");
+            connection.Open();
+
+            if (!TableExists(connection, "source_objects"))
+            {
+                throw new InvalidOperationException("source_objects table is missing; this is not a unity_source_index.db.");
+            }
+
+            var sourceRoot = !string.IsNullOrWhiteSpace(sourceRootOverride)
+                ? Path.GetFullPath(sourceRootOverride)
+                : ScalarString(connection, "SELECT value FROM metadata WHERE key='sourceRoot' LIMIT 1;");
+            if (string.IsNullOrWhiteSpace(sourceRoot) || !Directory.Exists(sourceRoot))
+            {
+                throw new DirectoryNotFoundException($"Source root is missing or does not exist. Pass --preview_source_root. sourceRoot={sourceRoot}");
+            }
+
+            var gameName = ScalarString(connection, "SELECT value FROM metadata WHERE key='game' LIMIT 1;");
+            var game = string.IsNullOrWhiteSpace(gameName) ? null : GameManager.GetGame(gameName);
+            game ??= GameManager.GetGame(GameType.Normal);
+            var unityVersion = !string.IsNullOrWhiteSpace(unityVersionOverride)
+                ? unityVersionOverride
+                : ScalarString(connection, "SELECT value FROM metadata WHERE key='unityVersionOverride' LIMIT 1;");
+
+            using var profile = ProfileLogger.Measure("source_index_refresh_simple_animation_typetree", new Dictionary<string, object>
+            {
+                ["sourceIndex"] = dbPath,
+                ["sourceRoot"] = sourceRoot,
+                ["sourceCandidateLimit"] = Math.Max(0, sourceCandidateLimit),
+            });
+
+            var candidates = ReadSimpleAnimationTypeTreeRefreshCandidates(connection);
+            var explicitPhysicalFilters = BuildPhysicalSourceFilterSet(sourceRoot, sourceFileFilters);
+            if (explicitPhysicalFilters.Count > 0)
+            {
+                candidates = candidates
+                    .Where(x => explicitPhysicalFilters.Contains(ExtractPhysicalSourcePath(x.SourcePath)))
+                    .ToList();
+            }
+
+            var sourcePathCounts = candidates
+                .GroupBy(x => ExtractPhysicalSourcePath(x.SourcePath), StringComparer.OrdinalIgnoreCase)
+                .Select(g => new { PhysicalSourcePath = g.Key, Count = g.Count() })
+                .OrderByDescending(x => x.Count)
+                .ThenBy(x => x.PhysicalSourcePath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (explicitPhysicalFilters.Count == 0 && sourceCandidateLimit > 0)
+            {
+                var selected = sourcePathCounts
+                    .Take(sourceCandidateLimit)
+                    .Select(x => x.PhysicalSourcePath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                candidates = candidates
+                    .Where(x => selected.Contains(ExtractPhysicalSourcePath(x.SourcePath)))
+                    .ToList();
+                sourcePathCounts = sourcePathCounts.Take(sourceCandidateLimit).ToList();
+            }
+
+            var selectedPhysicalPaths = sourcePathCounts
+                .Select(x => x.PhysicalSourcePath)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            var sourceFiles = selectedPhysicalPaths
+                .Select(x => ResolveSourcePhysicalPath(sourceRoot, x))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var report = new JObject
+            {
+                ["schemaVersion"] = 1,
+                ["sourceIndex"] = dbPath,
+                ["sourceRoot"] = sourceRoot,
+                ["game"] = gameName ?? string.Empty,
+                ["candidateRows"] = candidates.Count,
+                ["selectedSourcePathCount"] = selectedPhysicalPaths.Length,
+                ["loadedPhysicalFileCount"] = sourceFiles.Length,
+                ["explicitSourceFileFilterCount"] = explicitPhysicalFilters.Count,
+                ["sourceCandidateLimit"] = Math.Max(0, sourceCandidateLimit),
+                ["diagnosticOnly"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["rule"] = "SimpleAnimation TypeTree refresh only restores m_Clip/m_States/defaultState/playAutomatically metadata in source_objects.raw_json. It does not create production model-animation bindings, does not prove runtime Play calls, and does not set capabilities.animations=true.",
+                ["selectedSourcePaths"] = new JArray(sourcePathCounts.Take(64).Select(x => new JObject
+                {
+                    ["path"] = x.PhysicalSourcePath,
+                    ["simpleAnimationRows"] = x.Count,
+                    ["exists"] = File.Exists(ResolveSourcePhysicalPath(sourceRoot, x.PhysicalSourcePath)),
+                })),
+            };
+
+            if (candidates.Count == 0 || sourceFiles.Length == 0)
+            {
+                report["status"] = candidates.Count == 0 ? "noCandidates" : "noExistingSourceFiles";
+                return WriteSimpleAnimationTypeTreeRefreshReport(connection, dbPath, outputRoot, report, 0, selectedPhysicalPaths.Length);
+            }
+
+            var simpleAnimationByObject = new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            var manager = new AssetsManager
+            {
+                Game = game,
+                SpecifyUnityVersion = unityVersion,
+                ResolveDependencies = false,
+                LoadSerializedFileExternals = false,
+                SkipProcess = true,
+                StoreUnparsedObjects = false,
+                ObjectParseFilter = ShouldParseObjectForSourceIndex,
+                Silent = true,
+            };
+
+            try
+            {
+                manager.LoadFiles(sourceFiles);
+                foreach (var assetsFile in manager.assetsFileList)
+                {
+                    if (assetsFile?.Objects == null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var monoBehaviour in assetsFile.Objects.OfType<MonoBehaviour>())
+                    {
+                        if (!string.Equals(monoBehaviour.m_Script?.Name, "SimpleAnimation", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        var simpleAnimationJson = BuildSimpleAnimationTypeTreeJson(monoBehaviour);
+                        if (simpleAnimationJson == null)
+                        {
+                            continue;
+                        }
+
+                        simpleAnimationByObject[BuildSerializedObjectKey(assetsFile.fileName, monoBehaviour.m_PathID)] = simpleAnimationJson;
+                    }
+                }
+            }
+            finally
+            {
+                manager.Clear();
+            }
+
+            var updatedRows = 0;
+            var unchangedRows = 0;
+            var missingRows = 0;
+            var readFailedRows = 0;
+            using (var transaction = connection.BeginTransaction())
+            using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE source_objects SET raw_json=$rawJson WHERE id=$id;";
+                var rawParam = update.Parameters.Add("$rawJson", SqliteType.Text);
+                var idParam = update.Parameters.Add("$id", SqliteType.Integer);
+
+                foreach (var candidate in candidates)
+                {
+                    if (!simpleAnimationByObject.TryGetValue(BuildSerializedObjectKey(candidate.SerializedFile, candidate.PathId), out var simpleAnimationJson))
+                    {
+                        missingRows++;
+                        continue;
+                    }
+
+                    JObject raw;
+                    try
+                    {
+                        raw = string.IsNullOrWhiteSpace(candidate.RawJson)
+                            ? new JObject()
+                            : JObject.Parse(candidate.RawJson);
+                    }
+                    catch
+                    {
+                        readFailedRows++;
+                        continue;
+                    }
+
+                    var monoBehaviourJson = raw["monoBehaviour"] as JObject;
+                    if (monoBehaviourJson == null)
+                    {
+                        monoBehaviourJson = new JObject();
+                        raw["monoBehaviour"] = monoBehaviourJson;
+                    }
+
+                    if (JToken.DeepEquals(monoBehaviourJson["simpleAnimation"], simpleAnimationJson))
+                    {
+                        unchangedRows++;
+                        continue;
+                    }
+
+                    monoBehaviourJson["simpleAnimation"] = simpleAnimationJson;
+                    rawParam.Value = raw.ToString(Formatting.None);
+                    idParam.Value = candidate.Id;
+                    update.ExecuteNonQuery();
+                    updatedRows++;
+                }
+
+                InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshLastUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+                InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshUpdatedRows", updatedRows.ToString(CultureInfo.InvariantCulture));
+                InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshSelectedSourcePathCount", selectedPhysicalPaths.Length.ToString(CultureInfo.InvariantCulture));
+                InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshRule", "显式诊断刷新：只回填 SimpleAnimation TypeTree 摘要，不生成默认动画绑定。");
+                transaction.Commit();
+            }
+
+            report["status"] = "ok";
+            report["parsedSimpleAnimationObjects"] = simpleAnimationByObject.Count;
+            report["updatedRows"] = updatedRows;
+            report["unchangedRows"] = unchangedRows;
+            report["missingInLoadedAssetsRows"] = missingRows;
+            report["rawJsonReadFailedRows"] = readFailedRows;
+            var reportPath = WriteSimpleAnimationTypeTreeRefreshReport(connection, dbPath, outputRoot, report, updatedRows, selectedPhysicalPaths.Length);
+            CheckpointSourceIndex(connection, dbPath);
+            Logger.Info($"SimpleAnimation TypeTree metadata refresh updated {updatedRows} row(s), unchanged {unchangedRows}, missing {missingRows}. Report: {reportPath}");
+            return reportPath;
+        }
+
         private static void RefreshNarakaInputProbeForExistingIndex(SqliteConnection connection, string dbPath)
         {
             var gameName = ScalarString(connection, "SELECT value FROM metadata WHERE key='game' LIMIT 1;");
@@ -4313,6 +4541,109 @@ WHERE r.relation = $relation;";
             return result.ToArray();
         }
 
+        private static List<SimpleAnimationTypeTreeRefreshCandidate> ReadSimpleAnimationTypeTreeRefreshCandidates(SqliteConnection connection)
+        {
+            var result = new List<SimpleAnimationTypeTreeRefreshCandidate>();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT id, source_path, serialized_file, path_id, raw_json
+FROM source_objects
+WHERE type='MonoBehaviour'
+  AND json_extract(raw_json, '$.monoBehaviour.scriptName')='SimpleAnimation'
+ORDER BY source_path COLLATE NOCASE, serialized_file COLLATE NOCASE, path_id;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new SimpleAnimationTypeTreeRefreshCandidate
+                {
+                    Id = reader.IsDBNull(0) ? 0 : reader.GetInt64(0),
+                    SourcePath = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
+                    SerializedFile = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    PathId = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
+                    RawJson = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+                });
+            }
+
+            return result;
+        }
+
+        private static HashSet<string> BuildPhysicalSourceFilterSet(string sourceRoot, string[] sourceFileFilters)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var filter in sourceFileFilters ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(filter))
+                {
+                    continue;
+                }
+
+                var physical = ExtractPhysicalSourcePath(NormalizeSourceFilePath(filter));
+                if (Path.IsPathRooted(physical))
+                {
+                    physical = MakeRelativeOrName(sourceRoot, physical);
+                }
+
+                result.Add(NormalizeSourceFilePath(physical));
+            }
+
+            return result;
+        }
+
+        private static string ExtractPhysicalSourcePath(string sourcePath)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath))
+            {
+                return string.Empty;
+            }
+
+            var normalized = NormalizeSourceFilePath(sourcePath);
+            var cabSeparator = normalized.IndexOf('|');
+            return cabSeparator >= 0
+                ? normalized[..cabSeparator]
+                : normalized;
+        }
+
+        private static string ResolveSourcePhysicalPath(string sourceRoot, string physicalSourcePath)
+        {
+            if (string.IsNullOrWhiteSpace(physicalSourcePath))
+            {
+                return string.Empty;
+            }
+
+            var normalized = NormalizeSourceFilePath(physicalSourcePath);
+            return Path.IsPathRooted(normalized)
+                ? Path.GetFullPath(normalized)
+                : Path.GetFullPath(Path.Combine(sourceRoot, normalized.Replace('/', Path.DirectorySeparatorChar)));
+        }
+
+        private static string BuildSerializedObjectKey(string serializedFile, long pathId)
+        {
+            return $"{serializedFile ?? string.Empty}\u001F{pathId.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        private static string WriteSimpleAnimationTypeTreeRefreshReport(
+            SqliteConnection connection,
+            string dbPath,
+            string outputRoot,
+            JObject report,
+            int updatedRows,
+            int selectedSourcePathCount)
+        {
+            var root = string.IsNullOrWhiteSpace(outputRoot)
+                ? Path.GetDirectoryName(dbPath) ?? Environment.CurrentDirectory
+                : Path.GetFullPath(outputRoot);
+            Directory.CreateDirectory(root);
+            var reportPath = Path.Combine(root, "simple_animation_typetree_refresh_report.json");
+            File.WriteAllText(reportPath, report.ToString(Formatting.Indented));
+
+            using var transaction = connection.BeginTransaction();
+            InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshReport", reportPath);
+            InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshUpdatedRows", updatedRows.ToString(CultureInfo.InvariantCulture));
+            InsertMetadata(connection, transaction, "simpleAnimationTypeTreeRefreshSelectedSourcePathCount", selectedSourcePathCount.ToString(CultureInfo.InvariantCulture));
+            transaction.Commit();
+            return reportPath;
+        }
+
         private static Dictionary<string, long> ReadSourceIndexCountsForSummary(SqliteConnection connection, string outputRoot, string dbPath)
         {
             var counts = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
@@ -4958,6 +5289,15 @@ WHERE r.relation = $relation;";
             public long PathId { get; init; }
             public string TypeHint { get; init; }
             public object Details { get; init; }
+        }
+
+        private sealed class SimpleAnimationTypeTreeRefreshCandidate
+        {
+            public long Id { get; init; }
+            public string SourcePath { get; init; }
+            public string SerializedFile { get; init; }
+            public long PathId { get; init; }
+            public string RawJson { get; init; }
         }
 
         private sealed class LightweightRendererRelationReader

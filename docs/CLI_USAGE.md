@@ -753,6 +753,18 @@ Naraka 一行 smoke 还会写 `smoke_summary.json.sourceIndexScriptAnimationClip
 
 新版源索引会在 `source_objects.raw_json.monoBehaviour.simpleAnimation` 中为 `SimpleAnimation` 额外保存轻量 TypeTree 摘要：`playAutomatically`、`m_Clip`、`stateCount`、`defaultStateCount`、`stateNames`、`defaultStateNames`、`stateClipPathIds` 和 `typeTreeStatus`。`--list_source_model_animations` 会把它上浮到 `scriptAnimationComponentDiagnostics[*].monoBehaviour.simpleAnimationTypeTree`、`simpleAnimationSemanticSummary.typeTreeMetadataRows`、`typeTreePlayAutomaticallyRows`、`typeTreeDefaultStateRows` 和 `automaticDefaultStateClipRows`。这能把 Naraka 的脚本动画线索从“字段 PPtr”推进到“自动播放默认 state -> 确定 clip”证据；但它仍只说明脚本配置，不代表运行时代码一定播放该 state，也不代表 Humanoid/TRS 求解和视觉验收通过。旧 `unity_source_index.db` 没有这些字段时会显示 `typeTreeMetadataNotIndexedRows`，应重建源索引后再判断状态元数据覆盖率。
 
+旧全量源索引也可以用显式维护命令只回填这段 TypeTree 摘要，不必重建几十 GB 的 `unity_source_index.db`：
+
+```powershell
+AnimeStudio.CLI.exe `
+  --refresh_simple_animation_typetree "D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db" `
+  --preview_source_root "C:\Game163\program\NarakaBladepoint_Data\StreamingAssets" `
+  --source_files "4\f\4fd035612d51ea0f" `
+  --preview_output "D:\Assets\Naraka\SimpleAnimation_TypeTreeRefresh_ZhumuFullIndex_Current"
+```
+
+该命令只读取选中的物理源文件，把 `SimpleAnimation` 的 `m_PlayAutomatically`、默认 state、`m_Clip` 和 state clip 摘要写回 `source_objects.raw_json.monoBehaviour.simpleAnimation`，并生成 `simple_animation_typetree_refresh_report.json`。它不会创建 `model_animations.json` / `relation_animations` 关系，也不会把 `asset_library.json.capabilities.animations` 改成 `true`。Naraka 当前不能只依赖普通 `AnimatorController`：大量角色/怪物动作更像由 `SimpleAnimation`、PlayableGraph 或私有 IL2CPP 运行时代码驱动。后续允许把满足 `automaticDefaultStateClip`、可见蒙皮子树、Avatar/骨架覆盖、模型验证 ok、glTF TRS 写回 ok、像素/视觉运动 ok 的样本升级为 Naraka profile 生产候选；不满足这些门槛的脚本关系仍保持诊断。
+
 导出器读取 `unity_source_index.db` 的 PathID 时也必须保持 int64 精度。`SourceModelAnimationLister` 的 SQLite 读取路径优先使用 `GetInt64()`，避免通过通用 object/double 转换把 MonoBehaviour、GameObject 或 AnimationClip PathID 四舍五入；Naraka smoke 会检查 Zhumu 和 Yaodaoji 的 `monoBehaviourPathIdString` / `clipPathIdString` 精确值，防止后续诊断关系回查失败。
 
 `avatarTosClipDiagnosticSummary` 和 `modelAvatarCompatibilityDiagnosticSummary` 是同一类机器摘要，分别汇总 `Animator.avatar -> Avatar.m_TOS` 对 hash-only AnimationClip binding 的解析覆盖，以及选中模型 Transform 路径与 Avatar 路径的结构重叠。它们可以作为 Naraka Humanoid/Muscle 求解或 Unity oracle 探针的入口线索，但摘要里的 `defaultCandidateCount` 必须保持 0；即使 `maxCoverageRatio=1` 或 `highOverlapRows>0`，也不能替代 AnimatorController/Animation 显式上下文、模型静态验收、TRS 写回和清晰视觉验收。摘要同样写 `productionReadiness=blocked` 和 `blockedProductionRequirements`，其中 Avatar/TOS 诊断至少需要补齐显式 AnimatorController/AnimationClip 关系、模型 glTF 验证、动画 TRS 导出和视觉验收；模型-Avatar 兼容诊断至少需要补齐显式 AnimationClip 关系、模型 glTF 验证、动画 TRS 导出和视觉验收。

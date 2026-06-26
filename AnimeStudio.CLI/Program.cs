@@ -629,6 +629,18 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (o.RefreshSimpleAnimationTypeTree != null)
+                {
+                    SQLiteSourceIndexBuilder.RefreshSimpleAnimationTypeTreeMetadata(
+                        o.RefreshSimpleAnimationTypeTree.FullName,
+                        o.PreviewSourceRoot?.FullName,
+                        o.PreviewOutput?.FullName,
+                        o.SourceFileFilter,
+                        o.SourceCandidateLimit,
+                        o.UnityVersion);
+                    return;
+                }
+
                 if (o.ListSourceModelCandidates != null)
                 {
                     SourceModelCandidateLister.List(

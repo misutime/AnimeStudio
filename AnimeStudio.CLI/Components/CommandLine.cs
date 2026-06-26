@@ -190,6 +190,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.BuildSourceSqliteIndex,
                 optionsBinder.VerifySourceIndex,
                 optionsBinder.EnsureSourceIndexQueryIndexes,
+                optionsBinder.RefreshSimpleAnimationTypeTree,
                 optionsBinder.ListSourceModelCandidates,
                 optionsBinder.ListSourceModelAnimations,
                 optionsBinder.LocateSourceCabs,
@@ -355,6 +356,7 @@ namespace AnimeStudio.CLI
         public bool BuildSourceSqliteIndex { get; set; }
         public FileInfo VerifySourceIndex { get; set; }
         public FileInfo EnsureSourceIndexQueryIndexes { get; set; }
+        public FileInfo RefreshSimpleAnimationTypeTree { get; set; }
         public FileInfo ListSourceModelCandidates { get; set; }
         public FileInfo ListSourceModelAnimations { get; set; }
         public string[] LocateSourceCabs { get; set; }
@@ -515,6 +517,7 @@ namespace AnimeStudio.CLI
         public readonly Option<bool> BuildSourceSqliteIndex;
         public readonly Option<FileInfo> VerifySourceIndex;
         public readonly Option<FileInfo> EnsureSourceIndexQueryIndexes;
+        public readonly Option<FileInfo> RefreshSimpleAnimationTypeTree;
         public readonly Option<FileInfo> ListSourceModelCandidates;
         public readonly Option<FileInfo> ListSourceModelAnimations;
         public readonly Option<string[]> LocateSourceCabs;
@@ -673,6 +676,7 @@ namespace AnimeStudio.CLI
             BuildSourceSqliteIndex = new Option<bool>("--build_source_sqlite_index", "Build a reusable SQLite source index directly from a full Unity game/source folder. Requires input_path, output_path, and --game.");
             VerifySourceIndex = new Option<FileInfo>("--verify_source_index", "Inspect an existing unity_source_index.db and write an animation relation health report without rebuilding it.").LegalFilePathsOnly();
             EnsureSourceIndexQueryIndexes = new Option<FileInfo>("--ensure_source_index_query_indexes", "Create or rebuild query indexes on an existing unity_source_index.db. Useful for old large indexes before candidate or animation relation scans.").LegalFilePathsOnly();
+            RefreshSimpleAnimationTypeTree = new Option<FileInfo>("--refresh_simple_animation_typetree", "Diagnostic: refresh SimpleAnimation TypeTree metadata inside an existing unity_source_index.db. Use --preview_source_root and optional --source_files / --source_candidate_limit to keep it targeted.").LegalFilePathsOnly();
             ListSourceModelCandidates = new Option<FileInfo>("--list_source_model_candidates", "List model-first smoke candidates from unity_source_index.db using deterministic Animator/Renderer/Mesh/Material relations. Does not export assets or create animation bindings.").LegalFilePathsOnly();
             ListSourceModelAnimations = new Option<FileInfo>("--list_source_model_animations", "List deterministic source-index animation references for one selected model. Requires --preview_model; does not prove model quality or animation playability.").LegalFilePathsOnly();
             LocateSourceCabs = new Option<string[]>("--locate_source_cabs", "Diagnostic: locate Unity CAB serialized files inside a normal Unity source folder by reading bundle directory metadata only. Pass one or more CAB names; writes source_cab_locations.json.") { AllowMultipleArgumentsPerToken = true };
@@ -924,6 +928,7 @@ namespace AnimeStudio.CLI
                 BuildSourceSqliteIndex = bindingContext.ParseResult.GetValueForOption(BuildSourceSqliteIndex),
                 VerifySourceIndex = bindingContext.ParseResult.GetValueForOption(VerifySourceIndex),
                 EnsureSourceIndexQueryIndexes = bindingContext.ParseResult.GetValueForOption(EnsureSourceIndexQueryIndexes),
+                RefreshSimpleAnimationTypeTree = bindingContext.ParseResult.GetValueForOption(RefreshSimpleAnimationTypeTree),
                 ListSourceModelCandidates = bindingContext.ParseResult.GetValueForOption(ListSourceModelCandidates),
                 ListSourceModelAnimations = bindingContext.ParseResult.GetValueForOption(ListSourceModelAnimations),
                 LocateSourceCabs = bindingContext.ParseResult.GetValueForOption(LocateSourceCabs),
