@@ -7,7 +7,7 @@ param(
     [string]$AnimationPreviewAvatar = "mo_pve_b_dijiang_01_skeletonAvatar",
     [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
     [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
-    [string]$CharacterCandidateSampleRoot = "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_Current",
+    [string]$CharacterCandidateSampleRoot = "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_BundleRoot_Current",
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
@@ -146,6 +146,9 @@ $characterCandidateGltf = $null
 $characterCandidateTextureLinkErrors = $null
 $characterCandidateMaterialSidecarRows = $null
 $characterCandidateModelRows = $null
+$characterCandidateModelAnimationCandidateRows = $null
+$characterCandidateModelAnimationRelationRows = $null
+$characterCandidateRelationAnimationRows = $null
 $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
 $sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
@@ -474,14 +477,32 @@ if (![string]::IsNullOrWhiteSpace($CharacterCandidateSampleRoot)) {
             if ($LASTEXITCODE -ne 0) {
                 throw "sqlite3 failed while counting character candidate model assets."
             }
+            $characterCandidateModelAnimationCandidateRowsText = & $sqlite3.Source -readonly -batch -noheader $characterCandidateDb "SELECT COUNT(*) FROM model_animation_candidates;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting character candidate model_animation_candidates."
+            }
+            $characterCandidateModelAnimationRelationRowsText = & $sqlite3.Source -readonly -batch -noheader $characterCandidateDb "SELECT COUNT(*) FROM model_animation_relations;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting character candidate model_animation_relations."
+            }
+            $characterCandidateRelationAnimationRowsText = & $sqlite3.Source -readonly -batch -noheader $characterCandidateDb "SELECT COUNT(*) FROM relation_animations;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting character candidate relation_animations."
+            }
             $characterCandidateTextureLinkErrors = [long]$characterCandidateTextureLinkErrorsText
             $characterCandidateMaterialSidecarRows = [long]$characterCandidateMaterialSidecarRowsText
             $characterCandidateModelRows = [long]$characterCandidateModelRowsText
+            $characterCandidateModelAnimationCandidateRows = [long]$characterCandidateModelAnimationCandidateRowsText
+            $characterCandidateModelAnimationRelationRows = [long]$characterCandidateModelAnimationRelationRowsText
+            $characterCandidateRelationAnimationRows = [long]$characterCandidateRelationAnimationRowsText
             if ($characterCandidateTextureLinkErrors -ne 0) {
                 throw "Character candidate sample has texture link errors: $characterCandidateTextureLinkErrors"
             }
             if ($characterCandidateMaterialSidecarRows -lt 1 -or $characterCandidateModelRows -lt 1) {
                 throw "Character candidate sample lost material sidecar or model rows in library_index.db."
+            }
+            if ($characterCandidateModelAnimationCandidateRows -ne 0 -or $characterCandidateModelAnimationRelationRows -ne 0 -or $characterCandidateRelationAnimationRows -ne 0) {
+                throw "Character candidate sample unexpectedly created production animation relation rows. candidates=$characterCandidateModelAnimationCandidateRows modelRelations=$characterCandidateModelAnimationRelationRows relationAnimations=$characterCandidateRelationAnimationRows"
             }
         }
         else {
@@ -702,6 +723,9 @@ $summaryJsonLines += '    "textureLinkErrors": ' + (ConvertTo-SmokeJsonLiteral $
 $summaryJsonLines += '    "materialSidecars": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSummaryJson.counts.materialSidecars) + ","
 $summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateMaterialSidecarRows) + ","
 $summaryJsonLines += '    "modelRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateModelRows) + ","
+$summaryJsonLines += '    "modelAnimationCandidateRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateModelAnimationCandidateRows) + ","
+$summaryJsonLines += '    "modelAnimationRelationRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateModelAnimationRelationRows) + ","
+$summaryJsonLines += '    "relationAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRelationAnimationRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRule)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "checks": {'
@@ -928,12 +952,15 @@ if ($characterCandidateStatus -eq "ok") {
         (ConvertTo-SmokeText $characterCandidateValidationJson.totals.withTextures "0"),
         (ConvertTo-SmokeText $characterCandidateSkinJointCount "0"),
         (ConvertTo-SmokeText $characterCandidateMaxBoundsSize "0")))
-    $reportLines.Add(('- SQLite counts: textureAssets=`{0}`, textureLinks=`{1}`, textureLinkErrors=`{2}`, materialSidecars=`{3}`, modelRows=`{4}`' -f `
+    $reportLines.Add(('- SQLite counts: textureAssets=`{0}`, textureLinks=`{1}`, textureLinkErrors=`{2}`, materialSidecars=`{3}`, modelRows=`{4}`, modelAnimationCandidates=`{5}`, modelAnimationRelations=`{6}`, relationAnimations=`{7}`' -f `
         (ConvertTo-SmokeText $characterCandidateSummaryJson.counts.textureAssets "0"),
         (ConvertTo-SmokeText $characterCandidateSummaryJson.counts.textureLinks "0"),
         (ConvertTo-SmokeText $characterCandidateTextureLinkErrors "unknown"),
         (ConvertTo-SmokeText $characterCandidateSummaryJson.counts.materialSidecars "0"),
-        (ConvertTo-SmokeText $characterCandidateModelRows "unknown")))
+        (ConvertTo-SmokeText $characterCandidateModelRows "unknown"),
+        (ConvertTo-SmokeText $characterCandidateModelAnimationCandidateRows "unknown"),
+        (ConvertTo-SmokeText $characterCandidateModelAnimationRelationRows "unknown"),
+        (ConvertTo-SmokeText $characterCandidateRelationAnimationRows "unknown")))
     $reportLines.Add('- Rule: this is a stronger skinned humanoid/character candidate selected from Unity source-index Avatar and Renderer evidence. It can guide the next animation smoke target, but it still does not create a production model-animation binding without explicit clip/controller relation and visual validation.')
 }
 elseif ($characterCandidateStatus -eq "missing") {
