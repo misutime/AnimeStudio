@@ -284,6 +284,9 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryStatus = $null
     $summaryProductionReadiness = $null
     $summaryBlockedRequirements = @()
+    $summaryScriptNameCounts = @()
+    $summaryFieldPathCounts = @()
+    $summaryAnimationNameSamples = @()
     if ($null -ne $diagnosticSummary) {
         # 新报告直接给机器摘要；旧报告没有该节点时继续使用行数组统计。
         $summaryStatus = [string](Get-SmokePropertyValue -Object $diagnosticSummary -Name "status")
@@ -298,8 +301,20 @@ function Read-SourceModelScriptAnimationDiagnostic {
         $summaryDefaultCandidateCount = Get-SmokePropertyValue -Object $diagnosticSummary -Name "defaultCandidateCount"
         $summaryProductionReadiness = Get-SmokePropertyValue -Object $diagnosticSummary -Name "productionReadiness"
         $summaryBlockedRequirementsValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "blockedProductionRequirements"
+        $summaryScriptNameCountsValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "scriptNameCounts"
+        $summaryFieldPathCountsValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "fieldPathCounts"
+        $summaryAnimationNameSamplesValue = Get-SmokePropertyValue -Object $diagnosticSummary -Name "animationNameSamples"
         if ($null -ne $summaryBlockedRequirementsValue) {
             $summaryBlockedRequirements = @($summaryBlockedRequirementsValue)
+        }
+        if ($null -ne $summaryScriptNameCountsValue) {
+            $summaryScriptNameCounts = @($summaryScriptNameCountsValue)
+        }
+        if ($null -ne $summaryFieldPathCountsValue) {
+            $summaryFieldPathCounts = @($summaryFieldPathCountsValue)
+        }
+        if ($null -ne $summaryAnimationNameSamplesValue) {
+            $summaryAnimationNameSamples = @($summaryAnimationNameSamplesValue)
         }
         if ($null -ne $summaryRowCount) {
             $scriptAnimationRows = [Convert]::ToInt64($summaryRowCount)
@@ -348,6 +363,9 @@ function Read-SourceModelScriptAnimationDiagnostic {
     $summaryJsonLines += '  "subtreeSkinnedRendererRows": ' + (ConvertTo-SmokeJsonLiteral $subtreeSkinnedRendererRowCount) + ","
     $summaryJsonLines += '  "subtreeTruncatedRows": ' + (ConvertTo-SmokeJsonLiteral $subtreeTruncatedRowCount) + ","
     $summaryJsonLines += '  "animatorRows": ' + (ConvertTo-SmokeJsonLiteral $animatorRowCount) + ","
+    $summaryJsonLines += '  "scriptNameCounts": ' + (ConvertTo-SmokeJsonLiteral ($summaryScriptNameCounts | Select-Object -First 8) 10) + ","
+    $summaryJsonLines += '  "fieldPathCounts": ' + (ConvertTo-SmokeJsonLiteral ($summaryFieldPathCounts | Select-Object -First 8) 10) + ","
+    $summaryJsonLines += '  "animationNameSamples": ' + (ConvertTo-SmokeJsonLiteral ($summaryAnimationNameSamples | Select-Object -First 12) 10) + ","
     $summaryJsonLines += '  "firstScriptName": ' + (ConvertTo-SmokeJsonLiteral $firstScriptName) + ","
     $summaryJsonLines += '  "firstFieldPath": ' + (ConvertTo-SmokeJsonLiteral $firstFieldPath) + ","
     $summaryJsonLines += '  "firstClipName": ' + (ConvertTo-SmokeJsonLiteral $firstClipName) + ","
@@ -1619,6 +1637,9 @@ foreach ($probeRow in $simpleAnimationVisibleSubtreeProbeRows) {
         firstScriptName = $diagnostic.firstScriptName
         firstClipName = $diagnostic.firstClipName
         firstFieldPath = $diagnostic.firstFieldPath
+        scriptNameCounts = @($diagnostic.scriptNameCounts)
+        fieldPathCounts = @($diagnostic.fieldPathCounts)
+        animationNameSamples = @($diagnostic.animationNameSamples)
         visibleRendererRows = $diagnostic.visibleRendererRows
         subtreeVisibleRendererRows = $diagnostic.subtreeVisibleRendererRows
         subtreeSkinnedRendererRows = $diagnostic.subtreeSkinnedRendererRows
@@ -1652,6 +1673,12 @@ if ($sourceIndexSimpleAnimationVisibleSubtreeProbes.probeCount -lt 2 -or $source
 foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
     if ($probe.diagnosticOnly -ne $true -or $probe.notDefaultModelAnimationRelation -ne $true -or [string]$probe.productionReadiness -ne "blocked") {
         throw "SimpleAnimation visible-subtree probe lost diagnostic-only production boundary: $($probe.selector)"
+    }
+    $probeFieldPaths = @($probe.fieldPathCounts | ForEach-Object { [string]$_.fieldPath })
+    foreach ($requiredFieldPath in @("m_Clip", "m_States.data.clip")) {
+        if ($probeFieldPaths -notcontains $requiredFieldPath) {
+            throw "SimpleAnimation visible-subtree probe lost expected field path '$requiredFieldPath': $($probe.selector)"
+        }
     }
 }
 $sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex
@@ -3223,13 +3250,18 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     if ($sourceIndexSimpleAnimationVisibleSubtreeProbes.status -eq "ok") {
         $visibleProbeParts = @()
         foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
-            $visibleProbeParts += ('{0}:scriptRows={1},subtreeVisible={2},subtreeSkinned={3},animatorRows={4},firstClip={5}' -f `
+            $fieldPathParts = @($probe.fieldPathCounts | Select-Object -First 4 | ForEach-Object {
+                ('{0}:{1}' -f (ConvertTo-SmokeText $_.fieldPath), (ConvertTo-SmokeText $_.rowCount "0"))
+            })
+            $animationSamples = @($probe.animationNameSamples | Select-Object -First 3 | ForEach-Object { ConvertTo-SmokeText $_ })
+            $visibleProbeParts += ('{0}:scriptRows={1},subtreeVisible={2},subtreeSkinned={3},animatorRows={4},fields={5},sampleClips={6}' -f `
                 (ConvertTo-SmokeText $probe.selector),
                 (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
                 (ConvertTo-SmokeText $probe.subtreeVisibleRendererRows "0"),
                 (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
                 (ConvertTo-SmokeText $probe.animatorRows "0"),
-                (ConvertTo-SmokeText $probe.firstClipName ""))
+                ($fieldPathParts -join '/'),
+                ($animationSamples -join '/'))
         }
         $reportLines.Add(('- SimpleAnimation visible-subtree probes: probes=`{0}`, visible=`{1}`, skinned=`{2}`, animator=`{3}`, samples=`{4}`' -f `
             (ConvertTo-SmokeText $sourceIndexSimpleAnimationVisibleSubtreeProbes.probeCount "0"),
