@@ -184,6 +184,14 @@ $sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
     withController = 0
     domainCounts = @()
 }
+$sourceIndexLegacyAnimationClipDomains = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Legacy Animation.clip edges are explicit Unity references, but Naraka's current matches are VFX/marker style diagnostics, not character body production animation candidates."
+    totalRelations = 0
+    resolvedTargets = 0
+    unresolvedTargets = 0
+    domainCounts = @()
+}
 $animationDiagnosticStatus = if ($SkipAnimationDiagnostic) { "skipped" } else { "pending" }
 $animationReportJson = $null
 $animationGltfPath = $null
@@ -672,10 +680,73 @@ SELECT
     if ($characterCandidateSourceIndexBoundary.animatorControllerRows -ne 0 -or $characterCandidateSourceIndexBoundary.animationClipRows -ne 0 -or $characterCandidateSourceIndexBoundary.animatorControllerClipRows -ne 0) {
         throw "SamuraiGhost source-index boundary unexpectedly found explicit production animation edges. animatorController=$($characterCandidateSourceIndexBoundary.animatorControllerRows) animationClip=$($characterCandidateSourceIndexBoundary.animationClipRows) animatorControllerClip=$($characterCandidateSourceIndexBoundary.animatorControllerClipRows)"
     }
+
+    $legacyAnimationClipDomainSql = @"
+WITH legacy AS (
+  SELECT r.from_source, r.from_path_id, r.to_file, r.to_path_id,
+         so.name AS clip_name,
+         so.id AS target_object_id
+  FROM source_relations r
+  LEFT JOIN source_objects so
+    ON lower(so.serialized_file) = lower(r.to_file)
+   AND so.path_id = r.to_path_id
+   AND so.type = 'AnimationClip'
+  WHERE r.relation = 'animation.clip'
+),
+classified AS (
+  SELECT *,
+    CASE
+      WHEN lower(COALESCE(clip_name, '')) LIKE 'fx\_%' ESCAPE '\' OR lower(COALESCE(clip_name, '')) LIKE '%effect%' OR lower(COALESCE(clip_name, '')) LIKE '%ghost%' THEN 'VfxOrEffect'
+      WHEN lower(COALESCE(clip_name, '')) LIKE '%ui%' THEN 'UiOrPreview'
+      WHEN lower(COALESCE(clip_name, '')) LIKE '%showoff%' OR lower(COALESCE(clip_name, '')) LIKE '%platform%' THEN 'ShowoffOrPresentation'
+      WHEN lower(COALESCE(clip_name, '')) LIKE '%aimmark%' OR lower(COALESCE(clip_name, '')) LIKE '%marker%' THEN 'AimOrMarker'
+      ELSE 'Other'
+    END AS domain
+  FROM legacy
+)
+SELECT domain,
+       COUNT(*) AS relations,
+       COUNT(DISTINCT from_source || ':' || from_path_id) AS animationComponents,
+       SUM(CASE WHEN target_object_id IS NULL THEN 0 ELSE 1 END) AS resolvedTargets,
+       SUM(CASE WHEN target_object_id IS NULL THEN 1 ELSE 0 END) AS unresolvedTargets,
+       substr(group_concat(COALESCE(clip_name, '<unresolved>'), ', '), 1, 220) AS samples
+FROM classified
+GROUP BY domain
+ORDER BY relations DESC, domain;
+"@
+    $legacyAnimationClipDomainRowsText = & $sqlite3ForSourceIndex.Source -readonly -batch -json $SourceIndex $legacyAnimationClipDomainSql
+    if ($LASTEXITCODE -ne 0) {
+        throw "sqlite3 failed while querying Naraka source-index legacy Animation.clip domains."
+    }
+    $legacyAnimationClipDomainRowsParsed = ($legacyAnimationClipDomainRowsText -join [Environment]::NewLine) | ConvertFrom-Json
+    $legacyAnimationClipDomainRows = @()
+    foreach ($row in $legacyAnimationClipDomainRowsParsed) {
+        $legacyAnimationClipDomainRows += $row
+    }
+    $legacyAnimationClipTotal = 0L
+    $legacyAnimationClipResolved = 0L
+    $legacyAnimationClipUnresolved = 0L
+    foreach ($row in $legacyAnimationClipDomainRows) {
+        $legacyAnimationClipTotal += [long]$row.relations
+        $legacyAnimationClipResolved += [long]$row.resolvedTargets
+        $legacyAnimationClipUnresolved += [long]$row.unresolvedTargets
+    }
+    $sourceIndexLegacyAnimationClipDomains = [pscustomobject]@{
+        status = "ok"
+        rule = $sourceIndexLegacyAnimationClipDomains.rule
+        totalRelations = $legacyAnimationClipTotal
+        resolvedTargets = $legacyAnimationClipResolved
+        unresolvedTargets = $legacyAnimationClipUnresolved
+        domainCounts = $legacyAnimationClipDomainRows
+    }
+    if ($legacyAnimationClipTotal -gt 0 -and $legacyAnimationClipUnresolved -ne 0) {
+        throw "Naraka source-index legacy Animation.clip targets have unresolved PPtr target(s): $legacyAnimationClipUnresolved / $legacyAnimationClipTotal"
+    }
 }
 else {
     $sourceIndexAvatarAnimatorDomains.status = "toolMissing"
     $characterCandidateSourceIndexBoundary.status = "toolMissing"
+    $sourceIndexLegacyAnimationClipDomains.status = "toolMissing"
 }
 if ($null -eq $sqliteSummaryJson.qualityGates) {
     throw "sqlite_index_summary.json lost qualityGates section."
@@ -824,6 +895,7 @@ $summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral 
 $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary.status) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
+$summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
 $summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
@@ -851,7 +923,8 @@ $summaryJsonLines += '    "missingAnimatorControllerClipTargets": ' + (ConvertTo
 $summaryJsonLines += '    "missingAnimatorControllerClipTargetSamples": ' + $missingAnimatorControllerClipTargetSamplesJson + ","
 $summaryJsonLines += '    "explicitControllerClipDomains": ' + $explicitControllerClipDomainsJson + ","
 $summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnimatorControllerUsagesJson + ","
-$summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10)
+$summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
+$summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
@@ -979,6 +1052,23 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     }
     else {
         $reportLines.Add(('- Source-index animator.avatar domain query: `{0}`' -f $sourceIndexAvatarAnimatorDomains.status))
+    }
+    if ($sourceIndexLegacyAnimationClipDomains.status -eq "ok") {
+        $reportLines.Add(('- Source-index legacy Animation.clip domains: totalRelations=`{0}`, resolvedTargets=`{1}`, unresolvedTargets=`{2}`' -f `
+            (ConvertTo-SmokeText $sourceIndexLegacyAnimationClipDomains.totalRelations "0"),
+            (ConvertTo-SmokeText $sourceIndexLegacyAnimationClipDomains.resolvedTargets "0"),
+            (ConvertTo-SmokeText $sourceIndexLegacyAnimationClipDomains.unresolvedTargets "0")))
+        foreach ($domainRow in @($sourceIndexLegacyAnimationClipDomains.domainCounts | Select-Object -First 8)) {
+            $reportLines.Add(('-   {0}: relations=`{1}`, animationComponents=`{2}`, samples=`{3}`' -f `
+                (ConvertTo-SmokeText $domainRow.domain),
+                (ConvertTo-SmokeText $domainRow.relations "0"),
+                (ConvertTo-SmokeText $domainRow.animationComponents "0"),
+                (ConvertTo-SmokeText $domainRow.samples "")))
+        }
+        $reportLines.Add('- Legacy Animation.clip rule: these are recorded as explicit Unity references, but current Naraka matches are VFX/marker style diagnostics and do not enable default character body animation capability.')
+    }
+    else {
+        $reportLines.Add(('- Source-index legacy Animation.clip domain query: `{0}`' -f $sourceIndexLegacyAnimationClipDomains.status))
     }
 }
 $reportLines.Add("")
