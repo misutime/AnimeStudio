@@ -145,11 +145,13 @@ Invoke-Checked `
 
 $manifest = Join-Path $hadiOutput "asset_library.json"
 $db = Join-Path $hadiOutput "library_index.db"
+$sqliteSummary = Join-Path $hadiOutput "sqlite_index_summary.json"
 $validation = Join-Path $hadiOutput "model_validation.json"
 $gltf = Join-Path $hadiOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
 
 Test-FileRequired -Path $manifest -Label "asset_library.json"
 Test-FileRequired -Path $db -Label "library_index.db"
+Test-FileRequired -Path $sqliteSummary -Label "sqlite_index_summary.json"
 Test-FileRequired -Path $validation -Label "model_validation.json"
 Test-FileRequired -Path $gltf -Label "Hadi glTF"
 
@@ -233,6 +235,7 @@ if (!$SkipBrowserValidation) {
 
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw | ConvertFrom-Json
+$sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw | ConvertFrom-Json
 $thumbnailCache = Join-Path $hadiOutput ".asset_browser_cache"
 $thumbnailFileCount = 0
 if (Test-Path -LiteralPath $thumbnailCache) {
@@ -249,6 +252,7 @@ $smokeSummary = [ordered]@{
     libraryRoot = $hadiOutput
     assetLibrary = $manifest
     libraryIndex = $db
+    sqliteSummary = $sqliteSummary
     modelValidation = $validation
     modelGltf = $gltf
     checks = [ordered]@{
@@ -265,6 +269,29 @@ $smokeSummary = [ordered]@{
         animationPreviewComposer = $assetLibrary.capabilities.animationPreviewComposer
     }
     modelTotals = $modelValidation.totals
+    sqliteCounts = $sqliteSummaryJson.counts
+    animationRelationCoverage = if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
+        [ordered]@{
+            models = $sqliteSummaryJson.animationRelationCoverage.totals.models
+            animations = $sqliteSummaryJson.animationRelationCoverage.totals.animations
+            explicitCandidates = $sqliteSummaryJson.animationRelationCoverage.totals.explicitCandidates
+            modelsWithExplicitCandidates = $sqliteSummaryJson.animationRelationCoverage.totals.modelsWithExplicitCandidates
+            modelAnimationRelations = $sqliteSummaryJson.counts.modelAnimationRelations
+            sourceIndexAnimationRelationHealth = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.status
+            animatorControllerClipRelations = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.relationCounts.'animatorController.clip'
+            resolvedAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.resolvedTargetCounts.'animatorController.clip'
+            missingAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingTargetCounts.'animatorController.clip'
+        }
+    } else {
+        [ordered]@{
+            models = 0
+            animations = 0
+            explicitCandidates = 0
+            modelsWithExplicitCandidates = 0
+            modelAnimationRelations = 0
+            sourceIndexAnimationRelationHealth = "unknown"
+        }
+    }
     animationDiagnostic = if ($null -ne $animationReportJson) {
         [ordered]@{
             status = $animationReportJson.status
@@ -315,6 +342,35 @@ if ($null -ne $modelValidation.totals) {
         (ConvertTo-SmokeText $modelValidation.totals.error "0")))
 }
 $reportLines.Add("")
+$reportLines.Add("## SQLite Index")
+$reportLines.Add("")
+if ($null -ne $sqliteSummaryJson.counts) {
+    $reportLines.Add(('- Assets=`{0}`, assetCatalog=`{1}`, textureAssets=`{2}`, textureLinks=`{3}`, materialSidecars=`{4}`, modelValidation=`{5}`' -f `
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.assets "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.assetCatalog "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.textureAssets "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.textureLinks "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.materialSidecars "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelValidation "0")))
+    $reportLines.Add(('- Model animation candidates=`{0}`, model animation relations=`{1}`' -f `
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationCandidates "0"),
+        (ConvertTo-SmokeText $sqliteSummaryJson.counts.modelAnimationRelations "0")))
+}
+if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
+    $relationHealth = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth
+    $coverageTotals = $sqliteSummaryJson.animationRelationCoverage.totals
+    $reportLines.Add(('- Explicit animation coverage: models=`{0}`, animations=`{1}`, explicitCandidates=`{2}`, modelsWithExplicitCandidates=`{3}`' -f `
+        (ConvertTo-SmokeText $coverageTotals.models "0"),
+        (ConvertTo-SmokeText $coverageTotals.animations "0"),
+        (ConvertTo-SmokeText $coverageTotals.explicitCandidates "0"),
+        (ConvertTo-SmokeText $coverageTotals.modelsWithExplicitCandidates "0")))
+    $reportLines.Add(('- Source-index animation relation health: `{0}`, animatorController.clip=`{1}`, resolved=`{2}`, missing=`{3}`' -f `
+        (ConvertTo-SmokeText $relationHealth.status),
+        (ConvertTo-SmokeText $relationHealth.relationCounts.'animatorController.clip' "0"),
+        (ConvertTo-SmokeText $relationHealth.resolvedTargetCounts.'animatorController.clip' "0"),
+        (ConvertTo-SmokeText $relationHealth.missingTargetCounts.'animatorController.clip' "0")))
+}
+$reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
 $reportLines.Add("")
 if ($null -ne $animationReportJson) {
@@ -339,6 +395,7 @@ $reportLines.Add("## Artifacts")
 $reportLines.Add("")
 $reportLines.Add(('- `asset_library.json`: `{0}`' -f $manifest))
 $reportLines.Add(('- `library_index.db`: `{0}`' -f $db))
+$reportLines.Add(('- `sqlite_index_summary.json`: `{0}`' -f $sqliteSummary))
 $reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
 $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))

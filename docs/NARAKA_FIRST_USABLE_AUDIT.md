@@ -65,8 +65,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 脚本结束后会在 `OutputRoot` 写出两个汇总文件：
 
-- `SMOKE_REPORT.md`：人读 smoke 结论，汇总静态模型、glTF 校验、浏览器校验、缩略图和动画诊断边界。
-- `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态和动画诊断状态。
+- `SMOKE_REPORT.md`：人读 smoke 结论，汇总静态模型、glTF 校验、浏览器校验、缩略图、SQLite 索引计数、动画关系覆盖摘要和动画诊断边界。
+- `smoke_summary.json`：机器读 smoke 摘要，用来复查产物路径、能力标记、验证状态、SQLite 索引计数和动画诊断状态。
 
 这两个文件只汇总 smoke 证据，不会改变正式 `HadiBody_s9` 素材库，也不会把诊断动画写成默认动画关系。
 
