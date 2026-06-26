@@ -10,6 +10,7 @@ param(
     [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
     [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
     [string]$CharacterCandidateSampleRoot = "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_BundleRoot_Current",
+    [string]$ZhumuScriptAnimationSampleRoot = "D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current",
     [string]$CharacterCandidateSourceIndexBundle = "b\6\b6449028544fa466",
     [string]$CharacterCandidateSourceIndexSerializedFile = "CAB-43d9a2106c54892c7f775b8d7ab8b193",
     [string]$CharacterCandidateSourceIndexAnimatorName = "ch_m_japan_samurai_ghost",
@@ -852,6 +853,7 @@ $animationOutput = Join-Path $OutputRoot "AnimationDiagnostic_DijiangA8"
 $scriptAnimationHadiOutput = Join-Path $OutputRoot "SourceModelAnimation_HadiBody_ScriptComponentDiagnostic"
 $scriptAnimationFxOutput = Join-Path $OutputRoot "SourceModelAnimation_FxAttack_ScriptComponentDiagnostic"
 $sourceModelJiantianshiOutput = Join-Path $OutputRoot "SourceModelAnimation_Jiantianshi_FormalModelDiagnostic"
+$sourceModelZhumuOutput = Join-Path $OutputRoot "SourceModelAnimation_ZhumuSoul_ScriptAvatarDiagnostic"
 $avatarTosDijiangOutput = Join-Path $OutputRoot "SourceModelAnimation_Dijiang_AvatarTosDiagnostic"
 $avatarCompatibilitySamuraiOutput = Join-Path $OutputRoot "SourceModelAnimation_SamuraiGhost_AvatarCompatibilityDiagnostic"
 $representativeGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
@@ -891,6 +893,20 @@ $characterCandidateModelAnimationRelationRows = $null
 $characterCandidateRelationAnimationRows = $null
 $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
+$zhumuScriptAnimationStatus = "notChecked"
+$zhumuScriptAnimationRule = "Zhumu soul is a script-animation boundary probe: the attack prefab model must stay statically usable, while SimpleAnimation and Avatar overlap evidence remain diagnostic-only and create no default animation relation."
+$zhumuScriptAnimationSummaryJson = $null
+$zhumuScriptAnimationValidationJson = $null
+$zhumuScriptAnimationGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+$zhumuScriptAnimationGltf = $null
+$zhumuScriptAnimationTextureLinkErrors = $null
+$zhumuScriptAnimationMaterialSidecarRows = $null
+$zhumuScriptAnimationModelRows = $null
+$zhumuScriptAnimationModelAnimationCandidateRows = $null
+$zhumuScriptAnimationModelAnimationRelationRows = $null
+$zhumuScriptAnimationRelationAnimationRows = $null
+$zhumuScriptAnimationMaxBoundsSize = $null
+$zhumuScriptAnimationSkinJointCount = $null
 $hadiModularBoundary = [pscustomobject]@{
     status = "notChecked"
     rule = "Hadi body is a usable modular body/clothing asset, not a complete character. It must stay marked modular_incomplete and blocked from production animation smoke until deterministic Face/Hair assembly is available."
@@ -1057,6 +1073,11 @@ Invoke-Checked -Label "List Jiantianshi formal source-model animations" -FilePat
     "--preview_model", "ch_f_jiantianshi_lv_s1",
     "--preview_output", $sourceModelJiantianshiOutput,
     "--source_candidate_limit", "40")
+Invoke-Checked -Label "List Zhumu soul source-model animations" -FilePath $cli -Arguments @(
+    "--list_source_model_animations", $SourceIndex,
+    "--preview_model", "mo_pve_b_zhumu_soul_01",
+    "--preview_output", $sourceModelZhumuOutput,
+    "--source_candidate_limit", "40")
 Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $cli -Arguments @(
     "--list_source_model_animations", $SourceIndex,
     "--preview_model", "fxattack_male_sw_attack_heavy_02",
@@ -1065,8 +1086,10 @@ Invoke-Checked -Label "List fxattack script source-model animations" -FilePath $
 
 $hadiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_m_hadi_lv_s9" -OutputRoot $scriptAnimationHadiOutput
 $jiantianshiScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "ch_f_jiantianshi_lv_s1" -OutputRoot $sourceModelJiantianshiOutput
+$zhumuScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "mo_pve_b_zhumu_soul_01" -OutputRoot $sourceModelZhumuOutput
 $fxScriptAnimationDiagnostic = Read-SourceModelScriptAnimationDiagnostic -Selector "fxattack_male_sw_attack_heavy_02" -OutputRoot $scriptAnimationFxOutput
 $jiantianshiAvatarCompatibilityDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector "ch_f_jiantianshi_lv_s1" -OutputRoot $sourceModelJiantianshiOutput
+$zhumuAvatarCompatibilityDiagnostic = Read-SourceModelAvatarAnimationDiagnostic -Selector "mo_pve_b_zhumu_soul_01" -OutputRoot $sourceModelZhumuOutput
 
 if ($hadiScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "Hadi body script animation diagnostic did not select any source model."
@@ -1088,6 +1111,24 @@ if ($jiantianshiAvatarCompatibilityDiagnostic.invalidBoundaryRows -ne 0) {
 }
 if ($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarRows -lt 1 -or $jiantianshiAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows -lt 1 -or $jiantianshiAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage -lt 0.9) {
     throw "Jiantianshi formal Avatar compatibility diagnostic lost structural overlap evidence. rows=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarRows) highOverlapRows=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows) maxCoverage=$($jiantianshiAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage)"
+}
+if ($zhumuScriptAnimationDiagnostic.selectedModelCount -lt 1) {
+    throw "Zhumu soul source-model diagnostic did not select any source model."
+}
+if ($zhumuScriptAnimationDiagnostic.candidateCount -ne 0 -or $zhumuScriptAnimationDiagnostic.scriptAnimationRows -lt 1 -or $zhumuScriptAnimationDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "Zhumu soul script diagnostic must stay diagnostic-only without default candidates. candidates=$($zhumuScriptAnimationDiagnostic.candidateCount) scriptRows=$($zhumuScriptAnimationDiagnostic.scriptAnimationRows) invalidRows=$($zhumuScriptAnimationDiagnostic.invalidBoundaryRows)"
+}
+if ($zhumuScriptAnimationDiagnostic.subtreeVisibleRendererRows -lt 1 -or $zhumuScriptAnimationDiagnostic.subtreeSkinnedRendererRows -lt 1 -or $zhumuScriptAnimationDiagnostic.animatorRows -lt 1) {
+    throw "Zhumu soul script diagnostic lost visible subtree, skinned renderer, or Animator context. subtreeVisibleRows=$($zhumuScriptAnimationDiagnostic.subtreeVisibleRendererRows) subtreeSkinnedRows=$($zhumuScriptAnimationDiagnostic.subtreeSkinnedRendererRows) animatorRows=$($zhumuScriptAnimationDiagnostic.animatorRows)"
+}
+if ($zhumuAvatarCompatibilityDiagnostic.candidateCount -ne 0 -or $zhumuAvatarCompatibilityDiagnostic.avatarTosDefaultCandidateCount -ne 0 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarDefaultCandidateCount -ne 0) {
+    throw "Zhumu soul Avatar compatibility diagnostic unexpectedly produced default candidates. candidates=$($zhumuAvatarCompatibilityDiagnostic.candidateCount) avatarTosDefault=$($zhumuAvatarCompatibilityDiagnostic.avatarTosDefaultCandidateCount) modelAvatarDefault=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarDefaultCandidateCount)"
+}
+if ($zhumuAvatarCompatibilityDiagnostic.invalidBoundaryRows -ne 0) {
+    throw "Zhumu soul Avatar compatibility diagnostic lost diagnostic-only boundary. invalidRows=$($zhumuAvatarCompatibilityDiagnostic.invalidBoundaryRows)"
+}
+if ($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows -lt 1 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows -lt 1 -or $zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage -lt 0.9) {
+    throw "Zhumu soul Avatar compatibility diagnostic lost structural overlap evidence. rows=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows) highOverlapRows=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows) maxCoverage=$($zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage)"
 }
 if ($fxScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "FxAttack script animation diagnostic did not select any source model."
@@ -1113,6 +1154,7 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     rule = $scriptAnimationComponentDiagnostics.rule
     hadiBody = $hadiScriptAnimationDiagnostic
     jiantianshiFormal = $jiantianshiScriptAnimationDiagnostic
+    zhumuSoul = $zhumuScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
 }
 $sourceIndexSimpleAnimationClipDomains = Read-SourceIndexSimpleAnimationClipDomains -SourceIndexPath $SourceIndex
@@ -1170,6 +1212,7 @@ $sourceModelAvatarDiagnostics = [pscustomobject]@{
     rule = $sourceModelAvatarDiagnostics.rule
     dijiangTos = if ($null -ne $dijiangAvatarDiagnostic) { $dijiangAvatarDiagnostic } else { [pscustomobject]@{ status = "skipped"; reason = "SkipAnimationDiagnostic" } }
     jiantianshiFormalCompatibility = $jiantianshiAvatarCompatibilityDiagnostic
+    zhumuSoulCompatibility = $zhumuAvatarCompatibilityDiagnostic
     samuraiGhostCompatibility = $samuraiAvatarDiagnostic
 }
 
@@ -1543,6 +1586,121 @@ if (![string]::IsNullOrWhiteSpace($CharacterCandidateSampleRoot)) {
 }
 else {
     $characterCandidateStatus = "skipped"
+}
+
+if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
+    if (Test-Path -LiteralPath $ZhumuScriptAnimationSampleRoot) {
+        Write-Host ""
+        Write-Host "== Validate Naraka Zhumu script-animation model probe =="
+
+        $zhumuScriptAnimationAssetLibrary = Join-Path $ZhumuScriptAnimationSampleRoot "asset_library.json"
+        $zhumuScriptAnimationValidation = Join-Path $ZhumuScriptAnimationSampleRoot "model_validation.json"
+        $zhumuScriptAnimationSqliteSummary = Join-Path $ZhumuScriptAnimationSampleRoot "sqlite_index_summary.json"
+        $zhumuScriptAnimationDb = Join-Path $ZhumuScriptAnimationSampleRoot "library_index.db"
+        $zhumuScriptAnimationGltfs = @(Get-ChildItem -LiteralPath (Join-Path $ZhumuScriptAnimationSampleRoot "Models") -Recurse -Filter "*.gltf" -File)
+
+        Test-FileRequired -Path $zhumuScriptAnimationAssetLibrary -Label "Zhumu script-animation asset_library.json"
+        Test-FileRequired -Path $zhumuScriptAnimationValidation -Label "Zhumu script-animation model_validation.json"
+        Test-FileRequired -Path $zhumuScriptAnimationSqliteSummary -Label "Zhumu script-animation sqlite_index_summary.json"
+        Test-FileRequired -Path $zhumuScriptAnimationDb -Label "Zhumu script-animation library_index.db"
+        if ($zhumuScriptAnimationGltfs.Count -lt 1) {
+            throw "Zhumu script-animation model probe is missing exported glTF models."
+        }
+        $zhumuScriptAnimationGltf = $zhumuScriptAnimationGltfs[0].FullName
+
+        $zhumuScriptAnimationValidationJson = Get-Content -LiteralPath $zhumuScriptAnimationValidation -Raw -Encoding UTF8 | ConvertFrom-Json
+        $zhumuScriptAnimationSummaryJson = Get-Content -LiteralPath $zhumuScriptAnimationSqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([long]$zhumuScriptAnimationValidationJson.totals.models -lt 1 -or [long]$zhumuScriptAnimationValidationJson.totals.ok -lt 1) {
+            throw "Zhumu script-animation model probe has no ok model validation result."
+        }
+        if ([long]$zhumuScriptAnimationValidationJson.totals.withSkin -lt 1 -or [long]$zhumuScriptAnimationValidationJson.totals.withTextures -lt 1) {
+            throw "Zhumu script-animation model probe must keep both skin and texture evidence."
+        }
+        $zhumuScriptAnimationModel = @($zhumuScriptAnimationValidationJson.models)[0]
+        $zhumuScriptAnimationSkinJointCount = [long]$zhumuScriptAnimationModel.Body.SkinJointCount
+        if ($zhumuScriptAnimationSkinJointCount -lt 50) {
+            throw "Zhumu script-animation model probe has too few skin joints: $zhumuScriptAnimationSkinJointCount"
+        }
+        if ([long]$zhumuScriptAnimationModel.Body.PrimitivesWithMaterial -lt 1 -or [long]$zhumuScriptAnimationModel.Body.PrimitivesWithBaseColorTexture -lt 1) {
+            throw "Zhumu script-animation model probe lost material or base-color texture coverage."
+        }
+        $zhumuBoundsSize = @($zhumuScriptAnimationModel.Body.Bounds.Size)
+        foreach ($sizeValue in $zhumuBoundsSize) {
+            $sizeNumber = [double]$sizeValue
+            if ($null -eq $zhumuScriptAnimationMaxBoundsSize -or $sizeNumber -gt $zhumuScriptAnimationMaxBoundsSize) {
+                $zhumuScriptAnimationMaxBoundsSize = $sizeNumber
+            }
+        }
+        if ($null -eq $zhumuScriptAnimationMaxBoundsSize -or $zhumuScriptAnimationMaxBoundsSize -lt 1.0) {
+            throw "Zhumu script-animation model probe bbox is too small: $zhumuScriptAnimationMaxBoundsSize"
+        }
+        if ([long]$zhumuScriptAnimationSummaryJson.counts.textureAssets -lt 1 -or [long]$zhumuScriptAnimationSummaryJson.counts.materialSidecars -lt 1) {
+            throw "Zhumu script-animation model probe lost texture assets or material sidecars."
+        }
+
+        $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+        if ($null -ne $sqlite3) {
+            $zhumuScriptAnimationTextureLinkErrorsText = & $sqlite3.Source -readonly -batch -noheader $zhumuScriptAnimationDb "SELECT COUNT(*) FROM texture_links WHERE link_error IS NOT NULL AND trim(link_error) <> '';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking Zhumu script-animation texture link errors."
+            }
+            $zhumuScriptAnimationMaterialSidecarRowsText = & $sqlite3.Source -readonly -batch -noheader $zhumuScriptAnimationDb "SELECT COUNT(*) FROM material_sidecars;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting Zhumu script-animation material_sidecars."
+            }
+            $zhumuScriptAnimationModelRowsText = & $sqlite3.Source -readonly -batch -noheader $zhumuScriptAnimationDb "SELECT COUNT(*) FROM assets WHERE kind = 'Model';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting Zhumu script-animation model assets."
+            }
+            $zhumuScriptAnimationModelAnimationCandidateRowsText = & $sqlite3.Source -readonly -batch -noheader $zhumuScriptAnimationDb "SELECT COUNT(*) FROM model_animation_candidates;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting Zhumu script-animation model_animation_candidates."
+            }
+            $zhumuScriptAnimationModelAnimationRelationRowsText = & $sqlite3.Source -readonly -batch -noheader $zhumuScriptAnimationDb "SELECT COUNT(*) FROM model_animation_relations;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting Zhumu script-animation model_animation_relations."
+            }
+            $zhumuScriptAnimationRelationAnimationRowsText = & $sqlite3.Source -readonly -batch -noheader $zhumuScriptAnimationDb "SELECT COUNT(*) FROM relation_animations;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting Zhumu script-animation relation_animations."
+            }
+            $zhumuScriptAnimationTextureLinkErrors = [long]$zhumuScriptAnimationTextureLinkErrorsText
+            $zhumuScriptAnimationMaterialSidecarRows = [long]$zhumuScriptAnimationMaterialSidecarRowsText
+            $zhumuScriptAnimationModelRows = [long]$zhumuScriptAnimationModelRowsText
+            $zhumuScriptAnimationModelAnimationCandidateRows = [long]$zhumuScriptAnimationModelAnimationCandidateRowsText
+            $zhumuScriptAnimationModelAnimationRelationRows = [long]$zhumuScriptAnimationModelAnimationRelationRowsText
+            $zhumuScriptAnimationRelationAnimationRows = [long]$zhumuScriptAnimationRelationAnimationRowsText
+            if ($zhumuScriptAnimationTextureLinkErrors -ne 0) {
+                throw "Zhumu script-animation model probe has texture link errors: $zhumuScriptAnimationTextureLinkErrors"
+            }
+            if ($zhumuScriptAnimationMaterialSidecarRows -lt 1 -or $zhumuScriptAnimationModelRows -lt 1) {
+                throw "Zhumu script-animation model probe lost material sidecar or model rows in library_index.db."
+            }
+            if ($zhumuScriptAnimationModelAnimationCandidateRows -ne 0 -or $zhumuScriptAnimationModelAnimationRelationRows -ne 0 -or $zhumuScriptAnimationRelationAnimationRows -ne 0) {
+                throw "Zhumu script-animation model probe unexpectedly created production animation relation rows. candidates=$zhumuScriptAnimationModelAnimationCandidateRows modelRelations=$zhumuScriptAnimationModelAnimationRelationRows relationAnimations=$zhumuScriptAnimationRelationAnimationRows"
+            }
+        }
+        else {
+            Write-Warning "sqlite3.exe not found; Zhumu script-animation table checks skipped."
+        }
+
+        if (!$SkipGltfValidation) {
+            $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $gltfTransform) {
+                Invoke-Checked -Label "Validate Zhumu script-animation model glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $zhumuScriptAnimationGltf)
+                $zhumuScriptAnimationGltfValidationStatus = "ok"
+            }
+        }
+
+        $zhumuScriptAnimationStatus = "ok"
+    }
+    else {
+        $zhumuScriptAnimationStatus = "missing"
+        Write-Warning "Zhumu script-animation model probe not found; skipped: $ZhumuScriptAnimationSampleRoot"
+    }
+}
+else {
+    $zhumuScriptAnimationStatus = "skipped"
 }
 
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -2020,6 +2178,30 @@ $summaryJsonLines += '    "modelAnimationRelationRows": ' + (ConvertTo-SmokeJson
 $summaryJsonLines += '    "relationAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRelationAnimationRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "zhumuScriptAnimationProbe": {'
+$summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationStatus) + ","
+$summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $ZhumuScriptAnimationSampleRoot) + ","
+$summaryJsonLines += '    "gltf": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationGltf) + ","
+$summaryJsonLines += '    "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationGltfValidationStatus) + ","
+$summaryJsonLines += '    "models": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationValidationJson.totals.models) + ","
+$summaryJsonLines += '    "ok": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationValidationJson.totals.ok) + ","
+$summaryJsonLines += '    "withSkin": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationValidationJson.totals.withSkin) + ","
+$summaryJsonLines += '    "withTextures": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationValidationJson.totals.withTextures) + ","
+$summaryJsonLines += '    "skinJointCount": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationSkinJointCount) + ","
+$summaryJsonLines += '    "maxBoundsSize": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationMaxBoundsSize) + ","
+$summaryJsonLines += '    "textureAssets": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationSummaryJson.counts.textureAssets) + ","
+$summaryJsonLines += '    "textureLinks": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationSummaryJson.counts.textureLinks) + ","
+$summaryJsonLines += '    "textureLinkErrors": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationTextureLinkErrors) + ","
+$summaryJsonLines += '    "materialSidecars": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationSummaryJson.counts.materialSidecars) + ","
+$summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationMaterialSidecarRows) + ","
+$summaryJsonLines += '    "modelRows": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationModelRows) + ","
+$summaryJsonLines += '    "modelAnimationCandidateRows": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationModelAnimationCandidateRows) + ","
+$summaryJsonLines += '    "modelAnimationRelationRows": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationModelAnimationRelationRows) + ","
+$summaryJsonLines += '    "relationAnimationRows": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationRelationAnimationRows) + ","
+$summaryJsonLines += '    "script": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationDiagnostic 10) + ","
+$summaryJsonLines += '    "avatar": ' + (ConvertTo-SmokeJsonLiteral $zhumuAvatarCompatibilityDiagnostic 10) + ","
+$summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationRule)
+$summaryJsonLines += '  },'
 $summaryJsonLines += '  "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary 10) + ","
 $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
@@ -2028,6 +2210,8 @@ $summaryJsonLines += '    "shaderBoundaryGltfValidation": ' + (ConvertTo-SmokeJs
 $summaryJsonLines += '    "staticEnvironment": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentStatus) + ","
 $summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
+$summaryJsonLines += '    "zhumuScriptAnimationProbe": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationStatus) + ","
+$summaryJsonLines += '    "zhumuScriptAnimationGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationGltfValidationStatus) + ","
 $summaryJsonLines += '    "hadiModularBoundary": ' + (ConvertTo-SmokeJsonLiteral $hadiModularBoundary.status) + ","
 $summaryJsonLines += '    "formalSkinnedRepresentativeBoundary": ' + (ConvertTo-SmokeJsonLiteral $formalSkinnedRepresentativeBoundary.status) + ","
 $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
@@ -2135,6 +2319,7 @@ if ($null -ne $modelValidation.totals) {
 }
 $reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `ch_f_jiantianshi_lv_s1` (SkinnedActorVisualPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
 $reportLines.Add('- Representative boundary: `ch_m_japan_samurai_ghost` stays in the read-only skinned candidate gate because it comes from an effect/battle bundle and still has no explicit production model-animation relation.')
+$reportLines.Add('- Script-animation boundary: `mo_pve_b_zhumu_soul_01` stays in a separate read-only probe because it has strong SimpleAnimation/Avatar diagnostics and a valid attack prefab model, but no production TRS export or visual animation review.')
 if ($formalSkinnedRepresentativeBoundary.status -eq "ok") {
     $reportLines.Add(('- Jiantianshi formal skinned representative: validation=`{0}`, body=`{1}`, resourceKind=`{2}`, materials=`{3}/{4}`, bones=`{5}`, animationGate=`{6}`, defaultCandidates=`{7}`' -f `
         (ConvertTo-SmokeText $formalSkinnedRepresentativeBoundary.modelValidationStatus),
@@ -2287,8 +2472,9 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     if ($scriptAnimationComponentDiagnostics.status -eq "ok") {
         $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
         $jiantianshiScript = $scriptAnimationComponentDiagnostics.jiantianshiFormal
+        $zhumuScript = $scriptAnimationComponentDiagnostics.zhumuSoul
         $fxScript = $scriptAnimationComponentDiagnostics.fxAttack
-        $reportLines.Add(('- Selected-model script AnimationClip diagnostic: Hadi selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`; Jiantianshi selected=`{3}`, candidates=`{4}`, scriptRows=`{5}`, invalidBoundaryRows=`{6}`; Fx selected=`{7}`, candidates=`{8}`, scriptRows=`{9}`, invalidBoundaryRows=`{10}`' -f `
+        $reportLines.Add(('- Selected-model script AnimationClip diagnostic: Hadi selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`; Jiantianshi selected=`{3}`, candidates=`{4}`, scriptRows=`{5}`, invalidBoundaryRows=`{6}`; Zhumu selected=`{7}`, candidates=`{8}`, scriptRows=`{9}`, subtreeVisibleRows=`{10}`, invalidBoundaryRows=`{11}`; Fx selected=`{12}`, candidates=`{13}`, scriptRows=`{14}`, invalidBoundaryRows=`{15}`' -f `
             (ConvertTo-SmokeText $hadiScript.selectedModelCount "0"),
             (ConvertTo-SmokeText $hadiScript.candidateCount "0"),
             (ConvertTo-SmokeText $hadiScript.scriptAnimationRows "0"),
@@ -2296,6 +2482,11 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $jiantianshiScript.candidateCount "0"),
             (ConvertTo-SmokeText $jiantianshiScript.scriptAnimationRows "0"),
             (ConvertTo-SmokeText $jiantianshiScript.invalidBoundaryRows "0"),
+            (ConvertTo-SmokeText $zhumuScript.selectedModelCount "0"),
+            (ConvertTo-SmokeText $zhumuScript.candidateCount "0"),
+            (ConvertTo-SmokeText $zhumuScript.scriptAnimationRows "0"),
+            (ConvertTo-SmokeText $zhumuScript.subtreeVisibleRendererRows "0"),
+            (ConvertTo-SmokeText $zhumuScript.invalidBoundaryRows "0"),
             (ConvertTo-SmokeText $fxScript.selectedModelCount "0"),
             (ConvertTo-SmokeText $fxScript.candidateCount "0"),
             (ConvertTo-SmokeText $fxScript.scriptAnimationRows "0"),
@@ -2309,7 +2500,7 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $fxScript.subtreeSkinnedRendererRows "0"),
             (ConvertTo-SmokeText $fxScript.subtreeTruncatedRows "0"),
             (ConvertTo-SmokeText $fxScript.animatorRows "0")))
-        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi and Jiantianshi prove visible/formal model selection is not promoted by name or skeleton alone; FxAttack proves local SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
+        $reportLines.Add('- Selected-model script AnimationClip rule: Hadi and Jiantianshi prove visible/formal model selection is not promoted by name or skeleton alone; Zhumu and FxAttack prove local SimpleAnimation-style clip PPtrs and bounded subtree visibility are retained as diagnostic evidence only, not default model-animation candidates.')
     }
     else {
         $reportLines.Add(('- Selected-model script AnimationClip diagnostic: `{0}`' -f $scriptAnimationComponentDiagnostics.status))
@@ -2317,7 +2508,8 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     if ($sourceModelAvatarDiagnostics.status -eq "ok") {
         $samuraiAvatar = $sourceModelAvatarDiagnostics.samuraiGhostCompatibility
         $jiantianshiAvatar = $sourceModelAvatarDiagnostics.jiantianshiFormalCompatibility
-        $reportLines.Add(('- Source-model Avatar/TOS diagnostics: status=`{0}`, Jiantianshi selected=`{1}`, candidates=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`; Samurai selected=`{7}`, candidates=`{8}`, modelAvatarRows=`{9}`, highOverlapRows=`{10}`, maxCoverage=`{11}`, invalidBoundaryRows=`{12}`' -f `
+        $zhumuAvatar = $sourceModelAvatarDiagnostics.zhumuSoulCompatibility
+        $reportLines.Add(('- Source-model Avatar/TOS diagnostics: status=`{0}`, Jiantianshi selected=`{1}`, candidates=`{2}`, modelAvatarRows=`{3}`, highOverlapRows=`{4}`, maxCoverage=`{5}`, invalidBoundaryRows=`{6}`; Zhumu selected=`{7}`, candidates=`{8}`, modelAvatarRows=`{9}`, highOverlapRows=`{10}`, maxCoverage=`{11}`, invalidBoundaryRows=`{12}`; Samurai selected=`{13}`, candidates=`{14}`, modelAvatarRows=`{15}`, highOverlapRows=`{16}`, maxCoverage=`{17}`, invalidBoundaryRows=`{18}`' -f `
             (ConvertTo-SmokeText $sourceModelAvatarDiagnostics.status),
             (ConvertTo-SmokeText $jiantianshiAvatar.selectedModelCount "0"),
             (ConvertTo-SmokeText $jiantianshiAvatar.candidateCount "0"),
@@ -2325,6 +2517,12 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $jiantianshiAvatar.modelAvatarHighOverlapRows "0"),
             (ConvertTo-SmokeText $jiantianshiAvatar.modelAvatarMaxCoverage "0"),
             (ConvertTo-SmokeText $jiantianshiAvatar.invalidBoundaryRows "0"),
+            (ConvertTo-SmokeText $zhumuAvatar.selectedModelCount "0"),
+            (ConvertTo-SmokeText $zhumuAvatar.candidateCount "0"),
+            (ConvertTo-SmokeText $zhumuAvatar.modelAvatarRows "0"),
+            (ConvertTo-SmokeText $zhumuAvatar.modelAvatarHighOverlapRows "0"),
+            (ConvertTo-SmokeText $zhumuAvatar.modelAvatarMaxCoverage "0"),
+            (ConvertTo-SmokeText $zhumuAvatar.invalidBoundaryRows "0"),
             (ConvertTo-SmokeText $samuraiAvatar.selectedModelCount "0"),
             (ConvertTo-SmokeText $samuraiAvatar.candidateCount "0"),
             (ConvertTo-SmokeText $samuraiAvatar.modelAvatarRows "0"),
@@ -2483,6 +2681,50 @@ elseif ($characterCandidateStatus -eq "missing") {
     $reportLines.Add(('- Sample root missing: `{0}`' -f $CharacterCandidateSampleRoot))
 }
 $reportLines.Add("")
+$reportLines.Add("## Zhumu Script Animation Probe")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $zhumuScriptAnimationStatus))
+if ($zhumuScriptAnimationStatus -eq "ok") {
+    $reportLines.Add(('- Sample root: `{0}`' -f $ZhumuScriptAnimationSampleRoot))
+    $reportLines.Add(('- glTF: `{0}`' -f $zhumuScriptAnimationGltf))
+    $reportLines.Add(('- glTF validator: `{0}`' -f $zhumuScriptAnimationGltfValidationStatus))
+    $reportLines.Add(('- Model validation: models=`{0}`, ok=`{1}`, withSkin=`{2}`, withTextures=`{3}`, skinJoints=`{4}`, maxBoundsSize=`{5}`' -f `
+        (ConvertTo-SmokeText $zhumuScriptAnimationValidationJson.totals.models "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationValidationJson.totals.ok "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationValidationJson.totals.withSkin "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationValidationJson.totals.withTextures "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationSkinJointCount "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationMaxBoundsSize "0")))
+    $reportLines.Add(('- SQLite counts: textureAssets=`{0}`, textureLinks=`{1}`, textureLinkErrors=`{2}`, materialSidecars=`{3}`, modelRows=`{4}`, modelAnimationCandidates=`{5}`, modelAnimationRelations=`{6}`, relationAnimations=`{7}`' -f `
+        (ConvertTo-SmokeText $zhumuScriptAnimationSummaryJson.counts.textureAssets "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationSummaryJson.counts.textureLinks "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationTextureLinkErrors "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationSummaryJson.counts.materialSidecars "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationModelRows "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationModelAnimationCandidateRows "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationModelAnimationRelationRows "unknown"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationRelationAnimationRows "unknown")))
+    $reportLines.Add(('- Script diagnostic: selected=`{0}`, candidates=`{1}`, scriptRows=`{2}`, subtreeVisibleRows=`{3}`, subtreeSkinnedRows=`{4}`, invalidBoundaryRows=`{5}`, firstClip=`{6}`' -f `
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.selectedModelCount "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.candidateCount "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.scriptAnimationRows "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.subtreeVisibleRendererRows "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.subtreeSkinnedRendererRows "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.invalidBoundaryRows "0"),
+        (ConvertTo-SmokeText $zhumuScriptAnimationDiagnostic.firstClipName "")))
+    $reportLines.Add(('- Avatar compatibility diagnostic: selected=`{0}`, candidates=`{1}`, modelAvatarRows=`{2}`, highOverlapRows=`{3}`, maxCoverage=`{4}`, invalidBoundaryRows=`{5}`' -f `
+        (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.selectedModelCount "0"),
+        (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.candidateCount "0"),
+        (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.modelAvatarRows "0"),
+        (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows "0"),
+        (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage "0"),
+        (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.invalidBoundaryRows "0")))
+    $reportLines.Add('- Rule: Zhumu proves a stronger script-animation probe with a validated skinned model and visible child renderers, but SimpleAnimation semantics, TRS export and clear visual review are still missing. It must stay defaultCandidateCount=0 and cannot enable production animation capability.')
+}
+elseif ($zhumuScriptAnimationStatus -eq "missing") {
+    $reportLines.Add(('- Sample root missing: `{0}`' -f $ZhumuScriptAnimationSampleRoot))
+}
+$reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
 $reportLines.Add("")
 if ($null -ne $animationReportJson) {
@@ -2512,11 +2754,13 @@ $reportLines.Add(('- `model_validation.json`: `{0}`' -f $validation))
 $reportLines.Add(('- `smoke_summary.json`: `{0}`' -f $summaryJsonPath))
 $reportLines.Add(('- Hadi script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.hadiBody.report))
 $reportLines.Add(('- Jiantianshi formal source-model diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.jiantianshiFormal.report))
+$reportLines.Add(('- Zhumu script/avatar diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.zhumuSoul.report))
 $reportLines.Add(('- FxAttack script animation diagnostic JSON: `{0}`' -f $scriptAnimationComponentDiagnostics.fxAttack.report))
 if ($sourceModelAvatarDiagnostics.status -eq "ok") {
     if ($null -ne $sourceModelAvatarDiagnostics.dijiangTos -and $sourceModelAvatarDiagnostics.dijiangTos.status -ne "skipped") {
         $reportLines.Add(('- Dijiang Avatar/TOS diagnostic JSON: `{0}`' -f $sourceModelAvatarDiagnostics.dijiangTos.report))
     }
+    $reportLines.Add(('- Zhumu Avatar compatibility diagnostic JSON: `{0}`' -f $sourceModelAvatarDiagnostics.zhumuSoulCompatibility.report))
     $reportLines.Add(('- SamuraiGhost Avatar compatibility diagnostic JSON: `{0}`' -f $sourceModelAvatarDiagnostics.samuraiGhostCompatibility.report))
 }
 $reportLines.Add(('- Hadi model glTF: `{0}`' -f $gltf))
@@ -2533,6 +2777,10 @@ if ($staticEnvironmentStatus -eq "ok") {
 if ($characterCandidateStatus -eq "ok") {
     $reportLines.Add(('- Character candidate glTF: `{0}`' -f $characterCandidateGltf))
     $reportLines.Add(('- Character candidate SQLite summary: `{0}`' -f (Join-Path $CharacterCandidateSampleRoot "sqlite_index_summary.json")))
+}
+if ($zhumuScriptAnimationStatus -eq "ok") {
+    $reportLines.Add(('- Zhumu script-animation probe glTF: `{0}`' -f $zhumuScriptAnimationGltf))
+    $reportLines.Add(('- Zhumu script-animation probe SQLite summary: `{0}`' -f (Join-Path $ZhumuScriptAnimationSampleRoot "sqlite_index_summary.json")))
 }
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
