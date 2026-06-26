@@ -55,6 +55,14 @@ static_bigtree: models=1 textures=12 material_sidecars=1 texture_links=13 link_e
 
 ## 可复现命令
 
+推荐一行 smoke：
+
+```powershell
+tools\Export-NarakaFirstUsableSmoke.ps1
+```
+
+默认输入 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`，默认使用 `D:\Assets\Naraka\SourceIndex_Full_HeaderFix1\unity_source_index.db`，输出到 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current`。脚本会跑输入探针、导出 Hadi body s9、重建 `library_index.db`，并在本机工具存在时执行 glTF validator、AssetLibrary Browser 验证和 1 张缩略图渲染。
+
 输入探针：
 
 ```powershell
