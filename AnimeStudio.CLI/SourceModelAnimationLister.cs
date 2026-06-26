@@ -2991,6 +2991,7 @@ LIMIT $limit;";
                     ["name"] = row.GameObjectName,
                     ["serializedFile"] = row.GameObjectSerializedFile,
                     ["pathId"] = row.GameObjectPathId,
+                    ["pathIdString"] = row.GameObjectPathId.ToString(CultureInfo.InvariantCulture),
                     ["depthFromSelectedModel"] = row.GameObjectDepth,
                     ["visibleRendererCount"] = row.VisibleRendererCount,
                     ["animatorCount"] = row.AnimatorCount,
@@ -3015,6 +3016,7 @@ LIMIT $limit;";
                     ["sourcePath"] = row.MonoBehaviourSourcePath,
                     ["serializedFile"] = row.MonoBehaviourSerializedFile,
                     ["pathId"] = row.MonoBehaviourPathId,
+                    ["pathIdString"] = row.MonoBehaviourPathId.ToString(CultureInfo.InvariantCulture),
                     ["scriptName"] = row.ScriptName,
                 },
                 ["reference"] = new JObject
@@ -3028,6 +3030,7 @@ LIMIT $limit;";
                         ["sourcePath"] = row.AnimationSourcePath,
                         ["serializedFile"] = row.AnimationSerializedFile,
                         ["pathId"] = row.AnimationPathId,
+                        ["pathIdString"] = row.AnimationPathId.ToString(CultureInfo.InvariantCulture),
                     },
                 },
                 ["rule"] = "This diagnostic is intentionally limited to MonoBehaviour components on the selected GameObject and direct children. The bounded subtree summary is context only; it does not promote script semantics to production animation bindings.",
@@ -3525,7 +3528,27 @@ LIMIT $limit;";
 
         private static long ReadLong(SqliteDataReader reader, int ordinal)
         {
-            return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+            if (reader.IsDBNull(ordinal))
+            {
+                return 0;
+            }
+
+            // PathID 是 Unity 关系追踪的主键，必须避免经 double/object 转换导致 64 位精度丢失。
+            try
+            {
+                return reader.GetInt64(ordinal);
+            }
+            catch (Exception ex) when (ex is InvalidCastException || ex is InvalidOperationException)
+            {
+                var value = reader.GetValue(ordinal);
+                return value switch
+                {
+                    long longValue => longValue,
+                    int intValue => intValue,
+                    string stringValue => long.Parse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture),
+                    _ => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+                };
+            }
         }
 
         private static double Ratio(long part, long total)

@@ -1791,7 +1791,7 @@ if ($zhumuReadiness.simpleAnimationPairedDefaultStateClipRows -lt 20) {
     throw "SimpleAnimation readiness lost Zhumu default/state clip pairing evidence. paired=$($zhumuReadiness.simpleAnimationPairedDefaultStateClipRows)"
 }
 $zhumuPairedClipSamples = @($zhumuReadiness.simpleAnimationPairedClipSamples)
-if ($zhumuPairedClipSamples.Count -lt 8 -or [string]$zhumuPairedClipSamples[0].clipName -ne "mo_pve_b_zhumu2_attack_a4_01_soul" -or [string]$zhumuPairedClipSamples[0].clipPathIdString -ne "-3269044911608736500") {
+if ($zhumuPairedClipSamples.Count -lt 8 -or [string]$zhumuPairedClipSamples[0].clipName -ne "mo_pve_b_zhumu2_attack_a4_01_soul" -or [string]$zhumuPairedClipSamples[0].clipPathIdString -ne "-3269044911608736500" -or [string]$zhumuPairedClipSamples[0].monoBehaviourPathIdString -ne "-4218170017723787480") {
     throw "SimpleAnimation readiness lost Zhumu deterministic paired clip samples. count=$($zhumuPairedClipSamples.Count) first=$($zhumuPairedClipSamples[0].clipName)#$($zhumuPairedClipSamples[0].clipPathId)"
 }
 if ($yaodaojiReadiness.modelAvatarMaxCoverage -ne 0.0 -or $yaodaojiReadiness.nextStep -ne "avatarOverlapBlockedAttachmentOrCustomSkeletonProbe") {
@@ -1801,7 +1801,7 @@ if ($yaodaojiReadiness.simpleAnimationPairedDefaultStateClipRows -lt 1) {
     throw "SimpleAnimation readiness lost Yaodaoji default/state clip pairing evidence. paired=$($yaodaojiReadiness.simpleAnimationPairedDefaultStateClipRows)"
 }
 $yaodaojiPairedClipSamples = @($yaodaojiReadiness.simpleAnimationPairedClipSamples)
-if ($yaodaojiPairedClipSamples.Count -lt 1 -or [string]$yaodaojiPairedClipSamples[0].clipName -ne "ch_f_japan_yaodaoji_lv_s14_wings_idle") {
+if ($yaodaojiPairedClipSamples.Count -lt 1 -or [string]$yaodaojiPairedClipSamples[0].clipName -ne "ch_f_japan_yaodaoji_lv_s14_wings_idle" -or [string]$yaodaojiPairedClipSamples[0].clipPathIdString -ne "2494205227176918652" -or [string]$yaodaojiPairedClipSamples[0].monoBehaviourPathIdString -ne "1740956470544823793") {
     throw "SimpleAnimation readiness lost Yaodaoji deterministic paired clip sample. count=$($yaodaojiPairedClipSamples.Count) first=$($yaodaojiPairedClipSamples[0].clipName)"
 }
 $sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex

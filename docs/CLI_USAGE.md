@@ -749,6 +749,8 @@ Naraka 一行 smoke 还会写 `smoke_summary.json.sourceIndexScriptAnimationClip
 
 `simpleAnimationSemanticSummary.pairedClipSamples[]` 会列出最多 8 条同组件 default/state 配对样本，包含模型、GameObject、MonoBehaviour、AnimationClip 的 source、PathID、`roles`、`diagnosticOnly=true` 和 `notDefaultModelAnimationRelation=true`。PathID 同时提供数字字段和 `*PathIdString` 字段；浏览器、Node.js 或其它 JavaScript 消费端应优先使用字符串字段，避免 64 位整数精度丢失。这些样本只用于后续定向 Humanoid/TRS 求解探针，不允许直接写入 `model_animations.json`、`relation_animations` 或把 `capabilities.animations` 改成 `true`。
 
+导出器读取 `unity_source_index.db` 的 PathID 时也必须保持 int64 精度。`SourceModelAnimationLister` 的 SQLite 读取路径优先使用 `GetInt64()`，避免通过通用 object/double 转换把 MonoBehaviour、GameObject 或 AnimationClip PathID 四舍五入；Naraka smoke 会检查 Zhumu 和 Yaodaoji 的 `monoBehaviourPathIdString` / `clipPathIdString` 精确值，防止后续诊断关系回查失败。
+
 `avatarTosClipDiagnosticSummary` 和 `modelAvatarCompatibilityDiagnosticSummary` 是同一类机器摘要，分别汇总 `Animator.avatar -> Avatar.m_TOS` 对 hash-only AnimationClip binding 的解析覆盖，以及选中模型 Transform 路径与 Avatar 路径的结构重叠。它们可以作为 Naraka Humanoid/Muscle 求解或 Unity oracle 探针的入口线索，但摘要里的 `defaultCandidateCount` 必须保持 0；即使 `maxCoverageRatio=1` 或 `highOverlapRows>0`，也不能替代 AnimatorController/Animation 显式上下文、模型静态验收、TRS 写回和清晰视觉验收。摘要同样写 `productionReadiness=blocked` 和 `blockedProductionRequirements`，其中 Avatar/TOS 诊断至少需要补齐显式 AnimatorController/AnimationClip 关系、模型 glTF 验证、动画 TRS 导出和视觉验收；模型-Avatar 兼容诊断至少需要补齐显式 AnimationClip 关系、模型 glTF 验证、动画 TRS 导出和视觉验收。
 
 Naraka 一行 smoke 会读取这些摘要并写入 `smoke_summary.json.sourceModelAvatarDiagnostics`：Dijiang 用来保护 Avatar.m_TOS hash 覆盖诊断，SamuraiGhost 用来保护“模型-Avatar 结构高度重叠但没有显式生产动画关系”的边界。该门禁只允许 `candidateCount=0` / `defaultCandidateCount=0` / `productionReadiness=blocked` 的诊断证据通过，不会把结构兼容写成 `model_animations.json` 推荐关系。
