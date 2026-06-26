@@ -206,6 +206,22 @@ D:\Assets\Naraka\Zhumu_AttackA4_StandaloneAnimationGltfProbe_ForcedInternal_Curr
 
 `gltf-transform inspect` 显示该文件包含 1 个动画、23 个 channel、757 个 keyframe；报告消息为 `experimental_solved_known_limb_formula_risk`。这说明 AnimeStudio 的 Naraka Humanoid/Muscle 诊断链路已经能从脚本动画 Clip 走到 glTF TRS 输出，但仍是显式手动预览和内部 solver 实验结果，`avatarInjection.diagnosticOnly=true`、`notDefaultModelAnimationRelation=true`，不能写入默认 `model_animations.json` 推荐关系，也不能改变 `capabilities.animations=false`。
 
+随后用 `--merge_animation_gltf` 把该 standalone 动画合并回 Zhumu 静态模型，输出：
+
+```text
+D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current\mo_pve_b_zhumu_soul_01__mo_pve_b_zhumu2_attack_a4_01_soul.animation.merged.gltf
+```
+
+`merge_animation_gltf_report.json` 状态为 `needs_review`，新增 1 个动画、23 个 channel，模型 glTF validator 无 error/warning，`gltf-transform inspect` 能看到 2 个 skinned mesh、2 个 baseColor 材质和动画。报告仍明确列出 `standalone_animation_not_production_ready`、`standalone_animation_experimental`、`humanoid_solver_known_limb_risk` 和 `low_humanoid_channel_coverage`，所以它只能作为模型+单动画预览诊断产物。Blender 5.1 可导入并渲染 rest/mid/end 三帧：
+
+```text
+D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current\RenderProbe\zhumu_attack_a4_rest.png
+D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current\RenderProbe\zhumu_attack_a4_mid.png
+D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current\RenderProbe\zhumu_attack_a4_end.png
+```
+
+三帧 bbox 分别约为 `(-1.7855,-1.9233,-2.4681) -> (2.0541,1.3011,1.9651)`、`(-2.1099,-1.6354,-1.3669) -> (1.7240,2.7049,1.8846)`、`(-1.8469,-1.4915,-1.0680) -> (1.4500,2.6488,1.3946)`，说明动画确实驱动了模型节点；但它仍缺少正式 AnimatorController/脚本语义、主体骨骼覆盖和清晰视觉验收，不能升级为生产动画能力。
+
 当前已验证一个诊断正样本：
 
 ```text
