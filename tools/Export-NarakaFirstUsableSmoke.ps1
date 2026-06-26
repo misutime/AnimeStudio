@@ -3111,6 +3111,77 @@ if ($null -ne $animationReportJson) {
     $animationDiagnosticJson = $animationDiagnosticLines -join [Environment]::NewLine
 }
 
+$firstUsableReadinessItems = @(
+    [pscustomobject]@{
+        area = "sourceInput"
+        status = "ok"
+        evidence = $probeOutput
+        rule = "Naraka StreamingAssets 输入可识别，实际导出仍从完整源目录和完整 source index 取依赖闭包。"
+    },
+    [pscustomobject]@{
+        area = "assetLibraryV1"
+        status = if ($assetLibraryContract.status -eq "ok" -and $assetLibrary.capabilities.models -eq $true -and (Test-Path -LiteralPath $db)) { "ok" } else { "blocked" }
+        evidence = $db
+        rule = "必须生成 asset_library.json 与 library_index.db，且代表库 capabilities.models=true。"
+    },
+    [pscustomobject]@{
+        area = "representativeModels"
+        status = if ([long]$modelValidation.totals.models -ge 4 -and [long]$modelValidation.totals.ok -eq [long]$modelValidation.totals.models -and [string]$representativeGltfValidationStatus -in @("ok", "skipped")) { "ok" } else { "blocked" }
+        evidence = $validation
+        rule = "代表模型必须全部通过 model_validation，glTF validator 未显式跳过时必须为 ok。"
+    },
+    [pscustomobject]@{
+        area = "textures"
+        status = if ($textureLinkErrors -eq 0 -and [long]$sqliteSummaryJson.counts.textureAssets -gt 0 -and [long]$modelValidation.totals.withTextures -eq [long]$modelValidation.totals.models) { "ok" } else { "blocked" }
+        evidence = $sqliteSummary
+        rule = "共享贴图必须入库，代表模型都要有贴图，texture link error 必须为 0。"
+    },
+    [pscustomobject]@{
+        area = "materials"
+        status = if ([long]$sqliteSummaryJson.counts.materialSidecars -gt 0 -and $shaderBoundaryStatus -eq "ok") { "ok" } else { "blocked" }
+        evidence = $sqliteSummary
+        rule = "材质 sidecar 必须入库；特殊 shader 必须明确标记为降级预览或需要 custom shader。"
+    },
+    [pscustomobject]@{
+        area = "skeleton"
+        status = if ([long]$modelValidation.totals.withSkin -ge 3 -and $formalSkinnedRepresentativeBoundary.status -eq "ok") { "ok" } else { "blocked" }
+        evidence = $validation
+        rule = "代表库必须覆盖 skinned 模型，正式蒙皮代表样本要保留骨骼、skin 和动画门禁边界。"
+    },
+    [pscustomobject]@{
+        area = "staticEnvironmentExtension"
+        status = if ($staticEnvironmentStatus -eq "ok") { "ok" } else { "degraded" }
+        evidence = $StaticEnvironmentSampleRoot
+        rule = "静态环境/道具是显式扩展样本；通过则证明 Naraka 场景/道具模型扩展链路可用。"
+    },
+    [pscustomobject]@{
+        area = "animationRelation"
+        status = if ($zhumuScriptAnimationStatus -eq "ok" -and $zhumuScriptAnimationUsableRelationAnimationRows -ge 1) { "degraded" } else { "blocked" }
+        evidence = $zhumuScriptAnimationVerifiedPreviewImportReport
+        rule = "当前动画是生产可用的模型绑定 verified preview 关系，不是独立无 skin AnimationClip，也不是代表库默认动画能力。"
+    },
+    [pscustomobject]@{
+        area = "browserPreview"
+        status = if ($SkipBrowserValidation) { "skipped" } elseif ($browserValidationStatus -eq "ok" -and $thumbnailStatus -eq "ok") { "ok" } else { "blocked" }
+        evidence = $thumbnailCache
+        rule = "浏览器和缩略图是 P3 体验门禁；可显式跳过，不影响 P0/P1/P2 机器链路判断。"
+    }
+)
+$firstUsableBlockedAreas = @($firstUsableReadinessItems | Where-Object { [string]$_.status -eq "blocked" } | ForEach-Object { [string]$_.area })
+$firstUsableDegradedAreas = @($firstUsableReadinessItems | Where-Object { [string]$_.status -eq "degraded" } | ForEach-Object { [string]$_.area })
+$firstUsableSkippedAreas = @($firstUsableReadinessItems | Where-Object { [string]$_.status -eq "skipped" } | ForEach-Object { [string]$_.area })
+$firstUsableReadinessStatus = if ($firstUsableBlockedAreas.Count -gt 0) { "blocked" } elseif ($firstUsableDegradedAreas.Count -gt 0) { "usableWithDegradedAnimation" } else { "ok" }
+$firstUsableReadiness = [pscustomobject]@{
+    status = $firstUsableReadinessStatus
+    productionReady = ($firstUsableReadinessStatus -eq "ok")
+    firstUsable = ($firstUsableReadinessStatus -ne "blocked")
+    blockedAreas = $firstUsableBlockedAreas
+    degradedAreas = $firstUsableDegradedAreas
+    skippedAreas = $firstUsableSkippedAreas
+    items = $firstUsableReadinessItems
+    rule = "第一版可用性矩阵只汇总已通过的 smoke 证据。动画当前允许以 verified preview 降级交付，但必须保留 previewOnly/embeddedModelRequired 边界；任何 blocked area 都表示目标尚未完成。"
+}
+
 # 这两个报告只汇总已经验证过的产物，不改变正式素材库内容或动画关系结论。
 $summaryJsonLines = @()
 $summaryJsonLines += "{"
@@ -3127,6 +3198,7 @@ $summaryJsonLines += '  "modelReportEntrypoints": ' + (ConvertTo-SmokeJsonLitera
 $summaryJsonLines += '  "libraryIndex": ' + (ConvertTo-SmokeJsonLiteral $db) + ","
 $summaryJsonLines += '  "sqliteSummary": ' + (ConvertTo-SmokeJsonLiteral $sqliteSummary) + ","
 $summaryJsonLines += '  "modelValidation": ' + (ConvertTo-SmokeJsonLiteral $validation) + ","
+$summaryJsonLines += '  "firstUsableReadiness": ' + (ConvertTo-SmokeJsonLiteral $firstUsableReadiness 10) + ","
 $summaryJsonLines += '  "modelGltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ","
 $summaryJsonLines += '  "representativeModels": ['
 $summaryJsonLines += '    { "name": "ch_m_hadi_lv_s9", "role": "CharacterPart", "gltf": ' + (ConvertTo-SmokeJsonLiteral $gltf) + ' },'
@@ -3342,6 +3414,15 @@ if ($summaryJsonParsed.zhumuMergedAnimationPreview.status -eq "ok") {
 if ($RefreshZhumuVerifiedAnimationPreview -and [string]$summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status -ne "ok") {
     throw "smoke_summary.json Zhumu verified-preview refresh did not finish as ok. status=$($summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status)"
 }
+if ([string]$summaryJsonParsed.firstUsableReadiness.status -eq "blocked") {
+    throw "smoke_summary.json first usable readiness is blocked. blockedAreas=$($summaryJsonParsed.firstUsableReadiness.blockedAreas -join ',')"
+}
+if ([string]$summaryJsonParsed.firstUsableReadiness.status -eq "ok") {
+    throw "smoke_summary.json first usable readiness must not claim full ok while animation is still a degraded verified preview relation."
+}
+if (@($summaryJsonParsed.firstUsableReadiness.degradedAreas | ForEach-Object { [string]$_ }) -notcontains "animationRelation") {
+    throw "smoke_summary.json first usable readiness must keep animationRelation degraded until independent animation export is production-ready."
+}
 if ($summaryJsonParsed.zhumuScriptAnimationProbe.status -eq "ok") {
     if ($summaryJsonParsed.zhumuScriptAnimationProbe.capabilitiesAnimations -ne $true) {
         throw "smoke_summary.json Zhumu verified-preview sample must keep capabilities.animations=true."
@@ -3393,6 +3474,18 @@ $reportLines.Add(('- Source root: `{0}`' -f $SourceRoot))
 $reportLines.Add(('- Source index: `{0}`' -f $SourceIndex))
 $reportLines.Add(('- Output root: `{0}`' -f $OutputRoot))
 $reportLines.Add(('- Library root: `{0}`' -f $libraryOutput))
+$reportLines.Add("")
+$reportLines.Add("## First Usable Readiness")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $firstUsableReadiness.status))
+$reportLines.Add(('- First usable: `{0}`, productionReady: `{1}`' -f $firstUsableReadiness.firstUsable, $firstUsableReadiness.productionReady))
+$reportLines.Add(('- Degraded areas: `{0}`' -f (($firstUsableReadiness.degradedAreas | ForEach-Object { [string]$_ }) -join ', ')))
+$reportLines.Add(('- Skipped areas: `{0}`' -f (($firstUsableReadiness.skippedAreas | ForEach-Object { [string]$_ }) -join ', ')))
+$reportLines.Add(('- Blocked areas: `{0}`' -f (($firstUsableReadiness.blockedAreas | ForEach-Object { [string]$_ }) -join ', ')))
+foreach ($readinessItem in @($firstUsableReadiness.items)) {
+    $reportLines.Add(('- `{0}`: `{1}` - {2}' -f $readinessItem.area, $readinessItem.status, $readinessItem.rule))
+}
+$reportLines.Add(('- Rule: {0}' -f $firstUsableReadiness.rule))
 $reportLines.Add("")
 $reportLines.Add("## Naraka Animation Relation Policy")
 $reportLines.Add("")

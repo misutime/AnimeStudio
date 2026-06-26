@@ -316,6 +316,8 @@ D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current
 
 同一 smoke 现在提供显式刷新开关 `-RefreshZhumuVerifiedAnimationPreview`。默认 smoke 只验证既有 Zhumu 样本库；开启该开关时，脚本会用本轮生成的 Zhumu source report 和 render subject motion report 重新调用 `--apply_verified_animation_preview`，然后再执行原有 `asset_library.json`、`library_index.db`、compact index、glTF validator 和边界字段门禁。刷新会改写 `D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current`，所以没有默认开启；刷新状态会写入 `smoke_summary.json.zhumuVerifiedAnimationPreviewRefresh` 和 `SMOKE_REPORT.md`。
 
+2026-06-26 继续补充 smoke 的完成度机器入口：`smoke_summary.json.firstUsableReadiness` 会把输入、AssetLibrary v1、代表模型、贴图、材质、骨骼、静态环境扩展、动画关系和浏览器预览分别标成 `ok` / `degraded` / `blocked` / `skipped`。当前 quick smoke `D:\Assets\Naraka\Naraka_FirstUsableSmoke_ReadinessMatrix_Quick_Current` 结果为 `status=usableWithDegradedAnimation`、`firstUsable=true`、`productionReady=false`、`degradedAreas=["animationRelation"]`、`blockedAreas=[]`，表示模型、贴图、材质、骨骼和索引闭环已可交付，动画仍按 verified preview 降级交付，不应写成完整生产动画库完成。
+
 2026-06-26 追加 SimpleAnimation 短名单首样本深查门禁：quick smoke 现在会对 `ch_f_japan_yaodaoji_lv_s14_wings` 运行定向 `--list_source_model_animations`，输出到：
 
 ```text
