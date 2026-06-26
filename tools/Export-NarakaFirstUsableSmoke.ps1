@@ -449,13 +449,51 @@ WITH classified AS (
       WHEN lower(clip_name) LIKE '%male%' OR lower(clip_name) LIKE '%female%' THEN 'HumanNameToken'
       ELSE 'Other'
     END AS clip_domain,
+    from_file,
+    mb_path_id,
     clip_file,
     clip_path_id,
     clip_name
   FROM simple_clip
+),
+direct_context AS (
+  SELECT
+    classified.*,
+    goRel.to_file AS go_file,
+    goRel.to_path_id AS go_path_id,
+    COALESCE(go.name, '') AS go_name,
+    CASE WHEN EXISTS (
+      SELECT 1
+      FROM source_relations comp
+      JOIN source_objects obj ON obj.serialized_file=comp.to_file AND obj.path_id=comp.to_path_id
+      WHERE comp.relation='gameObject.component'
+        AND comp.from_file=goRel.to_file
+        AND comp.from_path_id=goRel.to_path_id
+        AND obj.type='Animator'
+    ) THEN 1 ELSE 0 END AS has_animator,
+    CASE WHEN EXISTS (
+      SELECT 1
+      FROM source_relations comp
+      JOIN source_objects obj ON obj.serialized_file=comp.to_file AND obj.path_id=comp.to_path_id
+      WHERE comp.relation='gameObject.component'
+        AND comp.from_file=goRel.to_file
+        AND comp.from_path_id=goRel.to_path_id
+        AND obj.type IN ('MeshRenderer','SkinnedMeshRenderer')
+    ) THEN 1 ELSE 0 END AS has_direct_visible_renderer
+  FROM classified
+  LEFT JOIN source_relations goRel ON goRel.relation='component.gameObject' AND goRel.from_file=classified.from_file AND goRel.from_path_id=classified.mb_path_id
+  LEFT JOIN source_objects go ON go.serialized_file=goRel.to_file AND go.path_id=goRel.to_path_id AND go.type='GameObject'
 )
-SELECT clip_domain, COUNT(*) AS relations, COUNT(DISTINCT clip_file || '#' || clip_path_id) AS distinct_clips, substr(group_concat(DISTINCT clip_name),1,220) AS sample_clips
-FROM classified
+SELECT
+  clip_domain,
+  COUNT(*) AS relations,
+  COUNT(DISTINCT clip_file || '#' || clip_path_id) AS distinct_clips,
+  COUNT(DISTINCT CASE WHEN go_file IS NOT NULL THEN go_file || '#' || go_path_id END) AS distinct_game_objects,
+  SUM(has_animator) AS rows_with_animator,
+  SUM(has_direct_visible_renderer) AS rows_with_direct_visible_renderer,
+  substr(group_concat(DISTINCT go_name),1,220) AS sample_game_objects,
+  substr(group_concat(DISTINCT clip_name),1,220) AS sample_clips
+FROM direct_context
 GROUP BY clip_domain
 ORDER BY relations DESC;
 "@
@@ -474,7 +512,7 @@ ORDER BY relations DESC;
         }
 
         $parts = ([string]$row).Split("`t")
-        if ($parts.Count -lt 4) {
+        if ($parts.Count -lt 8) {
             continue
         }
 
@@ -486,7 +524,11 @@ ORDER BY relations DESC;
             domain = [string]$parts[0]
             relations = $relations
             distinctClips = $distinctClips
-            sampleClips = [string]$parts[3]
+            distinctGameObjects = ConvertTo-SmokeInt64 $parts[3]
+            rowsWithAnimator = ConvertTo-SmokeInt64 $parts[4]
+            rowsWithDirectVisibleRenderer = ConvertTo-SmokeInt64 $parts[5]
+            sampleGameObjects = [string]$parts[6]
+            sampleClips = [string]$parts[7]
         }
     }
 
@@ -2225,9 +2267,18 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
                 (ConvertTo-SmokeText $domainRow.relations "0"),
                 (ConvertTo-SmokeText $domainRow.distinctClips "0"))
         }
+        $simpleAnimationContextParts = @()
+        foreach ($domainRow in @($sourceIndexSimpleAnimationClipDomains.domainCounts)) {
+            $simpleAnimationContextParts += ('{0}=go:{1},animatorRows:{2},directRendererRows:{3}' -f `
+                (ConvertTo-SmokeText $domainRow.domain),
+                (ConvertTo-SmokeText $domainRow.distinctGameObjects "0"),
+                (ConvertTo-SmokeText $domainRow.rowsWithAnimator "0"),
+                (ConvertTo-SmokeText $domainRow.rowsWithDirectVisibleRenderer "0"))
+        }
         $reportLines.Add(('- SimpleAnimation clip domains: totalRelations=`{0}`, domain relations/distinctClips=`{1}`' -f `
             (ConvertTo-SmokeText $sourceIndexSimpleAnimationClipDomains.totalRelations "0"),
             ($simpleAnimationDomainParts -join ', ')))
+        $reportLines.Add(('- SimpleAnimation direct GameObject context: `{0}`' -f ($simpleAnimationContextParts -join '; ')))
         $reportLines.Add('- SimpleAnimation domain rule: Character/HumanNameToken/MonsterOrNpc rows are useful next probes, but they remain script-field diagnostics until script semantics, deterministic model relation, TRS export and visual review are proven.')
     }
     else {
