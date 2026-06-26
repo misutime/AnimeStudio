@@ -663,13 +663,18 @@ function Test-AssetLibraryV1Contract {
         "model_validation",
         "texture_links",
         "material_sidecars",
-        "library_reports"
+        "library_reports",
+        "model_animation_relations",
+        "relation_animations"
     )
     $sqliteStatus = "toolMissing"
     $missingTables = @()
     $animationSupportStatus = "toolMissing"
     $animationSupportProductionReady = $null
     $animationSupportDefaultCandidateCount = $null
+    $modelAnimationRelationRows = $null
+    $relationAnimationRows = $null
+    $usableRelationAnimationRows = $null
     $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
     if ($null -ne $sqlite3) {
         $tableRows = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT name FROM sqlite_master WHERE type='table';"
@@ -706,6 +711,25 @@ function Test-AssetLibraryV1Contract {
         if ($animationSupportProductionReady -ne $false -or $animationSupportDefaultCandidateCount -ne 0) {
             throw "AssetLibrary animationSupport metadata must stay non-production for Naraka smoke. productionReady=$animationSupportProductionReady candidates=$animationSupportDefaultCandidateCount"
         }
+
+        $modelAnimationRelationRowsText = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT COUNT(*) FROM model_animation_relations;"
+        if ($LASTEXITCODE -ne 0) {
+            throw "sqlite3 failed while counting AssetLibrary model_animation_relations."
+        }
+        $relationAnimationRowsText = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT COUNT(*) FROM relation_animations;"
+        if ($LASTEXITCODE -ne 0) {
+            throw "sqlite3 failed while counting AssetLibrary relation_animations."
+        }
+        $usableRelationAnimationRowsText = & $sqlite3.Source -readonly -batch -noheader $DbPath "SELECT COUNT(*) FROM relation_animations WHERE is_usable_candidate=1;"
+        if ($LASTEXITCODE -ne 0) {
+            throw "sqlite3 failed while counting AssetLibrary usable relation_animations."
+        }
+        $modelAnimationRelationRows = [long]([string]$modelAnimationRelationRowsText).Trim()
+        $relationAnimationRows = [long]([string]$relationAnimationRowsText).Trim()
+        $usableRelationAnimationRows = [long]([string]$usableRelationAnimationRowsText).Trim()
+        if ($AssetLibrary.capabilities.animations -ne $true -and $usableRelationAnimationRows -ne 0) {
+            throw "AssetLibrary relation_animations has usable candidates while capabilities.animations=false. usableRelationAnimations=$usableRelationAnimationRows"
+        }
     }
     else {
         Write-Warning "sqlite3.exe not found; AssetLibrary v1 required table check skipped."
@@ -725,6 +749,9 @@ function Test-AssetLibraryV1Contract {
         animationSupportStatus = $animationSupportStatus
         animationSupportProductionReady = $animationSupportProductionReady
         animationSupportDefaultCandidateCount = $animationSupportDefaultCandidateCount
+        modelAnimationRelationRows = $modelAnimationRelationRows
+        relationAnimationRows = $relationAnimationRows
+        usableRelationAnimationRows = $usableRelationAnimationRows
         requiredTables = $requiredTables
         missingTables = $missingTables
     }
@@ -2584,6 +2611,10 @@ $reportLines.Add(('- AssetLibrary v1 contract: status=`{0}`, schemaVersion=`{1}`
     (ConvertTo-SmokeText $assetLibraryContract.sourceGame),
     (ConvertTo-SmokeText $assetLibraryContract.index),
     (ConvertTo-SmokeText $assetLibraryContract.sqliteTableCheck)))
+$reportLines.Add(('- Animation relation tables: modelRelations=`{0}`, relationAnimations=`{1}`, usableRelationAnimations=`{2}`' -f `
+    (ConvertTo-SmokeText $assetLibraryContract.modelAnimationRelationRows "unknown"),
+    (ConvertTo-SmokeText $assetLibraryContract.relationAnimationRows "unknown"),
+    (ConvertTo-SmokeText $assetLibraryContract.usableRelationAnimationRows "unknown")))
 $reportLines.Add(('- Core artifact contract: status=`{0}`, files=`{1}`, missing=`{2}`, invalidJson=`{3}`' -f `
     (ConvertTo-SmokeText $libraryCoreArtifacts.status),
     (ConvertTo-SmokeText $libraryCoreArtifacts.fileCount "0"),
