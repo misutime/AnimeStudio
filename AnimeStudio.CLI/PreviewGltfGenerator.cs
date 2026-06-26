@@ -544,6 +544,7 @@ namespace AnimeStudio.CLI
                 ? 0d
                 : (double)animatedSkinJoints.Length / skinJointIndices.Count;
             var vertexWeightCoverage = BuildAnimationVertexWeightCoverageReport(mergedGltf, gltfDirectory, animatedNodes);
+            var coreBodyCoverage = BuildCoreBodyCoverageReport(nodeNames, skinJointIndices, animatedNodes);
 
             return new JObject
             {
@@ -555,10 +556,76 @@ namespace AnimeStudio.CLI
                 ["animatedSkinJointCount"] = animatedSkinJoints.Length,
                 ["animatedSkinJointCoverage"] = Math.Round(coverage, 4),
                 ["vertexWeightCoverage"] = vertexWeightCoverage,
+                ["coreBodyCoverage"] = coreBodyCoverage,
                 ["animatedSkinJointNames"] = new JArray(animatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
                 ["unanimatedSkinJointSample"] = new JArray(unanimatedSkinJoints.Take(64).Select(x => GetGltfNodeName(nodeNames, x))),
                 ["rule"] = "这里只统计已合并 glTF 里动画 channel 直接命中的 skin joint，帮助判断覆盖范围；它不是视觉验收，也不能单独证明动画生产可用。",
             };
+        }
+
+        private static JObject BuildCoreBodyCoverageReport(JObject[] nodes, ISet<int> skinJointIndices, ISet<int> animatedNodes)
+        {
+            var coreBodyJoints = skinJointIndices
+                .Where(index => IsCoreBodyJointName(GetGltfNodeName(nodes, index)))
+                .OrderBy(x => x)
+                .ToArray();
+            var animatedCoreBodyJoints = coreBodyJoints
+                .Where(animatedNodes.Contains)
+                .ToArray();
+            var missingCoreBodyJoints = coreBodyJoints
+                .Where(x => !animatedNodes.Contains(x))
+                .ToArray();
+            var coverage = coreBodyJoints.Length == 0
+                ? 0d
+                : (double)animatedCoreBodyJoints.Length / coreBodyJoints.Length;
+
+            return new JObject
+            {
+                ["status"] = coreBodyJoints.Length == 0 ? "no_core_body_joints" : "diagnostic",
+                ["coreBodyJointCount"] = coreBodyJoints.Length,
+                ["animatedCoreBodyJointCount"] = animatedCoreBodyJoints.Length,
+                ["animatedCoreBodyJointCoverage"] = Math.Round(coverage, 4),
+                ["animatedCoreBodyJointNames"] = new JArray(animatedCoreBodyJoints.Take(64).Select(x => GetGltfNodeName(nodes, x))),
+                ["missingCoreBodyJointSample"] = new JArray(missingCoreBodyJoints.Take(64).Select(x => GetGltfNodeName(nodes, x))),
+                ["rule"] = "按通用人体主体骨词元统计 Pelvis/Spine/Head/Arm/Leg/Foot/Toe 等核心骨骼覆盖，排除 finger/twist/helper/hair/socket 等辅助骨；这是诊断字段，不代表生产验收。",
+            };
+        }
+
+        private static bool IsCoreBodyJointName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            var normalized = Regex.Replace(name.ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
+            if (normalized.Length == 0)
+            {
+                return false;
+            }
+
+            // 先排除常见辅助骨，避免 finger/twist/hair/helper 把主体动作覆盖率稀释。
+            var helperTokens = new[]
+            {
+                "finger", "thumb", "index", "middle", "ring", "pinky",
+                "twist", "helper", "help", "socket", "weapon", "prop",
+                "hair", "cloth", "skirt", "cape", "breast", "eye", "jaw",
+            };
+            if (helperTokens.Any(normalized.Contains))
+            {
+                return false;
+            }
+
+            var bodyTokens = new[]
+            {
+                "pelvis", "hip", "hips",
+                "spine", "chest", "neck", "head",
+                "clavicle", "shoulder",
+                "upperarm", "arm", "forearm", "hand",
+                "thigh", "upleg", "leg", "calf", "shin",
+                "foot", "toe",
+            };
+            return bodyTokens.Any(normalized.Contains);
         }
 
         private static JObject BuildAnimationVertexWeightCoverageReport(JObject gltf, string gltfDirectory, ISet<int> animatedNodes)
@@ -844,7 +911,10 @@ namespace AnimeStudio.CLI
                     ["weightedVertexCount"] = (int?)animationJointCoverage?["vertexWeightCoverage"]?["weightedVertexCount"] ?? 0,
                     ["animatedWeightedVertexCount"] = (int?)animationJointCoverage?["vertexWeightCoverage"]?["animatedWeightedVertexCount"] ?? 0,
                     ["animatedWeightCoverage"] = (double?)animationJointCoverage?["vertexWeightCoverage"]?["animatedWeightCoverage"] ?? 0d,
-                    ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道和 skin joint 覆盖偏低，只能视为诊断预览；必须经过主体骨骼覆盖和视觉验收。",
+                    ["coreBodyJointCount"] = (int?)animationJointCoverage?["coreBodyCoverage"]?["coreBodyJointCount"] ?? 0,
+                    ["animatedCoreBodyJointCount"] = (int?)animationJointCoverage?["coreBodyCoverage"]?["animatedCoreBodyJointCount"] ?? 0,
+                    ["animatedCoreBodyJointCoverage"] = (double?)animationJointCoverage?["coreBodyCoverage"]?["animatedCoreBodyJointCoverage"] ?? 0d,
+                    ["detail"] = "人形 Humanoid/UnityBakeAccelerated 动画通道和全量 skin joint 覆盖偏低；主体骨覆盖、顶点权重覆盖和视觉验收需要分开看，不能只凭合并成功升级为生产可用。",
                 });
             }
 
