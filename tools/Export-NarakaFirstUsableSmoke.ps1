@@ -11,6 +11,7 @@ param(
     [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
     [string]$CharacterCandidateSampleRoot = "D:\Assets\Naraka\Naraka_CompleteCharacterCandidate_SamuraiGhost_BundleRoot_Current",
     [string]$ZhumuScriptAnimationSampleRoot = "D:\Assets\Naraka\Naraka_ZhumuSoul_AttackPrefab_ModelProbe_Current",
+    [string]$ZhumuMergedAnimationProbeRoot = "D:\Assets\Naraka\Zhumu_AttackA4_MergedModelAnimationProbe_Current",
     [string]$CharacterCandidateSourceIndexBundle = "b\6\b6449028544fa466",
     [string]$CharacterCandidateSourceIndexSerializedFile = "CAB-43d9a2106c54892c7f775b8d7ab8b193",
     [string]$CharacterCandidateSourceIndexAnimatorName = "ch_m_japan_samurai_ghost",
@@ -907,6 +908,22 @@ $zhumuScriptAnimationModelAnimationRelationRows = $null
 $zhumuScriptAnimationRelationAnimationRows = $null
 $zhumuScriptAnimationMaxBoundsSize = $null
 $zhumuScriptAnimationSkinJointCount = $null
+$zhumuMergedAnimationPreview = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Zhumu merged animation preview is a read-only diagnostic gate. It proves model+single-animation glTF composition can open and render, but must stay needs_review and must not enable production animation capability."
+    sampleRoot = $ZhumuMergedAnimationProbeRoot
+    report = $null
+    gltf = $null
+    gltfValidation = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+    animationCountAdded = 0
+    channelCount = 0
+    sourceAssessmentStatus = $null
+    reasonCodes = @()
+    renderProbeStatus = "notChecked"
+    renderFrameCount = 0
+    renderImages = @()
+    renderSummary = $null
+}
 $hadiModularBoundary = [pscustomobject]@{
     status = "notChecked"
     rule = "Hadi body is a usable modular body/clothing asset, not a complete character. It must stay marked modular_incomplete and blocked from production animation smoke until deterministic Face/Hair assembly is available."
@@ -1703,6 +1720,93 @@ else {
     $zhumuScriptAnimationStatus = "skipped"
 }
 
+if (![string]::IsNullOrWhiteSpace($ZhumuMergedAnimationProbeRoot)) {
+    if (Test-Path -LiteralPath $ZhumuMergedAnimationProbeRoot) {
+        Write-Host ""
+        Write-Host "== Validate Naraka Zhumu merged animation preview probe =="
+
+        $zhumuMergedReport = Join-Path $ZhumuMergedAnimationProbeRoot "merge_animation_gltf_report.json"
+        $zhumuMergedRenderRoot = Join-Path $ZhumuMergedAnimationProbeRoot "RenderProbe"
+        $zhumuMergedRenderSummary = Join-Path $zhumuMergedRenderRoot "render_probe_summary.txt"
+        Test-FileRequired -Path $zhumuMergedReport -Label "Zhumu merged animation report"
+        Test-FileRequired -Path $zhumuMergedRenderSummary -Label "Zhumu merged animation render summary"
+
+        $zhumuMergedReportJson = Get-Content -LiteralPath $zhumuMergedReport -Raw -Encoding UTF8 | ConvertFrom-Json
+        $zhumuMergedGltf = [string]$zhumuMergedReportJson.outputGltf
+        if ([string]::IsNullOrWhiteSpace($zhumuMergedGltf)) {
+            $zhumuMergedGltf = (Get-ChildItem -LiteralPath $ZhumuMergedAnimationProbeRoot -Recurse -Filter "*.merged.gltf" -File | Select-Object -First 1).FullName
+        }
+        Test-FileRequired -Path $zhumuMergedGltf -Label "Zhumu merged animation glTF"
+
+        if ([string]$zhumuMergedReportJson.status -ne "needs_review") {
+            throw "Zhumu merged animation preview must stay needs_review until solver and visual validation are production-ready. status=$($zhumuMergedReportJson.status)"
+        }
+        $zhumuMergedChannelCount = ConvertTo-SmokeInt64 $zhumuMergedReportJson.channelCount
+        $zhumuMergedAnimationCountAdded = ConvertTo-SmokeInt64 $zhumuMergedReportJson.animationCountAdded
+        if ($zhumuMergedAnimationCountAdded -lt 1 -or $zhumuMergedChannelCount -lt 1) {
+            throw "Zhumu merged animation preview lost animation channels. animationCountAdded=$zhumuMergedAnimationCountAdded channelCount=$zhumuMergedChannelCount"
+        }
+
+        $zhumuMergedReasonCodes = @($zhumuMergedReportJson.sourceAssessment.reasons | ForEach-Object { [string]$_.reason } | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+        foreach ($requiredReason in @("standalone_animation_not_production_ready", "standalone_animation_experimental", "humanoid_solver_known_limb_risk", "low_humanoid_channel_coverage")) {
+            if ($zhumuMergedReasonCodes -notcontains $requiredReason) {
+                throw "Zhumu merged animation preview lost expected diagnostic reason: $requiredReason"
+            }
+        }
+
+        $zhumuMergedRenderImages = @(
+            (Join-Path $zhumuMergedRenderRoot "zhumu_attack_a4_rest.png"),
+            (Join-Path $zhumuMergedRenderRoot "zhumu_attack_a4_mid.png"),
+            (Join-Path $zhumuMergedRenderRoot "zhumu_attack_a4_end.png")
+        )
+        foreach ($renderImage in $zhumuMergedRenderImages) {
+            Test-FileRequired -Path $renderImage -Label "Zhumu merged animation render image"
+            if ((Get-Item -LiteralPath $renderImage).Length -le 0) {
+                throw "Zhumu merged animation render image is empty: $renderImage"
+            }
+        }
+        $zhumuMergedRenderSummaryText = (Get-Content -LiteralPath $zhumuMergedRenderSummary -Raw -Encoding UTF8).Trim()
+        $zhumuMergedRenderLines = @($zhumuMergedRenderSummaryText -split "`r?`n" | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+        foreach ($requiredFrame in @("rest:", "mid:", "end:")) {
+            if (@($zhumuMergedRenderLines | Where-Object { $_.StartsWith($requiredFrame, [System.StringComparison]::OrdinalIgnoreCase) }).Count -lt 1) {
+                throw "Zhumu merged animation render summary lost frame entry: $requiredFrame"
+            }
+        }
+
+        if (!$SkipGltfValidation) {
+            $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $gltfTransform) {
+                Invoke-Checked -Label "Validate Zhumu merged animation glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $zhumuMergedGltf)
+                $zhumuMergedAnimationPreview.gltfValidation = "ok"
+            }
+        }
+
+        $zhumuMergedAnimationPreview = [pscustomobject]@{
+            status = "ok"
+            rule = $zhumuMergedAnimationPreview.rule
+            sampleRoot = $ZhumuMergedAnimationProbeRoot
+            report = $zhumuMergedReport
+            gltf = $zhumuMergedGltf
+            gltfValidation = $zhumuMergedAnimationPreview.gltfValidation
+            animationCountAdded = $zhumuMergedAnimationCountAdded
+            channelCount = $zhumuMergedChannelCount
+            sourceAssessmentStatus = [string]$zhumuMergedReportJson.sourceAssessment.status
+            reasonCodes = $zhumuMergedReasonCodes
+            renderProbeStatus = "ok"
+            renderFrameCount = [int]$zhumuMergedRenderLines.Count
+            renderImages = $zhumuMergedRenderImages
+            renderSummary = $zhumuMergedRenderSummaryText
+        }
+    }
+    else {
+        $zhumuMergedAnimationPreview.status = "missing"
+        Write-Warning "Zhumu merged animation preview probe not found; skipped: $ZhumuMergedAnimationProbeRoot"
+    }
+}
+else {
+    $zhumuMergedAnimationPreview.status = "skipped"
+}
+
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -2202,6 +2306,7 @@ $summaryJsonLines += '    "script": ' + (ConvertTo-SmokeJsonLiteral $zhumuScript
 $summaryJsonLines += '    "avatar": ' + (ConvertTo-SmokeJsonLiteral $zhumuAvatarCompatibilityDiagnostic 10) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "zhumuMergedAnimationPreview": ' + (ConvertTo-SmokeJsonLiteral $zhumuMergedAnimationPreview 10) + ","
 $summaryJsonLines += '  "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary 10) + ","
 $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
@@ -2212,6 +2317,8 @@ $summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-Smok
 $summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
 $summaryJsonLines += '    "zhumuScriptAnimationProbe": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationStatus) + ","
 $summaryJsonLines += '    "zhumuScriptAnimationGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $zhumuScriptAnimationGltfValidationStatus) + ","
+$summaryJsonLines += '    "zhumuMergedAnimationPreview": ' + (ConvertTo-SmokeJsonLiteral $zhumuMergedAnimationPreview.status) + ","
+$summaryJsonLines += '    "zhumuMergedAnimationGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $zhumuMergedAnimationPreview.gltfValidation) + ","
 $summaryJsonLines += '    "hadiModularBoundary": ' + (ConvertTo-SmokeJsonLiteral $hadiModularBoundary.status) + ","
 $summaryJsonLines += '    "formalSkinnedRepresentativeBoundary": ' + (ConvertTo-SmokeJsonLiteral $formalSkinnedRepresentativeBoundary.status) + ","
 $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
@@ -2725,6 +2832,27 @@ elseif ($zhumuScriptAnimationStatus -eq "missing") {
     $reportLines.Add(('- Sample root missing: `{0}`' -f $ZhumuScriptAnimationSampleRoot))
 }
 $reportLines.Add("")
+$reportLines.Add("## Zhumu Merged Animation Preview")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $zhumuMergedAnimationPreview.status))
+if ($zhumuMergedAnimationPreview.status -eq "ok") {
+    $reportLines.Add(('- Sample root: `{0}`' -f $zhumuMergedAnimationPreview.sampleRoot))
+    $reportLines.Add(('- glTF: `{0}`' -f $zhumuMergedAnimationPreview.gltf))
+    $reportLines.Add(('- glTF validator: `{0}`' -f $zhumuMergedAnimationPreview.gltfValidation))
+    $reportLines.Add(('- Merge: animationCountAdded=`{0}`, channelCount=`{1}`, sourceAssessment=`{2}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.animationCountAdded "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.channelCount "0"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.sourceAssessmentStatus "unknown")))
+    $reportLines.Add(('- Diagnostic reasons: `{0}`' -f (($zhumuMergedAnimationPreview.reasonCodes | ForEach-Object { [string]$_ }) -join ', ')))
+    $reportLines.Add(('- Render probe: status=`{0}`, frames=`{1}`' -f `
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderProbeStatus "unknown"),
+        (ConvertTo-SmokeText $zhumuMergedAnimationPreview.renderFrameCount "0")))
+    $reportLines.Add('- Rule: merged model+animation glTF proves the diagnostic composition path can open and render, but it remains needs_review because the internal Humanoid/Muscle solver and low channel coverage are not production-validated.')
+}
+elseif ($zhumuMergedAnimationPreview.status -eq "missing") {
+    $reportLines.Add(('- Sample root missing: `{0}`' -f $ZhumuMergedAnimationProbeRoot))
+}
+$reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
 $reportLines.Add("")
 if ($null -ne $animationReportJson) {
@@ -2781,6 +2909,10 @@ if ($characterCandidateStatus -eq "ok") {
 if ($zhumuScriptAnimationStatus -eq "ok") {
     $reportLines.Add(('- Zhumu script-animation probe glTF: `{0}`' -f $zhumuScriptAnimationGltf))
     $reportLines.Add(('- Zhumu script-animation probe SQLite summary: `{0}`' -f (Join-Path $ZhumuScriptAnimationSampleRoot "sqlite_index_summary.json")))
+}
+if ($zhumuMergedAnimationPreview.status -eq "ok") {
+    $reportLines.Add(('- Zhumu merged animation preview glTF: `{0}`' -f $zhumuMergedAnimationPreview.gltf))
+    $reportLines.Add(('- Zhumu merged animation preview report: `{0}`' -f $zhumuMergedAnimationPreview.report))
 }
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
