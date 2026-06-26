@@ -1360,6 +1360,12 @@ $sourceIndexSimpleAnimationVisibleSubtreeProbes = [pscustomobject]@{
     animatorProbeCount = 0
     probes = @()
 }
+$sourceIndexSimpleAnimationProbeReadiness = [pscustomobject]@{
+    status = "notChecked"
+    rule = "SimpleAnimation probe readiness combines script clip fields, visible skinned subtree context and Avatar structural overlap. It only ranks next diagnostic probes; it never creates production model-animation bindings."
+    recommendedNextProbe = $null
+    rows = @()
+}
 $sourceIndexScriptAnimationClipScripts = [pscustomobject]@{
     status = "notChecked"
     rule = "MonoBehaviour script AnimationClip PPtr summary is a source-index diagnostic only. It reveals script-owned clip references, but does not create model-animation bindings."
@@ -1680,6 +1686,77 @@ foreach ($probe in @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes)) {
             throw "SimpleAnimation visible-subtree probe lost expected field path '$requiredFieldPath': $($probe.selector)"
         }
     }
+}
+$simpleAnimationProbeReadinessRows = @(
+    [pscustomobject]@{
+        selector = "mo_pve_b_zhumu_soul_01"
+        role = "MonsterOrNpcSimpleAnimationProbe"
+        scriptProbe = @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes | Where-Object { $_.selector -eq "mo_pve_b_zhumu_soul_01" } | Select-Object -First 1)[0]
+        avatarProbe = $zhumuAvatarCompatibilityDiagnostic
+    },
+    [pscustomobject]@{
+        selector = "ch_f_japan_yaodaoji_lv_s14_wings"
+        role = "CharacterSimpleAnimationShortlistProbe"
+        scriptProbe = @($sourceIndexSimpleAnimationVisibleSubtreeProbes.probes | Where-Object { $_.selector -eq "ch_f_japan_yaodaoji_lv_s14_wings" } | Select-Object -First 1)[0]
+        avatarProbe = $yaodaojiWingsAvatarCompatibilityDiagnostic
+    }
+)
+$simpleAnimationProbeReadiness = @()
+foreach ($probeRow in $simpleAnimationProbeReadinessRows) {
+    $scriptProbe = $probeRow.scriptProbe
+    $avatarProbe = $probeRow.avatarProbe
+    if ($null -eq $scriptProbe -or $null -eq $avatarProbe) {
+        throw "SimpleAnimation readiness probe is incomplete. selector=$($probeRow.selector) hasScriptProbe=$($null -ne $scriptProbe) hasAvatarProbe=$($null -ne $avatarProbe)"
+    }
+    # 这里只做下一步诊断排序，不能把脚本字段或 Avatar 重叠直接升级成生产动画绑定。
+    $nextStep = if ($avatarProbe.modelAvatarMaxCoverage -ge 0.9 -and $avatarProbe.modelAvatarHighOverlapRows -gt 0) {
+        "humanoidSolverProbeCandidate"
+    }
+    else {
+        "avatarOverlapBlockedAttachmentOrCustomSkeletonProbe"
+    }
+
+    $simpleAnimationProbeReadiness += [pscustomobject]@{
+        selector = $probeRow.selector
+        role = $probeRow.role
+        nextStep = $nextStep
+        scriptAnimationRows = $scriptProbe.scriptAnimationRows
+        fieldPathCounts = @($scriptProbe.fieldPathCounts)
+        animationNameSamples = @($scriptProbe.animationNameSamples)
+        subtreeVisibleRendererRows = $scriptProbe.subtreeVisibleRendererRows
+        subtreeSkinnedRendererRows = $scriptProbe.subtreeSkinnedRendererRows
+        subtreeTruncatedRows = $scriptProbe.subtreeTruncatedRows
+        animatorRows = $scriptProbe.animatorRows
+        modelAvatarRows = $avatarProbe.modelAvatarRows
+        modelAvatarHighOverlapRows = $avatarProbe.modelAvatarHighOverlapRows
+        modelAvatarFullOverlapRows = $avatarProbe.modelAvatarFullOverlapRows
+        modelAvatarMaxCoverage = $avatarProbe.modelAvatarMaxCoverage
+        avatarTosRows = $avatarProbe.avatarTosRows
+        avatarTosMaxCoverage = $avatarProbe.avatarTosMaxCoverage
+        defaultCandidateCount = 0
+        diagnosticOnly = $true
+        notDefaultModelAnimationRelation = $true
+        productionReadiness = "blocked"
+        blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+    }
+}
+$sourceIndexSimpleAnimationProbeReadiness = [pscustomobject]@{
+    status = "ok"
+    rule = $sourceIndexSimpleAnimationProbeReadiness.rule
+    recommendedNextProbe = "mo_pve_b_zhumu_soul_01"
+    rows = $simpleAnimationProbeReadiness
+    diagnosticOnly = $true
+    notDefaultModelAnimationRelation = $true
+    productionReadiness = "blocked"
+    blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+}
+$zhumuReadiness = @($sourceIndexSimpleAnimationProbeReadiness.rows | Where-Object { $_.selector -eq "mo_pve_b_zhumu_soul_01" } | Select-Object -First 1)[0]
+$yaodaojiReadiness = @($sourceIndexSimpleAnimationProbeReadiness.rows | Where-Object { $_.selector -eq "ch_f_japan_yaodaoji_lv_s14_wings" } | Select-Object -First 1)[0]
+if ($zhumuReadiness.modelAvatarMaxCoverage -lt 0.9 -or $zhumuReadiness.modelAvatarHighOverlapRows -lt 1 -or $zhumuReadiness.nextStep -ne "humanoidSolverProbeCandidate") {
+    throw "SimpleAnimation readiness lost Zhumu Humanoid solver probe evidence. maxCoverage=$($zhumuReadiness.modelAvatarMaxCoverage) highOverlap=$($zhumuReadiness.modelAvatarHighOverlapRows) nextStep=$($zhumuReadiness.nextStep)"
+}
+if ($yaodaojiReadiness.modelAvatarMaxCoverage -ne 0.0 -or $yaodaojiReadiness.nextStep -ne "avatarOverlapBlockedAttachmentOrCustomSkeletonProbe") {
+    throw "SimpleAnimation readiness lost Yaodaoji attachment/custom-skeleton boundary. maxCoverage=$($yaodaojiReadiness.modelAvatarMaxCoverage) nextStep=$($yaodaojiReadiness.nextStep)"
 }
 $sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex
 if ($sourceIndexScriptAnimationClipScripts.status -eq "ok" -and $sourceIndexScriptAnimationClipScripts.totalRelations -lt 1) {
@@ -2923,6 +3000,7 @@ $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-
 $summaryJsonLines += '    "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts.status) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationVisibleSubtreeProbes": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationVisibleSubtreeProbes.status) + ","
+$summaryJsonLines += '    "sourceIndexSimpleAnimationProbeReadiness": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationProbeReadiness.status) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics.status) + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
@@ -2962,6 +3040,7 @@ $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-
 $summaryJsonLines += '    "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts 10) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationVisibleSubtreeProbes": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationVisibleSubtreeProbes 10) + ","
+$summaryJsonLines += '    "sourceIndexSimpleAnimationProbeReadiness": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationProbeReadiness 10) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10)
 $summaryJsonLines += '  },'
 $summaryJsonLines += '  "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
@@ -2971,6 +3050,7 @@ $summaryJsonLines += '  "scriptAnimationComponentDiagnostics": ' + (ConvertTo-Sm
 $summaryJsonLines += '  "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts 10) + ","
 $summaryJsonLines += '  "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
 $summaryJsonLines += '  "sourceIndexSimpleAnimationVisibleSubtreeProbes": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationVisibleSubtreeProbes 10) + ","
+$summaryJsonLines += '  "sourceIndexSimpleAnimationProbeReadiness": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationProbeReadiness 10) + ","
 $summaryJsonLines += '  "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10) + ","
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
 $summaryJsonLines += "}"
@@ -3016,6 +3096,14 @@ if ($summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.status -eq
     }
     if ([int64]$summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.visibleSubtreeProbeCount -lt 2 -or [int64]$summaryJsonParsed.sourceIndexSimpleAnimationVisibleSubtreeProbes.skinnedSubtreeProbeCount -lt 2) {
         throw "smoke_summary.json SimpleAnimation visible-subtree probes lost visible/skinned evidence."
+    }
+}
+if ($summaryJsonParsed.sourceIndexSimpleAnimationProbeReadiness.status -eq "ok") {
+    if ([string]$summaryJsonParsed.sourceIndexSimpleAnimationProbeReadiness.productionReadiness -ne "blocked") {
+        throw "smoke_summary.json sourceIndexSimpleAnimationProbeReadiness must stay production-blocked. productionReadiness=$($summaryJsonParsed.sourceIndexSimpleAnimationProbeReadiness.productionReadiness)"
+    }
+    if ([string]$summaryJsonParsed.sourceIndexSimpleAnimationProbeReadiness.recommendedNextProbe -ne "mo_pve_b_zhumu_soul_01") {
+        throw "smoke_summary.json SimpleAnimation readiness lost Zhumu recommended probe."
     }
 }
 
@@ -3273,6 +3361,26 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     }
     else {
         $reportLines.Add(('- SimpleAnimation visible-subtree probes: `{0}`' -f $sourceIndexSimpleAnimationVisibleSubtreeProbes.status))
+    }
+    if ($sourceIndexSimpleAnimationProbeReadiness.status -eq "ok") {
+        $readinessParts = @()
+        foreach ($probe in @($sourceIndexSimpleAnimationProbeReadiness.rows)) {
+            $readinessParts += ('{0}:next={1},scriptRows={2},subtreeSkinned={3},avatarRows={4},highOverlap={5},maxCoverage={6}' -f `
+                (ConvertTo-SmokeText $probe.selector),
+                (ConvertTo-SmokeText $probe.nextStep),
+                (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
+                (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
+                (ConvertTo-SmokeText $probe.modelAvatarRows "0"),
+                (ConvertTo-SmokeText $probe.modelAvatarHighOverlapRows "0"),
+                (ConvertTo-SmokeText $probe.modelAvatarMaxCoverage "0"))
+        }
+        $reportLines.Add(('- SimpleAnimation probe readiness: recommendedNextProbe=`{0}`, rows=`{1}`' -f `
+            (ConvertTo-SmokeText $sourceIndexSimpleAnimationProbeReadiness.recommendedNextProbe ""),
+            ($readinessParts -join ' | ')))
+        $reportLines.Add('- SimpleAnimation readiness rule: Zhumu is currently the stronger Humanoid/TRS diagnostic probe because it has script clips, visible skinned subtree context and high Avatar structural overlap; Yaodaoji wings remains an attachment/custom-skeleton boundary until Avatar overlap or explicit binding is proven.')
+    }
+    else {
+        $reportLines.Add(('- SimpleAnimation probe readiness: `{0}`' -f $sourceIndexSimpleAnimationProbeReadiness.status))
     }
     if ($scriptAnimationComponentDiagnostics.status -eq "ok") {
         $hadiScript = $scriptAnimationComponentDiagnostics.hadiBody
