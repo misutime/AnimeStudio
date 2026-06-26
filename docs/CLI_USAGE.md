@@ -565,6 +565,15 @@ dotnet AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.dll `
 
 `--source_files` 是显式源文件路径，不是正则；Windows `4\2\420c7a76d4e7354a` 和索引报告里的 `4/2/420c7a76d4e7354a` 会归一化为同一个相对路径。`--names`、`--containers`、`--*_exclude` 仍然是正则筛选。
 
+Naraka 第一版可用性优先用仓库脚本做完整 smoke，而不是手工拼多条 CLI 命令。脚本会用完整源索引闭包定向导出代表模型，重建 AssetLibrary v1，验证模型、贴图、材质 sidecar、SQLite 索引、报告、浏览器缩略图和诊断动画边界：
+
+```powershell
+tools\Export-NarakaFirstUsableSmoke.ps1 `
+  -OutputRoot "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current"
+```
+
+当前本机默认完整复验目录为 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_YaodaojiShortlist_DefaultFull_Current`。通过标准是：`models=4`、`ok=4`、`withSkin=3`、`withTextures=4`、`textureLinkErrors=0`，AssetLibrary Browser 校验和 4 个代表模型缩略图渲染为 `ok`；Dijiang / Zhumu / Yaodaoji 等动画探针只能保持 `diagnosticOnly` 或 `productionReadiness=blocked`，`asset_library.json.capabilities.animations=false`、`animationSupport.defaultModelAnimationCandidateCount=0`、`modelAnimationRelations=0`。也就是说，当前第一版交付重点是模型、贴图、材质、索引、报告和可浏览闭环；动画已有诊断链路和风险记录，但默认生产动画库尚未启用。
+
 Naraka 标准 prefab/SkinnedMeshRenderer 小样本复验时，应优先使用 `source_model_candidates.json` 里的 `targetedLibraryExport`，或手动传 `--source_files + --path_ids` 锁定本次加载闭包。只传 `--names` / `--containers` 虽然会过滤导出候选，但仍可能在永劫大源目录上加载过宽依赖，导致诊断样本耗时和内存失真。下面的 Hadi body smoke 示例使用完整源目录和完整源索引，但只加载源索引闭包选出的 5 个物理文件：
 
 截至 2026-06-26 本机 `C:\Game163\program` 安装形态，默认主输入应使用 `C:\Game163\program\NarakaBladepoint_Data\StreamingAssets`。该目录下主体资源是大量无扩展 Unity bundle，已能通过 Naraka header/block 修正和完整 `unity_source_index.db` 建索引、定点导出模型；2026-06-26 探针复查 `StreamingAssets` 有 14,352 个文件、78.62 GB，其中 13,684 个 Naraka 替代 UnityFS header 可加载候选、`.pak` 为 0。完整游戏根目录虽然有 58 个 `.pak`、38.32 MB，但样本位于 `webviewsupport.cef904430` / CEF locale 目录，不是当前模型、贴图、材质、骨骼主资源入口。网上流传的 QuickBMS/AES key 只能作为其它发行包或旧版本解包线索，不能写入默认 `Library` 流程，也不能替代本项目的 Unity PPtr/source index 依赖闭包。若后续遇到只能从 `.pak` 进入的发行形态，应先用显式诊断命令记录包结构、UnityFS 命中率、解密参数和版本日期，再决定是否增加独立转换入口。
