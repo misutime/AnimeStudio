@@ -112,6 +112,8 @@ namespace AnimeStudio.CLI
             counts["assetCatalog"] = assetCatalogRows;
             counts["textureLinks"] = RunCountStage("texture links", () => ImportTextureLinks(connection, transaction, root));
             counts["materialSidecars"] = RunCountStage("material sidecars", () => ImportMaterialSidecars(connection, transaction, root));
+            counts["materialAssets"] = RunCountStage("material assets", () => ImportMaterialAssetsFromSidecars(connection, transaction));
+            counts["assets"] += counts["materialAssets"];
             counts["modelValidation"] = RunCountStage("model validation", () => ImportModelValidation(connection, transaction, root));
             counts["modelBindingPaths"] = RunCountStage("model binding paths", () => ImportModelBindingPaths(connection, transaction, root));
             counts["unityAssets"] = 0;
@@ -1199,6 +1201,38 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
             return count;
         }
 
+        private static long ImportMaterialAssetsFromSidecars(SqliteConnection connection, SqliteTransaction transaction)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+INSERT INTO assets(kind, resource_kind, name, source_type, source, object_path, output, format, validation_status, raw_json)
+SELECT
+    'Material',
+    'MaterialSidecar',
+    COALESCE(NULLIF(name, ''), NULLIF(material_name, ''), 'material'),
+    COALESCE(NULLIF(source_kind, ''), 'UnityMaterialSidecar'),
+    material_output,
+    shader_name,
+    COALESCE(NULLIF(relative_path, ''), material_output),
+    CASE
+        WHEN lower(COALESCE(NULLIF(relative_path, ''), material_output)) LIKE '%.json' THEN 'json'
+        ELSE 'gltfMaterial'
+    END,
+    COALESCE(NULLIF(material_status, ''), 'indexed'),
+    raw_json
+FROM material_sidecars ms
+WHERE COALESCE(NULLIF(relative_path, ''), material_output) IS NOT NULL
+  AND COALESCE(NULLIF(relative_path, ''), material_output) <> ''
+  AND NOT EXISTS (
+      SELECT 1
+      FROM assets a
+      WHERE a.kind='Material'
+        AND a.output = COALESCE(NULLIF(ms.relative_path, ''), ms.material_output)
+  );";
+            return command.ExecuteNonQuery();
+        }
+
         private static IEnumerable<MaterialSidecarRow> ReadGltfMaterialSidecars(string root, string gltfPath, string modelDir)
         {
             JObject gltf;
@@ -1283,17 +1317,21 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
             var anime = material["extras"]?["animeStudioMaterial"] as JObject;
             var textureSlots = anime?["textureSlots"] as JArray ?? new JArray();
             var customSlots = anime?["customShaderLayerSlots"] as JArray ?? new JArray();
+            var unityTextureSlots = ReadFilledUnityTextureSlots(unityMaterial).ToArray();
             var needsCustomShader = IsTrue(anime, "needsCustomShaderLayer") || customSlots.Count > 0;
             var needsTint = IsTrue(anime, "needsCustomizationTint");
             var unresolvedSteps = anime?["unresolvedShaderSteps"] as JArray
                 ?? (needsCustomShader
                     ? new JArray("privateLayeredTextureComposite", "privateMaskBlend", "runtimeShaderParameterEvaluation")
                     : new JArray());
+            var gltfTextureSlotNames = textureSlots.OfType<JObject>()
+                .Select(x => (string)x["slot"])
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             var keyTextureSlots = customSlots.Count > 0
                 ? customSlots
-                : new JArray(textureSlots.OfType<JObject>()
-                    .Select(x => (string)x["slot"])
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                : new JArray((gltfTextureSlotNames.Length > 0 ? gltfTextureSlotNames : unityTextureSlots.Select(x => x.Slot))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Select(x => new JValue(x)));
             var exportedTextures = new JArray(textureSlots.OfType<JObject>()
@@ -1305,6 +1343,20 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
                     ["textureName"] = x["resolvedTextureName"]?.DeepClone() ?? x["textureName"]?.DeepClone(),
                     ["previewUsage"] = x["previewUsage"]?.DeepClone()
                 }));
+            if (exportedTextures.Count == 0)
+            {
+                // Unity sidecar 只能证明槽和原始贴图引用；没有确定 URI 时不伪造 glTF 贴图路径。
+                foreach (var slot in unityTextureSlots)
+                {
+                    exportedTextures.Add(new JObject
+                    {
+                        ["slot"] = slot.Slot,
+                        ["textureName"] = slot.TextureName,
+                        ["pathId"] = slot.PathId,
+                        ["previewUsage"] = "unityMaterialSlotOnly"
+                    });
+                }
+            }
             var materialStatus = needsCustomShader
                 ? "layeredMaterialUnresolved"
                 : needsTint
@@ -1326,6 +1378,12 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
                 ["shaderName"] = string.IsNullOrWhiteSpace(shaderName) ? null : shaderName,
                 ["keyTextureSlots"] = keyTextureSlots.DeepClone(),
                 ["exportedTextures"] = exportedTextures,
+                ["unityTextureSlots"] = new JArray(unityTextureSlots.Select(x => new JObject
+                {
+                    ["slot"] = x.Slot,
+                    ["textureName"] = x.TextureName,
+                    ["pathId"] = x.PathId
+                })),
                 ["unresolvedShaderSteps"] = unresolvedSteps.DeepClone(),
                 ["pbrPreviewStatus"] = S(anime, "pbrPreviewStatus") ?? (needsCustomShader ? "bestEffortDegradedPreview" : "bestEffortPbrPreview"),
                 ["pbrPreviewConfidence"] = S(anime, "pbrPreviewConfidence") ?? (needsCustomShader ? "partial" : "standard"),
@@ -1340,7 +1398,7 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
                 materialName,
                 output,
                 hasPhysicalSidecar ? new FileInfo(unityMaterialPath).Length : null,
-                textureSlots.Count,
+                textureSlots.Count > 0 ? textureSlots.Count : unityTextureSlots.Length,
                 CountSavedPropertyObject(unityMaterial, "m_Colors"),
                 CountSavedPropertyObject(unityMaterial, "m_Floats"),
                 CountSavedPropertyObject(unityMaterial, "m_Ints"),
@@ -1400,6 +1458,34 @@ VALUES ($assetId, $materialOutput, $materialName, $name, $relativePath, $sizeByt
             var saved = unityMaterial?["m_SavedProperties"] as JObject
                 ?? unityMaterial?["unityMaterial"]?["m_SavedProperties"] as JObject;
             return saved?[name] is JObject obj ? obj.Count : null;
+        }
+
+        private static IEnumerable<UnityTextureSlot> ReadFilledUnityTextureSlots(JObject unityMaterial)
+        {
+            var texEnvs = unityMaterial?["m_SavedProperties"]?["m_TexEnvs"] as JObject
+                ?? unityMaterial?["unityMaterial"]?["m_SavedProperties"]?["m_TexEnvs"] as JObject;
+            if (texEnvs == null)
+            {
+                yield break;
+            }
+
+            foreach (var property in texEnvs.Properties())
+            {
+                var texture = property.Value?["m_Texture"] as JObject;
+                if (texture == null || IsTrue(texture, "IsNull"))
+                {
+                    continue;
+                }
+
+                var textureName = S(texture, "Name") ?? S(texture, "m_Name");
+                var pathId = I(texture, "m_PathID") ?? I(texture, "PathID");
+                if (string.IsNullOrWhiteSpace(textureName) && pathId.GetValueOrDefault() == 0)
+                {
+                    continue;
+                }
+
+                yield return new UnityTextureSlot(property.Name, textureName, pathId);
+            }
         }
 
         private static bool IsPathUnderRoot(string root, string path)
@@ -6972,6 +7058,8 @@ WHERE relation = 'animatorOverrideController.overrideSet';";
             string PbrPreviewStatus,
             string PbrPreviewConfidence,
             JObject RawJson);
+
+        private sealed record UnityTextureSlot(string Slot, string TextureName, long? PathId);
 
         private static string ClassifyFile(string root, string file)
         {
