@@ -1754,6 +1754,7 @@ foreach ($probeRow in $simpleAnimationProbeReadinessRows) {
         simpleAnimationDefaultClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "defaultClipRows")
         simpleAnimationStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "stateClipRows")
         simpleAnimationPairedDefaultStateClipRows = ConvertTo-SmokeInt64 (Get-SmokePropertyValue -Object $semanticSummary -Name "pairedDefaultStateClipRows")
+        simpleAnimationPairedClipSamples = @((Get-SmokePropertyValue -Object $semanticSummary -Name "pairedClipSamples") | Select-Object -First 8)
         subtreeVisibleRendererRows = $scriptProbe.subtreeVisibleRendererRows
         subtreeSkinnedRendererRows = $scriptProbe.subtreeSkinnedRendererRows
         subtreeTruncatedRows = $scriptProbe.subtreeTruncatedRows
@@ -1789,11 +1790,19 @@ if ($zhumuReadiness.modelAvatarMaxCoverage -lt 0.9 -or $zhumuReadiness.modelAvat
 if ($zhumuReadiness.simpleAnimationPairedDefaultStateClipRows -lt 20) {
     throw "SimpleAnimation readiness lost Zhumu default/state clip pairing evidence. paired=$($zhumuReadiness.simpleAnimationPairedDefaultStateClipRows)"
 }
+$zhumuPairedClipSamples = @($zhumuReadiness.simpleAnimationPairedClipSamples)
+if ($zhumuPairedClipSamples.Count -lt 8 -or [string]$zhumuPairedClipSamples[0].clipName -ne "mo_pve_b_zhumu2_attack_a4_01_soul" -or [string]$zhumuPairedClipSamples[0].clipPathIdString -ne "-3269044911608736500") {
+    throw "SimpleAnimation readiness lost Zhumu deterministic paired clip samples. count=$($zhumuPairedClipSamples.Count) first=$($zhumuPairedClipSamples[0].clipName)#$($zhumuPairedClipSamples[0].clipPathId)"
+}
 if ($yaodaojiReadiness.modelAvatarMaxCoverage -ne 0.0 -or $yaodaojiReadiness.nextStep -ne "avatarOverlapBlockedAttachmentOrCustomSkeletonProbe") {
     throw "SimpleAnimation readiness lost Yaodaoji attachment/custom-skeleton boundary. maxCoverage=$($yaodaojiReadiness.modelAvatarMaxCoverage) nextStep=$($yaodaojiReadiness.nextStep)"
 }
 if ($yaodaojiReadiness.simpleAnimationPairedDefaultStateClipRows -lt 1) {
     throw "SimpleAnimation readiness lost Yaodaoji default/state clip pairing evidence. paired=$($yaodaojiReadiness.simpleAnimationPairedDefaultStateClipRows)"
+}
+$yaodaojiPairedClipSamples = @($yaodaojiReadiness.simpleAnimationPairedClipSamples)
+if ($yaodaojiPairedClipSamples.Count -lt 1 -or [string]$yaodaojiPairedClipSamples[0].clipName -ne "ch_f_japan_yaodaoji_lv_s14_wings_idle") {
+    throw "SimpleAnimation readiness lost Yaodaoji deterministic paired clip sample. count=$($yaodaojiPairedClipSamples.Count) first=$($yaodaojiPairedClipSamples[0].clipName)"
 }
 $sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex
 if ($sourceIndexScriptAnimationClipScripts.status -eq "ok" -and $sourceIndexScriptAnimationClipScripts.totalRelations -lt 1) {
@@ -3405,11 +3414,19 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     if ($sourceIndexSimpleAnimationProbeReadiness.status -eq "ok") {
         $readinessParts = @()
         foreach ($probe in @($sourceIndexSimpleAnimationProbeReadiness.rows)) {
-            $readinessParts += ('{0}:next={1},scriptRows={2},pairedDefaultState={3},subtreeSkinned={4},avatarRows={5},highOverlap={6},maxCoverage={7}' -f `
+            $pairedClipSamples = @($probe.simpleAnimationPairedClipSamples)
+            $firstPairedClip = if ($pairedClipSamples.Count -gt 0) {
+                ('{0}#{1}' -f (ConvertTo-SmokeText $pairedClipSamples[0].clipName ""), (ConvertTo-SmokeText $pairedClipSamples[0].clipPathIdString "0"))
+            }
+            else {
+                ""
+            }
+            $readinessParts += ('{0}:next={1},scriptRows={2},pairedDefaultState={3},firstPairedClip={4},subtreeSkinned={5},avatarRows={6},highOverlap={7},maxCoverage={8}' -f `
                 (ConvertTo-SmokeText $probe.selector),
                 (ConvertTo-SmokeText $probe.nextStep),
                 (ConvertTo-SmokeText $probe.scriptAnimationRows "0"),
                 (ConvertTo-SmokeText $probe.simpleAnimationPairedDefaultStateClipRows "0"),
+                (ConvertTo-SmokeText $firstPairedClip ""),
                 (ConvertTo-SmokeText $probe.subtreeSkinnedRendererRows "0"),
                 (ConvertTo-SmokeText $probe.modelAvatarRows "0"),
                 (ConvertTo-SmokeText $probe.modelAvatarHighOverlapRows "0"),

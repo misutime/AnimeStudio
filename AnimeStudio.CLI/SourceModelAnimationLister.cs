@@ -3146,6 +3146,7 @@ LIMIT $limit;";
                 ["defaultOnlyRows"] = defaultOnlyRows.Count,
                 ["stateOnlyRows"] = stateOnlyRows.Count,
                 ["unresolvedFieldRows"] = simpleRows.Count - knownRows.Count,
+                ["pairedClipSamples"] = new JArray(BuildSimpleAnimationPairedClipSamples(pairedRows)),
                 ["productionReadiness"] = "blocked",
                 ["blockedProductionRequirements"] = new JArray(
                     "scriptRuntimeSemantics",
@@ -3155,6 +3156,49 @@ LIMIT $limit;";
                     "visualReview"),
                 ["rule"] = "SimpleAnimation public source shows m_Clip is the default clip and m_States.data.clip are state clips played through an Animator-backed PlayableGraph. This summary only explains script-field semantics; it does not prove which state is selected at runtime or create a production model-animation binding.",
             };
+        }
+
+        private static IEnumerable<JObject> BuildSimpleAnimationPairedClipSamples(IEnumerable<IGrouping<string, ScriptAnimationComponentDiagnosticRow>> pairedRows)
+        {
+            return (pairedRows ?? Array.Empty<IGrouping<string, ScriptAnimationComponentDiagnosticRow>>())
+                .Select(group =>
+                {
+                    var first = group
+                        .OrderBy(x => x.AnimationName, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(x => x.MonoBehaviourPathId)
+                        .First();
+                    var roles = group
+                        .Select(x => GetSimpleAnimationRole(x.ScriptName, x.ReferenceFieldPath))
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(x => x, StringComparer.Ordinal)
+                        .ToArray();
+                    return new JObject
+                    {
+                        ["modelName"] = first.ModelName,
+                        ["modelSerializedFile"] = first.ModelSerializedFile,
+                        ["modelPathId"] = first.ModelPathId,
+                        ["modelPathIdString"] = first.ModelPathId.ToString(CultureInfo.InvariantCulture),
+                        ["gameObjectName"] = first.GameObjectName,
+                        ["gameObjectSerializedFile"] = first.GameObjectSerializedFile,
+                        ["gameObjectPathId"] = first.GameObjectPathId,
+                        ["gameObjectPathIdString"] = first.GameObjectPathId.ToString(CultureInfo.InvariantCulture),
+                        ["monoBehaviourSerializedFile"] = first.MonoBehaviourSerializedFile,
+                        ["monoBehaviourPathId"] = first.MonoBehaviourPathId,
+                        ["monoBehaviourPathIdString"] = first.MonoBehaviourPathId.ToString(CultureInfo.InvariantCulture),
+                        ["clipName"] = first.AnimationName,
+                        ["clipSourcePath"] = first.AnimationSourcePath,
+                        ["clipSerializedFile"] = first.AnimationSerializedFile,
+                        ["clipPathId"] = first.AnimationPathId,
+                        ["clipPathIdString"] = first.AnimationPathId.ToString(CultureInfo.InvariantCulture),
+                        ["roles"] = new JArray(roles.Select(x => new JValue(x))),
+                        ["diagnosticOnly"] = true,
+                        ["notDefaultModelAnimationRelation"] = true,
+                    };
+                })
+                .OrderBy(x => x["clipName"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x["monoBehaviourPathId"]?.Value<long>() ?? 0)
+                .Take(8);
         }
 
         private static string GetSimpleAnimationRole(string scriptName, string fieldPath)
