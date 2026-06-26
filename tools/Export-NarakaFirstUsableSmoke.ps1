@@ -776,6 +776,14 @@ $missingAnimatorControllerClipTargets = 0
 $missingAnimatorControllerClipTargetSamplesJson = "null"
 $explicitControllerClipDomainsJson = "null"
 $explicitAnimatorControllerUsagesJson = "null"
+$animatorControllerProductionGate = [pscustomobject]@{
+    status = "unknown"
+    rule = "Current Naraka smoke expects no Animator that has both Avatar and a Controller with resolved clip edges. If this becomes non-zero, it is a production animation candidate signal and must be re-validated instead of silently enabling animations."
+    totalAnimators = 0
+    withAvatar = 0
+    withControllerClipEdges = 0
+    withAvatarAndControllerClipEdges = 0
+}
 
 if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     $coverageModels = $sqliteSummaryJson.animationRelationCoverage.totals.models
@@ -789,6 +797,20 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
     $missingAnimatorControllerClipTargetSamplesJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingAnimatorControllerClipTargetSamples 10
     $explicitControllerClipDomainsJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitControllerClipDomains 10
     $explicitAnimatorControllerUsagesJson = ConvertTo-SmokeJsonLiteral $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages 10
+    if ($null -ne $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages) {
+        $explicitAnimatorControllerUsages = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitAnimatorControllerUsages
+        $animatorControllerProductionGate = [pscustomobject]@{
+            status = "ok"
+            rule = $animatorControllerProductionGate.rule
+            totalAnimators = [long]$explicitAnimatorControllerUsages.totalAnimators
+            withAvatar = [long]$explicitAnimatorControllerUsages.withAvatar
+            withControllerClipEdges = [long]$explicitAnimatorControllerUsages.withControllerClipEdges
+            withAvatarAndControllerClipEdges = [long]$explicitAnimatorControllerUsages.withAvatarAndControllerClipEdges
+        }
+        if ($animatorControllerProductionGate.withAvatarAndControllerClipEdges -ne 0) {
+            throw "Naraka source-index found Animator+Avatar+ControllerClip production candidate signal. withAvatarAndControllerClipEdges=$($animatorControllerProductionGate.withAvatarAndControllerClipEdges). Re-validate before enabling default animation capability."
+        }
+    }
 }
 
 if ($null -ne $animationReportJson) {
@@ -896,6 +918,7 @@ $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-Smo
 $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary.status) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains.status) + ","
+$summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
 $summaryJsonLines += '    "thumbnailFileCount": ' + (ConvertTo-SmokeJsonLiteral $thumbnailFileCount) + ","
@@ -923,6 +946,7 @@ $summaryJsonLines += '    "missingAnimatorControllerClipTargets": ' + (ConvertTo
 $summaryJsonLines += '    "missingAnimatorControllerClipTargetSamples": ' + $missingAnimatorControllerClipTargetSamplesJson + ","
 $summaryJsonLines += '    "explicitControllerClipDomains": ' + $explicitControllerClipDomainsJson + ","
 $summaryJsonLines += '    "explicitAnimatorControllerUsages": ' + $explicitAnimatorControllerUsagesJson + ","
+$summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
 $summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10)
 $summaryJsonLines += '  },'
@@ -1036,6 +1060,11 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
         $reportLines.Add(('- Animator controller production gate: withAvatar=`{0}`, withAvatarAndControllerClipEdges=`{1}`' -f `
             (ConvertTo-SmokeText $relationHealth.explicitAnimatorControllerUsages.withAvatar "0"),
             (ConvertTo-SmokeText $relationHealth.explicitAnimatorControllerUsages.withAvatarAndControllerClipEdges "0")))
+        $reportLines.Add(('- Animator controller production gate status: `{0}`, totalAnimators=`{1}`, withControllerClipEdges=`{2}`' -f `
+            (ConvertTo-SmokeText $animatorControllerProductionGate.status),
+            (ConvertTo-SmokeText $animatorControllerProductionGate.totalAnimators "0"),
+            (ConvertTo-SmokeText $animatorControllerProductionGate.withControllerClipEdges "0")))
+        $reportLines.Add('- Animator controller production gate rule: a non-zero Animator+Avatar+ControllerClip count is a new production-candidate signal and must trigger explicit model/clip validation before default animation capability changes.')
     }
     if ($sourceIndexAvatarAnimatorDomains.status -eq "ok") {
         $reportLines.Add(('- Source-index animator.avatar domains: totalAnimators=`{0}`, withController=`{1}`' -f `
