@@ -479,6 +479,135 @@ function Read-SourceModelAvatarAnimationDiagnostic {
     }
 }
 
+function Read-SourceIndexScriptAnimationClipScripts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceIndexPath
+    )
+
+    $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $sqlite3) {
+        return [pscustomobject]@{
+            status = "toolMissing"
+            rule = "sqlite3.exe missing; script AnimationClip PPtr summary was skipped."
+            totalRelations = 0
+            distinctClipObjects = 0
+            scriptCount = 0
+            topScripts = @()
+            productionReadiness = "blocked"
+            blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+        }
+    }
+
+    # Naraka 大量动画关系藏在 MonoBehaviour 的脚本字段里。这里只做全库聚合，
+    # 让后续知道应该研究哪些脚本；没有脚本语义和模型验收前不能生成默认绑定。
+    $sql = @"
+CREATE TEMP TABLE mb_script AS
+SELECT from_file,
+       from_path_id AS mb_path_id,
+       COALESCE(NULLIF(json_extract(raw_json,'$.details.scriptName'), ''), '(unknown)') AS script_name
+FROM source_relations
+WHERE relation='monoBehaviour.script';
+CREATE INDEX temp.idx_mb_script_key ON mb_script(from_file, mb_path_id);
+CREATE TEMP TABLE mb_clip AS
+SELECT s.script_name,
+       r.from_file,
+       r.from_path_id AS mb_path_id,
+       r.to_file AS clip_file,
+       r.to_path_id AS clip_path_id,
+       c.name AS clip_name
+FROM mb_script s
+JOIN source_relations r ON r.relation='monoBehaviour.pptr' AND r.from_file=s.from_file AND r.from_path_id=s.mb_path_id
+JOIN source_objects c ON c.serialized_file=r.to_file AND c.path_id=r.to_path_id AND c.type='AnimationClip';
+WITH totals AS (
+  SELECT COUNT(*) AS total_relations,
+         COUNT(DISTINCT clip_file || '#' || clip_path_id) AS distinct_clip_objects,
+         COUNT(DISTINCT script_name) AS script_count
+  FROM mb_clip
+),
+grouped AS (
+  SELECT script_name,
+         COUNT(*) AS relation_count,
+         COUNT(DISTINCT from_file || '#' || mb_path_id) AS mono_behaviour_count,
+         COUNT(DISTINCT clip_file || '#' || clip_path_id) AS distinct_clip_count,
+         substr(group_concat(DISTINCT clip_name),1,260) AS sample_clips
+  FROM mb_clip
+  GROUP BY script_name
+)
+SELECT totals.total_relations,
+       totals.distinct_clip_objects,
+       totals.script_count,
+       grouped.script_name,
+       grouped.relation_count,
+       grouped.mono_behaviour_count,
+       grouped.distinct_clip_count,
+       grouped.sample_clips
+FROM grouped
+CROSS JOIN totals
+ORDER BY grouped.relation_count DESC, grouped.script_name;
+"@
+
+    $rows = @(& $sqlite3.Source -readonly -batch -tabs $SourceIndexPath $sql)
+    if ($LASTEXITCODE -ne 0) {
+        throw "sqlite3 failed while reading script AnimationClip PPtr summary from source index."
+    }
+
+    $topScripts = @()
+    $totalRelations = 0L
+    $distinctClipObjects = 0L
+    $scriptCount = 0L
+    foreach ($row in $rows) {
+        if ([string]::IsNullOrWhiteSpace($row)) {
+            continue
+        }
+
+        $parts = ([string]$row).Split("`t")
+        if ($parts.Count -lt 8) {
+            continue
+        }
+
+        if ($topScripts.Count -eq 0) {
+            $totalRelations = ConvertTo-SmokeInt64 $parts[0]
+            $distinctClipObjects = ConvertTo-SmokeInt64 $parts[1]
+            $scriptCount = ConvertTo-SmokeInt64 $parts[2]
+        }
+
+        $scriptName = [string]$parts[3]
+        $relationKind = switch ($scriptName) {
+            "SimpleAnimation" { "scriptPlayable" }
+            "UIStateAnimator" { "uiState" }
+            "AnimationPlayableAsset" { "timelineOrCutscene" }
+            "AnimationTrack" { "timelineOrCutscene" }
+            "SpeedAnimationPlayer" { "speedAnimationPlayer" }
+            default { "otherScriptField" }
+        }
+
+        $topScripts += [pscustomobject]@{
+            scriptName = $scriptName
+            relationKind = $relationKind
+            relationCount = ConvertTo-SmokeInt64 $parts[4]
+            monoBehaviourCount = ConvertTo-SmokeInt64 $parts[5]
+            distinctClipCount = ConvertTo-SmokeInt64 $parts[6]
+            sampleClips = [string]$parts[7]
+            diagnosticOnly = $true
+            notDefaultModelAnimationRelation = $true
+            productionReadiness = "blocked"
+            blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+        }
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        rule = "MonoBehaviour script AnimationClip PPtrs are explicit script-field references and reveal Naraka animation relationship storage. They remain diagnostics until script semantics, deterministic model relation, glTF TRS export and visual review are proven."
+        totalRelations = $totalRelations
+        distinctClipObjects = $distinctClipObjects
+        scriptCount = $scriptCount
+        topScripts = @($topScripts | Select-Object -First 20)
+        productionReadiness = "blocked"
+        blockedProductionRequirements = @("scriptSemantics", "deterministicModelRelation", "validatedModelGltf", "animationTrsExport", "visualReview")
+    }
+}
+
 function Read-SourceIndexSimpleAnimationClipDomains {
     param(
         [Parameter(Mandatory = $true)]
@@ -1204,6 +1333,14 @@ $sourceIndexSimpleAnimationClipDomains = [pscustomobject]@{
     distinctClipBuckets = 0
     domainCounts = @()
 }
+$sourceIndexScriptAnimationClipScripts = [pscustomobject]@{
+    status = "notChecked"
+    rule = "MonoBehaviour script AnimationClip PPtr summary is a source-index diagnostic only. It reveals script-owned clip references, but does not create model-animation bindings."
+    totalRelations = 0
+    distinctClipObjects = 0
+    scriptCount = 0
+    topScripts = @()
+}
 $sourceModelAvatarDiagnostics = [pscustomobject]@{
     status = "notChecked"
     rule = "Avatar.m_TOS hash coverage and model-avatar structural overlap are source-index diagnostics only. They can guide solver/oracle probes, but must stay defaultCandidateCount=0 until explicit Unity animation context, model validation, TRS export and visual validation are proven."
@@ -1449,12 +1586,28 @@ $scriptAnimationComponentDiagnostics = [pscustomobject]@{
     yaodaojiWings = $yaodaojiWingsScriptAnimationDiagnostic
     fxAttack = $fxScriptAnimationDiagnostic
 }
+$sourceIndexScriptAnimationClipScripts = Read-SourceIndexScriptAnimationClipScripts -SourceIndexPath $SourceIndex
+if ($sourceIndexScriptAnimationClipScripts.status -eq "ok" -and $sourceIndexScriptAnimationClipScripts.totalRelations -lt 1) {
+    throw "Script AnimationClip PPtr summary found no AnimationClip rows."
+}
 $sourceIndexSimpleAnimationClipDomains = Read-SourceIndexSimpleAnimationClipDomains -SourceIndexPath $SourceIndex
 if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok" -and $sourceIndexSimpleAnimationClipDomains.totalRelations -lt 1) {
     throw "SimpleAnimation clip-domain diagnostic found no AnimationClip PPtr rows."
 }
 if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok" -and $sourceIndexSimpleAnimationClipDomains.probeShortlistCount -lt 3) {
     throw "SimpleAnimation probe shortlist lost character/monster/human-token samples. count=$($sourceIndexSimpleAnimationClipDomains.probeShortlistCount)"
+}
+if ($sourceIndexScriptAnimationClipScripts.status -eq "ok" -and $sourceIndexSimpleAnimationClipDomains.status -eq "ok") {
+    $simpleScriptRow = @($sourceIndexScriptAnimationClipScripts.topScripts | Where-Object { $_.scriptName -eq "SimpleAnimation" } | Select-Object -First 1)
+    if ($simpleScriptRow.Count -lt 1) {
+        throw "Script AnimationClip PPtr summary lost SimpleAnimation row."
+    }
+    if ($simpleScriptRow[0].relationCount -ne $sourceIndexSimpleAnimationClipDomains.totalRelations) {
+        throw "Script AnimationClip PPtr summary and SimpleAnimation domain summary disagree. script=$($simpleScriptRow[0].relationCount) simple=$($sourceIndexSimpleAnimationClipDomains.totalRelations)"
+    }
+    if ($sourceIndexScriptAnimationClipScripts.totalRelations -lt $sourceIndexSimpleAnimationClipDomains.totalRelations) {
+        throw "Script AnimationClip PPtr total is smaller than SimpleAnimation subset. total=$($sourceIndexScriptAnimationClipScripts.totalRelations) simple=$($sourceIndexSimpleAnimationClipDomains.totalRelations)"
+    }
 }
 
 Write-Host ""
@@ -2672,6 +2825,7 @@ $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertT
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics.status) + ","
+$summaryJsonLines += '    "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts.status) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains.status) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics.status) + ","
 $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate.status) + ","
@@ -2709,6 +2863,7 @@ $summaryJsonLines += '    "animatorControllerProductionGate": ' + (ConvertTo-Smo
 $summaryJsonLines += '    "avatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains 10) + ","
 $summaryJsonLines += '    "legacyAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexLegacyAnimationClipDomains 10) + ","
 $summaryJsonLines += '    "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
+$summaryJsonLines += '    "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts 10) + ","
 $summaryJsonLines += '    "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
 $summaryJsonLines += '    "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10)
 $summaryJsonLines += '  },'
@@ -2716,6 +2871,7 @@ $summaryJsonLines += '  "sourceIndexLegacyAnimationClipDomains": ' + (ConvertTo-
 $summaryJsonLines += '  "animatorControllerProductionGate": ' + (ConvertTo-SmokeJsonLiteral $animatorControllerProductionGate 10) + ","
 $summaryJsonLines += '  "monoBehaviourAnimationClipPPtrSummary": ' + $monoBehaviourAnimationClipPPtrSummaryJson + ","
 $summaryJsonLines += '  "scriptAnimationComponentDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $scriptAnimationComponentDiagnostics 10) + ","
+$summaryJsonLines += '  "sourceIndexScriptAnimationClipScripts": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexScriptAnimationClipScripts 10) + ","
 $summaryJsonLines += '  "sourceIndexSimpleAnimationClipDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexSimpleAnimationClipDomains 10) + ","
 $summaryJsonLines += '  "sourceModelAvatarDiagnostics": ' + (ConvertTo-SmokeJsonLiteral $sourceModelAvatarDiagnostics 10) + ","
 $summaryJsonLines += '  "animationDiagnostic": ' + $animationDiagnosticJson
@@ -2746,6 +2902,14 @@ if ($summaryJsonParsed.zhumuMergedAnimationPreview.status -eq "ok") {
         if ($summaryZhumuBlockedRequirements -notcontains [string]$requiredRequirement) {
             throw "smoke_summary.json zhumuMergedAnimationPreview lost production blocked requirement: $requiredRequirement"
         }
+    }
+}
+if ($summaryJsonParsed.sourceIndexScriptAnimationClipScripts.status -eq "ok") {
+    if ([string]$summaryJsonParsed.sourceIndexScriptAnimationClipScripts.productionReadiness -ne "blocked") {
+        throw "smoke_summary.json sourceIndexScriptAnimationClipScripts must stay production-blocked. productionReadiness=$($summaryJsonParsed.sourceIndexScriptAnimationClipScripts.productionReadiness)"
+    }
+    if ([int64]$summaryJsonParsed.sourceIndexScriptAnimationClipScripts.totalRelations -lt [int64]$summaryJsonParsed.sourceIndexSimpleAnimationClipDomains.totalRelations) {
+        throw "smoke_summary.json script AnimationClip PPtr total is smaller than SimpleAnimation subset."
     }
 }
 
@@ -2922,6 +3086,25 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
                 (ConvertTo-SmokeText $scriptRow.sample.clipName "")))
         }
         $reportLines.Add('- MonoBehaviour AnimationClip PPtr rule: these are explicit script-field references for investigation, but custom script semantics are required before any default model-animation binding can be created.')
+    }
+    if ($sourceIndexScriptAnimationClipScripts.status -eq "ok") {
+        $scriptParts = @()
+        foreach ($scriptRow in @($sourceIndexScriptAnimationClipScripts.topScripts | Select-Object -First 8)) {
+            $scriptParts += ('{0}={1}/{2}/{3}' -f `
+                (ConvertTo-SmokeText $scriptRow.scriptName),
+                (ConvertTo-SmokeText $scriptRow.relationCount "0"),
+                (ConvertTo-SmokeText $scriptRow.distinctClipCount "0"),
+                (ConvertTo-SmokeText $scriptRow.relationKind))
+        }
+        $reportLines.Add(('- Source-index script AnimationClip PPtr scripts: totalRelations=`{0}`, distinctClipObjects=`{1}`, scripts=`{2}`, top=`{3}`' -f `
+            (ConvertTo-SmokeText $sourceIndexScriptAnimationClipScripts.totalRelations "0"),
+            (ConvertTo-SmokeText $sourceIndexScriptAnimationClipScripts.distinctClipObjects "0"),
+            (ConvertTo-SmokeText $sourceIndexScriptAnimationClipScripts.scriptCount "0"),
+            ($scriptParts -join '; ')))
+        $reportLines.Add('- Source-index script AnimationClip rule: SimpleAnimation is the main Naraka solver probe family; UIStateAnimator, Timeline/PlayableAsset and SpeedAnimationPlayer rows stay diagnostic until their script/runtime context is decoded and validated.')
+    }
+    else {
+        $reportLines.Add(('- Source-index script AnimationClip PPtr scripts: `{0}`' -f $sourceIndexScriptAnimationClipScripts.status))
     }
     if ($sourceIndexSimpleAnimationClipDomains.status -eq "ok") {
         $simpleAnimationDomainParts = @()
