@@ -6,6 +6,7 @@ param(
     [string]$AnimationSidecar = "D:\Assets\Naraka\Dijiang_AttackA8_FullDecodedSidecar_Current\Animations\assets\res\animclipadapter\05\mo_pve_b_dijiang_attack_a8_01.animation_asset.json",
     [string]$AnimationPreviewAvatar = "mo_pve_b_dijiang_01_skeletonAvatar",
     [string]$ShaderBoundarySampleRoot = "D:\Assets\Naraka\FaceMaleBattle_ShaderBoundary_Current",
+    [string]$StaticEnvironmentSampleRoot = "D:\Assets\Naraka\Smoke_static_jisui_device_bigtree_04_Current",
     [string]$OutputRoot = "D:\Assets\Naraka\Naraka_FirstUsableSmoke_Current",
     [string]$Configuration = "Release",
     [switch]$KeepExisting,
@@ -126,6 +127,15 @@ $shaderBoundarySummaryJson = $null
 $shaderBoundaryMaterialSidecarRows = $null
 $shaderBoundaryCustomShaderRows = $null
 $shaderBoundaryGltf = $null
+$staticEnvironmentStatus = "notChecked"
+$staticEnvironmentRule = "Static environment/prop meshes are an explicit extension sample. They prove mesh, UV, material slots, textures and AssetLibrary index health, but they do not change the default prefab/Animator-focused Library scope."
+$staticEnvironmentSummaryJson = $null
+$staticEnvironmentValidationJson = $null
+$staticEnvironmentGltfValidationStatus = if ($SkipGltfValidation) { "skipped" } else { "toolMissing" }
+$staticEnvironmentGltf = $null
+$staticEnvironmentTextureLinkErrors = $null
+$staticEnvironmentMaterialSidecarRows = $null
+$staticEnvironmentModelRows = $null
 $sourceIndexAvatarAnimatorDomains = [pscustomobject]@{
     status = "notChecked"
     rule = "Animator.avatar is only source-index evidence. It can explain model skeleton context, but it never creates a default model-animation binding without explicit clip/controller relation and model validation."
@@ -308,6 +318,89 @@ else {
     $shaderBoundaryStatus = "skipped"
 }
 
+if (![string]::IsNullOrWhiteSpace($StaticEnvironmentSampleRoot)) {
+    if (Test-Path -LiteralPath $StaticEnvironmentSampleRoot) {
+        Write-Host ""
+        Write-Host "== Validate Naraka static environment extension sample =="
+
+        $staticEnvironmentAssetLibrary = Join-Path $StaticEnvironmentSampleRoot "asset_library.json"
+        $staticEnvironmentValidation = Join-Path $StaticEnvironmentSampleRoot "model_validation.json"
+        $staticEnvironmentSqliteSummary = Join-Path $StaticEnvironmentSampleRoot "sqlite_index_summary.json"
+        $staticEnvironmentDb = Join-Path $StaticEnvironmentSampleRoot "library_index.db"
+        $staticEnvironmentReportFiles = @(Get-ChildItem -LiteralPath $StaticEnvironmentSampleRoot -Recurse -Filter "MATERIAL_REPORT.md" -File)
+        $staticEnvironmentGltfs = @(Get-ChildItem -LiteralPath (Join-Path $StaticEnvironmentSampleRoot "Models") -Recurse -Filter "*.gltf" -File)
+
+        Test-FileRequired -Path $staticEnvironmentAssetLibrary -Label "static environment asset_library.json"
+        Test-FileRequired -Path $staticEnvironmentValidation -Label "static environment model_validation.json"
+        Test-FileRequired -Path $staticEnvironmentSqliteSummary -Label "static environment sqlite_index_summary.json"
+        Test-FileRequired -Path $staticEnvironmentDb -Label "static environment library_index.db"
+        if ($staticEnvironmentReportFiles.Count -lt 1) {
+            throw "Static environment sample is missing MATERIAL_REPORT.md."
+        }
+        if ($staticEnvironmentGltfs.Count -lt 1) {
+            throw "Static environment sample is missing exported glTF models."
+        }
+        $staticEnvironmentGltf = $staticEnvironmentGltfs[0].FullName
+
+        $staticEnvironmentValidationJson = Get-Content -LiteralPath $staticEnvironmentValidation -Raw -Encoding UTF8 | ConvertFrom-Json
+        $staticEnvironmentSummaryJson = Get-Content -LiteralPath $staticEnvironmentSqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([long]$staticEnvironmentValidationJson.totals.models -lt 1 -or [long]$staticEnvironmentValidationJson.totals.ok -lt 1) {
+            throw "Static environment sample has no ok model validation result."
+        }
+        if ([long]$staticEnvironmentValidationJson.totals.withTextures -lt 1) {
+            throw "Static environment sample has no validated texture usage."
+        }
+        if ([long]$staticEnvironmentSummaryJson.counts.textureAssets -lt 1 -or [long]$staticEnvironmentSummaryJson.counts.materialSidecars -lt 1) {
+            throw "Static environment sample lost texture assets or material sidecars."
+        }
+
+        $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
+        if ($null -ne $sqlite3) {
+            $staticEnvironmentTextureLinkErrorsText = & $sqlite3.Source -readonly -batch -noheader $staticEnvironmentDb "SELECT COUNT(*) FROM texture_links WHERE link_error IS NOT NULL AND trim(link_error) <> '';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while checking static environment texture link errors."
+            }
+            $staticEnvironmentMaterialSidecarRowsText = & $sqlite3.Source -readonly -batch -noheader $staticEnvironmentDb "SELECT COUNT(*) FROM material_sidecars;"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting static environment material_sidecars."
+            }
+            $staticEnvironmentModelRowsText = & $sqlite3.Source -readonly -batch -noheader $staticEnvironmentDb "SELECT COUNT(*) FROM assets WHERE kind = 'Model';"
+            if ($LASTEXITCODE -ne 0) {
+                throw "sqlite3 failed while counting static environment model assets."
+            }
+            $staticEnvironmentTextureLinkErrors = [long]$staticEnvironmentTextureLinkErrorsText
+            $staticEnvironmentMaterialSidecarRows = [long]$staticEnvironmentMaterialSidecarRowsText
+            $staticEnvironmentModelRows = [long]$staticEnvironmentModelRowsText
+            if ($staticEnvironmentTextureLinkErrors -ne 0) {
+                throw "Static environment sample has texture link errors: $staticEnvironmentTextureLinkErrors"
+            }
+            if ($staticEnvironmentMaterialSidecarRows -lt 1 -or $staticEnvironmentModelRows -lt 1) {
+                throw "Static environment sample lost material sidecar or model rows in library_index.db."
+            }
+        }
+        else {
+            Write-Warning "sqlite3.exe not found; static environment table checks skipped."
+        }
+
+        if (!$SkipGltfValidation) {
+            $gltfTransform = Get-Command "gltf-transform.cmd" -ErrorAction SilentlyContinue
+            if ($null -ne $gltfTransform) {
+                Invoke-Checked -Label "Validate static environment glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $staticEnvironmentGltf)
+                $staticEnvironmentGltfValidationStatus = "ok"
+            }
+        }
+
+        $staticEnvironmentStatus = "ok"
+    }
+    else {
+        $staticEnvironmentStatus = "missing"
+        Write-Warning "Static environment sample not found; skipped: $StaticEnvironmentSampleRoot"
+    }
+}
+else {
+    $staticEnvironmentStatus = "skipped"
+}
+
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -470,10 +563,28 @@ $summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral
 $summaryJsonLines += '    "customShaderMaterialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryCustomShaderRows) + ","
 $summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryRule)
 $summaryJsonLines += '  },'
+$summaryJsonLines += '  "staticEnvironment": {'
+$summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentStatus) + ","
+$summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $StaticEnvironmentSampleRoot) + ","
+$summaryJsonLines += '    "gltf": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltf) + ","
+$summaryJsonLines += '    "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
+$summaryJsonLines += '    "models": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentValidationJson.totals.models) + ","
+$summaryJsonLines += '    "ok": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentValidationJson.totals.ok) + ","
+$summaryJsonLines += '    "withTextures": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentValidationJson.totals.withTextures) + ","
+$summaryJsonLines += '    "textureAssets": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentSummaryJson.counts.textureAssets) + ","
+$summaryJsonLines += '    "textureLinks": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentSummaryJson.counts.textureLinks) + ","
+$summaryJsonLines += '    "textureLinkErrors": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentTextureLinkErrors) + ","
+$summaryJsonLines += '    "materialSidecars": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentSummaryJson.counts.materialSidecars) + ","
+$summaryJsonLines += '    "materialSidecarRows": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentMaterialSidecarRows) + ","
+$summaryJsonLines += '    "modelRows": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentModelRows) + ","
+$summaryJsonLines += '    "rule": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentRule)
+$summaryJsonLines += '  },'
 $summaryJsonLines += '  "checks": {'
 $summaryJsonLines += '    "representativeGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $representativeGltfValidationStatus) + ","
 $summaryJsonLines += '    "shaderBoundary": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
 $summaryJsonLines += '    "shaderBoundaryGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryGltfValidationStatus) + ","
+$summaryJsonLines += '    "staticEnvironment": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentStatus) + ","
+$summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
 $summaryJsonLines += '    "browserValidation": ' + (ConvertTo-SmokeJsonLiteral $browserValidationStatus) + ","
 $summaryJsonLines += '    "thumbnailRender": ' + (ConvertTo-SmokeJsonLiteral $thumbnailStatus) + ","
@@ -653,6 +764,29 @@ elseif ($shaderBoundaryStatus -eq "missing") {
     $reportLines.Add(('- Sample root missing: `{0}`' -f $ShaderBoundarySampleRoot))
 }
 $reportLines.Add("")
+$reportLines.Add("## Static Environment Extension Diagnostic")
+$reportLines.Add("")
+$reportLines.Add(('- Status: `{0}`' -f $staticEnvironmentStatus))
+if ($staticEnvironmentStatus -eq "ok") {
+    $reportLines.Add(('- Sample root: `{0}`' -f $StaticEnvironmentSampleRoot))
+    $reportLines.Add(('- glTF: `{0}`' -f $staticEnvironmentGltf))
+    $reportLines.Add(('- glTF validator: `{0}`' -f $staticEnvironmentGltfValidationStatus))
+    $reportLines.Add(('- Model validation: models=`{0}`, ok=`{1}`, withTextures=`{2}`' -f `
+        (ConvertTo-SmokeText $staticEnvironmentValidationJson.totals.models "0"),
+        (ConvertTo-SmokeText $staticEnvironmentValidationJson.totals.ok "0"),
+        (ConvertTo-SmokeText $staticEnvironmentValidationJson.totals.withTextures "0")))
+    $reportLines.Add(('- SQLite counts: textureAssets=`{0}`, textureLinks=`{1}`, textureLinkErrors=`{2}`, materialSidecars=`{3}`, modelRows=`{4}`' -f `
+        (ConvertTo-SmokeText $staticEnvironmentSummaryJson.counts.textureAssets "0"),
+        (ConvertTo-SmokeText $staticEnvironmentSummaryJson.counts.textureLinks "0"),
+        (ConvertTo-SmokeText $staticEnvironmentTextureLinkErrors "unknown"),
+        (ConvertTo-SmokeText $staticEnvironmentSummaryJson.counts.materialSidecars "0"),
+        (ConvertTo-SmokeText $staticEnvironmentModelRows "unknown")))
+    $reportLines.Add('- Rule: this sample is an explicit static environment/prop extension check. It proves deterministic mesh, UV, texture and material-sidecar export for a visible static asset, but it does not broaden the default Library smoke beyond representative prefab/GameObject models.')
+}
+elseif ($staticEnvironmentStatus -eq "missing") {
+    $reportLines.Add(('- Sample root missing: `{0}`' -f $StaticEnvironmentSampleRoot))
+}
+$reportLines.Add("")
 $reportLines.Add("## Animation Diagnostic")
 $reportLines.Add("")
 if ($null -ne $animationReportJson) {
@@ -686,6 +820,10 @@ $reportLines.Add(('- Device prop glTF: `{0}`' -f $deviceGltf))
 if ($shaderBoundaryStatus -eq "ok") {
     $reportLines.Add(('- Shader boundary glTF: `{0}`' -f $shaderBoundaryGltf))
     $reportLines.Add(('- Shader boundary material report: `{0}`' -f (Join-Path $ShaderBoundarySampleRoot "MATERIAL_REPORT.md")))
+}
+if ($staticEnvironmentStatus -eq "ok") {
+    $reportLines.Add(('- Static environment glTF: `{0}`' -f $staticEnvironmentGltf))
+    $reportLines.Add(('- Static environment SQLite summary: `{0}`' -f (Join-Path $StaticEnvironmentSampleRoot "sqlite_index_summary.json")))
 }
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))
