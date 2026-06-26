@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument("--frame_labels", default="", help="Comma-separated frame labels. Empty defaults to first,mid,end.")
     parser.add_argument("--file_prefix", default="", help="Optional file prefix for single-view smoke outputs, for example zhumu_attack_a4.")
     parser.add_argument("--summary_text", default="", help="Optional bbox summary text path. Relative paths are written under --output.")
+    parser.add_argument("--camera_margin", type=float, default=1.16, help="Orthographic camera fit margin. Increase it when validation frames touch image borders.")
     return parser.parse_args(argv)
 
 
@@ -341,14 +342,15 @@ def view_target(view):
     return center, radius
 
 
-def update_camera(cam, view="full"):
+def update_camera(cam, view="full", camera_margin=1.16):
     center, radius = view_target(view)
     cam.location = center + Vector((0, -radius * 3.0, radius * 0.15))
     direction = center - cam.location
     cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     cam_data = cam.data
     cam_data.type = "ORTHO"
-    fit_scale = camera_ortho_scale_for_objects(mesh_objects(), cam)
+    # 批量验收时宁可多留一点边，也不要让动作大幅度帧被裁掉。
+    fit_scale = camera_ortho_scale_for_objects(mesh_objects(), cam, margin=camera_margin)
     fallback_scale = radius * 2.35
     cam_data.ortho_scale = max(fit_scale or fallback_scale, 0.1)
     bpy.context.scene.camera = cam
@@ -455,7 +457,7 @@ def main():
             for label, frame in zip(labels, frames):
                 scene.frame_set(frame)
                 bpy.context.view_layer.update()
-                update_camera(cam, view)
+                update_camera(cam, view, args.camera_margin)
                 scene.render.filepath = str(out_dir / output_file_name(view, label, frame, args.file_prefix, len(views)))
                 bpy.ops.render.render(write_still=True)
                 bounds = serializable_bounds(mesh_objects())
