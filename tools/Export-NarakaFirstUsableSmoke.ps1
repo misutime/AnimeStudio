@@ -2285,6 +2285,7 @@ if ($null -ne $animationReportJson) {
     $animationDiagnosticLines += '  "status": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.status) + ","
     $animationDiagnosticLines += '  "message": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.message) + ","
     $animationDiagnosticLines += '  "gltf": ' + (ConvertTo-SmokeJsonLiteral $animationGltfPath) + ","
+    $animationDiagnosticLines += '  "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $animationGltfValidationStatus) + ","
     $animationDiagnosticLines += '  "avatarInjectionMode": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.mode) + ","
     $animationDiagnosticLines += '  "diagnosticOnly": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.diagnosticOnly) + ","
     $animationDiagnosticLines += '  "notDefaultModelAnimationRelation": ' + (ConvertTo-SmokeJsonLiteral $animationReportJson.avatarInjection.notDefaultModelAnimationRelation) + ","
@@ -2296,6 +2297,7 @@ if ($null -ne $animationReportJson) {
     $animationDiagnosticLines = @()
     $animationDiagnosticLines += "{"
     $animationDiagnosticLines += '  "status": ' + (ConvertTo-SmokeJsonLiteral $animationDiagnosticStatus) + ","
+    $animationDiagnosticLines += '  "gltfValidation": ' + (ConvertTo-SmokeJsonLiteral $animationGltfValidationStatus) + ","
     $animationDiagnosticLines += '  "diagnosticOnly": true,'
     $animationDiagnosticLines += '  "notDefaultModelAnimationRelation": true'
     $animationDiagnosticLines += "}"
