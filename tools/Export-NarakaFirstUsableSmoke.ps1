@@ -225,6 +225,10 @@ $characterCandidateModelAnimationRelationRows = $null
 $characterCandidateRelationAnimationRows = $null
 $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
+$hadiModularBoundary = [pscustomobject]@{
+    status = "notChecked"
+    rule = "Hadi body is a usable modular body/clothing asset, not a complete character. It must stay marked modular_incomplete and blocked from production animation smoke until deterministic Face/Hair assembly is available."
+}
 $characterCandidateSourceIndexBoundary = [pscustomobject]@{
     status = "notChecked"
     rule = "SamuraiGhost bundle source-index boundary: Animator.avatar and same-bundle Humanoid/Muscle clips are diagnostic evidence only; production animation binding still requires explicit Animator.controller, Animation.clip or AnimatorController.clip relation plus visual validation."
@@ -286,6 +290,7 @@ $manifest = Join-Path $libraryOutput "asset_library.json"
 $db = Join-Path $libraryOutput "library_index.db"
 $sqliteSummary = Join-Path $libraryOutput "sqlite_index_summary.json"
 $validation = Join-Path $libraryOutput "model_validation.json"
+$assetCatalog = Join-Path $libraryOutput "asset_catalog.jsonl"
 $gltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
 $bowGltf = Join-Path $libraryOutput "Models\assets\res\prefab\drop_item_generate\weapon\weapon_drop_bow_dongjun\weapon_drop_bow_dongjun.gltf"
 $deviceGltf = Join-Path $libraryOutput "Models\assets\res\prefab\device_generate\device_hongbao_02\device_hongbao_02.gltf"
@@ -295,6 +300,7 @@ Test-FileRequired -Path $manifest -Label "asset_library.json"
 Test-FileRequired -Path $db -Label "library_index.db"
 Test-FileRequired -Path $sqliteSummary -Label "sqlite_index_summary.json"
 Test-FileRequired -Path $validation -Label "model_validation.json"
+Test-FileRequired -Path $assetCatalog -Label "asset_catalog.jsonl"
 Test-FileRequired -Path $gltf -Label "Hadi glTF"
 Test-FileRequired -Path $bowGltf -Label "Bow prop glTF"
 Test-FileRequired -Path $deviceGltf -Label "Device prop glTF"
@@ -672,6 +678,42 @@ else {
 $assetLibrary = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $modelValidation = Get-Content -LiteralPath $validation -Raw -Encoding UTF8 | ConvertFrom-Json
 $sqliteSummaryJson = Get-Content -LiteralPath $sqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
+$hadiCatalogRow = $null
+foreach ($catalogLine in Get-Content -LiteralPath $assetCatalog -Encoding UTF8) {
+    if ([string]::IsNullOrWhiteSpace($catalogLine)) {
+        continue
+    }
+
+    $catalogRow = $catalogLine | ConvertFrom-Json
+    if ($catalogRow.name -eq "ch_m_hadi_lv_s9") {
+        $hadiCatalogRow = $catalogRow
+        break
+    }
+}
+if ($null -eq $hadiCatalogRow) {
+    throw "asset_catalog.jsonl lost Hadi representative model row."
+}
+
+$hadiMissingRoles = @($hadiCatalogRow.modelCompletenessMissingRoles)
+if ($hadiCatalogRow.libraryRole -ne "ModularCharacterBase" -or
+    $hadiCatalogRow.resourceKind -ne "CharacterPart" -or
+    $hadiCatalogRow.modelCompletenessStatus -ne "modular_incomplete" -or
+    ($hadiMissingRoles -notcontains "Face") -or
+    ($hadiMissingRoles -notcontains "Hair")) {
+    throw "Hadi modular boundary changed unexpectedly. libraryRole=$($hadiCatalogRow.libraryRole) resourceKind=$($hadiCatalogRow.resourceKind) completeness=$($hadiCatalogRow.modelCompletenessStatus) missingRoles=$($hadiMissingRoles -join ',')"
+}
+$hadiModularBoundary = [pscustomobject]@{
+    status = "ok"
+    rule = $hadiModularBoundary.rule
+    name = [string]$hadiCatalogRow.name
+    libraryRole = [string]$hadiCatalogRow.libraryRole
+    resourceKind = [string]$hadiCatalogRow.resourceKind
+    characterAssemblyRole = [string]$hadiCatalogRow.characterAssemblyRole
+    characterAssemblyFamily = [string]$hadiCatalogRow.characterAssemblyFamily
+    modelCompletenessStatus = [string]$hadiCatalogRow.modelCompletenessStatus
+    missingRoles = $hadiMissingRoles
+    modelCompletenessRule = [string]$hadiCatalogRow.modelCompletenessRule
+}
 $sqlite3ForSourceIndex = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
 if ($null -ne $sqlite3ForSourceIndex) {
     $avatarAnimatorDomainSql = @"
@@ -964,6 +1006,7 @@ $summaryJsonLines += '    { "name": "ch_m_hadi_lv_s9", "role": "CharacterPart", 
 $summaryJsonLines += '    { "name": "weapon_drop_bow_dongjun", "role": "WeaponProp", "gltf": ' + (ConvertTo-SmokeJsonLiteral $bowGltf) + ' },'
 $summaryJsonLines += '    { "name": "device_hongbao_02", "role": "Prop", "gltf": ' + (ConvertTo-SmokeJsonLiteral $deviceGltf) + ' }'
 $summaryJsonLines += '  ],'
+$summaryJsonLines += '  "hadiModularBoundary": ' + (ConvertTo-SmokeJsonLiteral $hadiModularBoundary 10) + ","
 $summaryJsonLines += '  "shaderBoundary": {'
 $summaryJsonLines += '    "status": ' + (ConvertTo-SmokeJsonLiteral $shaderBoundaryStatus) + ","
 $summaryJsonLines += '    "sampleRoot": ' + (ConvertTo-SmokeJsonLiteral $ShaderBoundarySampleRoot) + ","
@@ -1023,6 +1066,7 @@ $summaryJsonLines += '    "shaderBoundaryGltfValidation": ' + (ConvertTo-SmokeJs
 $summaryJsonLines += '    "staticEnvironment": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentStatus) + ","
 $summaryJsonLines += '    "staticEnvironmentGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $staticEnvironmentGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidate": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateStatus) + ","
+$summaryJsonLines += '    "hadiModularBoundary": ' + (ConvertTo-SmokeJsonLiteral $hadiModularBoundary.status) + ","
 $summaryJsonLines += '    "characterCandidateGltfValidation": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateGltfValidationStatus) + ","
 $summaryJsonLines += '    "characterCandidateSourceIndexBoundary": ' + (ConvertTo-SmokeJsonLiteral $characterCandidateSourceIndexBoundary.status) + ","
 $summaryJsonLines += '    "sourceIndexAvatarAnimatorDomains": ' + (ConvertTo-SmokeJsonLiteral $sourceIndexAvatarAnimatorDomains.status) + ","
@@ -1100,6 +1144,17 @@ if ($null -ne $modelValidation.totals) {
         (ConvertTo-SmokeText $modelValidation.totals.error "0")))
 }
 $reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
+if ($hadiModularBoundary.status -eq "ok") {
+    $reportLines.Add(('- Hadi modular boundary: libraryRole=`{0}`, resourceKind=`{1}`, completeness=`{2}`, missingRoles=`{3}`' -f `
+        (ConvertTo-SmokeText $hadiModularBoundary.libraryRole),
+        (ConvertTo-SmokeText $hadiModularBoundary.resourceKind),
+        (ConvertTo-SmokeText $hadiModularBoundary.modelCompletenessStatus),
+        (ConvertTo-SmokeText ($hadiModularBoundary.missingRoles -join ","))))
+    $reportLines.Add('- Hadi modular rule: this body/clothing sample is usable as a model asset, but it is not a complete character and must not be used as a production animation smoke model until deterministic Face/Hair assembly is available.')
+}
+else {
+    $reportLines.Add(('- Hadi modular boundary: `{0}`' -f $hadiModularBoundary.status))
+}
 $reportLines.Add("")
 $reportLines.Add("## SQLite Index")
 $reportLines.Add("")
