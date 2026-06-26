@@ -3178,6 +3178,9 @@ LIMIT $limit;";
                     x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)) &&
                     x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "stateClip", StringComparison.Ordinal)))
                 .ToList();
+            var automaticDefaultStateClipRows = pairedRows
+                .Where(IsSimpleAnimationAutomaticDefaultStateClip)
+                .ToList();
             var defaultOnlyRows = groupedByComponentClip
                 .Where(x =>
                     x.Any(y => string.Equals(GetSimpleAnimationRole(y.ScriptName, y.ReferenceFieldPath), "defaultClip", StringComparison.Ordinal)) &&
@@ -3208,10 +3211,12 @@ LIMIT $limit;";
                 ["typeTreeMetadataNotIndexedRows"] = simpleRows.Count(x => string.Equals(x.SimpleAnimationTypeTreeStatus, "notIndexed", StringComparison.OrdinalIgnoreCase)),
                 ["typeTreePlayAutomaticallyRows"] = simpleRows.Count(x => x.SimpleAnimationPlayAutomatically > 0),
                 ["typeTreeDefaultStateRows"] = simpleRows.Count(x => x.SimpleAnimationDefaultStateCount > 0),
+                ["automaticDefaultStateClipRows"] = automaticDefaultStateClipRows.Count,
                 ["defaultOnlyRows"] = defaultOnlyRows.Count,
                 ["stateOnlyRows"] = stateOnlyRows.Count,
                 ["unresolvedFieldRows"] = simpleRows.Count - knownRows.Count,
                 ["pairedClipSamples"] = new JArray(BuildSimpleAnimationPairedClipSamples(pairedRows)),
+                ["automaticDefaultStateClipSamples"] = new JArray(BuildSimpleAnimationPairedClipSamples(automaticDefaultStateClipRows)),
                 ["productionReadiness"] = "blocked",
                 ["blockedProductionRequirements"] = new JArray(
                     "scriptRuntimeSemantics",
@@ -3221,6 +3226,29 @@ LIMIT $limit;";
                     "visualReview"),
                 ["rule"] = "SimpleAnimation public source shows m_Clip is the default clip and m_States.data.clip are state clips played through an Animator-backed PlayableGraph. This summary only explains script-field semantics; it does not prove which state is selected at runtime or create a production model-animation binding.",
             };
+        }
+
+        private static bool IsSimpleAnimationAutomaticDefaultStateClip(IGrouping<string, ScriptAnimationComponentDiagnosticRow> group)
+        {
+            var rows = group?.ToArray() ?? Array.Empty<ScriptAnimationComponentDiagnosticRow>();
+            if (rows.Length == 0)
+            {
+                return false;
+            }
+
+            var first = rows[0];
+            if (!string.Equals(first.SimpleAnimationTypeTreeStatus, "ok", StringComparison.OrdinalIgnoreCase) ||
+                first.SimpleAnimationPlayAutomatically <= 0 ||
+                first.SimpleAnimationDefaultStateCount != 1 ||
+                first.SimpleAnimationDefaultClipPathId != first.AnimationPathId)
+            {
+                return false;
+            }
+
+            var stateClipPathIds = ParseJsonArrayOrEmpty(first.SimpleAnimationStateClipPathIdsJson)
+                .Values<long>()
+                .ToArray();
+            return stateClipPathIds.Length > 0 && stateClipPathIds.Contains(first.AnimationPathId);
         }
 
         private static IEnumerable<JObject> BuildSimpleAnimationPairedClipSamples(IEnumerable<IGrouping<string, ScriptAnimationComponentDiagnosticRow>> pairedRows)
@@ -3258,6 +3286,7 @@ LIMIT $limit;";
                         ["clipPathIdString"] = first.AnimationPathId.ToString(CultureInfo.InvariantCulture),
                         ["roles"] = new JArray(roles.Select(x => new JValue(x))),
                         ["simpleAnimationTypeTree"] = BuildSimpleAnimationTypeTreeDiagnosticJson(first),
+                        ["automaticDefaultStateClip"] = IsSimpleAnimationAutomaticDefaultStateClip(group),
                         ["diagnosticOnly"] = true,
                         ["notDefaultModelAnimationRelation"] = true,
                     };
