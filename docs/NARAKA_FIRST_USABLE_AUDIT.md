@@ -108,6 +108,8 @@ tools\Export-NarakaFirstUsableSmoke.ps1
 
 同日补充 Hadi 模块化边界 smoke：脚本会读取默认代表模型的 `asset_catalog.jsonl` 行，要求 `ch_m_hadi_lv_s9` 继续标记为 `libraryRole=ModularCharacterBase`、`resourceKind=CharacterPart`、`modelCompletenessStatus=modular_incomplete`，且 `modelCompletenessMissingRoles` 至少包含 `Face` 和 `Hair`。该门禁保护“body/服装部件可作为模型素材使用，但不能当完整角色或生产动画 smoke 样本”的结论。
 
+同日复验 SamuraiGhost 默认代表库边界：尝试把 `b\6\b6449028544fa466` / `pathId=7640773285473327857` 加入默认 `RepresentativeModels` 合批导出时，`Core` profile 仍只生成 3 个默认模型候选；该对象来源在 `assets/res/effect/battle/takeda`，且仍没有 `Animator.controller` / `Animation.clip` / `AnimatorController.clip` 生产关系，因此不应为了扩大代表库而放宽默认过滤或加 `--include_vfx`。脚本报告现在显式写出 `Representative boundary`：`ch_m_japan_samurai_ghost` 保持在只读 skinned candidate gate。复验 `D:\Assets\Naraka\Naraka_FirstUsableSmoke_SamuraiBoundary_StaticQuick_Current`（`-SkipBrowserValidation -SkipAnimationDiagnostic`）通过，默认代表库仍为 `models=3`、`ok=3`、`withSkin=2`、`withTextures=3`，`capabilities.animations=false`，`animationSupport.status=notProductionReady`、`defaultModelAnimationCandidateCount=0`；只读 SamuraiGhost 候选仍为 `models=1`、`ok=1`、`withSkin=1`、`skinJoints=73`、`modelAnimationRelationRows=0`。
+
 输入探针：
 
 ```powershell

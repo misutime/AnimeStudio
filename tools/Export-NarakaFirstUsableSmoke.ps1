@@ -1875,6 +1875,7 @@ if ($null -ne $modelValidation.totals) {
         (ConvertTo-SmokeText $modelValidation.totals.error "0")))
 }
 $reportLines.Add(('- Representative samples: `ch_m_hadi_lv_s9` (CharacterPart), `weapon_drop_bow_dongjun` (WeaponProp), `device_hongbao_02` (Prop)'))
+$reportLines.Add('- Representative boundary: `ch_m_japan_samurai_ghost` stays in the read-only skinned candidate gate because it comes from an effect/battle bundle and still has no explicit production model-animation relation.')
 if ($hadiModularBoundary.status -eq "ok") {
     $reportLines.Add(('- Hadi modular boundary: libraryRole=`{0}`, resourceKind=`{1}`, completeness=`{2}`, missingRoles=`{3}`' -f `
         (ConvertTo-SmokeText $hadiModularBoundary.libraryRole),
