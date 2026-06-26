@@ -4730,6 +4730,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                 var missingControllerClipTargetSamples = missingControllerClipTargets
                     ? BuildMissingSourceRelationTargetSamples(sourceConnection, "animatorController.clip", "AnimationClip", 8)
                     : new JArray();
+                var explicitControllerClipDomains = BuildExplicitControllerClipDomainSummary(sourceConnection);
 
                 return new JObject
                 {
@@ -4760,6 +4761,7 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                     {
                         ["AnimatorOverrideController"] = overrideControllerObjects,
                     },
+                    ["explicitControllerClipDomains"] = explicitControllerClipDomains,
                     ["nonEmptyOverrideSetCount"] = nonEmptyOverrideSet,
                     ["staleOverridePairIndex"] = staleOverridePairs,
                     ["missingControllerClipTargets"] = missingControllerClipTargets,
@@ -4783,6 +4785,158 @@ ORDER BY count DESC, key COLLATE NOCASE;");
                 };
             }
         }
+
+        private static JObject BuildExplicitControllerClipDomainSummary(SqliteConnection connection)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandTimeout = SummaryQueryTimeoutSeconds;
+            command.CommandText = @"
+SELECT
+    r.from_name AS controller_name,
+    MIN(r.from_source) AS sample_source,
+    COUNT(*) AS clip_edges,
+    GROUP_CONCAT(DISTINCT COALESCE(clip.name, '')) AS clip_names
+FROM source_relations r
+LEFT JOIN source_objects clip
+  ON clip.serialized_file = r.to_file COLLATE NOCASE
+ AND clip.path_id = r.to_path_id
+ AND clip.type = 'AnimationClip'
+WHERE r.relation='animatorController.clip'
+GROUP BY r.from_file, r.from_path_id, r.from_name
+ORDER BY clip_edges DESC, controller_name COLLATE NOCASE;";
+
+            var rows = new List<ControllerClipDomainRow>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var controllerName = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var sampleSource = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                    var clipEdges = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+                    var clipNames = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                    rows.Add(new ControllerClipDomainRow(
+                        ClassifyControllerClipDomain(controllerName, sampleSource, clipNames),
+                        controllerName,
+                        sampleSource,
+                        clipEdges,
+                        clipNames));
+                }
+            }
+
+            var domainCounts = new JArray();
+            foreach (var group in rows.GroupBy(r => r.Domain).OrderByDescending(g => g.Sum(r => r.ClipEdges)).ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                domainCounts.Add(new JObject
+                {
+                    ["domain"] = group.Key,
+                    ["controllers"] = group.Count(),
+                    ["clipEdges"] = group.Sum(r => r.ClipEdges),
+                });
+            }
+
+            var samples = new JArray();
+            foreach (var row in rows.OrderByDescending(r => r.ClipEdges).ThenBy(r => r.ControllerName, StringComparer.OrdinalIgnoreCase).Take(16))
+            {
+                samples.Add(new JObject
+                {
+                    ["domain"] = row.Domain,
+                    ["controller"] = row.ControllerName,
+                    ["clipEdges"] = row.ClipEdges,
+                    ["clipNames"] = row.ClipNames,
+                    ["sampleSource"] = row.SampleSource,
+                });
+            }
+
+            return new JObject
+            {
+                ["rule"] = "该分类只用于说明显式 AnimatorController->AnimationClip 关系来自 UI、VFX、预览或其它资源域；它不参与模型-动画绑定，也不能把非角色关系升级成生产动画能力。",
+                ["totalControllers"] = rows.Count,
+                ["totalClipEdges"] = rows.Sum(r => r.ClipEdges),
+                ["domainCounts"] = domainCounts,
+                ["samples"] = samples,
+            };
+        }
+
+        private static string ClassifyControllerClipDomain(string controllerName, string sampleSource, string clipNames)
+        {
+            var text = ((controllerName ?? string.Empty) + " " + (sampleSource ?? string.Empty) + " " + (clipNames ?? string.Empty)).ToLowerInvariant();
+            if (ContainsAny(text,
+                    "uiface",
+                    "ui_",
+                    "/ui",
+                    "\\ui",
+                    "btn",
+                    "button",
+                    "dropdown",
+                    "slider",
+                    "mousecursor",
+                    "progressbar",
+                    "joystick",
+                    "selector",
+                    "pressed",
+                    "highlighted",
+                    "disabled",
+                    "selected",
+                    "hover",
+                    "transitionanim",
+                    "dimanim"))
+            {
+                return "UiStateController";
+            }
+
+            if (ContainsAny(text,
+                    "trackeditor",
+                    "timeline",
+                    "cutscene",
+                    "cinematic",
+                    "preview"))
+            {
+                return "PreviewOrTimeline";
+            }
+
+            if (ContainsAny(text,
+                    "fx_",
+                    "vfx",
+                    "effect",
+                    "particle",
+                    "trail",
+                    "aura",
+                    "skill"))
+            {
+                return "VfxOrEffect";
+            }
+
+            if (ContainsAny(text,
+                    "device",
+                    "prop",
+                    "scene",
+                    "stage"))
+            {
+                return "PropOrScene";
+            }
+
+            return "Other";
+        }
+
+        private static bool ContainsAny(string text, params string[] tokens)
+        {
+            foreach (var token in tokens)
+            {
+                if (text.Contains(token, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private sealed record ControllerClipDomainRow(
+            string Domain,
+            string ControllerName,
+            string SampleSource,
+            long ClipEdges,
+            string ClipNames);
 
         private static JArray BuildMissingSourceRelationTargetSamples(SqliteConnection connection, string relation, string targetType, int limit)
         {

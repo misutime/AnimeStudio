@@ -293,6 +293,7 @@ $smokeSummary = [ordered]@{
             resolvedAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.resolvedTargetCounts.'animatorController.clip'
             missingAnimatorControllerClipTargets = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingTargetCounts.'animatorController.clip'
             missingAnimatorControllerClipTargetSamples = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.missingAnimatorControllerClipTargetSamples
+            explicitControllerClipDomains = $sqliteSummaryJson.animationRelationCoverage.sourceIndexAnimationRelationHealth.explicitControllerClipDomains
         }
     } else {
         [ordered]@{
@@ -397,6 +398,18 @@ if ($null -ne $sqliteSummaryJson.animationRelationCoverage) {
             (ConvertTo-SmokeText $firstMissingClip.targetFile),
             (ConvertTo-SmokeText $firstMissingClip.targetPathId "0"),
             (ConvertTo-SmokeText $firstMissingClip.sampleReferrer.name)))
+    }
+    if ($null -ne $relationHealth.explicitControllerClipDomains -and $null -ne $relationHealth.explicitControllerClipDomains.domainCounts) {
+        $domainParts = @()
+        foreach ($domain in $relationHealth.explicitControllerClipDomains.domainCounts) {
+            $domainParts += ('{0}={1}/{2}' -f `
+                (ConvertTo-SmokeText $domain.domain),
+                (ConvertTo-SmokeText $domain.controllers "0"),
+                (ConvertTo-SmokeText $domain.clipEdges "0"))
+        }
+        if ($domainParts.Count -gt 0) {
+            $reportLines.Add(('- Explicit controller clip domains: `{0}` (controllers/clipEdges)' -f ($domainParts -join ', ')))
+        }
     }
 }
 $reportLines.Add("")
