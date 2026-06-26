@@ -183,7 +183,9 @@ namespace AnimeStudio.CLI
                 ["monoBehaviourPPtrDiagnostics"] = new JArray(monoBehaviourPPtrDiagnostics.Select(ToJson)),
                 ["scriptAnimationComponentDiagnosticSummary"] = BuildScriptAnimationComponentDiagnosticSummary(scriptAnimationComponentDiagnostics),
                 ["scriptAnimationComponentDiagnostics"] = new JArray(scriptAnimationComponentDiagnostics.Select(ToJson)),
+                ["avatarTosClipDiagnosticSummary"] = BuildAvatarTosClipDiagnosticSummary(avatarTosClipDiagnostics),
                 ["avatarTosClipDiagnostics"] = new JArray(avatarTosClipDiagnostics.Select(ToJson)),
+                ["modelAvatarCompatibilityDiagnosticSummary"] = BuildModelAvatarCompatibilityDiagnosticSummary(modelAvatarCompatibilityDiagnostics),
                 ["candidates"] = new JArray(filtered.Select(ToJson)),
             };
 
@@ -3085,12 +3087,122 @@ LIMIT $limit;";
             };
         }
 
+        // 这些摘要只方便 smoke 和审计读取诊断边界，不把结构线索升级成默认动画候选。
+        private static JObject BuildAvatarTosClipDiagnosticSummary(IReadOnlyList<AvatarTosClipDiagnosticRow> rows)
+        {
+            rows ??= Array.Empty<AvatarTosClipDiagnosticRow>();
+            var topAvatars = rows
+                .GroupBy(x => string.IsNullOrWhiteSpace(x.AvatarName) ? "<unknown>" : x.AvatarName, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new JObject
+                {
+                    ["avatarName"] = x.Key,
+                    ["rowCount"] = x.Count(),
+                    ["clipCount"] = x.Select(y => y.AnimationSerializedFile + ":" + y.AnimationPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                    ["maxCoverageRatio"] = x.Max(y => Ratio(y.ResolvedPathHashCount, y.UniqueHashOnlyPathHashCount)),
+                })
+                .OrderByDescending(x => x["rowCount"]?.Value<int>() ?? 0)
+                .ThenByDescending(x => x["maxCoverageRatio"]?.Value<double>() ?? 0)
+                .ThenBy(x => x["avatarName"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .Take(12);
+            var animationSamples = rows
+                .Select(x => x.AnimationName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Take(16);
+
+            var maxCoverage = rows.Count == 0
+                ? 0.0
+                : rows.Max(x => Ratio(x.ResolvedPathHashCount, x.UniqueHashOnlyPathHashCount));
+            return new JObject
+            {
+                ["status"] = rows.Count == 0 ? "empty" : "diagnosticOnly",
+                ["rowCount"] = rows.Count,
+                ["diagnosticOnly"] = true,
+                ["manualReviewRequired"] = rows.Count > 0,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["defaultCandidateCount"] = 0,
+                ["modelReadyForAnimation"] = false,
+                ["distinctModelCount"] = rows.Select(x => x.ModelSerializedFile + ":" + x.ModelPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                ["distinctAvatarCount"] = rows.Select(x => x.AvatarSerializedFile + ":" + x.AvatarPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                ["distinctClipCount"] = rows.Select(x => x.AnimationSerializedFile + ":" + x.AnimationPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                ["uniqueHashOnlyPathHashCount"] = rows.Sum(x => x.UniqueHashOnlyPathHashCount),
+                ["resolvedPathHashCount"] = rows.Sum(x => x.ResolvedPathHashCount),
+                ["zeroPathHashBindingCount"] = rows.Sum(x => x.ZeroPathHashBindingCount),
+                ["maxCoverageRatio"] = maxCoverage,
+                ["fullCoverageRows"] = rows.Count(x => x.UniqueHashOnlyPathHashCount > 0 && x.ResolvedPathHashCount == x.UniqueHashOnlyPathHashCount),
+                ["unresolvedHashRows"] = rows.Count(x => x.UniqueHashOnlyPathHashCount > x.ResolvedPathHashCount),
+                ["avatarNameCounts"] = new JArray(topAvatars),
+                ["animationNameSamples"] = new JArray(animationSamples.Select(x => new JValue(x))),
+                ["rule"] = "Animator.avatar -> Avatar.m_TOS rows only prove hash-only binding path recovery evidence. They remain diagnosticOnly/notDefaultModelAnimationRelation until explicit Animator/Controller context, model validation, TRS export and visual review are proven.",
+            };
+        }
+
+        private static JObject BuildModelAvatarCompatibilityDiagnosticSummary(IReadOnlyList<ModelAvatarCompatibilityDiagnosticRow> rows)
+        {
+            rows ??= Array.Empty<ModelAvatarCompatibilityDiagnosticRow>();
+            var reasonCounts = rows
+                .GroupBy(x => string.IsNullOrWhiteSpace(x.Reason) ? "<unknown>" : x.Reason, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new JObject
+                {
+                    ["reason"] = x.Key,
+                    ["rowCount"] = x.Count(),
+                })
+                .OrderByDescending(x => x["rowCount"]?.Value<int>() ?? 0)
+                .ThenBy(x => x["reason"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .Take(12);
+            var topAvatars = rows
+                .GroupBy(x => string.IsNullOrWhiteSpace(x.AvatarName) ? "<unknown>" : x.AvatarName, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new JObject
+                {
+                    ["avatarName"] = x.Key,
+                    ["rowCount"] = x.Count(),
+                    ["maxCoverageRatio"] = x.Max(y => y.CoverageRatio),
+                    ["maxMatchedAvatarPathCount"] = x.Max(y => y.MatchedAvatarPathCount),
+                })
+                .OrderByDescending(x => x["maxCoverageRatio"]?.Value<double>() ?? 0)
+                .ThenByDescending(x => x["maxMatchedAvatarPathCount"]?.Value<int>() ?? 0)
+                .ThenBy(x => x["avatarName"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .Take(12);
+            var modelSamples = rows
+                .Select(x => x.ModelName)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .Take(16);
+
+            return new JObject
+            {
+                ["status"] = rows.Count == 0 ? "empty" : "diagnosticOnly",
+                ["rowCount"] = rows.Count,
+                ["diagnosticOnly"] = true,
+                ["manualReviewRequired"] = rows.Count > 0,
+                ["notDefaultModelAnimationRelation"] = true,
+                ["defaultCandidateCount"] = 0,
+                ["modelReadyForAnimation"] = false,
+                ["distinctModelCount"] = rows.Select(x => x.ModelSerializedFile + ":" + x.ModelPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                ["distinctAvatarCount"] = rows.Select(x => x.AvatarSerializedFile + ":" + x.AvatarPathId.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).Count(),
+                ["visibleRendererRows"] = rows.Count(x => x.VisibleRendererCount > 0),
+                ["highOverlapRows"] = rows.Count(x => x.CoverageRatio >= 0.9),
+                ["fullOverlapRows"] = rows.Count(x => x.ComparableAvatarPathCount > 0 && x.MatchedAvatarPathCount == x.ComparableAvatarPathCount),
+                ["maxCoverageRatio"] = rows.Count == 0 ? 0.0 : rows.Max(x => x.CoverageRatio),
+                ["maxMatchedAvatarPathCount"] = rows.Count == 0 ? 0 : rows.Max(x => x.MatchedAvatarPathCount),
+                ["maxComparableAvatarPathCount"] = rows.Count == 0 ? 0 : rows.Max(x => x.ComparableAvatarPathCount),
+                ["avatarNameCounts"] = new JArray(topAvatars),
+                ["reasonCounts"] = new JArray(reasonCounts),
+                ["modelNameSamples"] = new JArray(modelSamples.Select(x => new JValue(x))),
+                ["rule"] = "Model/Avatar structural path overlap is a bounded source-index diagnostic. High overlap can guide a manual solver/oracle probe, but it must not create default model-animation relations without Unity explicit context, model validation, TRS export and visual review.",
+            };
+        }
+
         private static JObject ToJson(AvatarTosClipDiagnosticRow row)
         {
             return new JObject
             {
                 ["deterministic"] = true,
                 ["diagnosticOnly"] = true,
+                ["manualReviewRequired"] = true,
+                ["notDefaultModelAnimationRelation"] = true,
                 ["relationKind"] = "animator.avatar_tos_pathHash_coverage",
                 ["relationSource"] = "structural_source_index",
                 ["modelReadyForAnimation"] = false,
