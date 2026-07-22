@@ -1,5 +1,7 @@
 # AnimeStudio 资源导出工具开发规划
 
+本文件是路线图和待办记录，不是强制标准。资源导出的唯一强制标准是 [PROJECT_EXPORT_STANDARDS.md](PROJECT_EXPORT_STANDARDS.md)；单游戏特殊适配看 [game-profiles/README.md](game-profiles/README.md)。本文出现的具体游戏、命令和输出目录只代表阶段性样本或历史任务，不能覆盖通用标准。
+
 ## 目标定位
 
 本工具的核心目标是面向 PC 端 Unity 游戏，把已经打包过的资源尽可能还原成开发期可使用、可查看、可二次整理的素材库。
@@ -8,7 +10,6 @@
 
 - 3D 模型：静态模型、角色模型、场景模型、道具、球、NPC。
 - 骨骼与蒙皮：SkinnedMeshRenderer、骨架层级、bind pose、权重。
-- 动画：Animator/AnimationClip 导出的骨骼动画，后续包含 blendshape 动画。
 - 贴图：Texture2D，支持 Raw 快速导出、按需 PNG 后处理。
 - 材质：Material 参数、贴图槽、shader 引用和可分析 metadata。
 - Shader：实验功能，以研究和重建材质为目标，先保证可转储、可定位、可关联；不进入默认核心导出。
@@ -19,11 +20,12 @@
 - 还原运行时代码逻辑、MonoBehaviour 行为。
 - 规避加密、绕过保护或破解私有协议。
 - 无脑导出所有零散资源且不分类、不标注。默认 Library 应尽量完整，但必须保持目录分类、标签和报告清晰。
+- 默认导出、转换、绑定、预览或验收动画。AnimationClip、AnimatorController、Timeline、材质动画、摄像机动画和 VFX 动画只作为 out-of-scope 诊断线索。
 
 验收取向：
 
-- 默认 `Library` 是“完整可浏览素材库”，优先把可能有用的模型、贴图、材质、动画、音效等资源拿出来。
-- 模型、骨骼、动画、贴图、材质这些核心资产不能系统性缺失。
+- 默认 `Library` 是“完整可浏览模型素材库”，优先把可能有用的模型、贴图、材质、骨骼/skin、索引和报告拿出来。
+- 模型、骨骼/skin、贴图、材质这些核心资产不能系统性缺失。
 - 输出目录能像素材库一样浏览，单个模型目录可以直接查看模型、相关贴图、材质报告和使用说明。
 - 只过滤非常确定的垃圾或损坏对象；不确定对象优先分类、打标签、写报告。
 - 精品筛选作为后处理能力推进，后续通过 `Core` / `Curated` / `Playable` / `ProductionReady` 等层从完整素材库里筛出高质量子集。
@@ -31,7 +33,7 @@
 
 基础准则：
 
-> 后续每一步实现都以“导出完整可浏览素材库”为准。默认输出必须优先保留可能有用的素材，并通过分类、标签、报告、索引和后续筛选控制质量；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
+> 后续每一步实现都以“导出完整可浏览模型素材库”为准。默认输出必须优先保留可能有用的模型、贴图、材质和骨骼/skin，并通过分类、标签、报告、索引和后续筛选控制质量；特殊研究、调试、旧式内嵌动画、Raw 快速扫描等行为必须通过显式参数开启。
 
 Unity 关系解构准则：
 
@@ -39,7 +41,7 @@ Unity 关系解构准则：
 
 CAB / PPtr 依赖索引策略：
 
-> CAB map 是一次完整构建、长期复用的 Unity 外部引用索引，不应为某次导出做瘦身版。导出候选可以裁剪，但依赖图必须来自完整输入源目录。新版 CAB map 记录来源文件数量和完整输入集合 fingerprint；只有源文件变化、map 格式升级或显式复用了错误 map 时才自动重建。这样后续新增动画、材质、贴图、shader 或其他素材导出逻辑时，不会因为旧的裁剪 map 切断 Unity 外部引用。
+> CAB map 是一次完整构建、长期复用的 Unity 外部引用索引，不应为某次导出做瘦身版。导出候选可以裁剪，但依赖图必须来自完整输入源目录。新版 CAB map 记录来源文件数量和完整输入集合 fingerprint；只有源文件变化、map 格式升级或显式复用了错误 map 时才自动重建。这样后续新增材质、贴图、shader 或其他素材导出逻辑时，不会因为旧的裁剪 map 切断 Unity 外部引用。
 
 材质和 shader 解构准则：
 
@@ -71,27 +73,24 @@ CAB / PPtr 依赖索引策略：
 - 不影响 `Normal` 通用 Unity 导出路径。
 - 文档中标明它是游戏 profile 规则，不是核心导出逻辑。
 
-模型和动画准则：
+模型和动画边界：
 
-> 模型默认保持干净，动画默认独立入库，绑定关系通过索引和后处理建立；只有按需预览或显式打包时，才把动画写入模型 glTF/GLB。
+> 模型默认保持干净，动画默认不入库、不绑定、不预览、不验收。只有显式诊断/旧库迁移命令可以处理动画，而且输出必须标注为诊断，不改变默认 AssetLibrary 能力。
 
 原因：
 
-- 一个角色模型通常能使用很多动画，直接全嵌会导致 glTF 巨大、重复、难浏览。
-- Unity 游戏常把角色模型、角色私有动画、通用身体动作、NPC 动画、场景动画放在不同 bundle；导出模型时未必已经加载完整动画集合。
-- 同名/同类动画不一定兼容，必须通过骨骼路径、skeleton hash、Animator/AnimationClip 关系和实际 glTF channel 写入结果验证。
-- 默认素材库的首要价值是“能浏览和筛选资产”，不是把所有运行时关系一次性塞进单文件。
-- 角色、NPC、道具、机关、场景物件都可能有动画；绑定逻辑必须基于 Unity component/controller/clip binding，而不是只服务角色动画。
+- 动画会显著放大默认导出复杂度和验收成本，当前目标是先打通模型、贴图、材质、骨骼/skin、AssetLibrary v1 索引和报告闭环。
+- Unity 游戏常把角色模型、附件、材质、贴图和动画拆在不同 bundle；默认模型导出只保证模型依赖闭包，不为动画建立生产关系。
+- 同名/同类动画不一定兼容，旧动画诊断资料只能作为研究背景，不能进入默认推荐关系。
+- 默认素材库的首要价值是“能浏览和筛选模型资产”，不是把运行时动作关系一次性塞进单文件。
 
 团队统一工作流：
 
 1. 默认 `Library` 导出 prefab/Animator/GameObject 组合模型：mesh、material、PNG texture、skeleton/skin。
-2. AnimationClip 独立进入 `Animations`。
-3. 先生成并检查静态模型验收报告：模型、贴图、材质、skin/joint 基础结构必须自洽。
-4. 自动生成 Unity 关系图：模型、组件、Controller、Avatar、Clip、binding、PPtr 依赖。
-5. 从 Unity 关系图生成绑定索引：`animation_bindings.jsonl` 和 `model_animations.json`。
-6. 选中模型和动画后，按需生成可播放预览 glTF。
-7. 确认一组动画后，显式生成带动画合集的 glTF/GLB。
+2. 遇到 AnimationClip、AnimatorController、Timeline 等动画资源时默认跳过，并记录 `animation_out_of_scope.json` 或源索引诊断计数。
+3. 生成并检查静态模型验收报告：模型、贴图、材质、skin/joint 基础结构必须自洽。
+4. 自动生成 Unity 关系图：模型、组件、Renderer、Material、Texture、Avatar、PPtr 依赖。
+5. 写出 AssetLibrary v1：`asset_library.json`、`library_index.db`、材质 sidecar、验证报告和人读 README。
 
 默认素材库形态：
 
@@ -102,9 +101,9 @@ CAB / PPtr 依赖索引策略：
 - 需要研究零散 fbx/source parts 时，显式使用 `--model_source PrefabAndParts` 或 `RawPartsOnly`。
 - 角色/蒙皮模型默认保留 skeleton/skin，不能为了模型浏览速度丢掉骨骼。
 - 贴图默认 PNG，进入共享 `Textures/_ModelDependencies`，模型目录通过硬链接引用。
-- 动画默认独立进入 `Animations`，不嵌入每个模型。
+- 动画默认不进入 `Animations`，也不嵌入每个模型。
 - Shader 默认不导出；实验研究时显式 `--include_shaders`，进入 `Shaders`，以安全 raw archive + metadata 形式保留。
-- 材质、贴图、动画、源路径关系由 manifest/catalog 记录。
+- 材质、贴图、骨骼/skin、源路径关系由 manifest/catalog 记录；动画只记录 out-of-scope 边界或源索引诊断。
 - 默认 Library 不再以过早 Core 过滤作为覆盖策略。UI、video、camera、manager、明确空对象、collider、navmesh、socket、joint、bone、损坏对象等确定垃圾可以过滤；effect、decal、helper、terrain tile、building part、VFX mesh 等不确定对象优先分类、标注或写报告。
 
 ## 当前完成度
@@ -117,21 +116,21 @@ CAB / PPtr 依赖索引策略：
 | --- | --- | --- |
 | Unity 文件读取/依赖解析 | 已可加载 UnityFS/SerializedFile，支持 CAB 依赖 map，Freedunk 1 字节前导 UnityFS 已兼容 | 75% |
 | 3D 模型导出 | 支持 `SplitObjects`、`Animator`，默认 glTF，可导出 mesh、skin、基础层级 | 70% |
-| glTF 输出 | 已有 `.gltf + .bin`、`.glb`、材质贴图引用、skin、基础 TRS 动画 | 60% |
+| glTF 输出 | 已有 `.gltf + .bin`、`.glb`、材质贴图引用、skin；默认不写动画 channel | 60% |
 | FBX 输出 | 继承原有 FBX exporter；新增 Unity bake 后的 Blender FBX 后端，可把 baked glTF 打包为模型+骨骼+动作的成熟 FBX 验收资产 | 78% |
 | 贴图导出 | PNG 默认、Raw 可选、按模型后处理、硬链接省空间 | 80% |
 | 材质导出 | 能导出材质 JSON、基础 PBR 映射、glTF alpha/double-sided 状态、extras 保留 Unity slot/float/color 信息 | 62% |
-| 动画导出 | 默认独立导出 AnimationClip；`Animator` 模式仍可调试收集，模型默认不嵌全局动作库；支持 Unity 引用/Avatar/binding 驱动的候选索引、Unity Editor Humanoid bake、baked glTF 写入、Blender FBX 打包、验证报告和 AnimationClip 类型分类 | 82% |
+| 动画导出 | 已降级为显式诊断/旧库迁移能力；默认 Library 不导出 AnimationClip、不写模型-动画候选、不声明动画能力 | 非默认目标 |
 | Shader 导出 | 实验功能；显式 `--include_shaders` 时安全归档 raw + metadata，避免 native 反汇编崩溃；反编译仍需单独实验模式 | 45% |
 | 覆盖与分类 | 已从过早 Core 过滤转向默认完整可浏览 Library；StaticMeshPrimary、Renderer/Material 关系绑定和报告标注仍需继续增强 | 70% |
 | 性能与诊断 | 有 profile jsonl、manifest、阶段耗时、缓存、批处理、GC 策略 | 70% |
-| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 放组合模型和有意义的 StaticMeshPrimary，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录；新增 `skeletons.json` 从骨架视角聚合可浏览模型和候选动画 | 78% |
+| 输出可浏览性 | 默认 `PrefabPrimary`，`Models` 放组合模型和有意义的 StaticMeshPrimary，raw fbx/source parts 进入索引或 `RawUnreferenced`，模型依赖贴图集中共享并硬链接到模型目录；`skeletons.json` 从骨架视角聚合可浏览模型，不承诺动画候选 | 78% |
 
 ## 已有关键能力
 
 ### 默认完整 Library 与后处理筛选
 
-默认 Library 的目标是完整可浏览素材库，不是最终精品包。工具应优先保留可能有用的模型、贴图、材质、动画、音效等资源；只过滤非常确定的垃圾或损坏对象。
+默认 Library 的目标是完整可浏览模型素材库，不是最终精品包。工具应优先保留可能有用的模型、贴图、材质、骨骼/skin 和来源关系；动画、音频等非模型资产不进入默认 Library，只保留必要的源索引或 out-of-scope 诊断线索。
 
 底层导出阶段可以确定过滤：
 
@@ -220,10 +219,10 @@ Textures/_ModelDependencies/*.rawtex.json
 修正后的默认策略：
 
 - 默认 `--mode Library`。
-- 默认 `--animation_package Separate`。
+- 默认 `--animation_package Skip`。
 - 模型 glTF 不嵌入 Animator Controller 的全局动作库。
-- AnimationClip 独立写入 `Animations`。
-- 后续通过 skeleton hash、binding manifest、animation-only glTF 把模型和动画重新关联。
+- AnimationClip 默认不写入 `Animations`，只记录 out-of-scope 边界或源索引诊断。
+- 后续如果研究动画，只能走显式诊断/旧库迁移命令，不能改变默认 AssetLibrary 能力。
 
 ### 按模型单独转换贴图
 
@@ -263,31 +262,20 @@ asset_catalog.jsonl
 export_profile.jsonl
 ```
 
-`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/animation/bone 数、skeletonHash 和 skeleton 多维指纹；动画会作为独立资产登记，实验 shader 只在 `--include_shaders` 时登记。当前 skeleton 指纹包含 `namePathHash`、`hierarchyHash`、`bindPoseHash`、`avatarHumanHash`、`avatarSkeletonNameHash` 和 `relationBasis`，优先使用 Unity Avatar/HumanDescription，其次使用骨骼路径、层级和 bindpose。
-
-AnimationClip 条目会额外记录：
-
-- `animationType`：`TransformBodyAnimation`、`MixedHumanoidTransform`、`HumanoidMuscleAnimation`、`AuxiliaryAnimation`、`BlendShapeAnimation` 等。
-- `hasMuscleClip`：是否存在 Unity Humanoid/Muscle 数据。
-- `coreTransformBindingCount`：直接命中主体骨骼的 Transform binding 数。
-- `humanoidBindingCount`：Animator/Humanoid binding 数。
-- `blendShapeBindingCount`：SkinnedMeshRenderer / blendshape binding 数。
-- `auxiliaryBindingCount`：point、socket、twist、helper 等辅助节点 binding 数。
-- `classificationNotes`：是否需要 Humanoid/Muscle bake、是否主要是辅助节点动画等提示。
+`asset_catalog.jsonl` 是素材库索引。模型条目记录 resourceKind、mesh/vertex/material/texture/bone 数、skeletonHash 和 skeleton 多维指纹；动画不再作为默认独立资产登记，实验 shader 只在 `--include_shaders` 时登记。当前 skeleton 指纹包含 `namePathHash`、`hierarchyHash`、`bindPoseHash`、`avatarHumanHash`、`avatarSkeletonNameHash` 和 `relationBasis`，优先使用 Unity Avatar/HumanDescription，其次使用骨骼路径、层级和 bindpose。
 
 默认还会生成：
 
 ```text
 asset_summary.json
-animation_bindings.jsonl
-model_animations.json
+animation_out_of_scope.json
 skeletons.json
 unity_relations.jsonl
 unity_relation_summary.json
 model_validation.json
 ```
 
-`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`model_validation.json` 检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽；这是动画前的静态模型验收门。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Animation、AnimatorController、AnimatorOverrideController、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material、AnimationClip binding 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_bindings.jsonl` 为独立 AnimationClip 列出候选模型，`model_animations.json` 为每个模型列出候选动画、匹配依据、匹配分数、验证状态和下一步动作。`skeletons.json` 为每个素材库骨架聚合可浏览模型和候选动画；动画 FBX 等无 mesh 的源骨架保留为 `sourceSkeletonCount`，不混入 `models` 浏览列表。默认候选必须从 Unity 关系图或等价的内存 Unity 引用解析结果派生；`resourceKind`、资源路径和角色/场景线索只能在显式 fallback 模式中作为带标注的补充线索。
+`asset_summary.json` 汇总导出数量、资源分类和模型是否带骨骼/贴图/morph。`model_validation.json` 检查 glTF image、texture、material、mesh accessor、skin joint、inverseBindMatrices 是否自洽。`unity_relations.jsonl` 记录 GameObject、组件、Animator、Avatar、SkinnedMeshRenderer、MeshFilter、Renderer/Material 等 Unity 原生关系，`unity_relation_summary.json` 是轻量摘要。`animation_out_of_scope.json` 说明动画默认跳过，不生成正式动画资产或模型-动画候选。`skeletons.json` 为每个素材库骨架聚合可浏览模型；动画 FBX 等无 mesh 的源骨架不能混入 `models` 浏览列表。
 
 `export_profile.jsonl` 已记录：
 
@@ -318,28 +306,17 @@ model_validation.json
 
 优先级：P0
 
-### 2. glTF 动画仍偏基础
+### 2. 动画导出已降级为显式诊断/历史资料
 
-当前 glTF 动画主要写骨骼/节点的 translation、rotation、scale。普通 Transform 曲线可以直接生成可播放动画；Unity Humanoid/Muscle 动画不能靠简单近似直接定版。当前策略改为先生成可复用动画资产：保留 Unity `.anim` YAML，同时为每个 AnimationClip 生成 `.animation_asset.json`，结构化记录 binding、Humanoid muscle、root motion、MuscleClip flags、曲线容器信息和解码后的 Unity serialized 空间 keyframes。后续 glTF/GLB 预览或动画合集必须基于这些 Unity 语义资产进行 bake/验证。
+动画不再是默认素材库目标。默认 Library 不导出 `AnimationClip`、不生成 `Animations`、不写模型-动画候选，也不把动画 channel 写入 glTF/GLB。遇到动画相关资源时，默认只写 `animation_out_of_scope.json` 或源索引诊断计数，用来说明“看到了但跳过了”。
 
-缺口：
+保留的动画能力只用于显式诊断、旧库迁移和内部研究：
 
-- blendshape 动画未写入 `weights` channel。
-- Humanoid/Muscle 动画现在能作为 Unity 语义资产落盘：`.anim` 保存原始 YAML，`.animation_asset.json` 保存可读 binding、MuscleClip 元数据和 decoded curves/keyframes。
-- `ApproximateHumanoidMuscleV1` 不能作为正确动画资产验收。它只用于证明 channel 生成和绑定路径可运行；如果视觉姿态扭曲，报告必须标为 `experimental`。下一步采用 UnityGLTF 式 Unity Editor bake 流程，把 `.anim` + Avatar 通过 Unity Animator 采样成目标骨架 TRS。
-- 动画 clip 与 AnimatorController 状态机关系已有关系图明细，候选索引已能输出显式 Unity 引用、AnimationClip binding 与 Avatar/Humanoid 兼容关系；状态机层级、override 展开和可读分组还需要继续增强。
-- 模型与动画的适配关系已由 Unity 关系图、Avatar metadata、模型 bone path、AnimationClip binding 生成，`model_animations.json` 不默认输出路径/名称/resourceKind 推断候选。
-- 未对动画 clip 做可读命名、角色归属、重复去重。
-- 已有 `--pack_model_animations` 初版，可从 `model_animations.json` 批量生成“同一模型 + 单条动画”的验证包，并汇总 `animation_pack_report.json`；真正可靠的 animation-only glTF/GLB 和多动画合集 GLB 仍需在 Humanoid solver/bake 流程成熟后实现。
+- 旧 `.anim` / `.animation_asset.json` / bake 报告只能作为诊断产物，不能算默认可用素材库资产。
+- `ApproximateHumanoidMuscleV1`、Unity bake、`--pack_model_animations` 等路径只能在显式命令中使用，并且必须把输出标成诊断/实验/迁移。
+- 这些路径不能把 `asset_library.json.capabilities.animations` 改成 `true`，也不能阻塞模型、贴图、材质和索引主线。
 
-Freedunk 当前验证结论：
-
-- `D:\Assets\Freedunk_Data_Dev\AnimationTypeScan` 小样本扫描 594 个 `AnimationClip`，全部是 `MixedHumanoidTransform`。
-- `NORMALMOVE_STAND_01` / `DASH_01` 已能导出 `.anim` 和 `.animation_asset.json`。sidecar 中可见 `MixedHumanoidTransform`、160/140 条 Humanoid muscle binding、root/foot motion 以及 `RequiresHumanoidSolverOrBake` 状态。
-- 用户实际验证过近似 bake 预览会出现人物姿态扭曲，因此 `ApproximateHumanoidMuscleV1` 只能作为实验报告，不再作为“可播放正确”的验收依据。
-- 这说明 Freedunk 角色身体动作的主路径确实是 Humanoid/Muscle；下一阶段采用 UnityGLTF 式路径：AnimeStudio 生成 `unity_bake_request.json`，Unity Editor helper 用 `Animator`、`Avatar`、`PlayableGraph`/`AnimationClipPlayable` 采样，输出目标骨架 TRS，再由 AnimeStudio 合成 glTF/GLB。
-
-优先级：P0
+优先级：非默认目标
 
 ### 3. 材质还原仍需 shader-aware 重建
 
@@ -375,13 +352,13 @@ Freedunk 当前验证结论：
 
 ### 5. 输出素材库索引仍需增强
 
-现在已有 manifest、`asset_catalog.jsonl`、`asset_summary.json` 和 `animation_bindings.jsonl`，但还不是完整的人类浏览索引。
+现在已有 manifest、`asset_catalog.jsonl`、`asset_summary.json`、`animation_out_of_scope.json` 和 SQLite 索引，但还不是完整的人类浏览索引。
 
 缺口：
 
 - 没有统一 `asset_catalog.json` 或可浏览 `catalog.html`。
 - 资源分类仍有 fallback 成分，需要优先寻找 Unity 类型、组件和引用依据，再标注无法由 Unity 关系解释的部分。
-- 模型与贴图、材质、动画、源文件的关系图还不够完整。
+- 模型与贴图、材质、骨骼/skin、源文件的关系图还不够完整。
 - 没有自动生成缩略图/预览图。
 
 优先级：P1
@@ -419,22 +396,18 @@ Freedunk 当前验证结论：
 
 任务：
 
-1. 完善 Unity 关系图消费：用 GameObject/prefab、Animator、Animation、Controller、OverrideController、Avatar、SkinnedMeshRenderer、AnimationClip binding、PPtr 依赖生成模型动画绑定索引。
-2. 补 Humanoid/Muscle bake：把 Unity muscle 曲线采样成目标骨架 TRS 曲线。
-3. 补 glTF morph target 导出。
-4. 补 glTF blendshape weight 动画。
-5. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
-6. 给 Animator/AnimationClip 输出动画 clip 列表、来源、角色归属和候选模型。
-7. 增强按需预览命令：Humanoid/Muscle 动画预览必须覆盖主体骨骼。
-8. 增加动画合集打包命令：把已确认的一组动画写进 glTF/GLB。
-9. 用 Freedunk 角色样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景。
+1. 完善 Unity 关系图消费：用 GameObject/prefab、Animator、Avatar、SkinnedMeshRenderer、Renderer/Material、PPtr 依赖增强模型、骨骼、材质和贴图关系。
+2. 补 glTF morph target 导出。
+3. 校验 skin/joints/inverseBindMatrices 与 Blender 导入表现。
+4. 补模型材质槽、贴图引用、bbox、骨骼覆盖等自动验证。
+5. 用 Freedunk 等样本做回归测试：至少 5 个角色、2 个 NPC、1 个球、1 个场景或道具模型。
 
 验收：
 
-- Blender 打开 glTF 可看到模型、骨骼、贴图和基础动画。
+- Blender 打开 glTF 可看到模型、骨骼、贴图和材质。
 - 有 blendshape 的角色，glTF 中存在 `targets` 和 `weights`。
-- 默认 Library 模型仍然干净，不嵌全局动作库。
-- 预览 glTF 能播放指定动画，并记录实际写入的 channel 数。
+- 默认 Library 模型保持干净，不嵌全局动作库，也不生成默认动画候选。
+- `asset_library.json.capabilities.animations=false`，`animation_out_of_scope.json` 记录默认跳过规则。
 
 ### P1：做资源库索引和浏览友好输出
 
@@ -442,7 +415,7 @@ Freedunk 当前验证结论：
 
 任务：
 
-1. 将现有 `asset_catalog.jsonl` / `asset_summary.json` / `animation_bindings.jsonl` 扩展成可浏览索引。
+1. 将现有 `asset_catalog.jsonl` / `asset_summary.json` / `animation_out_of_scope.json` / SQLite 扩展成可浏览索引。
 2. 继续完善每个模型记录：
    - 类型推断：Character / NPC / Stage / Prop / Ball / Effect / Unknown
    - 源 container
@@ -451,18 +424,16 @@ Freedunk 当前验证结论：
    - mesh count
    - material count
    - texture count
-   - animation count
+   - animation out-of-scope 诊断计数
    - skeleton/bone count
-3. 用 skeleton hash / bone path / AnimatorController / source container 验证动画候选绑定，减少只靠 resourceKind 的误配。
-4. 生成 `model_animations.json`，从模型视角列出可用动画、匹配依据、匹配分数和验证状态。
-5. 使用 `--generate_preview_gltf` 对单个模型和单个候选动画生成可播放预览，并写出 `preview_validation.json`，记录 channel、skin、joint 和 bbox 验证结果。
-6. 生成可选 `catalog.html` 或轻量浏览器。
-7. 给每个模型输出 `model.info.json`，方便单模型后处理。
+3. 从模型视角列出贴图、材质、骨骼/skin、源文件和验证状态。
+4. 生成可选 `catalog.html` 或轻量浏览器。
+5. 给每个模型输出 `model.info.json`，方便单模型后处理。
 
 验收：
 
 - 用户可以按类型找到模型。
-- 单个模型目录能知道它依赖哪些贴图、材质、动画。
+- 单个模型目录能知道它依赖哪些贴图、材质、骨骼/skin 和源文件。
 - 后处理筛选推荐、降级或排除的资源都能在报告里看到数量和原因。
 
 ### P1：精品筛选层数据驱动化
@@ -578,7 +549,7 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
   --game Normal
 ```
 
-等价于 `Library + ByLibrary + 完整可浏览素材库 + glTF + PNG + Separate animations`。这是团队后续开发、测试和验收的主路径。
+等价于 `Library + ByLibrary + 完整可浏览模型素材库 + glTF + PNG + Skip animations`。这是团队后续开发、测试和验收的主路径。
 
 ### 快速模型扫描
 
@@ -622,12 +593,11 @@ AnimeStudio.CLI\bin\Debug\net9.0-windows\AnimeStudio.CLI.exe `
 
 建议下一阶段不要继续扩大“能导出多少类型”，而是先把主路径做扎实：
 
-1. 用 Unity 关系图驱动 `model_animations.json`，默认不再输出路径/名称/resourceKind 推断出来的候选绑定。
-2. Humanoid/Muscle bake。
-3. glTF morph target / blendshape 动画。
-4. asset catalog 和 filter report。
-5. 材质语义 schema。
-6. Core/Curated/Playable 等后处理筛选层配置化。
-7. 固定 Freedunk 样本集做回归验证。
+1. 继续用 Unity 关系图增强模型、材质、贴图、骨骼/skin 和来源关系。
+2. glTF morph target 导出。
+3. asset catalog、SQLite 和 filter report。
+4. 材质语义 schema。
+5. Core/Curated/ProductionReady 等后处理筛选层配置化。
+6. 固定 Freedunk 等样本集做模型素材库回归验证。
 
 这样工具会从“能导出”进入“能稳定产出可用素材库”的阶段。

@@ -17,7 +17,7 @@
 2026-06-25 失败收尾：
 
 - 本轮 Endfield 人形动画求解没有达到生产验收。Pelica 等样本证明模型、Avatar、AnimationClip、AnimatorController 诊断链路可复现，但 IK goal、TDOF、BlendTree、runtime 参数、additive/layer 语义仍未完整求解，视觉上仍有 idle 语义失败或需要诊断路径才能改善的情况。
-- 后续重启任务前先读 `docs/ENDFIELD_ANIMATION_SOLVER_FAILURE_HANDOFF.md`。该文档记录本轮执行过程、已确认有效的旧原神/Browser bake 经验、失败点、代码安全边界和下一轮建议。
+- 后续重启动画研究前先读 `docs/archive/animation-research/ENDFIELD_ANIMATION_SOLVER_FAILURE_HANDOFF.md`。该文档记录本轮执行过程、已确认有效的旧原神/Browser bake 经验、失败点、代码安全边界和下一轮建议。
 - 当前所有 Endfield Unity bake / UnityOracle / recovered controller 结果继续保持保守门禁：`writesReusableGltfTrsCandidate=false`、`diagnosticOnly=true` 或 `needs_review` 时，不得进入 production smoke 或默认可播放推荐。
 
 2026-06-24 旧 Genshin / Browser Unity bake 审计补充：

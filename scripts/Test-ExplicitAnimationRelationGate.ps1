@@ -99,7 +99,7 @@ $program = Read-RepoFile "AnimeStudio.CLI\Program.cs"
 $browserCandidate = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationCandidate.cs"
 $browserIndex = Read-RepoFile "AnimeStudio.LibraryBrowser\LibraryAnimationIndex.cs"
 $browserMain = Read-RepoFile "AnimeStudio.LibraryBrowser\MainForm.cs"
-$browserDoc = Read-RepoFile "docs\LIBRARY_BROWSER_ANIMATION_PREVIEW_DESIGN.md"
+$browserDoc = Read-RepoFile "docs\archive\animation-research\LIBRARY_BROWSER_ANIMATION_PREVIEW_DESIGN.md"
 $standards = Read-RepoFile "docs\PROJECT_EXPORT_STANDARDS.md"
 $cliUsage = Read-RepoFile "docs\CLI_USAGE.md"
 

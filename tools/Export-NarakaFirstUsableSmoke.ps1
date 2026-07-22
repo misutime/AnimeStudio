@@ -1189,9 +1189,7 @@ function Test-LibraryCoreArtifacts {
 
     $requiredFiles = @(
         [pscustomobject]@{ path = "asset_catalog.jsonl"; allowEmpty = $false; kind = "jsonl" },
-        [pscustomobject]@{ path = "model_animations.json"; allowEmpty = $false; kind = "json" },
-        [pscustomobject]@{ path = "model_animations.compact.json"; allowEmpty = $false; kind = "json" },
-        [pscustomobject]@{ path = "animation_bindings.jsonl"; allowEmpty = $true; kind = "jsonl" },
+        [pscustomobject]@{ path = "animation_out_of_scope.json"; allowEmpty = $false; kind = "json" },
         [pscustomobject]@{ path = "unity_relations.jsonl"; allowEmpty = $true; kind = "jsonl" },
         [pscustomobject]@{ path = "unity_relation_summary.json"; allowEmpty = $false; kind = "json" },
         [pscustomobject]@{ path = "export_manifest.jsonl"; allowEmpty = $false; kind = "jsonl" },
@@ -1333,7 +1331,7 @@ $characterCandidateRelationAnimationRows = $null
 $characterCandidateMaxBoundsSize = $null
 $characterCandidateSkinJointCount = $null
 $zhumuScriptAnimationStatus = "notChecked"
-$zhumuScriptAnimationRule = "Zhumu soul is a script-animation verified-preview gate: the attack prefab model must stay statically usable, and the promoted animation relation must stay a VerifiedAnimationPreview with previewOnly=true and embeddedModelRequired=true."
+$zhumuScriptAnimationRule = "Zhumu soul is a script-animation diagnostic boundary: the attack prefab model must stay statically usable, and script AnimationClip evidence must not create default animation assets or model-animation relations."
 $zhumuVerifiedAnimationPreviewRefresh = [pscustomobject]@{
     status = if ($RefreshZhumuVerifiedAnimationPreview) { "pending" } else { "skipped" }
     explicitSwitch = [bool]$RefreshZhumuVerifiedAnimationPreview
@@ -1342,14 +1340,14 @@ $zhumuVerifiedAnimationPreviewRefresh = [pscustomobject]@{
     renderReport = $null
     sourceReport = $null
     importReport = $null
-    rule = "刷新 verified preview 会改写 Zhumu 样本库并重建 library_index.db，因此默认关闭；开启后只用本轮 smoke 生成的 source report 与 render motion report 重新应用已验证预览关系。"
+    rule = "旧 verified preview 刷新会写回动画资产和关系，当前默认标准已废弃这条路径；即使显式传开关也只记录 skippedDeprecated，不改写样本库。"
 }
 $narakaAnimationRelationPolicy = [pscustomobject]@{
-    status = "customRuntimeLikely"
+    status = "outOfScopeAnimation"
     standardAnimatorControllerIsRequired = $false
-    acceptedProductionRelation = "VerifiedPreviewRelation"
-    acceptedRelationPath = "NarakaSimpleAnimationCustomRuntime"
-    rule = "普通 AnimatorController 不是 Naraka 动画生产验收的唯一入口。脚本 PPtr、SimpleAnimation TypeTree 默认 state、模型静态门禁、glTF TRS 覆盖和清晰渲染运动一起通过时，可以作为生产可用的模型绑定预览关系；未验证脚本字段仍保持 blocked。"
+    acceptedProductionRelation = $null
+    acceptedRelationPath = $null
+    rule = "Naraka 脚本 PPtr、SimpleAnimation TypeTree 和 AnimatorController 关系只作为源索引诊断线索。默认 Library 不导出动画、不写生产模型-动画关系，也不把 custom runtime 预览升级成能力声明。"
 }
 $zhumuScriptAnimationAssetLibraryJson = $null
 $zhumuScriptAnimationSummaryJson = $null
@@ -1499,7 +1497,7 @@ if ($LASTEXITCODE -ne 0) {
 # 这些样本来自完整源索引的确定性闭包，用来同时覆盖角色部件、正式路径带骨骼模型、武器和普通道具。
 Write-Host ""
 Write-Host "== Export Naraka representative model smoke =="
-& $cli $SourceRoot $libraryOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Separate" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" $FormalSkinnedRepresentativeBundle "d\1\d1d0bc7b6c107e00" "0\f\0f2ab2b1ab070ac0" "--path_ids" "-6619473669887381141" $FormalSkinnedRepresentativeRootPathId "3879445205109982761" "3817277305598733592"
+& $cli $SourceRoot $libraryOutput "--game" "Naraka" "--mode" "Library" "--group_assets" "ByLibrary" "--profile_3d" "Core" "--model_format" "Gltf" "--texture_mode" "Png" "--animation_package" "Skip" "--fbx_animation" "Skip" "--source_index" $SourceIndex "--source_files" "4\c\4c08b7069a411750" $FormalSkinnedRepresentativeBundle "d\1\d1d0bc7b6c107e00" "0\f\0f2ab2b1ab070ac0" "--path_ids" "-6619473669887381141" $FormalSkinnedRepresentativeRootPathId "3879445205109982761" "3817277305598733592"
 if ($LASTEXITCODE -ne 0) {
     throw "Export Naraka representative model smoke failed with exit code $LASTEXITCODE"
 }
@@ -1516,7 +1514,7 @@ $db = Join-Path $libraryOutput "library_index.db"
 $sqliteSummary = Join-Path $libraryOutput "sqlite_index_summary.json"
 $validation = Join-Path $libraryOutput "model_validation.json"
 $assetCatalog = Join-Path $libraryOutput "asset_catalog.jsonl"
-$modelAnimationsCompact = Join-Path $libraryOutput "model_animations.compact.json"
+$animationOutOfScope = Join-Path $libraryOutput "animation_out_of_scope.json"
 $gltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_m_hadi\ch_m_hadi_lv_s9\ch_m_hadi_lv_s9.gltf"
 $jiantianshiGltf = Join-Path $libraryOutput "Models\assets\res\prefab\actor_visual_part\ch_f_jiantianshi\ch_f_jiantianshi_lv_s1\ch_f_jiantianshi_lv_s1.gltf"
 $bowGltf = Join-Path $libraryOutput "Models\assets\res\prefab\drop_item_generate\weapon\weapon_drop_bow_dongjun\weapon_drop_bow_dongjun.gltf"
@@ -1529,7 +1527,7 @@ Test-FileRequired -Path $db -Label "library_index.db"
 Test-FileRequired -Path $sqliteSummary -Label "sqlite_index_summary.json"
 Test-FileRequired -Path $validation -Label "model_validation.json"
 Test-FileRequired -Path $assetCatalog -Label "asset_catalog.jsonl"
-Test-FileRequired -Path $modelAnimationsCompact -Label "model_animations.compact.json"
+Test-FileRequired -Path $animationOutOfScope -Label "animation_out_of_scope.json"
 Test-FileRequired -Path $gltf -Label "Hadi glTF"
 Test-FileRequired -Path $jiantianshiGltf -Label "Jiantianshi glTF"
 Test-FileRequired -Path $bowGltf -Label "Bow prop glTF"
@@ -1669,31 +1667,8 @@ if ($zhumuAvatarCompatibilityDiagnostic.modelAvatarRows -lt 1 -or $zhumuAvatarCo
 }
 if ($RefreshZhumuVerifiedAnimationPreview) {
     Write-Host ""
-    Write-Host "== Refresh Naraka Zhumu verified animation preview relation =="
-
-    Test-FileRequired -Path $ZhumuScriptAnimationSampleRoot -Label "Zhumu verified-preview Library root"
-    Test-FileRequired -Path $ZhumuMergedAnimationProbeRoot -Label "Zhumu merged animation probe root"
-    $zhumuRefreshMergeReport = Join-Path $ZhumuMergedAnimationProbeRoot "merge_animation_gltf_report.json"
-    $zhumuRefreshRenderRoot = Join-Path $ZhumuMergedAnimationProbeRoot "RenderProbe"
-    $zhumuRefreshRenderReport = Join-Path $OutputRoot "zhumu_render_subject_occupancy.json"
-    $zhumuRefreshSourceReport = Join-Path $sourceModelZhumuOutput "source_model_animation_candidates.json"
-    Test-FileRequired -Path $zhumuRefreshMergeReport -Label "Zhumu merge_animation_gltf_report.json"
-    Test-FileRequired -Path $zhumuRefreshSourceReport -Label "Zhumu source_model_animation_candidates.json"
-
-    # 刷新关系前先用本轮 smoke 输出目录重建渲染运动报告，避免复用旧报告造成证据漂移。
-    $zhumuRefreshRender = Invoke-ZhumuRenderSubjectAnalysis -RenderRoot $zhumuRefreshRenderRoot -OutputPath $zhumuRefreshRenderReport
-    Invoke-Checked -Label "Apply Zhumu verified animation preview" -FilePath $cli -Arguments @(
-        "--apply_verified_animation_preview", $zhumuRefreshMergeReport,
-        "--verified_animation_render_report", $zhumuRefreshRender.report,
-        "--verified_animation_source_report", $zhumuRefreshSourceReport,
-        "--preview_output", $ZhumuScriptAnimationSampleRoot,
-        "--source_index", $SourceIndex,
-        "--game", "Naraka")
-
-    $zhumuVerifiedAnimationPreviewRefresh.status = "ok"
-    $zhumuVerifiedAnimationPreviewRefresh.mergeReport = $zhumuRefreshMergeReport
-    $zhumuVerifiedAnimationPreviewRefresh.renderReport = $zhumuRefreshRender.report
-    $zhumuVerifiedAnimationPreviewRefresh.sourceReport = $zhumuRefreshSourceReport
+    Write-Warning "-RefreshZhumuVerifiedAnimationPreview is deprecated under the current no-default-animation standard; skipping writeback."
+    $zhumuVerifiedAnimationPreviewRefresh.status = "skippedDeprecated"
 }
 if ($yaodaojiWingsScriptAnimationDiagnostic.selectedModelCount -lt 1) {
     throw "Yaodaoji wings shortlist source-model diagnostic did not select any source model."
@@ -2395,8 +2370,6 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
         Test-FileRequired -Path $zhumuScriptAnimationValidation -Label "Zhumu script-animation model_validation.json"
         Test-FileRequired -Path $zhumuScriptAnimationSqliteSummary -Label "Zhumu script-animation sqlite_index_summary.json"
         Test-FileRequired -Path $zhumuScriptAnimationDb -Label "Zhumu script-animation library_index.db"
-        Test-FileRequired -Path $zhumuScriptAnimationCompact -Label "Zhumu script-animation model_animations.compact.json"
-        Test-FileRequired -Path $zhumuScriptAnimationVerifiedPreviewRoot -Label "Zhumu verified animation preview directory"
         if ($zhumuScriptAnimationGltfs.Count -lt 1) {
             throw "Zhumu script-animation model probe is missing exported glTF models."
         }
@@ -2405,9 +2378,11 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
         $zhumuScriptAnimationAssetLibraryJson = Get-Content -LiteralPath $zhumuScriptAnimationAssetLibrary -Raw -Encoding UTF8 | ConvertFrom-Json
         $zhumuScriptAnimationValidationJson = Get-Content -LiteralPath $zhumuScriptAnimationValidation -Raw -Encoding UTF8 | ConvertFrom-Json
         $zhumuScriptAnimationSummaryJson = Get-Content -LiteralPath $zhumuScriptAnimationSqliteSummary -Raw -Encoding UTF8 | ConvertFrom-Json
-        $zhumuScriptAnimationCompactJson = Get-Content -LiteralPath $zhumuScriptAnimationCompact -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($zhumuScriptAnimationAssetLibraryJson.capabilities.models -ne $true -or $zhumuScriptAnimationAssetLibraryJson.capabilities.animations -ne $true) {
-            throw "Zhumu verified-preview sample must expose models=true and animations=true. models=$($zhumuScriptAnimationAssetLibraryJson.capabilities.models) animations=$($zhumuScriptAnimationAssetLibraryJson.capabilities.animations)"
+        if (Test-Path -LiteralPath $zhumuScriptAnimationCompact) {
+            $zhumuScriptAnimationCompactJson = Get-Content -LiteralPath $zhumuScriptAnimationCompact -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        if ($zhumuScriptAnimationAssetLibraryJson.capabilities.models -ne $true -or $zhumuScriptAnimationAssetLibraryJson.capabilities.animations -ne $false) {
+            throw "Zhumu diagnostic sample must expose models=true and animations=false. models=$($zhumuScriptAnimationAssetLibraryJson.capabilities.models) animations=$($zhumuScriptAnimationAssetLibraryJson.capabilities.animations)"
         }
         if ([long]$zhumuScriptAnimationValidationJson.totals.models -lt 1 -or [long]$zhumuScriptAnimationValidationJson.totals.ok -lt 1) {
             throw "Zhumu script-animation model probe has no ok model validation result."
@@ -2437,55 +2412,27 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
             throw "Zhumu script-animation model probe lost texture assets or material sidecars."
         }
 
-        $zhumuVerifiedPreviewImportReports = @(Get-ChildItem -LiteralPath $zhumuScriptAnimationVerifiedPreviewRoot -Recurse -Filter "verified_animation_preview_import.json" -File)
-        if ($zhumuVerifiedPreviewImportReports.Count -ne 1) {
-            throw "Zhumu verified-preview sample must contain exactly one verified_animation_preview_import.json. count=$($zhumuVerifiedPreviewImportReports.Count)"
+        $zhumuScriptAnimationVerifiedPreviewCompactCount = 0
+        $zhumuScriptAnimationVerifiedPreviewCandidateCount = 0
+        $zhumuVerifiedPreviewImportReports = @()
+        if (Test-Path -LiteralPath $zhumuScriptAnimationVerifiedPreviewRoot) {
+            $zhumuVerifiedPreviewImportReports = @(Get-ChildItem -LiteralPath $zhumuScriptAnimationVerifiedPreviewRoot -Recurse -Filter "verified_animation_preview_import.json" -File)
         }
-        $zhumuScriptAnimationVerifiedPreviewImportReport = $zhumuVerifiedPreviewImportReports[0].FullName
-        if ($RefreshZhumuVerifiedAnimationPreview) {
-            $zhumuVerifiedAnimationPreviewRefresh.importReport = $zhumuScriptAnimationVerifiedPreviewImportReport
+        if ($zhumuVerifiedPreviewImportReports.Count -ne 0) {
+            throw "Zhumu diagnostic sample must not contain default verified animation preview reports. count=$($zhumuVerifiedPreviewImportReports.Count)"
         }
-        $zhumuScriptAnimationVerifiedPreviewImportJson = Get-Content -LiteralPath $zhumuScriptAnimationVerifiedPreviewImportReport -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.status -ne "ok" -or [string]$zhumuScriptAnimationVerifiedPreviewImportJson.source -ne "NarakaSimpleAnimationVerifiedPreview") {
-            throw "Zhumu verified-preview import report lost status/source evidence. status=$($zhumuScriptAnimationVerifiedPreviewImportJson.status) source=$($zhumuScriptAnimationVerifiedPreviewImportJson.source)"
-        }
-        if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.productionReadiness -ne "productionPreviewReady" -or $zhumuScriptAnimationVerifiedPreviewImportJson.previewOnly -ne $true -or $zhumuScriptAnimationVerifiedPreviewImportJson.embeddedModelRequired -ne $true) {
-            throw "Zhumu verified-preview import report must stay productionPreviewReady previewOnly embedded-model. productionReadiness=$($zhumuScriptAnimationVerifiedPreviewImportJson.productionReadiness) previewOnly=$($zhumuScriptAnimationVerifiedPreviewImportJson.previewOnly) embeddedModelRequired=$($zhumuScriptAnimationVerifiedPreviewImportJson.embeddedModelRequired)"
-        }
-        if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.productionRelationTier -ne "VerifiedPreviewRelation" -or [string]$zhumuScriptAnimationVerifiedPreviewImportJson.relationPath -ne "NarakaSimpleAnimationCustomRuntime" -or $zhumuScriptAnimationVerifiedPreviewImportJson.customRuntimeRequired -ne $true -or $zhumuScriptAnimationVerifiedPreviewImportJson.standardAnimatorControllerRecovered -ne $false -or $zhumuScriptAnimationVerifiedPreviewImportJson.standaloneAnimationClip -ne $false) {
-            throw "Zhumu verified-preview import report lost custom runtime relation boundary. tier=$($zhumuScriptAnimationVerifiedPreviewImportJson.productionRelationTier) path=$($zhumuScriptAnimationVerifiedPreviewImportJson.relationPath) customRuntimeRequired=$($zhumuScriptAnimationVerifiedPreviewImportJson.customRuntimeRequired) standardController=$($zhumuScriptAnimationVerifiedPreviewImportJson.standardAnimatorControllerRecovered) standalone=$($zhumuScriptAnimationVerifiedPreviewImportJson.standaloneAnimationClip)"
-        }
-        $zhumuScriptAnimationVerifiedPreviewGltf = Join-Path $ZhumuScriptAnimationSampleRoot ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.animationOutput)
-        Test-FileRequired -Path $zhumuScriptAnimationVerifiedPreviewGltf -Label "Zhumu verified animation preview glTF"
-        if ([int64]$zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animationCountAdded -lt 1 -or [int64]$zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.channelCount -lt 1) {
-            throw "Zhumu verified-preview import report lost animation/channel evidence."
-        }
-        if ([double]$zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animatedWeightedVertexCoverage -lt 0.6 -or [double]$zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animatedCoreBodyJointCoverage -lt 0.9) {
-            throw "Zhumu verified-preview import report lost coverage gates. weighted=$($zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animatedWeightedVertexCoverage) core=$($zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animatedCoreBodyJointCoverage)"
-        }
-        if ([string]$zhumuScriptAnimationVerifiedPreviewImportJson.renderEvidence.status -ne "ok" -or [string]$zhumuScriptAnimationVerifiedPreviewImportJson.renderEvidence.motion.status -ne "ok") {
-            throw "Zhumu verified-preview import report lost render motion evidence. render=$($zhumuScriptAnimationVerifiedPreviewImportJson.renderEvidence.status) motion=$($zhumuScriptAnimationVerifiedPreviewImportJson.renderEvidence.motion.status)"
-        }
-
-        $zhumuVerifiedPreviewCompactAnimations = @($zhumuScriptAnimationCompactJson.animations | Where-Object {
-            [string]$_.resourceKind -eq "VerifiedAnimationPreview" -and [string]$_.animationType -eq "ModelAnimationPreviewGltf"
-        })
-        $zhumuScriptAnimationVerifiedPreviewCompactCount = $zhumuVerifiedPreviewCompactAnimations.Count
-        if ($zhumuScriptAnimationVerifiedPreviewCompactCount -lt 1) {
-            throw "Zhumu compact animation index lost VerifiedAnimationPreview animation asset."
-        }
-        $zhumuVerifiedPreviewCompactCandidates = @($zhumuScriptAnimationCompactJson.modelAnimationRefs | ForEach-Object { @($_.candidates) } | Where-Object {
-            [string]$_.confidence -eq "naraka_simple_animation_verified_preview" -and
-            [string]$_.productionReadiness -eq "productionPreviewReady" -and
-            $_.previewOnly -eq $true -and
-            $_.embeddedModelRequired -eq $true
-        })
-        $zhumuScriptAnimationVerifiedPreviewCandidateCount = $zhumuVerifiedPreviewCompactCandidates.Count
-        if ($zhumuScriptAnimationVerifiedPreviewCandidateCount -lt 1) {
-            throw "Zhumu compact animation index lost verified preview candidate boundary fields."
-        }
-        if ([int64]$zhumuScriptAnimationCompactJson.capabilitySummary.animationCapabilities.VerifiedAnimationPreview -lt 1) {
-            throw "Zhumu compact animation capability summary lost VerifiedAnimationPreview count."
+        if ($null -ne $zhumuScriptAnimationCompactJson) {
+            $zhumuVerifiedPreviewCompactAnimations = @($zhumuScriptAnimationCompactJson.animations | Where-Object {
+                [string]$_.resourceKind -eq "VerifiedAnimationPreview" -and [string]$_.animationType -eq "ModelAnimationPreviewGltf"
+            })
+            $zhumuScriptAnimationVerifiedPreviewCompactCount = $zhumuVerifiedPreviewCompactAnimations.Count
+            $zhumuVerifiedPreviewCompactCandidates = @($zhumuScriptAnimationCompactJson.modelAnimationRefs | ForEach-Object { @($_.candidates) } | Where-Object {
+                [string]$_.confidence -eq "naraka_simple_animation_verified_preview"
+            })
+            $zhumuScriptAnimationVerifiedPreviewCandidateCount = $zhumuVerifiedPreviewCompactCandidates.Count
+            if ($zhumuScriptAnimationVerifiedPreviewCompactCount -ne 0 -or $zhumuScriptAnimationVerifiedPreviewCandidateCount -ne 0) {
+                throw "Zhumu diagnostic animation data must not remain in default compact model-animation indexes."
+            }
         }
 
         $sqlite3 = Get-Command "sqlite3.exe" -ErrorAction SilentlyContinue
@@ -2541,11 +2488,11 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
             if ($zhumuScriptAnimationMaterialSidecarRows -lt 1 -or $zhumuScriptAnimationModelRows -lt 1) {
                 throw "Zhumu script-animation model probe lost material sidecar or model rows in library_index.db."
             }
-            if ($zhumuScriptAnimationAnimationAssetRows -lt 1 -or $zhumuScriptAnimationVerifiedPreviewAssetRows -lt 1) {
-                throw "Zhumu verified-preview sample lost animation asset rows. animations=$zhumuScriptAnimationAnimationAssetRows verified=$zhumuScriptAnimationVerifiedPreviewAssetRows"
+            if ($zhumuScriptAnimationAnimationAssetRows -ne 0 -or $zhumuScriptAnimationVerifiedPreviewAssetRows -ne 0) {
+                throw "Zhumu diagnostic sample must not create animation asset rows. animations=$zhumuScriptAnimationAnimationAssetRows verified=$zhumuScriptAnimationVerifiedPreviewAssetRows"
             }
-            if ($zhumuScriptAnimationModelAnimationCandidateRows -lt 1 -or $zhumuScriptAnimationModelAnimationRelationRows -lt 1 -or $zhumuScriptAnimationRelationAnimationRows -lt 1 -or $zhumuScriptAnimationUsableRelationAnimationRows -lt 1) {
-                throw "Zhumu verified-preview sample lost production preview relation rows. candidates=$zhumuScriptAnimationModelAnimationCandidateRows modelRelations=$zhumuScriptAnimationModelAnimationRelationRows relationAnimations=$zhumuScriptAnimationRelationAnimationRows usable=$zhumuScriptAnimationUsableRelationAnimationRows"
+            if ($zhumuScriptAnimationModelAnimationCandidateRows -ne 0 -or $zhumuScriptAnimationModelAnimationRelationRows -ne 0 -or $zhumuScriptAnimationRelationAnimationRows -ne 0 -or $zhumuScriptAnimationUsableRelationAnimationRows -ne 0) {
+                throw "Zhumu diagnostic sample must not create model-animation relation rows. candidates=$zhumuScriptAnimationModelAnimationCandidateRows modelRelations=$zhumuScriptAnimationModelAnimationRelationRows relationAnimations=$zhumuScriptAnimationRelationAnimationRows usable=$zhumuScriptAnimationUsableRelationAnimationRows"
             }
         }
         else {
@@ -2557,8 +2504,6 @@ if (![string]::IsNullOrWhiteSpace($ZhumuScriptAnimationSampleRoot)) {
             if ($null -ne $gltfTransform) {
                 Invoke-Checked -Label "Validate Zhumu script-animation model glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $zhumuScriptAnimationGltf)
                 $zhumuScriptAnimationGltfValidationStatus = "ok"
-                Invoke-Checked -Label "Validate Zhumu verified animation preview glTF" -FilePath $gltfTransform.Source -Arguments @("validate", $zhumuScriptAnimationVerifiedPreviewGltf)
-                $zhumuScriptAnimationVerifiedPreviewGltfValidationStatus = "ok"
             }
         }
 
@@ -2781,20 +2726,9 @@ if ($jiantianshiCatalogRow.libraryRole -ne "PrefabPrimary" -or
     throw "Jiantianshi formal skinned representative gate failed. libraryRole=$($jiantianshiCatalogRow.libraryRole) resourceKind=$($jiantianshiCatalogRow.resourceKind) validation=$($jiantianshiCatalogRow.modelValidationStatus) body=$($jiantianshiCatalogRow.modelBodyStatus) missingRendererBinding=$($jiantianshiCatalogRow.materialMissingRendererBinding) primitives=$jiantianshiPrimitivesWithMaterial/$jiantianshiPrimitiveCount bones=$($jiantianshiCatalogRow.boneCount) pathId=$($jiantianshiCatalogRow.pathId) output=$($jiantianshiCatalogRow.output) source=$jiantianshiSource"
 }
 
-$compactAnimationIndex = Get-Content -LiteralPath $modelAnimationsCompact -Raw -Encoding UTF8 | ConvertFrom-Json
-$jiantianshiCompactModel = @($compactAnimationIndex.models | Where-Object { $_.output -eq $expectedJiantianshiOutput }) | Select-Object -First 1
-if ($null -eq $jiantianshiCompactModel) {
-    throw "model_animations.compact.json lost Jiantianshi model row."
-}
-$jiantianshiCompactRef = @($compactAnimationIndex.modelAnimationRefs | Where-Object { $_.modelId -eq $jiantianshiCompactModel.id }) | Select-Object -First 1
-if ($null -eq $jiantianshiCompactRef) {
-    throw "model_animations.compact.json lost Jiantianshi model animation ref row."
-}
-if ($jiantianshiCompactModel.modelAnimationGate.status -ne "ready" -or
-    $jiantianshiCompactModel.modelReadyForAnimation -ne $true -or
-    [long]$jiantianshiCompactRef.candidateCount -ne 0 -or
-    [long]$jiantianshiCompactRef.usableCandidateCount -ne 0) {
-    throw "Jiantianshi animation gate must be model-ready but without default animation candidates. gate=$($jiantianshiCompactModel.modelAnimationGate.status) ready=$($jiantianshiCompactModel.modelReadyForAnimation) candidates=$($jiantianshiCompactRef.candidateCount) usable=$($jiantianshiCompactRef.usableCandidateCount)"
+$animationOutOfScopeJson = Get-Content -LiteralPath $animationOutOfScope -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([string]$animationOutOfScopeJson.status -ne "outOfScopeAnimation" -or $animationOutOfScopeJson.defaultAnimationExport -ne $false -or $animationOutOfScopeJson.defaultModelAnimationCandidates -ne $false) {
+    throw "animation_out_of_scope.json must declare default animation export and model-animation candidates disabled."
 }
 $formalSkinnedRepresentativeBoundary = [pscustomobject]@{
     status = "ok"
@@ -3156,9 +3090,9 @@ $firstUsableReadinessItems = @(
     },
     [pscustomobject]@{
         area = "animationRelation"
-        status = if ($zhumuScriptAnimationStatus -eq "ok" -and $zhumuScriptAnimationUsableRelationAnimationRows -ge 1) { "degraded" } else { "blocked" }
-        evidence = $zhumuScriptAnimationVerifiedPreviewImportReport
-        rule = "当前动画是生产可用的模型绑定 verified preview 关系，不是独立无 skin AnimationClip，也不是代表库默认动画能力。"
+        status = "skipped"
+        evidence = Join-Path $libraryOutput "animation_out_of_scope.json"
+        rule = "动画已退出默认导出目标。smoke 只要求默认库声明 animations=false，并记录 out-of-scope 边界；显式动画诊断不能影响第一版模型素材库可用性。"
     },
     [pscustomobject]@{
         area = "browserPreview"
@@ -3170,7 +3104,7 @@ $firstUsableReadinessItems = @(
 $firstUsableBlockedAreas = @($firstUsableReadinessItems | Where-Object { [string]$_.status -eq "blocked" } | ForEach-Object { [string]$_.area })
 $firstUsableDegradedAreas = @($firstUsableReadinessItems | Where-Object { [string]$_.status -eq "degraded" } | ForEach-Object { [string]$_.area })
 $firstUsableSkippedAreas = @($firstUsableReadinessItems | Where-Object { [string]$_.status -eq "skipped" } | ForEach-Object { [string]$_.area })
-$firstUsableReadinessStatus = if ($firstUsableBlockedAreas.Count -gt 0) { "blocked" } elseif ($firstUsableDegradedAreas.Count -gt 0) { "usableWithDegradedAnimation" } else { "ok" }
+$firstUsableReadinessStatus = if ($firstUsableBlockedAreas.Count -gt 0) { "blocked" } elseif ($firstUsableDegradedAreas.Count -gt 0) { "usableWithDegradedExtension" } else { "ok" }
 $firstUsableReadiness = [pscustomobject]@{
     status = $firstUsableReadinessStatus
     productionReady = ($firstUsableReadinessStatus -eq "ok")
@@ -3179,7 +3113,7 @@ $firstUsableReadiness = [pscustomobject]@{
     degradedAreas = $firstUsableDegradedAreas
     skippedAreas = $firstUsableSkippedAreas
     items = $firstUsableReadinessItems
-    rule = "第一版可用性矩阵只汇总已通过的 smoke 证据。动画当前允许以 verified preview 降级交付，但必须保留 previewOnly/embeddedModelRequired 边界；任何 blocked area 都表示目标尚未完成。"
+    rule = "第一版可用性矩阵只汇总已通过的模型素材库 smoke 证据。动画已退出默认导出目标，只能作为 skipped/out-of-scope 边界；任何 blocked area 都表示目标尚未完成。"
 }
 
 # 这两个报告只汇总已经验证过的产物，不改变正式素材库内容或动画关系结论。
@@ -3411,30 +3345,24 @@ if ($summaryJsonParsed.zhumuMergedAnimationPreview.status -eq "ok") {
         }
     }
 }
-if ($RefreshZhumuVerifiedAnimationPreview -and [string]$summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status -ne "ok") {
-    throw "smoke_summary.json Zhumu verified-preview refresh did not finish as ok. status=$($summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status)"
+if ($RefreshZhumuVerifiedAnimationPreview -and [string]$summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status -ne "skippedDeprecated") {
+    throw "smoke_summary.json deprecated Zhumu verified-preview refresh must stay skippedDeprecated. status=$($summaryJsonParsed.zhumuVerifiedAnimationPreviewRefresh.status)"
 }
 if ([string]$summaryJsonParsed.firstUsableReadiness.status -eq "blocked") {
     throw "smoke_summary.json first usable readiness is blocked. blockedAreas=$($summaryJsonParsed.firstUsableReadiness.blockedAreas -join ',')"
 }
-if ([string]$summaryJsonParsed.firstUsableReadiness.status -eq "ok") {
-    throw "smoke_summary.json first usable readiness must not claim full ok while animation is still a degraded verified preview relation."
-}
-if (@($summaryJsonParsed.firstUsableReadiness.degradedAreas | ForEach-Object { [string]$_ }) -notcontains "animationRelation") {
-    throw "smoke_summary.json first usable readiness must keep animationRelation degraded until independent animation export is production-ready."
+if (@($summaryJsonParsed.firstUsableReadiness.skippedAreas | ForEach-Object { [string]$_ }) -notcontains "animationRelation") {
+    throw "smoke_summary.json first usable readiness must mark animationRelation as skipped/out-of-scope."
 }
 if ($summaryJsonParsed.zhumuScriptAnimationProbe.status -eq "ok") {
-    if ($summaryJsonParsed.zhumuScriptAnimationProbe.capabilitiesAnimations -ne $true) {
-        throw "smoke_summary.json Zhumu verified-preview sample must keep capabilities.animations=true."
+    if ($summaryJsonParsed.zhumuScriptAnimationProbe.capabilitiesAnimations -ne $false) {
+        throw "smoke_summary.json Zhumu diagnostic sample must keep capabilities.animations=false under the current default standard."
     }
-    if ([int64]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewAssetRows -lt 1 -or [int64]$summaryJsonParsed.zhumuScriptAnimationProbe.usableRelationAnimationRows -lt 1) {
-        throw "smoke_summary.json Zhumu verified-preview rows are missing."
+    if ([int64]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewAssetRows -ne 0 -or [int64]$summaryJsonParsed.zhumuScriptAnimationProbe.usableRelationAnimationRows -ne 0) {
+        throw "smoke_summary.json Zhumu diagnostic animation rows must stay out of the formal AssetLibrary index."
     }
-    if ([string]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.productionReadiness -ne "productionPreviewReady" -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.previewOnly -ne $true -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.embeddedModelRequired -ne $true) {
-        throw "smoke_summary.json Zhumu verified-preview boundary fields are wrong."
-    }
-    if ([string]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.productionRelationTier -ne "VerifiedPreviewRelation" -or [string]$summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.relationPath -ne "NarakaSimpleAnimationCustomRuntime" -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.customRuntimeRequired -ne $true -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.standardAnimatorControllerRecovered -ne $false -or $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport.standaloneAnimationClip -ne $false) {
-        throw "smoke_summary.json Zhumu verified-preview custom runtime boundary fields are wrong."
+    if ($null -ne $summaryJsonParsed.zhumuScriptAnimationProbe.verifiedPreviewImport) {
+        throw "smoke_summary.json Zhumu diagnostic sample must not retain a verified-preview import payload."
     }
 }
 if ($summaryJsonParsed.sourceIndexScriptAnimationClipScripts.status -eq "ok") {
@@ -3494,7 +3422,7 @@ $reportLines.Add(('- Accepted relation: `{0}` via `{1}`' -f $narakaAnimationRela
 $reportLines.Add(('- Standard AnimatorController required: `{0}`' -f $narakaAnimationRelationPolicy.standardAnimatorControllerIsRequired))
 $reportLines.Add(('- Rule: {0}' -f $narakaAnimationRelationPolicy.rule))
 $reportLines.Add("")
-$reportLines.Add("## Zhumu Verified Preview Refresh")
+$reportLines.Add("## Zhumu Deprecated Verified Preview Refresh")
 $reportLines.Add("")
 $reportLines.Add(('- Status: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.status))
 $reportLines.Add(('- Explicit switch: `{0}`' -f $zhumuVerifiedAnimationPreviewRefresh.explicitSwitch))
@@ -3516,7 +3444,7 @@ $reportLines.Add(('- AssetLibrary v1 contract: status=`{0}`, schemaVersion=`{1}`
     (ConvertTo-SmokeText $assetLibraryContract.sourceGame),
     (ConvertTo-SmokeText $assetLibraryContract.index),
     (ConvertTo-SmokeText $assetLibraryContract.sqliteTableCheck)))
-$reportLines.Add(('- Animation relation tables: modelRelations=`{0}`, relationAnimations=`{1}`, usableRelationAnimations=`{2}`' -f `
+$reportLines.Add(('- Legacy animation relation tables: modelRelations=`{0}`, relationAnimations=`{1}`, usableRelationAnimations=`{2}`' -f `
     (ConvertTo-SmokeText $assetLibraryContract.modelAnimationRelationRows "unknown"),
     (ConvertTo-SmokeText $assetLibraryContract.relationAnimationRows "unknown"),
     (ConvertTo-SmokeText $assetLibraryContract.usableRelationAnimationRows "unknown")))
@@ -4020,7 +3948,7 @@ elseif ($characterCandidateStatus -eq "missing") {
     $reportLines.Add(('- Sample root missing: `{0}`' -f $CharacterCandidateSampleRoot))
 }
 $reportLines.Add("")
-$reportLines.Add("## Zhumu Script Animation Verified Preview")
+$reportLines.Add("## Zhumu Script Animation Diagnostic Boundary")
 $reportLines.Add("")
 $reportLines.Add(('- Status: `{0}`' -f $zhumuScriptAnimationStatus))
 if ($zhumuScriptAnimationStatus -eq "ok") {
@@ -4030,26 +3958,7 @@ if ($zhumuScriptAnimationStatus -eq "ok") {
         (ConvertTo-SmokeText $zhumuScriptAnimationAssetLibraryJson.capabilities.animations "unknown")))
     $reportLines.Add(('- glTF: `{0}`' -f $zhumuScriptAnimationGltf))
     $reportLines.Add(('- glTF validator: `{0}`' -f $zhumuScriptAnimationGltfValidationStatus))
-    $reportLines.Add(('- Verified preview glTF: `{0}`' -f $zhumuScriptAnimationVerifiedPreviewGltf))
-    $reportLines.Add(('- Verified preview glTF validator: `{0}`' -f $zhumuScriptAnimationVerifiedPreviewGltfValidationStatus))
-    $reportLines.Add(('- Verified preview import report: `{0}`' -f $zhumuScriptAnimationVerifiedPreviewImportReport))
-    $reportLines.Add(('- Verified preview boundary: source=`{0}`, productionReadiness=`{1}`, previewOnly=`{2}`, embeddedModelRequired=`{3}`' -f `
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.source "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.productionReadiness "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.previewOnly "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.embeddedModelRequired "unknown")))
-    $reportLines.Add(('- Verified preview relation path: tier=`{0}`, path=`{1}`, customRuntimeRequired=`{2}`, standardAnimatorControllerRecovered=`{3}`, standaloneAnimationClip=`{4}`' -f `
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.productionRelationTier "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.relationPath "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.customRuntimeRequired "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.standardAnimatorControllerRecovered "unknown"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.standaloneAnimationClip "unknown")))
-    $reportLines.Add(('- Verified preview coverage: animationCountAdded=`{0}`, channelCount=`{1}`, weightedVertexCoverage=`{2}`, coreBodyCoverage=`{3}`, renderMotion=`{4}`' -f `
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animationCountAdded "0"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.channelCount "0"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animatedWeightedVertexCoverage "0"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.mergeEvidence.animatedCoreBodyJointCoverage "0"),
-        (ConvertTo-SmokeText $zhumuScriptAnimationVerifiedPreviewImportJson.renderEvidence.motion.status "unknown")))
+    $reportLines.Add('- Verified preview: skipped by default; this sample must not contain animation preview reports, animation assets, or model-animation relation rows.')
     $reportLines.Add(('- Model validation: models=`{0}`, ok=`{1}`, withSkin=`{2}`, withTextures=`{3}`, skinJoints=`{4}`, maxBoundsSize=`{5}`' -f `
         (ConvertTo-SmokeText $zhumuScriptAnimationValidationJson.totals.models "0"),
         (ConvertTo-SmokeText $zhumuScriptAnimationValidationJson.totals.ok "0"),
@@ -4087,7 +3996,7 @@ if ($zhumuScriptAnimationStatus -eq "ok") {
         (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.modelAvatarHighOverlapRows "0"),
         (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.modelAvatarMaxCoverage "0"),
         (ConvertTo-SmokeText $zhumuAvatarCompatibilityDiagnostic.invalidBoundaryRows "0")))
-    $reportLines.Add('- Rule: Zhumu now proves a bounded production preview relation from SimpleAnimation PPtr + TypeTree default state + merged glTF TRS + render motion evidence. It is a trusted preview package only; it stays `previewOnly=true` and `embeddedModelRequired=true`, and it must not be described as an independent skinless AnimationClip or a recovered standard AnimatorController chain.')
+    $reportLines.Add('- Rule: Zhumu now proves only bounded script-animation diagnostic evidence plus a valid model export. Animation export remains out of default scope and must not create default Library assets or relations.')
 }
 elseif ($zhumuScriptAnimationStatus -eq "missing") {
     $reportLines.Add(('- Sample root missing: `{0}`' -f $ZhumuScriptAnimationSampleRoot))
@@ -4164,7 +4073,7 @@ else {
     $reportLines.Add(('- Diagnostic status: `{0}`' -f $animationDiagnosticStatus))
 }
 $reportLines.Add("")
-$reportLines.Add('Standalone animation diagnostics remain blocked. The separate Zhumu VerifiedAnimationPreview sample may enable `capabilities.animations=true` only inside its own preview library, with `previewOnly=true` and `embeddedModelRequired=true`; the representative smoke Library still keeps `capabilities.animations=false`.')
+$reportLines.Add('Standalone animation diagnostics remain out of scope for the default Library. Even explicit Zhumu diagnostics must not create default animation assets, default model-animation relations, or change AssetLibrary `capabilities.animations=false`.')
 $reportLines.Add("")
 $reportLines.Add("## Artifacts")
 $reportLines.Add("")
@@ -4207,10 +4116,6 @@ if ($zhumuScriptAnimationStatus -eq "ok") {
 if ($zhumuMergedAnimationPreview.status -eq "ok") {
     $reportLines.Add(('- Zhumu merged animation preview glTF: `{0}`' -f $zhumuMergedAnimationPreview.gltf))
     $reportLines.Add(('- Zhumu merged animation preview report: `{0}`' -f $zhumuMergedAnimationPreview.report))
-}
-if ($zhumuScriptAnimationStatus -eq "ok") {
-    $reportLines.Add(('- Zhumu verified animation preview glTF: `{0}`' -f $zhumuScriptAnimationVerifiedPreviewGltf))
-    $reportLines.Add(('- Zhumu verified animation preview import report: `{0}`' -f $zhumuScriptAnimationVerifiedPreviewImportReport))
 }
 if ($null -ne $animationGltfPath) {
     $reportLines.Add(('- Diagnostic animation glTF: `{0}`' -f $animationGltfPath))

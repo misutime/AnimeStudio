@@ -112,7 +112,7 @@ def export_command(args, row):
         "--mode Library",
         "--group_assets ByLibrary",
         "--model_format Gltf",
-        "--animation_package Separate",
+        "--animation_package Skip",
         "--skip_sqlite_index",
         "--source_index " + ps_single_quote(args.resolved_source_index),
         "--names " + ps_single_quote(regex_exact(row["name"])),
@@ -137,7 +137,7 @@ def batch_export_command(args, rows, batch_index):
         "--mode Library",
         "--group_assets ByLibrary",
         "--model_format Gltf",
-        "--animation_package Separate",
+        "--animation_package Skip",
         "--skip_sqlite_index",
         "--source_index " + ps_single_quote(args.resolved_source_index),
     ]

@@ -43,16 +43,6 @@ $jobs = @(
         Name = "global_shaders"
         Input = Join-Path $assets "graphics\shaders.ab"
         Args = @("--include_shaders")
-    },
-    @{
-        Name = "stage_animations"
-        Input = Join-Path $assets "graphics\stage\animation.ab"
-        Args = @()
-    },
-    @{
-        Name = "npc_animations"
-        Input = Join-Path $assets "graphics\character\npc\prefab\animation_npc.ab"
-        Args = @()
     }
 )
 

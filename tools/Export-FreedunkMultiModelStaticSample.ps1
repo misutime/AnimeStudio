@@ -49,7 +49,7 @@ $containerPattern = "graphics[\\/]character[\\/]pc[\\/](" + (($characters | ForE
     --profile_3d Core `
     --model_format Gltf `
     --texture_mode Png `
-    --animation_package Separate `
+    --animation_package Skip `
     --fbx_animation Skip `
     --names $namePattern `
     --containers $containerPattern `

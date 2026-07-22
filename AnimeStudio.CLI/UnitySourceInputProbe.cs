@@ -12,6 +12,7 @@ namespace AnimeStudio.CLI
     {
         private const int SampleLimit = 12;
         private static readonly byte[] NarakaHeader = { 0x15, 0x1E, 0x1C, 0x0D, 0x0D, 0x23, 0x21 };
+        private static readonly byte[] OdinHeader = { 0x4F, 0x64, 0x69, 0x6E, 0x00, 0x00, 0x00, 0x00 };
 
         public static string WriteReport(string sourceRoot, string outputRoot, Game game)
         {
@@ -38,6 +39,7 @@ namespace AnimeStudio.CLI
             var unityRawHeaderFileCount = 0;
             var narakaHeaderFileCount = 0;
             var narakaLoadableCandidateCount = 0;
+            var odinHeaderFileCount = 0;
             var pakFileCount = 0;
             var pakBytes = 0L;
             var noExtensionFileCount = 0;
@@ -46,6 +48,7 @@ namespace AnimeStudio.CLI
             var pakSamples = new List<string>();
             var unityHeaderSamples = new List<string>();
             var narakaHeaderSamples = new List<string>();
+            var odinHeaderSamples = new List<string>();
 
             foreach (var file in files)
             {
@@ -90,6 +93,12 @@ namespace AnimeStudio.CLI
                     AddSample(unityHeaderSamples, MakeRelative(sourceRoot, file));
                 }
 
+                if (IsOdinHeader(header))
+                {
+                    odinHeaderFileCount++;
+                    AddSample(odinHeaderSamples, MakeRelative(sourceRoot, file));
+                }
+
                 if (TryReadNarakaBundleHeader(file, header, out var sizeOffset))
                 {
                     narakaHeaderFileCount++;
@@ -109,7 +118,7 @@ namespace AnimeStudio.CLI
                 + narakaLoadableCandidateCount;
 
             var recommendedSourceRoot = FindRecommendedSourceRoot(sourceRoot, game, narakaHeaderFileCount, loadableHeaderFileCount);
-            var recommendation = BuildRecommendation(game, sourceRoot, recommendedSourceRoot, pakFileCount, narakaHeaderFileCount, narakaLoadableCandidateCount, loadableHeaderFileCount);
+            var recommendation = BuildRecommendation(game, sourceRoot, recommendedSourceRoot, pakFileCount, narakaHeaderFileCount, narakaLoadableCandidateCount, odinHeaderFileCount, loadableHeaderFileCount);
 
             return new JObject
             {
@@ -127,6 +136,7 @@ namespace AnimeStudio.CLI
                 ["unityRawHeaderFileCount"] = unityRawHeaderFileCount,
                 ["narakaHeaderFileCount"] = narakaHeaderFileCount,
                 ["narakaLoadableCandidateCount"] = narakaLoadableCandidateCount,
+                ["odinHeaderFileCount"] = odinHeaderFileCount,
                 ["pakFileCount"] = pakFileCount,
                 ["pakBytes"] = pakBytes,
                 ["pakSize"] = FormatBytes(pakBytes),
@@ -136,18 +146,26 @@ namespace AnimeStudio.CLI
                 ["pakSamples"] = new JArray(pakSamples),
                 ["unityHeaderSamples"] = new JArray(unityHeaderSamples),
                 ["narakaHeaderSamples"] = new JArray(narakaHeaderSamples),
+                ["odinHeaderSamples"] = new JArray(odinHeaderSamples),
                 ["recommendation"] = recommendation,
-                ["rule"] = "该探针只检查输入文件形态，不解包 .pak，不验证社区 AES key，也不修改素材库。Naraka 替代头表示当前 StreamingAssets 可走 AnimeStudio Naraka bundle header fix 主线；外部 .pak/AES 只能作为独立预处理诊断。",
+                ["rule"] = "该探针只检查输入文件形态，不解包 .pak，不验证社区 AES key，也不修改素材库。Naraka 替代头表示当前 StreamingAssets 可走 AnimeStudio Naraka bundle header fix 主线；Odin 表示 SGEngine/Odin 自定义资源容器，当前默认 Library 不会把它伪装成可用 Unity bundle；外部 .pak/AES 只能作为独立预处理诊断。",
             };
         }
 
-        private static JObject BuildRecommendation(Game game, string sourceRoot, string recommendedSourceRoot, int pakFileCount, int narakaHeaderFileCount, int narakaLoadableCandidateCount, int loadableHeaderFileCount)
+        private static JObject BuildRecommendation(Game game, string sourceRoot, string recommendedSourceRoot, int pakFileCount, int narakaHeaderFileCount, int narakaLoadableCandidateCount, int odinHeaderFileCount, int loadableHeaderFileCount)
         {
             var status = "unknown";
             var nextStep = "Build unity_source_index.db with --build_source_sqlite_index after confirming --game.";
             var notes = new JArray();
 
-            if (game?.Type.IsNaraka() == true && narakaHeaderFileCount > 0)
+            if (odinHeaderFileCount > 0 && loadableHeaderFileCount == 0)
+            {
+                status = "unsupported_odin_container";
+                nextStep = "Do not run default Library export yet. Add SGEngine/Odin container decoding first, then rebuild unity_source_index.db and rerun model candidate smoke.";
+                notes.Add("检测到 Odin 自定义资源容器。当前工具能看到 CAB/Unity 版本等线索，但还不能把 Odin 容器解成标准 Unity SerializedFile/AssetBundle。");
+                notes.Add("默认 Library 必须拒绝这类输入，避免产出只有内置 Unity 资源、没有真实模型的空素材库。");
+            }
+            else if (game?.Type.IsNaraka() == true && narakaHeaderFileCount > 0)
             {
                 status = "naraka_streaming_assets_loadable";
                 nextStep = string.Equals(sourceRoot, recommendedSourceRoot, StringComparison.OrdinalIgnoreCase)
@@ -236,6 +254,12 @@ namespace AnimeStudio.CLI
         {
             return header.Length >= NarakaHeader.Length
                 && NarakaHeader.Select((x, i) => header[i] == x).All(x => x);
+        }
+
+        private static bool IsOdinHeader(byte[] header)
+        {
+            return header.Length >= OdinHeader.Length
+                && OdinHeader.Select((x, i) => header[i] == x).All(x => x);
         }
 
         private static bool TryReadNarakaBundleHeader(string path, byte[] header, out long sizeOffset)

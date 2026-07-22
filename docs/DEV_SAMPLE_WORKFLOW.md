@@ -1,5 +1,7 @@
 # AnimeStudio 开发样本工作流
 
+本文件只说明开发样本怎么复现，不是资源导出标准。默认导出规则以 [PROJECT_EXPORT_STANDARDS.md](PROJECT_EXPORT_STANDARDS.md) 为准；Freedunk 的当前特殊背景记录在 [game-profiles/Freedunk.md](game-profiles/Freedunk.md)。
+
 本项目后续功能开发以“导出可用素材库”为基础准则。不要只靠全量导出验证功能；全量太慢，也不利于定位问题。默认使用 Freedunk 的真实资源建立一个小型、固定、可重复的开发样本库。
 
 ## 固定样本目录

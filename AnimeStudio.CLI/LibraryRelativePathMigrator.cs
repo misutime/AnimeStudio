@@ -21,6 +21,7 @@ namespace AnimeStudio.CLI
             "Audio",
             "Previews",
             "BakedPreview",
+            ".diagnostics",
         };
 
         private static readonly HashSet<string> PathFieldNames = new(StringComparer.OrdinalIgnoreCase)

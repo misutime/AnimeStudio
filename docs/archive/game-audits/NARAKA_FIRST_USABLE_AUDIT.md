@@ -2,6 +2,8 @@
 
 审计日期：2026-06-26
 
+> 当前状态说明：本页是旧审计记录，保留当时对 Naraka verified preview / 动画诊断的历史事实。最新项目标准已经调整为默认不导出、不绑定、不预览、不验收动画；`asset_library.json.capabilities.animations` 必须保持 `false`，默认 Library 只交付模型、贴图、材质、骨骼/skin、索引和报告。新的默认验收以 `animation_out_of_scope.json` 和 `firstUsableReadiness.skippedAreas=["animationRelation"]` 为准。
+
 本页记录永劫无间（Naraka: Bladepoint）当前第一版可用导出状态。它不是全量导出报告，而是小范围代表性 smoke 的事实清单，用来判断工具是否已经打通模型、贴图、材质、索引和报告闭环。
 
 ## 结论

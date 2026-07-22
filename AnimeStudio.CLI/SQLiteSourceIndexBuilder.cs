@@ -22,8 +22,13 @@ namespace AnimeStudio.CLI
         private const long EndfieldVfsInnerBatchBytes = 512L * 1024L * 1024L;
         private const int EndfieldVfsInnerBatchMinFileCount = 2048;
         private const int SourceIndexWriteCommitInterval = 10_000;
+        private const int SourceIndexCheckpointOperationInterval = 250_000;
+        private const long SourceIndexBuildCheckpointWalBytes = 512L * 1024L * 1024L;
+        private const long SourceIndexUnsafeWalBytes = 2L * 1024L * 1024L * 1024L;
+        private const int SourceIndexMaxExpandedContainerPreloadPerContainer = 4096;
+        private const int SourceIndexMaxExpandedContainerPreloadPerBundle = 500_000;
         private const int SourceIndexMaxLightweightArrayCount = 100_000;
-        private const string SourceRelationFeatures = "assetBundle.preload,assetBundle.containerAsset,assetBundle.containerPreload,resourceManager.container,monoBehaviour.script,monoBehaviour.pptr";
+        private const string SourceRelationFeatures = "assetBundle.preload,assetBundle.containerAsset,assetBundle.containerPreload,assetBundle.containerPreloadRange,resourceManager.container,monoBehaviour.script,monoBehaviour.pptr";
         private static readonly TimeSpan SourceIndexHeartbeatInterval = TimeSpan.FromSeconds(30);
 
         public static string WriteAnimationRelationHealthReport(string sourceIndexPath, string outputPath = null, bool requireHealthy = false)
@@ -88,6 +93,8 @@ CREATE INDEX idx_source_objects_file_path_nocase
 ON source_objects(serialized_file COLLATE NOCASE, path_id);");
             EnsureIndex(connection, "idx_source_objects_type", "source_objects", "type");
             EnsureIndex(connection, "idx_source_objects_name", "source_objects", "name");
+            EnsureIndex(connection, "idx_source_objects_type_name", "source_objects", "type, name");
+            EnsureIndex(connection, "idx_source_objects_type_source", "source_objects", "type, source_path");
             EnsureIndex(connection, "idx_source_externals_file", "source_externals", "serialized_file, file_id");
             // 关系查询多数从已选模型/Avatar/Controller 的 PathID 出发。PathID 放第一位，避免 Endfield 这类超大表退化成按 relation 全扫。
             EnsureIndex(connection, "idx_source_relations_from", "source_relations", "from_path_id, relation, from_file");
@@ -505,6 +512,10 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                 ["lightweightMonoBehaviourObjects"] = 0,
                 ["lightweightMonoBehaviourRelations"] = 0,
                 ["lightweightMonoBehaviourFailures"] = 0,
+                ["assetBundleContainerPreloadExpandedRelations"] = 0,
+                ["assetBundleContainerPreloadRangeRelations"] = 0,
+                ["assetBundleContainerPreloadCompactedRanges"] = 0,
+                ["assetBundleContainerPreloadCompactedSkippedRows"] = 0,
                 ["failedBatches"] = 0,
             };
 
@@ -519,10 +530,14 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                 connection.Open();
                 Execute(connection, "PRAGMA journal_mode = WAL;");
                 Execute(connection, "PRAGMA synchronous = NORMAL;");
+                Execute(connection, "PRAGMA wal_autocheckpoint = 16384;");
+                Execute(connection, "PRAGMA journal_size_limit = 1073741824;");
                 CreateSchema(connection);
                 using var transaction = connection.BeginTransaction();
                 InsertMetadata(connection, transaction, "schemaVersion", "1");
                 InsertMetadata(connection, transaction, "kind", "unity_source_index");
+                InsertMetadata(connection, transaction, "buildStatus", "building");
+                InsertMetadata(connection, transaction, "buildStartedUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
                 InsertMetadata(connection, transaction, "sourceRoot", sourceRoot);
                 InsertMetadata(connection, transaction, "game", game.Name);
                 InsertMetadata(connection, transaction, "unityVersionOverride", unityVersion ?? string.Empty);
@@ -669,7 +684,17 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                     {
                         var progress = new SourceIndexWriteProgress(batchIndex + 1, batches.Count, manager.assetsFileList.Sum(x => x.m_Objects?.Count ?? 0));
                         using var heartbeat = StartSourceIndexWriteHeartbeat(progress);
-                        IndexLoadedAssets(connection, sourceRoot, manager, counts, progress);
+                        IndexLoadedAssets(connection, dbPath, sourceRoot, manager, counts, progress);
+                    }
+
+                    using (ProfileLogger.Measure("source_index_checkpoint_batch", new Dictionary<string, object>
+                    {
+                        ["batchIndex"] = batchIndex + 1,
+                        ["dbPath"] = dbPath,
+                        ["walBytes"] = SafeFileLength(dbPath + "-wal"),
+                    }))
+                    {
+                        CheckpointSourceIndexDuringBuild(connection, dbPath, $"batch_{batchIndex + 1}");
                     }
                 }
                 catch (Exception e)
@@ -694,7 +719,7 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
                 ["dbPath"] = dbPath,
             }))
             {
-                CreateIndexes(connection);
+                CreateIndexes(connection, dbPath);
             }
 
             using (ProfileLogger.Measure("source_index_write_summary", new Dictionary<string, object>
@@ -706,6 +731,8 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
             {
                 WriteSummary(connection, outputRoot, dbPath, sourceRoot, sourceFiles.Length, counts, narakaInputProbe);
             }
+
+            MarkSourceIndexBuildComplete(connection, counts);
 
             using (ProfileLogger.Measure("source_index_checkpoint", new Dictionary<string, object>
             {
@@ -1027,22 +1054,85 @@ ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
 
         private static void CheckpointSourceIndex(SqliteConnection connection, string dbPath)
         {
-            const long largeCheckpointDatabaseBytes = 64L * 1024L * 1024L * 1024L;
-            const long largeCheckpointWalBytes = 8L * 1024L * 1024L * 1024L;
-
             var databaseBytes = SafeFileLength(dbPath);
             var walPath = dbPath + "-wal";
             var walBytes = SafeFileLength(walPath);
-            if (databaseBytes >= largeCheckpointDatabaseBytes || walBytes >= largeCheckpointWalBytes)
+            Logger.Info($"SQLite source index checkpoint starting: db={FormatBytes(databaseBytes)}, wal={FormatBytes(walBytes)}.");
+            Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+            Logger.Info($"SQLite source index checkpoint finished: db={FormatBytes(SafeFileLength(dbPath))}, wal={FormatBytes(SafeFileLength(walPath))}.");
+        }
+
+        internal static void GuardSourceIndexReadableForHeavyQueries(string dbPath, string operation)
+        {
+            dbPath = Path.GetFullPath(dbPath);
+            var walPath = dbPath + "-wal";
+            var walBytes = SafeFileLength(walPath);
+            if (walBytes < SourceIndexUnsafeWalBytes)
             {
-                Logger.Warning(
-                    "SQLite source index is very large; using PASSIVE WAL checkpoint instead of TRUNCATE to avoid multi-hour finalization. " +
-                    $"Keep the .db/.db-wal/.db-shm files together until a later maintenance checkpoint. db={FormatBytes(databaseBytes)}, wal={FormatBytes(walBytes)}");
-                Execute(connection, "PRAGMA wal_checkpoint(PASSIVE);");
                 return;
             }
 
+            var buildStatus = ReadSourceIndexBuildStatusBestEffort(dbPath);
+            var statusText = string.IsNullOrWhiteSpace(buildStatus) ? "unknown" : buildStatus;
+            if (!string.Equals(buildStatus, "complete", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Refusing to run {operation} on an incomplete or unsafe unity_source_index.db. " +
+                    $"buildStatus={statusText}, wal={FormatBytes(walBytes)}. " +
+                    "This usually means a previous source-index build was interrupted while SQLite still had a very large WAL. " +
+                    "Delete that partial index and rebuild, or let --build_source_sqlite_index finish cleanly. Candidate queries must not run on this state because they can appear hung and keep a huge temporary WAL alive.");
+            }
+
+            Logger.Warning(
+                $"Running {operation} on a completed source index with a large WAL ({FormatBytes(walBytes)}). " +
+                "Run --ensure_source_index_query_indexes afterwards if you want to checkpoint/compact it.");
+        }
+
+        private static string ReadSourceIndexBuildStatusBestEffort(string dbPath)
+        {
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
+                connection.Open();
+                if (!TableExists(connection, "metadata"))
+                {
+                    return string.Empty;
+                }
+
+                return ScalarString(connection, "SELECT value FROM metadata WHERE key='buildStatus' LIMIT 1;");
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static void MarkSourceIndexBuildComplete(SqliteConnection connection, Dictionary<string, long> counts)
+        {
+            using var transaction = connection.BeginTransaction();
+            InsertMetadata(connection, transaction, "buildStatus", "complete");
+            InsertMetadata(connection, transaction, "buildCompletedUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            if (counts != null)
+            {
+                InsertMetadata(connection, transaction, "buildSourceObjects", counts.TryGetValue("sourceObjects", out var sourceObjects) ? sourceObjects.ToString(CultureInfo.InvariantCulture) : "0");
+                InsertMetadata(connection, transaction, "buildSourceRelations", counts.TryGetValue("sourceRelations", out var sourceRelations) ? sourceRelations.ToString(CultureInfo.InvariantCulture) : "0");
+            }
+            transaction.Commit();
+        }
+
+        private static void CheckpointSourceIndexDuringBuild(SqliteConnection connection, string dbPath, string reason)
+        {
+            var walPath = dbPath + "-wal";
+            var walBytes = SafeFileLength(walPath);
+            if (walBytes < SourceIndexBuildCheckpointWalBytes)
+            {
+                return;
+            }
+
+            Logger.Info($"SQLite source index WAL checkpoint during build ({reason}): wal={FormatBytes(walBytes)}.");
             Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+            Logger.Info($"SQLite source index WAL after build checkpoint ({reason}): wal={FormatBytes(SafeFileLength(walPath))}.");
         }
 
         private static void CreateSchema(SqliteConnection connection)
@@ -1119,21 +1209,35 @@ CREATE TABLE source_animation_bindings (
 );");
         }
 
-        private static void CreateIndexes(SqliteConnection connection)
+        private static void CreateIndexes(SqliteConnection connection, string dbPath)
         {
-            Execute(connection, @"
-CREATE INDEX idx_serialized_files_name ON serialized_files(file_name);
-CREATE INDEX idx_source_objects_source_path ON source_objects(source_path, path_id);
-CREATE INDEX idx_source_objects_file_path ON source_objects(serialized_file, path_id);
-CREATE INDEX idx_source_objects_file_path_nocase ON source_objects(serialized_file COLLATE NOCASE, path_id);
-CREATE INDEX idx_source_objects_type ON source_objects(type);
-CREATE INDEX idx_source_objects_name ON source_objects(name);
-CREATE INDEX idx_source_externals_file ON source_externals(serialized_file, file_id);
-CREATE INDEX idx_source_relations_from ON source_relations(from_path_id, relation, from_file);
-CREATE INDEX idx_source_relations_to ON source_relations(to_path_id, relation, to_file);
-CREATE INDEX idx_source_relations_relation ON source_relations(relation);
-CREATE INDEX idx_source_relations_container_relation ON source_relations(json_extract(raw_json, '$.details.container'), relation);
-CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(animation_file, animation_path_id);");
+            CreateIndexForBuild(connection, dbPath, "idx_serialized_files_name", "CREATE INDEX idx_serialized_files_name ON serialized_files(file_name);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_source_path", "CREATE INDEX idx_source_objects_source_path ON source_objects(source_path, path_id);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_file_path", "CREATE INDEX idx_source_objects_file_path ON source_objects(serialized_file, path_id);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_file_path_nocase", "CREATE INDEX idx_source_objects_file_path_nocase ON source_objects(serialized_file COLLATE NOCASE, path_id);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_type", "CREATE INDEX idx_source_objects_type ON source_objects(type);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_name", "CREATE INDEX idx_source_objects_name ON source_objects(name);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_type_name", "CREATE INDEX idx_source_objects_type_name ON source_objects(type, name);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_objects_type_source", "CREATE INDEX idx_source_objects_type_source ON source_objects(type, source_path);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_externals_file", "CREATE INDEX idx_source_externals_file ON source_externals(serialized_file, file_id);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_relations_from", "CREATE INDEX idx_source_relations_from ON source_relations(from_path_id, relation, from_file);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_relations_to", "CREATE INDEX idx_source_relations_to ON source_relations(to_path_id, relation, to_file);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_relations_relation", "CREATE INDEX idx_source_relations_relation ON source_relations(relation);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_relations_container_relation", "CREATE INDEX idx_source_relations_container_relation ON source_relations(json_extract(raw_json, '$.details.container'), relation);");
+            CreateIndexForBuild(connection, dbPath, "idx_source_animation_bindings_clip", "CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(animation_file, animation_path_id);");
+        }
+
+        private static void CreateIndexForBuild(SqliteConnection connection, string dbPath, string indexName, string sql)
+        {
+            using (ProfileLogger.Measure("source_index_create_sql_index", new Dictionary<string, object>
+            {
+                ["indexName"] = indexName,
+                ["walBytes"] = SafeFileLength(dbPath + "-wal"),
+            }))
+            {
+                Execute(connection, sql);
+            }
+            CheckpointSourceIndexDuringBuild(connection, dbPath, $"create_index_{indexName}");
         }
 
         private static void EnsureExpressionIndex(SqliteConnection connection, string indexName, string createSql)
@@ -1217,10 +1321,11 @@ CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(ani
             }
         }
 
-        private static void IndexLoadedAssets(SqliteConnection connection, string sourceRoot, AssetsManager manager, Dictionary<string, long> counts, SourceIndexWriteProgress progress)
+        private static void IndexLoadedAssets(SqliteConnection connection, string dbPath, string sourceRoot, AssetsManager manager, Dictionary<string, long> counts, SourceIndexWriteProgress progress)
         {
             SqliteTransaction transaction = null;
             var operationsSinceCommit = 0;
+            var operationsSinceCheckpoint = 0;
 
             void EnsureTransaction()
             {
@@ -1243,11 +1348,17 @@ CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(ani
                 transaction.Dispose();
                 transaction = null;
                 operationsSinceCommit = 0;
+                if (operationsSinceCheckpoint >= SourceIndexCheckpointOperationInterval)
+                {
+                    CheckpointSourceIndexDuringBuild(connection, dbPath, "write_operations");
+                    operationsSinceCheckpoint = 0;
+                }
             }
 
             void CountOperation()
             {
                 operationsSinceCommit++;
+                operationsSinceCheckpoint++;
                 CommitIfNeeded();
             }
 
@@ -1288,12 +1399,30 @@ CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(ani
                         if (lightweightRelations > 0)
                         {
                             operationsSinceCommit += lightweightRelations;
+                            operationsSinceCheckpoint += lightweightRelations;
                             CommitIfNeeded();
                         }
                     }
 
                     foreach (var obj in assetsFile.Objects)
                     {
+                        progress.CurrentType = obj?.type.ToString() ?? string.Empty;
+                        progress.CurrentPathId = obj?.m_PathID ?? 0;
+                        progress.CurrentFile = obj?.assetsFile?.fileName ?? assetsFile.fileName ?? string.Empty;
+                        if (obj is AssetBundle assetBundle)
+                        {
+                            CommitIfNeeded(force: true);
+                            WriteAssetBundleRelationsChunked(connection, dbPath, assetBundle, counts, progress);
+                            continue;
+                        }
+
+                        if (obj is ResourceManager resourceManager)
+                        {
+                            CommitIfNeeded(force: true);
+                            WriteResourceManagerRelationsChunked(connection, dbPath, resourceManager, counts, progress);
+                            continue;
+                        }
+
                         EnsureTransaction();
                         WriteObjectRelations(connection, transaction, obj, counts);
                         progress.RelationsWritten = counts["sourceRelations"];
@@ -1304,6 +1433,7 @@ CREATE INDEX idx_source_animation_bindings_clip ON source_animation_bindings(ani
             finally
             {
                 CommitIfNeeded(force: true);
+                CheckpointSourceIndexDuringBuild(connection, dbPath, "write_batch_final");
             }
         }
 
@@ -1911,6 +2041,7 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
         private static void WriteAssetBundleRelations(SqliteConnection connection, SqliteTransaction transaction, AssetBundle assetBundle, Dictionary<string, long> counts)
         {
             var preloadTable = assetBundle.m_PreloadTable ?? new List<PPtr<AnimeStudio.Object>>();
+            var expandedContainerPreloadRows = 0;
             for (var preloadIndex = 0; preloadIndex < preloadTable.Count; preloadIndex++)
             {
                 var ptr = preloadTable[preloadIndex];
@@ -1940,6 +2071,27 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
 
                 var start = Math.Max(0, info.preloadIndex);
                 var end = Math.Min(preloadTable.Count, start + Math.Max(0, info.preloadSize));
+                var preloadCount = Math.Max(0, end - start);
+                var canExpand = ShouldExpandContainerPreload(preloadCount, expandedContainerPreloadRows, out var compactReason);
+                AddPPtrRelation(connection, transaction, counts, "assetBundle.containerPreloadRange", assetBundle, info.asset.m_FileID, info.asset.m_PathID, "Object", new
+                {
+                    container,
+                    preloadIndex = info.preloadIndex,
+                    preloadSize = info.preloadSize,
+                    boundedStart = start,
+                    boundedEnd = end,
+                    boundedCount = preloadCount,
+                    expanded = canExpand,
+                    compactReason,
+                });
+                IncrementCount(counts, "assetBundleContainerPreloadRangeRelations");
+                if (!canExpand)
+                {
+                    IncrementCount(counts, "assetBundleContainerPreloadCompactedRanges");
+                    IncrementCount(counts, "assetBundleContainerPreloadCompactedSkippedRows", preloadCount);
+                    continue;
+                }
+
                 for (var tableIndex = start; tableIndex < end; tableIndex++)
                 {
                     var ptr = preloadTable[tableIndex];
@@ -1951,8 +2103,235 @@ VALUES ($sourcePath, $serializedFile, $pathId, $type, $classId, $name, $byteStar
                         preloadTableIndex = tableIndex,
                         preloadOffset = tableIndex - start,
                     });
+                    expandedContainerPreloadRows++;
+                    IncrementCount(counts, "assetBundleContainerPreloadExpandedRelations");
                 }
             }
+        }
+
+        private static void WriteAssetBundleRelationsChunked(SqliteConnection connection, string dbPath, AssetBundle assetBundle, Dictionary<string, long> counts, SourceIndexWriteProgress progress)
+        {
+            SqliteTransaction transaction = null;
+            var operationsSinceCommit = 0;
+            var operationsSinceCheckpoint = 0;
+            var expandedContainerPreloadRows = 0;
+
+            void EnsureTransaction()
+            {
+                transaction ??= connection.BeginTransaction();
+            }
+
+            void CommitIfNeeded(bool force = false)
+            {
+                if (transaction == null)
+                {
+                    return;
+                }
+
+                if (!force && operationsSinceCommit < SourceIndexWriteCommitInterval)
+                {
+                    return;
+                }
+
+                transaction.Commit();
+                transaction.Dispose();
+                transaction = null;
+                operationsSinceCommit = 0;
+                if (operationsSinceCheckpoint >= SourceIndexCheckpointOperationInterval)
+                {
+                    CheckpointSourceIndexDuringBuild(connection, dbPath, "asset_bundle_relations");
+                    operationsSinceCheckpoint = 0;
+                }
+            }
+
+            void CountRelation()
+            {
+                operationsSinceCommit++;
+                operationsSinceCheckpoint++;
+                progress.RelationsWritten = counts["sourceRelations"];
+                CommitIfNeeded();
+            }
+
+            void Add(string relation, int fileId, long pathId, string typeHint, object details, bool countExpanded = false)
+            {
+                EnsureTransaction();
+                if (InsertPPtrRelation(connection, transaction, relation, assetBundle, fileId, pathId, typeHint, details))
+                {
+                    counts["sourceRelations"]++;
+                    if (countExpanded)
+                    {
+                        IncrementCount(counts, "assetBundleContainerPreloadExpandedRelations");
+                    }
+                    CountRelation();
+                }
+            }
+
+            try
+            {
+                var preloadTable = assetBundle.m_PreloadTable ?? new List<PPtr<AnimeStudio.Object>>();
+                for (var preloadIndex = 0; preloadIndex < preloadTable.Count; preloadIndex++)
+                {
+                    var ptr = preloadTable[preloadIndex];
+                    Add("assetBundle.preload", ptr.m_FileID, ptr.m_PathID, "Object", new
+                    {
+                        preloadIndex,
+                    });
+                }
+
+                foreach (var pair in assetBundle.m_Container ?? Enumerable.Empty<KeyValuePair<string, AssetInfo>>())
+                {
+                    var container = pair.Key ?? string.Empty;
+                    var info = pair.Value;
+                    if (info == null)
+                    {
+                        continue;
+                    }
+
+                    Add("assetBundle.containerAsset", info.asset.m_FileID, info.asset.m_PathID, "Object", new
+                    {
+                        container,
+                        preloadIndex = info.preloadIndex,
+                        preloadSize = info.preloadSize,
+                    });
+
+                    var start = Math.Max(0, info.preloadIndex);
+                    var end = Math.Min(preloadTable.Count, start + Math.Max(0, info.preloadSize));
+                    var preloadCount = Math.Max(0, end - start);
+                    var canExpand = ShouldExpandContainerPreload(preloadCount, expandedContainerPreloadRows, out var compactReason);
+                    Add("assetBundle.containerPreloadRange", info.asset.m_FileID, info.asset.m_PathID, "Object", new
+                    {
+                        container,
+                        preloadIndex = info.preloadIndex,
+                        preloadSize = info.preloadSize,
+                        boundedStart = start,
+                        boundedEnd = end,
+                        boundedCount = preloadCount,
+                        expanded = canExpand,
+                        compactReason,
+                    });
+                    IncrementCount(counts, "assetBundleContainerPreloadRangeRelations");
+
+                    if (!canExpand)
+                    {
+                        IncrementCount(counts, "assetBundleContainerPreloadCompactedRanges");
+                        IncrementCount(counts, "assetBundleContainerPreloadCompactedSkippedRows", preloadCount);
+                        continue;
+                    }
+
+                    for (var tableIndex = start; tableIndex < end; tableIndex++)
+                    {
+                        var ptr = preloadTable[tableIndex];
+                        Add("assetBundle.containerPreload", ptr.m_FileID, ptr.m_PathID, "Object", new
+                        {
+                            container,
+                            preloadIndex = info.preloadIndex,
+                            preloadSize = info.preloadSize,
+                            preloadTableIndex = tableIndex,
+                            preloadOffset = tableIndex - start,
+                        }, countExpanded: true);
+                        expandedContainerPreloadRows++;
+                    }
+                }
+            }
+            finally
+            {
+                CommitIfNeeded(force: true);
+                CheckpointSourceIndexDuringBuild(connection, dbPath, "asset_bundle_relations_final");
+            }
+        }
+
+        private static void WriteResourceManagerRelationsChunked(SqliteConnection connection, string dbPath, ResourceManager resourceManager, Dictionary<string, long> counts, SourceIndexWriteProgress progress)
+        {
+            SqliteTransaction transaction = null;
+            var operationsSinceCommit = 0;
+            var operationsSinceCheckpoint = 0;
+
+            void EnsureTransaction()
+            {
+                transaction ??= connection.BeginTransaction();
+            }
+
+            void CommitIfNeeded(bool force = false)
+            {
+                if (transaction == null)
+                {
+                    return;
+                }
+
+                if (!force && operationsSinceCommit < SourceIndexWriteCommitInterval)
+                {
+                    return;
+                }
+
+                transaction.Commit();
+                transaction.Dispose();
+                transaction = null;
+                operationsSinceCommit = 0;
+                if (operationsSinceCheckpoint >= SourceIndexCheckpointOperationInterval)
+                {
+                    CheckpointSourceIndexDuringBuild(connection, dbPath, "resource_manager_relations");
+                    operationsSinceCheckpoint = 0;
+                }
+            }
+
+            try
+            {
+                foreach (var pair in resourceManager.m_Container ?? Enumerable.Empty<KeyValuePair<string, PPtr<AnimeStudio.Object>>>())
+                {
+                    var ptr = pair.Value;
+                    EnsureTransaction();
+                    if (InsertPPtrRelation(connection, transaction, "resourceManager.container", resourceManager, ptr.m_FileID, ptr.m_PathID, "Object", new
+                    {
+                        container = pair.Key ?? string.Empty,
+                    }))
+                    {
+                        counts["sourceRelations"]++;
+                        operationsSinceCommit++;
+                        operationsSinceCheckpoint++;
+                        progress.RelationsWritten = counts["sourceRelations"];
+                        CommitIfNeeded();
+                    }
+                }
+            }
+            finally
+            {
+                CommitIfNeeded(force: true);
+                CheckpointSourceIndexDuringBuild(connection, dbPath, "resource_manager_relations_final");
+            }
+        }
+
+        private static bool ShouldExpandContainerPreload(int preloadCount, int expandedContainerPreloadRows, out string compactReason)
+        {
+            if (preloadCount <= 0)
+            {
+                compactReason = string.Empty;
+                return true;
+            }
+
+            if (preloadCount > SourceIndexMaxExpandedContainerPreloadPerContainer)
+            {
+                compactReason = "preload_range_too_large";
+                return false;
+            }
+
+            if (expandedContainerPreloadRows + preloadCount > SourceIndexMaxExpandedContainerPreloadPerBundle)
+            {
+                compactReason = "bundle_expanded_preload_budget_exhausted";
+                return false;
+            }
+
+            compactReason = string.Empty;
+            return true;
+        }
+
+        private static void IncrementCount(Dictionary<string, long> counts, string key, long delta = 1)
+        {
+            if (counts == null)
+            {
+                return;
+            }
+
+            counts[key] = counts.TryGetValue(key, out var value) ? value + delta : delta;
         }
 
         private static void WriteResourceManagerRelations(SqliteConnection connection, SqliteTransaction transaction, ResourceManager resourceManager, Dictionary<string, long> counts)

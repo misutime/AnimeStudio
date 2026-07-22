@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Newtonsoft.Json;
 
 namespace AnimeStudio.CLI
@@ -93,7 +94,7 @@ namespace AnimeStudio.CLI
             var json = JsonConvert.SerializeObject(entry);
             lock (LockObject)
             {
-                File.AppendAllText(_path, json + Environment.NewLine);
+                AppendTextShared(_path, json + Environment.NewLine);
                 UpdateSummary(entry);
             }
         }
@@ -168,8 +169,22 @@ namespace AnimeStudio.CLI
                             ["peakManagedMemoryBytes"] = x.Value.PeakManagedMemoryBytes,
                         }),
             };
-            File.WriteAllText(_summaryPath, JsonConvert.SerializeObject(summary, Formatting.Indented));
+            WriteTextShared(_summaryPath, JsonConvert.SerializeObject(summary, Formatting.Indented));
             _summaryDirtyCount = 0;
+        }
+
+        private static void AppendTextShared(string path, string text)
+        {
+            using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            using var writer = new StreamWriter(stream, Encoding.UTF8);
+            writer.Write(text);
+        }
+
+        private static void WriteTextShared(string path, string text)
+        {
+            using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            using var writer = new StreamWriter(stream, Encoding.UTF8);
+            writer.Write(text);
         }
 
         private static long GetLong(Dictionary<string, object> entry, string key)

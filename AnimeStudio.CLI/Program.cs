@@ -874,6 +874,16 @@ namespace AnimeStudio.CLI
                     return;
                 }
 
+                if (RejectKnownIncompleteModelLibraryExport(o, game))
+                {
+                    return;
+                }
+
+                if (RejectUnsupportedOdinContainerLibraryExport(o, game))
+                {
+                    return;
+                }
+
                 if (game is UnityCNGame unityCNGame)
                 {
                     UnityCN.SetKey(unityCNGame.Key);
@@ -1038,7 +1048,7 @@ namespace AnimeStudio.CLI
                         }
                     }
                 }
-                ConfigureWorkModeTypes(o.WorkMode, o.FbxAnimationMode);
+                ConfigureWorkModeTypes(o.WorkMode, o.FbxAnimationMode, o.AnimationPackage);
                 if (o.BuildSourceSqliteIndex)
                 {
                     ConfigureSourceIndexTypes();
@@ -1485,12 +1495,13 @@ namespace AnimeStudio.CLI
                         }
                         if (o.InspectUnityFiles)
                         {
-                            inspectReports.AddRange(BuildUnityFileInspect(assetsManager, batch));
+                            inspectReports.AddRange(BuildUnityFileInspect(assetsManager, batch, o.PathIdFilter, o.SourceObjectKeyFilter));
                             assetsManager.Clear();
                             continue;
                         }
                         if (assetsManager.assetsFileList.Count > 0)
                         {
+                            Studio.RepairRendererMeshReferencesFromSourceIndex(sourceIndexPath);
                             using (ProfileLogger.Measure("build_asset_data", new Dictionary<string, object>
                             {
                                 ["loadedAssetFiles"] = assetsManager.assetsFileList.Count,
@@ -1502,6 +1513,7 @@ namespace AnimeStudio.CLI
                                     o.NameFilter,
                                     o.ContainerFilter,
                                     o.PathIdFilter,
+                                    o.SourceObjectKeyFilter,
                                     nameExcludeFilters,
                                     containerExcludeFilters,
                                     ref i
@@ -1575,6 +1587,210 @@ namespace AnimeStudio.CLI
             }
         }
 
+        private static bool RejectKnownIncompleteModelLibraryExport(Options o, Game game)
+        {
+            if (game?.Type.IsArknightsEndfieldGroup() != true || o.WorkMode != WorkMode.Library)
+            {
+                return false;
+            }
+
+            if (IsAllowedKnownIncompleteModelDiagnostic(o))
+            {
+                return false;
+            }
+
+            const string reason = "knownIncompleteModelExport";
+            var message =
+                "拒绝导出 Arknights Endfield 默认 Library：当前项目已知该游戏默认模型导出仍不能稳定产出完整可用模型。"
+                + "最近烟测显示 cutscene 包模型全部为 warning、withTextures=0，并存在材质/贴图 CAB 闭包和本机 VFS chunk 缺失问题。"
+                + "为避免跑完整导出后才发现模型不可用，请先使用诊断命令补齐源索引、CAB、材质贴图闭包，"
+                + "并用真实角色样本验证 model_validation=ok 后再恢复默认导出。";
+            Logger.Error(message);
+            TryWriteExportRefusalReport(o.Output?.FullName, game, reason, message);
+            Environment.ExitCode = 2;
+            return true;
+        }
+
+        private static bool IsAllowedKnownIncompleteModelDiagnostic(Options o)
+        {
+            // 这些命令只做源数据诊断或索引建设，不产出默认可用模型库。
+            return o.InspectUnityFiles
+                || o.BuildSourceSqliteIndex
+                || o.DumpUnityBlockChunks
+                || (o.LocateSourceCabs != null && o.LocateSourceCabs.Length > 0)
+                || (o.LocateEndfieldStrings != null && o.LocateEndfieldStrings.Length > 0)
+                || (o.LocateEndfieldCabs != null && o.LocateEndfieldCabs.Length > 0)
+                || o.BuildEndfieldCabLocationIndex
+                || o.LocateEndfieldMissingSourceCabs != null
+                || (o.InspectEndfieldManifestDeps != null && o.InspectEndfieldManifestDeps.Length > 0);
+        }
+
+        private static bool RejectUnsupportedOdinContainerLibraryExport(Options o, Game game)
+        {
+            if (o?.WorkMode != WorkMode.Library || IsAllowedKnownIncompleteModelDiagnostic(o))
+            {
+                return false;
+            }
+
+            if (o.Input == null || !Directory.Exists(o.Input.FullName))
+            {
+                return false;
+            }
+
+            var probe = ProbeOdinContainerInput(o.Input.FullName);
+            if (probe.OdinHeaderFileCount <= 0 || probe.LoadableUnityLikeHeaderFileCount > 0)
+            {
+                return false;
+            }
+
+            const string reason = "unsupportedOdinContainer";
+            var message =
+                "拒绝导出默认 Library：当前输入主要资源使用 SGEngine/Odin 自定义资源容器，"
+                + $"检测到 Odin 文件 {probe.OdinHeaderFileCount} 个，但没有检测到可直接加载的 UnityFS/UnityWeb/UnityRaw/Naraka bundle 头。"
+                + "现有读取器只能解析内置少量 Unity assets，不能解出真实角色、场景、材质和贴图；"
+                + "如果继续全量导出，会生成空素材库或误导性的内置资源结果。"
+                + "请先实现 Odin 容器解码，再重建 unity_source_index.db 并重新跑模型候选烟测。";
+            Logger.Error(message);
+            TryWriteExportRefusalReport(o.Output?.FullName, game, reason, message);
+            Environment.ExitCode = 2;
+            return true;
+        }
+
+        private static OdinContainerProbe ProbeOdinContainerInput(string inputRoot)
+        {
+            var result = new OdinContainerProbe();
+            foreach (var file in Directory.EnumerateFiles(inputRoot, "*", SearchOption.AllDirectories))
+            {
+                if (!TryReadFirstBytes(file, 8, out var header))
+                {
+                    continue;
+                }
+
+                if (IsOdinHeader(header))
+                {
+                    result.OdinHeaderFileCount++;
+                }
+
+                if (IsUnityLikeLoadableHeader(header))
+                {
+                    result.LoadableUnityLikeHeaderFileCount++;
+                }
+            }
+
+            return result;
+        }
+
+        private static bool TryReadFirstBytes(string path, int count, out byte[] bytes)
+        {
+            bytes = Array.Empty<byte>();
+            try
+            {
+                using var stream = File.OpenRead(path);
+                if (stream.Length <= 0)
+                {
+                    return false;
+                }
+
+                bytes = new byte[Math.Min(count, stream.Length)];
+                var read = stream.Read(bytes, 0, bytes.Length);
+                if (read == bytes.Length)
+                {
+                    return true;
+                }
+
+                Array.Resize(ref bytes, read);
+                return read > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsOdinHeader(byte[] header)
+        {
+            return header.Length >= 8
+                && header[0] == 0x4F
+                && header[1] == 0x64
+                && header[2] == 0x69
+                && header[3] == 0x6E
+                && header[4] == 0
+                && header[5] == 0
+                && header[6] == 0
+                && header[7] == 0;
+        }
+
+        private static bool IsUnityLikeLoadableHeader(byte[] header)
+        {
+            if (header.Length < 7)
+            {
+                return false;
+            }
+
+            var text = Encoding.ASCII.GetString(header, 0, Math.Min(header.Length, 8));
+            return text.StartsWith("UnityFS", StringComparison.Ordinal)
+                || text.StartsWith("UnityWeb", StringComparison.Ordinal)
+                || text.StartsWith("UnityRaw", StringComparison.Ordinal)
+                || IsNarakaBundleHeader(header);
+        }
+
+        private static bool IsNarakaBundleHeader(byte[] header)
+        {
+            return header.Length >= 7
+                && header[0] == 0x15
+                && header[1] == 0x1E
+                && header[2] == 0x1C
+                && header[3] == 0x0D
+                && header[4] == 0x0D
+                && header[5] == 0x23
+                && header[6] == 0x21;
+        }
+
+        private sealed class OdinContainerProbe
+        {
+            public int OdinHeaderFileCount { get; set; }
+            public int LoadableUnityLikeHeaderFileCount { get; set; }
+        }
+
+        private static void TryWriteExportRefusalReport(string outputRoot, Game game, string reason, string message)
+        {
+            if (string.IsNullOrWhiteSpace(outputRoot))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(outputRoot);
+                var report = new JObject
+                {
+                    ["status"] = "refused",
+                    ["reason"] = reason,
+                    ["game"] = game?.Name ?? "Unknown",
+                    ["gameType"] = game?.Type.ToString() ?? "Unknown",
+                    ["message"] = message,
+                    ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+                    ["allowedDiagnostics"] = new JArray(
+                        "--probe_source_input",
+                        "--inspect_unity_files",
+                        "--build_source_sqlite_index",
+                        "--list_source_model_candidates",
+                        "--locate_endfield_cabs",
+                        "--locate_endfield_missing_source_cabs",
+                        "--build_endfield_cab_location_index",
+                        "--locate_endfield_strings",
+                        "--inspect_endfield_manifest_deps")
+                };
+                File.WriteAllText(
+                    Path.Combine(outputRoot, "export_refusal.json"),
+                    report.ToString(Formatting.Indented));
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Unable to write export_refusal.json: {ex.Message}");
+            }
+        }
+
         private static string ResolveMapName(string mapName, Game game, string inputBaseFolder)
         {
             if (!string.IsNullOrWhiteSpace(mapName))
@@ -1633,32 +1849,348 @@ namespace AnimeStudio.CLI
         {
             if (o == null
                 || o.WorkMode != WorkMode.Library
-                || o.PathIdFilter.IsNullOrEmpty())
+                || (o.PathIdFilter.IsNullOrEmpty() && o.SourceObjectKeyFilter.IsNullOrEmpty()))
             {
                 return;
             }
 
-            var selected = o.PathIdFilter.ToHashSet();
+            var selected = (o.PathIdFilter ?? Array.Empty<long>()).ToHashSet();
+            var selectedKeys = ParseSourceObjectKeys(o.SourceObjectKeyFilter);
             var added = new HashSet<long>();
+            var addedKeys = new HashSet<SourceObjectKey>();
             var sources = new JArray();
 
+            AddRendererGameObjectDependenciesFromSourceIndex(sourceIndexPath, selected, selectedKeys, added, addedKeys, sources);
+            AddContainerRendererGameObjectDependenciesFromSourceIndex(sourceIndexPath, selectedKeys, addedKeys, sources);
             AddBaseClipDependenciesFromInspect(o.UnityFileInspect?.FullName, selected, added, sources);
             AddBaseClipDependenciesFromSourceIndex(sourceIndexPath, selected, added, sources);
             if (o.IncludeAnimatorControllerClipClosure)
             {
                 AddControllerClipClosureFromSourceIndex(sourceIndexPath, selected, added, sources);
             }
-            if (added.Count == 0)
+            if (added.Count == 0 && addedKeys.Count == 0)
             {
                 return;
             }
 
-            o.PathIdFilter = selected.Concat(added).Distinct().ToArray();
+            if (!o.PathIdFilter.IsNullOrEmpty())
+            {
+                o.PathIdFilter = selected.Concat(added).Distinct().ToArray();
+            }
+            if (addedKeys.Count > 0)
+            {
+                o.SourceObjectKeyFilter = selectedKeys
+                    .Concat(addedKeys)
+                    .Select(FormatSourceObjectKey)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
             var reason = o.IncludeAnimatorControllerClipClosure
                 ? "AnimatorController baseLayerClip/controller clip closure"
-                : "AnimatorController baseLayerClip dependency";
-            Logger.Info($"Expanded --path_ids with {added.Count} deterministic {reason} clip(s): {string.Join(", ", added.Take(12))}{(added.Count > 12 ? ", ..." : "")}");
-            TryWritePathIdExpansionReport(o.Output?.FullName, selected, added, sources);
+                : "Renderer GameObject / AnimatorController baseLayerClip dependency";
+            Logger.Info($"Expanded targeted object filters with {added.Count + addedKeys.Count} deterministic {reason} item(s): {string.Join(", ", added.Take(12))}{(added.Count > 12 ? ", ..." : "")}");
+            TryWritePathIdExpansionReport(o.Output?.FullName, selected, selectedKeys, added, addedKeys, sources);
+        }
+
+        private static void AddRendererGameObjectDependenciesFromSourceIndex(
+            string sourceIndexPath,
+            HashSet<long> selected,
+            HashSet<SourceObjectKey> selectedKeys,
+            HashSet<long> added,
+            HashSet<SourceObjectKey> addedKeys,
+            JArray sources)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath)
+                || !File.Exists(sourceIndexPath)
+                || ((selected == null || selected.Count == 0)
+                    && (selectedKeys == null || selectedKeys.Count == 0)))
+            {
+                return;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+WITH renderer_game_objects AS (
+    SELECT from_file, from_path_id, from_type, from_name, to_file, to_path_id, raw_json
+    FROM source_relations INDEXED BY idx_source_relations_relation
+    WHERE relation='component.gameObject'
+      AND from_type IN ('SkinnedMeshRenderer', 'MeshRenderer')
+      AND to_path_id IS NOT NULL
+)
+SELECT r.from_file,
+       r.from_path_id,
+       r.from_type,
+       r.from_name,
+       r.to_file,
+       r.to_path_id,
+       r.raw_json,
+       COALESCE(smr_mesh.to_file, mf_mesh.to_file) AS mesh_file,
+       COALESCE(smr_mesh.to_path_id, mf_mesh.to_path_id) AS mesh_path_id
+FROM renderer_game_objects r
+LEFT JOIN source_relations smr_mesh
+  ON r.from_type='SkinnedMeshRenderer'
+ AND smr_mesh.relation='skinnedMeshRenderer.mesh'
+ AND smr_mesh.from_file=r.from_file COLLATE NOCASE
+ AND smr_mesh.from_path_id=r.from_path_id
+LEFT JOIN source_relations mf_go
+  ON r.from_type='MeshRenderer'
+ AND mf_go.relation='component.gameObject'
+ AND mf_go.from_type='MeshFilter'
+ AND mf_go.to_file=r.to_file COLLATE NOCASE
+ AND mf_go.to_path_id=r.to_path_id
+LEFT JOIN source_relations mf_mesh
+  ON mf_mesh.relation='meshFilter.mesh'
+ AND mf_mesh.from_file=mf_go.from_file COLLATE NOCASE
+ AND mf_mesh.from_path_id=mf_go.from_path_id;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var rendererFile = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var rendererPathId = reader.GetInt64(1);
+                    var rendererKey = new SourceObjectKey(NormalizeSourceObjectKeyFile(rendererFile), rendererPathId);
+                    var exactKeyMatched = selectedKeys != null && selectedKeys.Contains(rendererKey);
+                    var pathIdMatched = selected != null && selected.Count > 0 && selected.Contains(rendererPathId);
+                    if (!exactKeyMatched && !pathIdMatched)
+                    {
+                        continue;
+                    }
+
+                    var gameObjectFile = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                    var gameObjectPathId = reader.GetInt64(5);
+                    if (gameObjectPathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var gameObjectKey = new SourceObjectKey(NormalizeSourceObjectKeyFile(gameObjectFile), gameObjectPathId);
+                    if (exactKeyMatched)
+                    {
+                        if (selectedKeys.Contains(gameObjectKey) || !addedKeys.Add(gameObjectKey))
+                        {
+                            continue;
+                        }
+                    }
+                    else if (selected.Contains(gameObjectPathId) || !added.Add(gameObjectPathId))
+                    {
+                        continue;
+                    }
+
+                    sources.Add(new JObject
+                    {
+                        ["source"] = "unity_source_index.source_relations.component.gameObject",
+                        ["selectedRendererFile"] = rendererFile,
+                        ["selectedRendererPathId"] = rendererPathId,
+                        ["selectedRendererType"] = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                        ["selectedRendererName"] = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                        ["gameObjectFile"] = gameObjectFile,
+                        ["gameObjectPathId"] = gameObjectPathId,
+                        ["meshFile"] = reader.IsDBNull(7) ? string.Empty : reader.GetString(7),
+                        ["meshPathId"] = reader.IsDBNull(8) ? 0 : reader.GetInt64(8),
+                        ["selectionMode"] = exactKeyMatched ? "sourceObjectKey" : "pathId",
+                        ["rule"] = "定向 Library 导出选中 Renderer 组件时，追加 Unity 显式 component.gameObject 目标，让导出阶段仍以 GameObject/PrefabPrimary 作为模型入口。",
+                    });
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to expand --path_ids from Renderer component.gameObject source-index relations: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static void AddContainerRendererGameObjectDependenciesFromSourceIndex(
+            string sourceIndexPath,
+            HashSet<SourceObjectKey> selectedKeys,
+            HashSet<SourceObjectKey> addedKeys,
+            JArray sources)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath)
+                || !File.Exists(sourceIndexPath)
+                || selectedKeys == null
+                || selectedKeys.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={sourceIndexPath};Mode=ReadOnly");
+                connection.Open();
+                var containers = SelectSourceObjectContainers(connection, selectedKeys);
+                if (containers.Count == 0)
+                {
+                    return;
+                }
+
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+WITH container_objects AS (
+    SELECT to_file, to_path_id
+    FROM source_relations INDEXED BY idx_source_relations_container_relation
+    WHERE relation='assetBundle.containerPreload'
+      AND json_extract(raw_json, '$.details.container')=$container
+),
+renderers AS (
+    SELECT o.serialized_file AS renderer_file, o.path_id AS renderer_path_id, o.type AS renderer_type, o.name AS renderer_name
+    FROM source_objects o
+    INNER JOIN container_objects c
+      ON c.to_file=o.serialized_file COLLATE NOCASE
+     AND c.to_path_id=o.path_id
+    WHERE o.type IN ('SkinnedMeshRenderer', 'MeshRenderer')
+)
+SELECT r.renderer_file,
+       r.renderer_path_id,
+       r.renderer_type,
+       r.renderer_name,
+       go.to_file,
+       go.to_path_id,
+       COALESCE(smr_mesh.to_file, mf_mesh.to_file) AS mesh_file,
+       COALESCE(smr_mesh.to_path_id, mf_mesh.to_path_id) AS mesh_path_id
+FROM renderers r
+INNER JOIN source_relations go
+  ON go.from_file=r.renderer_file COLLATE NOCASE
+ AND go.from_path_id=r.renderer_path_id
+ AND go.relation='component.gameObject'
+LEFT JOIN source_relations smr_mesh
+  ON r.renderer_type='SkinnedMeshRenderer'
+ AND smr_mesh.relation='skinnedMeshRenderer.mesh'
+ AND smr_mesh.from_file=r.renderer_file COLLATE NOCASE
+ AND smr_mesh.from_path_id=r.renderer_path_id
+LEFT JOIN source_relations mf_go
+  ON r.renderer_type='MeshRenderer'
+ AND mf_go.relation='component.gameObject'
+ AND mf_go.from_type='MeshFilter'
+ AND mf_go.to_file=go.to_file COLLATE NOCASE
+ AND mf_go.to_path_id=go.to_path_id
+LEFT JOIN source_relations mf_mesh
+  ON mf_mesh.relation='meshFilter.mesh'
+ AND mf_mesh.from_file=mf_go.from_file COLLATE NOCASE
+ AND mf_mesh.from_path_id=mf_go.from_path_id
+WHERE go.to_file <> ''
+  AND go.to_path_id IS NOT NULL
+  AND COALESCE(smr_mesh.to_path_id, mf_mesh.to_path_id) IS NOT NULL;";
+                var containerParam = command.Parameters.Add("$container", SqliteType.Text);
+                var addedCount = 0;
+                const int maxAddedPerRun = 512;
+                foreach (var container in containers)
+                {
+                    containerParam.Value = container;
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        if (addedCount >= maxAddedPerRun)
+                        {
+                            Logger.Warning($"Targeted container renderer GameObject expansion reached {maxAddedPerRun} item(s); remaining renderer owners stay diagnostic for this run.");
+                            return;
+                        }
+
+                        var gameObjectFile = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                        var gameObjectPathId = reader.IsDBNull(5) ? 0 : reader.GetInt64(5);
+                        if (string.IsNullOrWhiteSpace(gameObjectFile) || gameObjectPathId == 0)
+                        {
+                            continue;
+                        }
+
+                        var gameObjectKey = new SourceObjectKey(NormalizeSourceObjectKeyFile(gameObjectFile), gameObjectPathId);
+                        if (selectedKeys.Contains(gameObjectKey) || !addedKeys.Add(gameObjectKey))
+                        {
+                            continue;
+                        }
+
+                        addedCount++;
+                        sources.Add(new JObject
+                        {
+                            ["source"] = "unity_source_index.source_relations.assetBundle.containerPreload.component.gameObject",
+                            ["container"] = container,
+                            ["rendererFile"] = reader.IsDBNull(0) ? string.Empty : reader.GetString(0),
+                            ["rendererPathId"] = reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                            ["rendererType"] = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                            ["rendererName"] = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
+                            ["gameObjectFile"] = gameObjectFile,
+                            ["gameObjectPathId"] = gameObjectPathId,
+                            ["meshFile"] = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+                            ["meshPathId"] = reader.IsDBNull(7) ? 0 : reader.GetInt64(7),
+                            ["selectionMode"] = "sourceObjectKeyContainerPreload",
+                            ["rule"] = "定向 Library 导出选中 AssetBundle container 主对象时，追加同一 Unity container preload 中 Renderer 所属 GameObject，避免 prefab 根对象无直接 Mesh 时导出 0 个模型。",
+                        });
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Warning($"Unable to expand targeted AssetBundle container Renderer GameObject dependencies from source index: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
+        private static HashSet<string> SelectSourceObjectContainers(
+            SqliteConnection connection,
+            HashSet<SourceObjectKey> selectedKeys)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT r.raw_json
+FROM source_relations r
+INNER JOIN source_objects o
+  ON o.serialized_file=r.to_file COLLATE NOCASE
+ AND o.path_id=r.to_path_id
+WHERE r.to_file=$file COLLATE NOCASE
+  AND r.to_path_id=$pathId
+  AND r.relation='assetBundle.containerAsset'
+  AND o.type IN ('GameObject', 'Animator')
+  AND lower(coalesce(json_extract(r.raw_json, '$.details.container'), '')) LIKE '%.prefab';";
+            var fileParam = command.Parameters.Add("$file", SqliteType.Text);
+            var pathParam = command.Parameters.Add("$pathId", SqliteType.Integer);
+            foreach (var key in selectedKeys)
+            {
+                fileParam.Value = key.File;
+                pathParam.Value = key.PathId;
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var container = ExtractContainerPath(reader.IsDBNull(0) ? null : reader.GetString(0));
+                    if (!string.IsNullOrWhiteSpace(container))
+                    {
+                        result.Add(container);
+                    }
+                }
+            }
+
+            using var preloadCommand = connection.CreateCommand();
+            preloadCommand.CommandText = @"
+SELECT r.raw_json
+FROM source_relations r
+INNER JOIN source_objects o
+  ON o.serialized_file=r.to_file COLLATE NOCASE
+ AND o.path_id=r.to_path_id
+WHERE r.to_file=$file COLLATE NOCASE
+  AND r.to_path_id=$pathId
+  AND r.relation='assetBundle.containerPreload'
+  AND o.type IN ('GameObject', 'Animator', 'SkinnedMeshRenderer', 'MeshRenderer')
+  AND lower(coalesce(json_extract(r.raw_json, '$.details.container'), '')) LIKE '%.prefab';";
+            var preloadFileParam = preloadCommand.Parameters.Add("$file", SqliteType.Text);
+            var preloadPathParam = preloadCommand.Parameters.Add("$pathId", SqliteType.Integer);
+            foreach (var key in selectedKeys)
+            {
+                preloadFileParam.Value = key.File;
+                preloadPathParam.Value = key.PathId;
+                using var reader = preloadCommand.ExecuteReader();
+                while (reader.Read())
+                {
+                    var container = ExtractContainerPath(reader.IsDBNull(0) ? null : reader.GetString(0));
+                    if (!string.IsNullOrWhiteSpace(container))
+                    {
+                        result.Add(container);
+                    }
+                }
+            }
+
+            return result;
         }
 
         private static void TryRefreshAnimatorControllerContextsAfterTargetedExport(
@@ -1947,7 +2479,9 @@ WHERE relation='animatorController.clip'
         private static void TryWritePathIdExpansionReport(
             string outputRoot,
             HashSet<long> selected,
+            HashSet<SourceObjectKey> selectedKeys,
             HashSet<long> added,
+            HashSet<SourceObjectKey> addedKeys,
             JArray sources)
         {
             if (string.IsNullOrWhiteSpace(outputRoot))
@@ -1961,9 +2495,11 @@ WHERE relation='animatorController.clip'
                 var report = new JObject
                 {
                     ["status"] = "ok",
-                    ["rule"] = "定向 Library 导出会把 AnimatorController 显式上下文中的 baseLayerClip 或显式请求的 controller clip 闭包一起加入 --path_ids，避免非 base layer / additive clip 单独入库后被误当作完整身体动作，并可补齐 ImportedAnimatorController 所需的 clip 依赖。这里只补导资产，不新增模型-动画绑定关系。",
+                    ["rule"] = "定向 Library 导出会把 Renderer->GameObject、AnimatorController baseLayerClip 或显式请求的 controller clip 闭包加入目标对象筛选。SerializedFile:PathID 是优先格式，可避免不同 CAB 复用 PathID 时误选对象。这里只补导资产，不新增模型-动画绑定关系。",
                     ["selectedPathIds"] = new JArray(selected.OrderBy(x => x)),
-                    ["addedBaseLayerClipPathIds"] = new JArray(added.OrderBy(x => x)),
+                    ["selectedSourceObjectKeys"] = new JArray((selectedKeys ?? new HashSet<SourceObjectKey>()).OrderBy(FormatSourceObjectKey).Select(FormatSourceObjectKey)),
+                    ["addedPathIds"] = new JArray(added.OrderBy(x => x)),
+                    ["addedSourceObjectKeys"] = new JArray((addedKeys ?? new HashSet<SourceObjectKey>()).OrderBy(FormatSourceObjectKey).Select(FormatSourceObjectKey)),
                     ["sources"] = sources,
                 };
                 File.WriteAllText(
@@ -1977,6 +2513,66 @@ WHERE relation='animatorController.clip'
         }
 
         private readonly record struct SourceObjectKey(string File, long PathId);
+
+        private static HashSet<SourceObjectKey> ParseSourceObjectKeys(string[] filters)
+        {
+            var result = new HashSet<SourceObjectKey>();
+            if (filters.IsNullOrEmpty())
+            {
+                return result;
+            }
+
+            foreach (var filter in filters)
+            {
+                if (TryParseSourceObjectKey(filter, out var key))
+                {
+                    result.Add(key);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool TryParseSourceObjectKey(string value, out SourceObjectKey key)
+        {
+            key = default;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var trimmed = value.Trim();
+            var separator = trimmed.LastIndexOf(':');
+            if (separator < 0)
+            {
+                separator = trimmed.LastIndexOf('#');
+            }
+            if (separator <= 0 || separator >= trimmed.Length - 1)
+            {
+                return false;
+            }
+
+            var file = NormalizeSourceObjectKeyFile(trimmed[..separator]);
+            var pathIdText = trimmed[(separator + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(file)
+                || !long.TryParse(pathIdText, out var pathId))
+            {
+                return false;
+            }
+
+            key = new SourceObjectKey(file, pathId);
+            return true;
+        }
+
+        private static string NormalizeSourceObjectKeyFile(string file)
+        {
+            return (file ?? string.Empty).Trim().Replace('\\', '/').ToLowerInvariant();
+        }
+
+        private static string FormatSourceObjectKey(SourceObjectKey key)
+        {
+            return $"{NormalizeSourceObjectKeyFile(key.File)}:{key.PathId.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        }
 
         private static bool ShouldSkipDependencyClosureForTargetedIndependentExport(Options o)
         {
@@ -2038,7 +2634,10 @@ WHERE relation='animatorController.clip'
                 || !File.Exists(sourceIndexPath)
                 || files.IsNullOrEmpty()
                 || game?.Type.IsArknightsEndfieldGroup() == true
-                || (o.NameFilter.IsNullOrEmpty() && o.ContainerFilter.IsNullOrEmpty() && o.PathIdFilter.IsNullOrEmpty()))
+                || (o.NameFilter.IsNullOrEmpty()
+                    && o.ContainerFilter.IsNullOrEmpty()
+                    && o.PathIdFilter.IsNullOrEmpty()
+                    && o.SourceObjectKeyFilter.IsNullOrEmpty()))
             {
                 return false;
             }
@@ -2062,7 +2661,8 @@ WHERE relation='animatorController.clip'
                     selectedSources,
                     o.NameFilter,
                     o.ContainerFilter,
-                    o.PathIdFilter);
+                    o.PathIdFilter,
+                    o.SourceObjectKeyFilter);
                 if (closure.Count == 0)
                 {
                     return false;
@@ -2089,6 +2689,7 @@ WHERE relation='animatorController.clip'
                 ProfileLogger.Event("source_index_targeted_source_file_closure", new Dictionary<string, object>
                 {
                     ["explicitSourceFileCount"] = selectedSources.Count,
+                    ["sourceObjectKeyFilterCount"] = o.SourceObjectKeyFilter?.Length ?? 0,
                     ["resolvedSourceFileCount"] = files.Length,
                     ["sourceIndex"] = sourceIndexPath,
                 });
@@ -2106,7 +2707,8 @@ WHERE relation='animatorController.clip'
             HashSet<string> selectedSources,
             Regex[] nameFilters,
             Regex[] containerFilters,
-            long[] pathIdFilters)
+            long[] pathIdFilters,
+            string[] sourceObjectKeyFilters)
         {
             SQLitePCL.Batteries_V2.Init();
             using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
@@ -2132,7 +2734,8 @@ WHERE relation='animatorController.clip'
                 connection,
                 seedCabs,
                 nameFilters,
-                pathIdFilters);
+                pathIdFilters,
+                ParseSourceObjectKeys(sourceObjectKeyFilters));
             var selectedContainers = SelectTargetContainersFromSourceIndex(
                 connection,
                 seedCabs,
@@ -2195,11 +2798,13 @@ WHERE file_name IS NOT NULL AND file_name <> ''
             SqliteConnection connection,
             HashSet<string> seedCabs,
             Regex[] nameFilters,
-            long[] pathIdFilters)
+            long[] pathIdFilters,
+            HashSet<SourceObjectKey> sourceObjectKeys)
         {
             var result = new HashSet<SourceObjectKey>();
             var pathIds = (pathIdFilters ?? Array.Empty<long>()).ToHashSet();
-            if (nameFilters.IsNullOrEmpty() && pathIds.Count == 0)
+            sourceObjectKeys ??= new HashSet<SourceObjectKey>();
+            if (nameFilters.IsNullOrEmpty() && pathIds.Count == 0 && sourceObjectKeys.Count == 0)
             {
                 return result;
             }
@@ -2221,7 +2826,8 @@ WHERE serialized_file=$cab COLLATE NOCASE
                     var name = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
                     var nameMatched = !nameFilters.IsNullOrEmpty() && nameFilters.Any(filter => filter.IsMatch(name ?? string.Empty));
                     var pathIdMatched = pathIds.Count > 0 && pathIds.Contains(pathId);
-                    if (nameMatched || pathIdMatched)
+                    var sourceObjectKeyMatched = sourceObjectKeys.Contains(new SourceObjectKey(NormalizeSourceObjectKeyFile(cab), pathId));
+                    if (nameMatched || pathIdMatched || sourceObjectKeyMatched)
                     {
                         result.Add(new SourceObjectKey(cab, pathId));
                     }
@@ -2271,7 +2877,7 @@ WHERE relation='assetBundle.containerPreload'
 SELECT raw_json
 FROM source_relations
 WHERE to_path_id=$pathId
-  AND relation='assetBundle.containerPreload'
+  AND relation='assetBundle.containerAsset'
   AND to_file=$file COLLATE NOCASE;";
                 var pathParam = command.Parameters.Add("$pathId", SqliteType.Integer);
                 var fileParam = command.Parameters.Add("$file", SqliteType.Text);
@@ -2850,8 +3456,18 @@ WHERE from_file=$cab
             );
         }
 
-        private static IEnumerable<object> BuildUnityFileInspect(AssetsManager assetsManager, IReadOnlyCollection<string> batch)
+        private static IEnumerable<object> BuildUnityFileInspect(
+            AssetsManager assetsManager,
+            IReadOnlyCollection<string> batch,
+            long[] pathIdFilters,
+            string[] sourceObjectKeyFilters)
         {
+            var selectedPathIds = pathIdFilters.IsNullOrEmpty()
+                ? new HashSet<long>()
+                : pathIdFilters.ToHashSet();
+            var selectedSourceObjectKeys = ParseSourceObjectKeys(sourceObjectKeyFilters);
+            var hasTargetFilter = selectedPathIds.Count > 0 || selectedSourceObjectKeys.Count > 0;
+
             foreach (var assetsFile in assetsManager.assetsFileList)
             {
                 var rawTypeCounts = assetsFile.m_Objects
@@ -2885,6 +3501,13 @@ WHERE from_file=$cab
                     .OfType<Avatar>()
                     .Select(BuildAvatarInspect)
                     .ToArray();
+                var selectedRenderers = hasTargetFilter
+                    ? assetsFile.Objects
+                        .OfType<Renderer>()
+                        .Where(x => IsSelectedRendererForInspect(x, selectedPathIds, selectedSourceObjectKeys))
+                        .Select(BuildRendererInspect)
+                        .ToArray()
+                    : Array.Empty<object>();
 
                 yield return new
                 {
@@ -2899,9 +3522,102 @@ WHERE from_file=$cab
                     sampleNames,
                     avatars,
                     animatorControllers,
+                    selectedRenderers,
                     batch = batch.ToArray(),
                 };
             }
+        }
+
+        private static bool IsSelectedRendererForInspect(
+            Renderer renderer,
+            HashSet<long> selectedPathIds,
+            HashSet<SourceObjectKey> selectedSourceObjectKeys)
+        {
+            if (renderer == null)
+            {
+                return false;
+            }
+
+            var rendererFile = NormalizeSourceObjectKeyFile(renderer.assetsFile?.fileName);
+            var gameObjectPathId = renderer.m_GameObject?.m_PathID ?? 0;
+            if (selectedPathIds.Contains(renderer.m_PathID) || selectedPathIds.Contains(gameObjectPathId))
+            {
+                return true;
+            }
+
+            if (selectedSourceObjectKeys.Count == 0)
+            {
+                return false;
+            }
+
+            return selectedSourceObjectKeys.Contains(new SourceObjectKey(rendererFile, renderer.m_PathID))
+                || selectedSourceObjectKeys.Contains(new SourceObjectKey(rendererFile, gameObjectPathId));
+        }
+
+        private static object BuildRendererInspect(Renderer renderer)
+        {
+            var materials = renderer.m_Materials ?? new List<PPtr<Material>>();
+            return new
+            {
+                type = renderer.type.ToString(),
+                name = renderer.Name,
+                file = renderer.assetsFile?.fileName,
+                pathId = renderer.m_PathID,
+                gameObject = DescribePPtrForInspect(renderer.assetsFile, renderer.m_GameObject, "GameObject"),
+                enabled = renderer.m_Enabled,
+                materialSlotCount = materials.Count,
+                materials = materials.Select((x, index) => DescribePPtrForInspect(renderer.assetsFile, x, "Material", index)).ToArray(),
+                skinnedMesh = renderer is SkinnedMeshRenderer skinned
+                    ? DescribePPtrForInspect(renderer.assetsFile, skinned.m_Mesh, "Mesh")
+                    : null,
+                meshRendererMeshFilterHint = renderer is MeshRenderer
+                    ? "MeshRenderer mesh lives on sibling MeshFilter; inspect source_index component.gameObject relations for MeshFilter.mesh."
+                    : null,
+                rootBone = renderer is SkinnedMeshRenderer skinnedRoot
+                    ? DescribePPtrForInspect(renderer.assetsFile, skinnedRoot.m_RootBone, "Transform")
+                    : null,
+                boneCount = renderer is SkinnedMeshRenderer skinnedBones
+                    ? skinnedBones.m_Bones?.Count ?? 0
+                    : 0,
+            };
+        }
+
+        private static object DescribePPtrForInspect<T>(SerializedFile sourceFile, PPtr<T> ptr, string typeHint, int? slot = null)
+            where T : AnimeStudio.Object
+        {
+            if (ptr == null)
+            {
+                return null;
+            }
+
+            ptr.TryGet(out T resolved);
+            return new
+            {
+                slot,
+                fileId = ptr.m_FileID,
+                pathId = ptr.m_PathID,
+                typeHint,
+                targetFile = ResolvePPtrTargetFileName(sourceFile, ptr.m_FileID),
+                resolved = resolved != null,
+                resolvedType = resolved?.type.ToString(),
+                resolvedName = resolved?.Name,
+            };
+        }
+
+        private static string ResolvePPtrTargetFileName(SerializedFile sourceFile, int fileId)
+        {
+            if (sourceFile == null || fileId == 0)
+            {
+                return sourceFile?.fileName;
+            }
+
+            var externalIndex = fileId - 1;
+            if (externalIndex >= 0 && externalIndex < sourceFile.m_Externals.Count)
+            {
+                return sourceFile.m_Externals[externalIndex].fileName;
+            }
+
+            return null;
         }
 
         private static object BuildAvatarInspect(Avatar avatar)
@@ -3508,7 +4224,7 @@ WHERE from_file=$cab
             return filters.ToArray();
         }
 
-        private static void ConfigureWorkModeTypes(WorkMode workMode, FbxAnimationMode animationMode)
+        private static void ConfigureWorkModeTypes(WorkMode workMode, FbxAnimationMode animationMode, AnimationPackageMode animationPackage)
         {
             if (workMode == WorkMode.Export)
             {
@@ -3563,9 +4279,13 @@ WHERE from_file=$cab
             TypeFlags.SetType(ClassIDType.MiHoYoBinData, false, false);
             TypeFlags.SetType(ClassIDType.Shader, false, false);
 
-            if (workMode == WorkMode.Library || animationMode != FbxAnimationMode.Skip)
+            var explicitAnimationExport =
+                animationMode != FbxAnimationMode.Skip
+                || animationPackage != AnimationPackageMode.Skip;
+            if (workMode == WorkMode.Library || explicitAnimationExport)
             {
-                TypeFlags.SetType(ClassIDType.AnimationClip, true, true);
+                // 默认 Library 只识别动画资源边界，不把 AnimationClip 写进正式素材库。
+                TypeFlags.SetType(ClassIDType.AnimationClip, true, explicitAnimationExport);
                 TypeFlags.SetType(ClassIDType.AnimatorController, true, false);
                 TypeFlags.SetType(ClassIDType.AnimatorOverrideController, true, false);
                 TypeFlags.SetType(ClassIDType.Avatar, true, false);

@@ -120,7 +120,7 @@ namespace AnimeStudio.CLI
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
         private static readonly Regex VfxLibrarySignalPattern = new Regex(
-            @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])",
+            @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|cloudeffect|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
 
@@ -343,6 +343,7 @@ namespace AnimeStudio.CLI
             Regex[] nameFilters,
             Regex[] containerFilters,
             long[] pathIdFilters,
+            string[] sourceObjectKeyFilters,
             Regex[] nameExcludeFilters,
             Regex[] containerExcludeFilters,
             ref int i
@@ -407,6 +408,7 @@ namespace AnimeStudio.CLI
             var pathIdFilterSet = pathIdFilters.IsNullOrEmpty()
                 ? null
                 : pathIdFilters.ToHashSet();
+            var sourceObjectKeyFilterSet = ParseSourceObjectKeyFilters(sourceObjectKeyFilters);
             var matches = exportableAssets
                 .Where(x =>
                 {
@@ -418,8 +420,8 @@ namespace AnimeStudio.CLI
                         containerFilters.IsNullOrEmpty()
                         || containerFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
                     var isPathIdExactMatch = pathIdFilterSet != null && pathIdFilterSet.Contains(x.m_PathID);
-                    var isPathIdMatch =
-                        pathIdFilterSet == null || isPathIdExactMatch;
+                    var isSourceObjectKeyExactMatch = sourceObjectKeyFilterSet != null
+                        && sourceObjectKeyFilterSet.Contains(BuildAssetSourceObjectKey(x));
                     var isNameExcluded =
                         !nameExcludeFilters.IsNullOrEmpty()
                         && nameExcludeFilters.Any(y => y.IsMatch(x.Text ?? string.Empty));
@@ -428,15 +430,20 @@ namespace AnimeStudio.CLI
                         && containerExcludeFilters.Any(y => y.IsMatch(GetFilterableContainerText(x)));
                     // 显式 --path_ids 是定向诊断/刷新入口，已经精确到 Unity 对象。
                     // 默认 3D 路径/名字排除会过滤 UI、cutscene 等路径；精确 PathID 不能被这些默认规则误杀。
-                    if (isPathIdExactMatch)
+                    // --source_object_keys 进一步包含 SerializedFile，用来避免不同 CAB 复用 PathID 时误选对象。
+                    if (isPathIdExactMatch || isSourceObjectKeyExactMatch)
                     {
                         return isFilteredType;
+                    }
+                    if (sourceObjectKeyFilterSet != null)
+                    {
+                        return false;
                     }
 
                     return isMatchRegex
                         && isFilteredType
                         && isContainerMatch
-                        && isPathIdMatch
+                        && (pathIdFilterSet == null || isPathIdExactMatch)
                         && !isNameExcluded
                         && !isContainerExcluded;
                 })
@@ -456,6 +463,7 @@ namespace AnimeStudio.CLI
                     ["afterNameContainerFilterTotal"] = regexFilteredCounts.Values.Sum(),
                     ["afterNameContainerFilterByType"] = regexFilteredCounts,
                     ["pathIdFilterCount"] = pathIdFilterSet?.Count ?? 0,
+                    ["sourceObjectKeyFilterCount"] = sourceObjectKeyFilterSet?.Count ?? 0,
                     ["afterModelRootFilterTotal"] = matches.Length,
                     ["afterModelRootFilterByType"] = CountAssetItemsByType(matches),
                     ["containerMainAssetCount"] = containerMainAssets.Count,
@@ -489,6 +497,66 @@ namespace AnimeStudio.CLI
             );
         }
 
+        private static HashSet<string> ParseSourceObjectKeyFilters(string[] filters)
+        {
+            if (filters.IsNullOrEmpty())
+            {
+                return null;
+            }
+
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var filter in filters)
+            {
+                var normalized = NormalizeSourceObjectKey(filter);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                {
+                    result.Add(normalized);
+                }
+            }
+
+            return result.Count == 0 ? null : result;
+        }
+
+        private static string BuildAssetSourceObjectKey(AssetItem asset)
+        {
+            if (asset == null || string.IsNullOrWhiteSpace(asset.SourceFile?.fileName))
+            {
+                return string.Empty;
+            }
+
+            return NormalizeSourceObjectKey($"{asset.SourceFile.fileName}:{asset.m_PathID.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        private static string NormalizeSourceObjectKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = key.Trim();
+            var separator = trimmed.LastIndexOf(':');
+            if (separator < 0)
+            {
+                separator = trimmed.LastIndexOf('#');
+            }
+            if (separator <= 0 || separator >= trimmed.Length - 1)
+            {
+                return string.Empty;
+            }
+
+            var file = trimmed[..separator].Trim().Replace('\\', '/');
+            var pathIdText = trimmed[(separator + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(file)
+                || !long.TryParse(pathIdText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pathId))
+            {
+                return string.Empty;
+            }
+
+            // SerializedFile + PathID 才是跨 CAB 稳定选择；裸 PathID 在大项目里经常撞号。
+            return $"{file}:{pathId.ToString(CultureInfo.InvariantCulture)}";
+        }
+
         private static AssetItem[] FilterUsefulModelRoots(AssetItem[] assets)
         {
             var skipped = 0;
@@ -519,6 +587,192 @@ namespace AnimeStudio.CLI
             return filtered;
         }
 
+        public static void RepairRendererMeshReferencesFromSourceIndex(string sourceIndexPath)
+        {
+            if (string.IsNullOrWhiteSpace(sourceIndexPath)
+                || !File.Exists(sourceIndexPath)
+                || assetsManager?.assetsFileList == null
+                || assetsManager.assetsFileList.Count == 0)
+            {
+                return;
+            }
+
+            var repaired = 0;
+            var missing = 0;
+            var meshTargets = LoadRendererMeshRepairTargets(sourceIndexPath);
+            if (meshTargets.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var assetsFile in assetsManager.assetsFileList)
+            {
+                foreach (var obj in assetsFile.Objects)
+                {
+                    switch (obj)
+                    {
+                        case SkinnedMeshRenderer renderer when renderer.m_Mesh == null || renderer.m_Mesh.IsNull:
+                            if (TryRepairMeshReferenceFromSourceIndex(meshTargets, renderer, "skinnedMeshRenderer.mesh"))
+                            {
+                                repaired++;
+                            }
+                            else
+                            {
+                                missing++;
+                            }
+                            break;
+                        case MeshFilter filter when filter.m_Mesh == null || filter.m_Mesh.IsNull:
+                            if (TryRepairMeshReferenceFromSourceIndex(meshTargets, filter, "meshFilter.mesh"))
+                            {
+                                repaired++;
+                            }
+                            else
+                            {
+                                missing++;
+                            }
+                            break;
+                    }
+                }
+            }
+
+            if (repaired > 0 || missing > 0)
+            {
+                Logger.Info($"Source-index renderer mesh repair completed: repaired={repaired}, unresolved={missing}.");
+                ProfileLogger.Event("source_index_renderer_mesh_repair", new Dictionary<string, object>
+                {
+                    ["repaired"] = repaired,
+                    ["unresolved"] = missing,
+                    ["sourceIndex"] = sourceIndexPath,
+                });
+            }
+        }
+
+        private static bool TryRepairMeshReferenceFromSourceIndex(
+            Dictionary<string, List<SourceMeshTarget>> meshTargets,
+            Object component,
+            string relation)
+        {
+            if (component?.assetsFile == null || string.IsNullOrWhiteSpace(relation))
+            {
+                return false;
+            }
+
+            try
+            {
+                var key = BuildRendererMeshRepairKey(relation, component.assetsFile.fileName, component.m_PathID);
+                if (!meshTargets.TryGetValue(key, out var targets))
+                {
+                    return false;
+                }
+
+                foreach (var target in targets)
+                {
+                    if (TryFindLoadedMesh(target.File, target.PathId, out var mesh))
+                    {
+                        switch (component)
+                        {
+                            case SkinnedMeshRenderer renderer:
+                                renderer.m_Mesh ??= new PPtr<Mesh>(0, 0, renderer.assetsFile);
+                                renderer.m_Mesh.Set(mesh);
+                                break;
+                            case MeshFilter filter:
+                                filter.m_Mesh ??= new PPtr<Mesh>(0, 0, filter.assetsFile);
+                                filter.m_Mesh.Set(mesh);
+                                break;
+                        }
+
+                        return true;
+                    }
+                }
+            }
+            catch (Exception e) when (e is IOException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to repair renderer mesh reference from source index: {component.assetsFile.fileName}:{component.m_PathID}. {e.GetType().Name}: {e.Message}");
+            }
+
+            return false;
+        }
+
+        private static Dictionary<string, List<SourceMeshTarget>> LoadRendererMeshRepairTargets(string sourceIndexPath)
+        {
+            var result = new Dictionary<string, List<SourceMeshTarget>>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT relation, from_file, from_path_id, to_file, to_path_id
+FROM source_relations INDEXED BY idx_source_relations_relation
+WHERE relation IN ('skinnedMeshRenderer.mesh', 'meshFilter.mesh')
+  AND from_file IS NOT NULL
+  AND from_path_id IS NOT NULL
+  AND to_file IS NOT NULL
+  AND to_path_id IS NOT NULL
+ORDER BY id;";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var relation = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                    var fromFile = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                    var fromPathId = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+                    var toFile = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                    var toPathId = reader.IsDBNull(4) ? 0 : reader.GetInt64(4);
+                    if (string.IsNullOrWhiteSpace(relation)
+                        || string.IsNullOrWhiteSpace(fromFile)
+                        || fromPathId == 0
+                        || string.IsNullOrWhiteSpace(toFile)
+                        || toPathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var key = BuildRendererMeshRepairKey(relation, fromFile, fromPathId);
+                    if (!result.TryGetValue(key, out var targets))
+                    {
+                        targets = new List<SourceMeshTarget>();
+                        result[key] = targets;
+                    }
+
+                    targets.Add(new SourceMeshTarget(toFile, toPathId));
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to load renderer mesh repair targets from source index: {e.GetType().Name}: {e.Message}");
+            }
+
+            return result;
+        }
+
+        private static string BuildRendererMeshRepairKey(string relation, string fromFile, long fromPathId)
+        {
+            return $"{relation}\u001f{fromFile ?? string.Empty}\u001f{fromPathId.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        private static bool TryFindLoadedMesh(string serializedFile, long pathId, out Mesh mesh)
+        {
+            mesh = null;
+            foreach (var assetsFile in assetsManager.assetsFileList)
+            {
+                if (!string.Equals(assetsFile.fileName, serializedFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (assetsFile.ObjectsDic.TryGetValue(pathId, out var obj) && obj is Mesh loadedMesh)
+                {
+                    mesh = loadedMesh;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private readonly record struct SourceMeshTarget(string File, long PathId);
+
         private static bool IsExcludedModelRoot(AssetItem asset)
         {
             var filterTexts = new[]
@@ -543,6 +797,42 @@ namespace AnimeStudio.CLI
                 .Where(x => x.Asset is GameObject && containerMainAssets.Contains(x.Asset))
                 .Select(x => (GameObject)x.Asset)
                 .ToHashSet();
+            if (WorkMode == WorkMode.Library)
+            {
+                var hierarchyRoots = FilterHierarchyModelRoots(assets, out var skippedChildren);
+                if (containerModelAssets.Count == 0)
+                {
+                    var skippedModels = assets.Count(x => x.Asset is GameObject);
+                    if (skippedModels > 0)
+                    {
+                        Logger.Warning(
+                            $"--model_roots_only found no AssetBundle/ResourceManager main GameObject entries for {skippedModels} GameObject model(s)."
+                        );
+                    }
+                    if (skippedChildren > 0)
+                    {
+                        Logger.Info($"Library model root fallback kept hierarchy roots and skipped {skippedChildren} child model candidate(s).");
+                    }
+                    return hierarchyRoots;
+                }
+
+                var hierarchyRootSet = hierarchyRoots
+                    .Where(x => x.Asset is GameObject)
+                    .Select(x => (GameObject)x.Asset)
+                    .ToHashSet();
+                var selected = assets
+                    .Where(x =>
+                        x.Asset is not GameObject gameObject
+                        || containerModelAssets.Contains(gameObject)
+                        || hierarchyRootSet.Contains(gameObject))
+                    .ToArray();
+                var skipped = assets.Count(x => x.Asset is GameObject) - selected.Count(x => x.Asset is GameObject);
+                if (skipped > 0)
+                {
+                    Logger.Info($"Library model root filter kept {containerModelAssets.Count} container main model(s) plus {hierarchyRootSet.Count} hierarchy root model(s), skipped {skipped} child model candidate(s).");
+                }
+                return selected;
+            }
             if (containerModelAssets.Count == 0)
             {
                 var skippedModels = assets.Count(x => x.Asset is GameObject);
@@ -551,15 +841,6 @@ namespace AnimeStudio.CLI
                     Logger.Warning(
                         $"--model_roots_only found no AssetBundle/ResourceManager main GameObject entries for {skippedModels} GameObject model(s)."
                     );
-                }
-                if (WorkMode == WorkMode.Library)
-                {
-                    var hierarchyRoots = FilterHierarchyModelRoots(assets, out var skippedChildren);
-                    if (skippedChildren > 0)
-                    {
-                        Logger.Info($"Library model root fallback kept hierarchy roots and skipped {skippedChildren} child model candidate(s).");
-                    }
-                    return hierarchyRoots;
                 }
                 if (skippedModels > 0)
                 {
@@ -1040,24 +1321,38 @@ namespace AnimeStudio.CLI
             var shaders = exportableAssets.Where(x => x.Asset is Shader).ToList();
             var sourcePartModels = new List<AssetItem>();
             var staticMeshes = IncludeStaticMeshes
-                ? CollectLibraryStaticMeshModels(sourcePartModels)
+                ? CollectLibraryStaticMeshModels(savePath, sourcePartModels)
                 : new List<AssetItem>();
             var libraryTextures = CollectLibraryTextureAssets(savePath);
 
             models = FilterLibraryModelSources(models, sourcePartModels);
+            MarkTargetedPrefabRendererParts(savePath, models);
             models = FilterOptimizedAnimatorMissingAvatarModels(models);
             models.AddRange(staticMeshes);
             models = FilterDeprecatedLibraryAssets(models, "model");
+            models = FilterDefaultVfxModels(models, sourcePartModels);
             models = FilterLowValueBrowsableModels(models, sourcePartModels);
             animations = FilterDeprecatedLibraryAssets(animations, "animation");
+            if (CliExportOptions.AnimationPackage == AnimationPackageMode.Skip && animations.Count > 0)
+            {
+                Logger.Info($"Library skipped {animations.Count} AnimationClip asset(s); animation export is out of scope for the default asset library.");
+                ProfileLogger.Event("library_skip_animation_clips", new Dictionary<string, object>
+                {
+                    ["skippedCount"] = animations.Count,
+                    ["reason"] = "outOfScopeAnimation",
+                    ["rule"] = "默认素材库只导出模型、贴图、材质、骨骼和索引。AnimationClip 只在显式诊断参数下处理。",
+                });
+                animations.Clear();
+            }
 
             Logger.Info(
-                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} animation clip(s), {libraryTextures.Count} material/terrain texture asset(s), {shaders.Count} shader(s)."
+                $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} explicit diagnostic animation clip(s), {libraryTextures.Count} material/terrain texture asset(s), {shaders.Count} shader(s)."
             );
             AppendModelSourcePartCatalog(savePath, sourcePartModels);
 
             var modelAnimations = CliExportOptions.ExportEmbeddedAnimations ? animations : null;
             ExportModelAssets(savePath, models, AssetGroupOption.ByLibrary, modelAnimations);
+            WritePrefabAssemblyReport(savePath);
             ExportSeparateAnimationClips(savePath);
             if (libraryTextures.Count > 0)
             {
@@ -1207,6 +1502,55 @@ namespace AnimeStudio.CLI
             }
 
             return kept;
+        }
+
+        private static List<AssetItem> FilterDefaultVfxModels(List<AssetItem> models, List<AssetItem> sourcePartModels)
+        {
+            if (IncludeVfx)
+            {
+                return models;
+            }
+
+            var kept = new List<AssetItem>(models.Count);
+            var skipped = 0;
+            foreach (var model in models)
+            {
+                if (IsLikelyMeshVfxModel(model))
+                {
+                    model.LibraryRole = "SourcePart";
+                    sourcePartModels.Add(model);
+                    skipped++;
+                    continue;
+                }
+
+                kept.Add(model);
+            }
+
+            if (skipped > 0)
+            {
+                Logger.Info($"Library downgraded {skipped} mesh-VFX model candidate(s); use --include_vfx to export VFX metadata or mesh previews.");
+                ProfileLogger.Event("library_default_vfx_model_filter", new Dictionary<string, object>
+                {
+                    ["inputCount"] = models.Count,
+                    ["skippedCount"] = skipped,
+                    ["keptCount"] = kept.Count,
+                    ["rule"] = "默认 Library 不导出 VFX/特效网格。CloudEffect、VFX、particle、trail、skill 等明显特效信号只进入 source-part/index 线索；显式 --include_vfx 后再进入 VFX 扩展输出。",
+                });
+            }
+
+            return kept;
+        }
+
+        private static bool IsLikelyMeshVfxModel(AssetItem asset)
+        {
+            var sourceName = asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName;
+            var signalText = string.Join(
+                "/",
+                new[] { asset.Container, Path.GetFileNameWithoutExtension(sourceName), asset.Text }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+
+            return VfxLibrarySignalPattern.IsMatch(signalText);
         }
 
         private static bool IsLowValueBrowsableModel(AssetItem asset)
@@ -1480,6 +1824,240 @@ namespace AnimeStudio.CLI
             return exportModels;
         }
 
+        private static void MarkTargetedPrefabRendererParts(string savePath, List<AssetItem> models)
+        {
+            if (models == null || models.Count == 0)
+            {
+                return;
+            }
+
+            var partMap = LoadTargetedPrefabRendererPartMap(savePath);
+            using var sourceIndexConnection = OpenSourceIndexForPrefabPartFallback();
+
+            var marked = 0;
+            foreach (var model in models)
+            {
+                if (model?.Asset is not GameObject)
+                {
+                    continue;
+                }
+
+                var key = BuildSourceObjectKey(model);
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                if (!partMap.TryGetValue(key, out var partInfo))
+                {
+                    partInfo = QuerySourceIndexPrefabRendererPartInfo(sourceIndexConnection, model);
+                    if (partInfo == null)
+                    {
+                        continue;
+                    }
+                }
+
+                model.LibraryRole = "PrefabRendererPart";
+                model.SourcePartRole = "CoveredByPrefab";
+                model.DiagnosticOnly = true;
+                model.VisualAcceptanceScope = "PrefabRendererPartDiagnostic";
+                model.CoveredByPrefabContainer = partInfo.Container;
+                model.CoveredByPrefabSourceObjectKey = partInfo.SourceObjectKey;
+                model.LibraryRoleReason = "targeted_container_renderer_owner";
+                marked++;
+            }
+
+            if (marked > 0)
+            {
+                Logger.Info($"Marked {marked} targeted prefab renderer owner GameObject(s) as PrefabRendererPart/CoveredByPrefab. They remain useful diagnostics, but do not count as default prefab main-model visual acceptance.");
+                ProfileLogger.Event("library_prefab_renderer_part_mark", new Dictionary<string, object>
+                {
+                    ["markedCount"] = marked,
+                    ["candidateCount"] = models.Count,
+                    ["rule"] = "选中 AssetBundle container 主对象后补导的 Renderer owner 是 prefab 子件。默认可保留诊断输出，但不能当作完整 prefab/Animator 主模型验收证据；真正的主线应后续生成 assembled prefab glTF 或模块组装报告。",
+                });
+            }
+        }
+
+        private static SqliteConnection OpenSourceIndexForPrefabPartFallback()
+        {
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                return connection;
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Unable to open source index for prefab renderer part fallback: {indexPath}. {e.GetType().Name}: {e.Message}");
+                return null;
+            }
+        }
+
+        private static TargetedPrefabRendererPartInfo QuerySourceIndexPrefabRendererPartInfo(SqliteConnection connection, AssetItem model)
+        {
+            if (connection == null
+                || model?.SourceFile == null
+                || model.m_PathID == 0
+                || string.IsNullOrWhiteSpace(model.Container)
+                || !model.Container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var file = NormalizeSourceObjectKeyFile(model.SourceFile.fileName);
+            if (string.IsNullOrWhiteSpace(file))
+            {
+                return null;
+            }
+
+            var container = model.Container.Replace('\\', '/');
+            try
+            {
+                if (IsSourceIndexContainerMainObject(connection, file, model.m_PathID, container))
+                {
+                    return null;
+                }
+
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT json_extract(preload.raw_json, '$.details.container') AS container
+FROM source_relations comp
+INNER JOIN source_relations preload
+  ON preload.relation='assetBundle.containerPreload'
+ AND preload.to_file=comp.from_file COLLATE NOCASE
+ AND preload.to_path_id=comp.from_path_id
+WHERE comp.relation='component.gameObject'
+  AND comp.from_type IN ('SkinnedMeshRenderer', 'MeshRenderer')
+  AND comp.to_file=$file COLLATE NOCASE
+  AND comp.to_path_id=$pathId
+  AND json_extract(preload.raw_json, '$.details.container')=$container
+LIMIT 1;";
+                command.Parameters.AddWithValue("$file", file);
+                command.Parameters.AddWithValue("$pathId", model.m_PathID);
+                command.Parameters.AddWithValue("$container", container);
+                var matchedContainer = command.ExecuteScalar()?.ToString();
+                if (string.IsNullOrWhiteSpace(matchedContainer))
+                {
+                    return null;
+                }
+
+                return new TargetedPrefabRendererPartInfo(container, BuildSourceObjectKey(file, model.m_PathID));
+            }
+            catch (Exception e) when (e is SqliteException || e is InvalidOperationException)
+            {
+                Logger.Verbose($"Unable to classify prefab renderer part from source index for {file}:{model.m_PathID}: {e.Message}");
+                return null;
+            }
+        }
+
+        private static bool IsSourceIndexContainerMainObject(SqliteConnection connection, string file, long pathId, string container)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT 1
+FROM source_relations
+WHERE relation='assetBundle.containerAsset'
+  AND to_file=$file COLLATE NOCASE
+  AND to_path_id=$pathId
+  AND lower(coalesce(json_extract(raw_json, '$.details.container'), ''))=lower($container)
+LIMIT 1;";
+            command.Parameters.AddWithValue("$file", file);
+            command.Parameters.AddWithValue("$pathId", pathId);
+            command.Parameters.AddWithValue("$container", container);
+            return command.ExecuteScalar() != null;
+        }
+
+        private static Dictionary<string, TargetedPrefabRendererPartInfo> LoadTargetedPrefabRendererPartMap(string savePath)
+        {
+            var result = new Dictionary<string, TargetedPrefabRendererPartInfo>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(savePath))
+            {
+                return result;
+            }
+
+            var reportPath = Path.Combine(savePath, "path_id_dependency_expansion.json");
+            if (!File.Exists(reportPath))
+            {
+                return result;
+            }
+
+            try
+            {
+                var report = JObject.Parse(File.ReadAllText(reportPath));
+                var sources = report["sources"] as JArray;
+                if (sources == null)
+                {
+                    return result;
+                }
+
+                foreach (var source in sources.OfType<JObject>())
+                {
+                    var sourceKind = (string)source["source"] ?? string.Empty;
+                    if (!sourceKind.Contains("assetBundle.containerPreload.component.gameObject", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var gameObjectFile = (string)source["gameObjectFile"] ?? string.Empty;
+                    var gameObjectPathId = (long?)source["gameObjectPathId"] ?? 0;
+                    if (string.IsNullOrWhiteSpace(gameObjectFile) || gameObjectPathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var key = BuildSourceObjectKey(gameObjectFile, gameObjectPathId);
+                    result[key] = new TargetedPrefabRendererPartInfo(
+                        (string)source["container"] ?? string.Empty,
+                        key);
+                }
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Unable to read prefab renderer part expansion report: {reportPath}. {e.GetType().Name}: {e.Message}");
+            }
+
+            return result;
+        }
+
+        private static string BuildSourceObjectKey(AssetItem item)
+        {
+            if (item?.SourceFile == null || item.m_PathID == 0)
+            {
+                return string.Empty;
+            }
+
+            return BuildSourceObjectKey(item.SourceFile.fileName, item.m_PathID);
+        }
+
+        private static string BuildSourceObjectKey(string file, long pathId)
+        {
+            file = NormalizeSourceObjectKeyFile(file);
+            return string.IsNullOrWhiteSpace(file)
+                ? string.Empty
+                : $"{file}:{pathId.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        private static string NormalizeSourceObjectKeyFile(string file)
+        {
+            if (string.IsNullOrWhiteSpace(file))
+            {
+                return string.Empty;
+            }
+
+            return file.Trim().Replace('\\', '/');
+        }
+
+        private sealed record TargetedPrefabRendererPartInfo(string Container, string SourceObjectKey);
+        private sealed record TargetedPrefabCoveredStaticMeshInfo(string Container, string SourceObjectKey);
+
         private static bool IsRawModelSourcePart(AssetItem asset)
         {
             var text = GetFilterableContainerText(asset).Replace('\\', '/').ToLowerInvariant();
@@ -1541,6 +2119,11 @@ namespace AnimeStudio.CLI
                 {
                     kind = "ModelSourcePart",
                     libraryRole = item.LibraryRole,
+                    diagnosticOnly = item.DiagnosticOnly,
+                    sourcePartRole = item.SourcePartRole,
+                    libraryRoleReason = item.LibraryRoleReason,
+                    coveredByPrefabContainer = item.CoveredByPrefabContainer,
+                    coveredByPrefabSourceObjectKey = item.CoveredByPrefabSourceObjectKey,
                     resourceKind = InferLibraryResourceKind(item.Text, item.Container, item.SourceFile?.originalPath ?? item.SourceFile?.fileName),
                     exportedAt = DateTime.UtcNow.ToString("O"),
                     name = item.Text,
@@ -1556,7 +2139,1546 @@ namespace AnimeStudio.CLI
             }
         }
 
-        private static List<AssetItem> CollectLibraryStaticMeshModels(List<AssetItem> sourcePartModels)
+        private static void WritePrefabAssemblyReport(string savePath)
+        {
+            if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                return;
+            }
+
+            var catalogPath = Path.Combine(CliExportOptions.OutputRoot, "asset_catalog.jsonl");
+            if (!File.Exists(catalogPath))
+            {
+                return;
+            }
+
+            var groups = new Dictionary<string, List<JObject>>(StringComparer.OrdinalIgnoreCase);
+            var existingMainModels = new Dictionary<string, PrefabMainModelInfo>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                foreach (var line in File.ReadLines(catalogPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    var row = JObject.Parse(line);
+                    if (TryReadExistingPrefabMainModel(row, out var mainModel))
+                    {
+                        var key = NormalizePrefabContainerKey(mainModel.Container);
+                        if (!string.IsNullOrWhiteSpace(key) && !existingMainModels.ContainsKey(key))
+                        {
+                            existingMainModels[key] = mainModel;
+                        }
+                    }
+
+                    var container = (string)row["coveredByPrefabContainer"];
+                    if (string.IsNullOrWhiteSpace(container))
+                    {
+                        continue;
+                    }
+
+                    var role = (string)row["libraryRole"];
+                    var sourceRole = (string)row["sourcePartRole"];
+                    if (!string.Equals(role, "PrefabRendererPart", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(sourceRole, "CoveredByPrefab", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!groups.TryGetValue(container, out var rows))
+                    {
+                        rows = new List<JObject>();
+                        groups[container] = rows;
+                    }
+                    rows.Add(row);
+                }
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Unable to build prefab assembly report from asset catalog: {e.GetType().Name}: {e.Message}");
+                return;
+            }
+
+            if (groups.Count == 0)
+            {
+                return;
+            }
+
+            var assemblies = new JArray();
+            using var sourceIndexConnection = OpenSourceIndexForPrefabPartFallback();
+            var writtenAssemblyCount = 0;
+            var primaryAssemblyCount = 0;
+            var partialAssemblyCount = 0;
+            var missingAssemblyCount = 0;
+            var existingMainModelGroupCount = 0;
+            foreach (var group in groups.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var rows = group.Value;
+                existingMainModels.TryGetValue(NormalizePrefabContainerKey(group.Key), out var existingMainModel);
+                var materialStatusCounts = rows
+                    .GroupBy(x => (string)x["materialStatus"] ?? "unknown", StringComparer.OrdinalIgnoreCase)
+                    .OrderByDescending(x => x.Count())
+                    .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.Count(), StringComparer.OrdinalIgnoreCase);
+                var exportedPartCount = rows.Count(x => !string.IsNullOrWhiteSpace((string)x["output"]));
+                var diagnosticOnlyCount = rows.Count(x => (bool?)x["diagnosticOnly"] == true);
+                PrefabAssemblyCoverage coverage;
+                using (ProfileLogger.Measure("prefab_assembly_coverage", new Dictionary<string, object>
+                {
+                    ["container"] = group.Key,
+                    ["partCount"] = rows.Count,
+                }))
+                {
+                    coverage = LoadPrefabAssemblyCoverage(sourceIndexConnection, group.Key, rows);
+                }
+
+                PrefabAssemblyWriteResult assemblyWrite;
+                string assemblyOutput;
+                if (existingMainModel != null)
+                {
+                    // 已经有完整 prefab/Animator 主模型时，Renderer part 只保留来源证据，
+                    // 不再额外合成重复 assembly，也不把 part 当成主模型通过证据。
+                    assemblyWrite = null;
+                    assemblyOutput = null;
+                    existingMainModelGroupCount++;
+                }
+                else
+                {
+                    using (ProfileLogger.Measure("prefab_assembly_write_gltf", new Dictionary<string, object>
+                    {
+                        ["container"] = group.Key,
+                        ["partCount"] = rows.Count,
+                        ["coverageStatus"] = coverage.Status,
+                        ["expectedRendererOwnerCount"] = coverage.ExpectedRendererOwnerCount,
+                        ["exportedRendererOwnerCount"] = coverage.ExportedRendererOwnerCount,
+                        ["rendererOwnerCoverageRatio"] = coverage.CoverageRatio,
+                    }))
+                    {
+                        assemblyWrite = TryWritePrefabAssemblyGltf(group.Key, rows, materialStatusCounts, coverage);
+                        assemblyOutput = assemblyWrite?.Output;
+                    }
+                }
+                var assemblyStatus = existingMainModel != null
+                    ? "coveredByExistingPrefabMainModel"
+                    : string.IsNullOrWhiteSpace(assemblyOutput)
+                    ? "needsPrefabAssemblyGltf"
+                    : coverage.IsLowCoverage
+                        ? "prefabAssemblyPartialGltfWritten"
+                        : "prefabAssemblyGltfWritten";
+                if (existingMainModel != null)
+                {
+                    // 有主模型时不写 PrefabAssemblyMissing/Partial 行；主模型自身的材质和验证状态由原 catalog 行负责。
+                }
+                else if (string.IsNullOrWhiteSpace(assemblyOutput))
+                {
+                    missingAssemblyCount++;
+                }
+                else
+                {
+                    writtenAssemblyCount++;
+                    if (coverage.IsLowCoverage)
+                    {
+                        partialAssemblyCount++;
+                    }
+                    else
+                    {
+                        primaryAssemblyCount++;
+                    }
+                }
+
+                var deletedPartCount = DeletePrefabRendererPartOutputs(group.Key, rows);
+                if (existingMainModel == null && string.IsNullOrWhiteSpace(assemblyOutput))
+                {
+                    AppendPrefabAssemblyMissingCatalogRow(group.Key, rows, materialStatusCounts);
+                }
+                else if (existingMainModel == null)
+                {
+                    AppendPrefabAssemblyCatalogRow(group.Key, rows, materialStatusCounts, assemblyOutput, assemblyWrite.Merge, coverage);
+                }
+
+                var visualGate = EvaluatePrefabAssemblyVisualGate(group.Key, rows, materialStatusCounts, coverage);
+                assemblies.Add(new JObject
+                {
+                    ["container"] = group.Key,
+                    ["resourceKind"] = InferLibraryResourceKind(group.Key, group.Key, null),
+                    ["partCount"] = rows.Count,
+                    ["exportedPartCount"] = exportedPartCount,
+                    ["deletedCoveredPrefabPartCount"] = deletedPartCount,
+                    ["diagnosticOnlyPartCount"] = diagnosticOnlyCount,
+                    ["expectedRendererOwnerCount"] = coverage.ExpectedRendererOwnerCount,
+                    ["exportedRendererOwnerCount"] = coverage.ExportedRendererOwnerCount,
+                    ["rendererOwnerCoverageRatio"] = coverage.CoverageRatio,
+                    ["assemblyCompletenessStatus"] = coverage.Status,
+                    ["materialStatusCounts"] = JObject.FromObject(materialStatusCounts),
+                    ["assemblyOutput"] = assemblyOutput,
+                    ["mainModelOutput"] = existingMainModel?.Output ?? assemblyOutput,
+                    ["assemblyStatus"] = assemblyStatus,
+                    ["existingMainModelPresent"] = existingMainModel != null,
+                    ["existingMainModelRole"] = existingMainModel?.LibraryRole,
+                    ["existingMainModelName"] = existingMainModel?.Name,
+                    ["existingMainModelOutput"] = existingMainModel?.Output,
+                    ["existingMainModelValidationStatus"] = existingMainModel?.ModelValidationStatus,
+                    ["libraryDecision"] = existingMainModel != null
+                        ? "parts_are_diagnostic_because_prefab_main_model_already_exists"
+                        : string.IsNullOrWhiteSpace(assemblyOutput)
+                        ? "parts_are_diagnostic_until_prefab_main_model_is_written"
+                        : coverage.IsLowCoverage
+                            ? "assembly_gltf_is_partial_diagnostic_until_more_prefab_renderer_parts_are_exported"
+                            : "assembly_gltf_is_prefab_main_model_candidate_pending_visual_validation",
+                    ["visualAcceptanceEligible"] = existingMainModel != null
+                        ? existingMainModel.VisualAcceptanceEligible
+                        : !string.IsNullOrWhiteSpace(assemblyOutput) && visualGate.Eligible,
+                    ["visualAcceptanceBlocker"] = existingMainModel != null
+                        ? existingMainModel.VisualAcceptanceBlocker
+                        : string.IsNullOrWhiteSpace(assemblyOutput)
+                        ? "missing_prefab_main_model_or_assembly"
+                        : visualGate.Blocker,
+                    ["visualAcceptanceGate"] = visualGate.Evidence,
+                    ["rule"] = "PrefabRendererPart/CoveredByPrefab rows are Unity Renderer parts of the same prefab/container. They should be assembled into one prefab main-model GLB before counting as default Library model acceptance.",
+                    ["parts"] = new JArray(rows.Select(x => new JObject
+                    {
+                        ["name"] = x["name"],
+                        ["output"] = x["output"],
+                        ["originalOutputBeforeCleanup"] = x["originalOutputBeforeCleanup"],
+                        ["diagnosticFileStatus"] = x["diagnosticFileStatus"],
+                        ["container"] = x["container"],
+                        ["source"] = x["source"],
+                        ["pathId"] = x["pathId"],
+                        ["libraryRole"] = x["libraryRole"],
+                        ["sourcePartRole"] = x["sourcePartRole"],
+                        ["materialStatus"] = x["materialStatus"],
+                        ["modelValidationStatus"] = x["modelValidationStatus"],
+                    })),
+                });
+            }
+
+            var report = new JObject
+            {
+                ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                ["assemblyCount"] = assemblies.Count,
+                ["writtenAssemblyCount"] = writtenAssemblyCount,
+                ["primaryAssemblyCount"] = primaryAssemblyCount,
+                ["partialAssemblyCount"] = partialAssemblyCount,
+                ["missingAssemblyCount"] = missingAssemblyCount,
+                ["existingMainModelGroupCount"] = existingMainModelGroupCount,
+                ["defaultMainModelGroupCount"] = primaryAssemblyCount + existingMainModelGroupCount,
+                ["defaultMainModelAssemblyStatus"] = missingAssemblyCount == 0 && partialAssemblyCount == 0
+                    ? "all_prefab_renderer_part_groups_have_main_assembly"
+                    : "insufficient_prefab_main_model_assembly",
+                ["visualAcceptanceRule"] = "PrefabRendererPart/CoveredByPrefab rows are diagnostic evidence only. A prefab group counts for default visual acceptance only when a browsable PrefabAssemblyPrimary or original prefab/Animator main model exists and source renderer coverage is not clearly partial.",
+                ["assemblies"] = assemblies,
+                ["note"] = "这是默认导出的 prefab 组装关系报告。它不把零散 Renderer/Mesh 子件当作主模型通过证据；覆盖率明显不足时只写 PrefabAssemblyPartial 诊断行，不能算默认主模型通过。",
+            };
+            RewriteCatalogDeletedPrefabRendererPartOutputs(catalogPath, assemblies);
+            RewriteExportManifestDeletedPrefabRendererParts(
+                Path.Combine(CliExportOptions.OutputRoot, "export_manifest.jsonl"),
+                assemblies);
+            var outputPath = Path.Combine(CliExportOptions.OutputRoot, "prefab_assemblies.json");
+            using (ProfileLogger.Measure("prefab_assembly_write_report", new Dictionary<string, object>
+            {
+                ["assemblyCount"] = assemblies.Count,
+                ["primaryAssemblyCount"] = primaryAssemblyCount,
+                ["partialAssemblyCount"] = partialAssemblyCount,
+                ["missingAssemblyCount"] = missingAssemblyCount,
+                ["output"] = outputPath,
+            }))
+            {
+                File.WriteAllText(outputPath, report.ToString(Newtonsoft.Json.Formatting.Indented));
+            }
+            Logger.Info($"Wrote prefab assembly report: {outputPath}");
+            ProfileLogger.Event("library_prefab_assembly_report", new Dictionary<string, object>
+            {
+                ["assemblyCount"] = assemblies.Count,
+                ["rule"] = "Group PrefabRendererPart/CoveredByPrefab outputs by Unity prefab/container so they can be assembled into formal prefab main-model GLB later.",
+            });
+        }
+
+        private static int DeletePrefabRendererPartOutputs(string container, List<JObject> rows)
+        {
+            if (rows == null || rows.Count == 0 || string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot))
+            {
+                return 0;
+            }
+
+            var outputRoot = Path.GetFullPath(CliExportOptions.OutputRoot);
+            var deleted = 0;
+            foreach (var row in rows)
+            {
+                if (!IsPrefabRendererPartRow(row))
+                {
+                    continue;
+                }
+
+                var output = (string)row["output"];
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    continue;
+                }
+
+                var sourcePath = Path.IsPathRooted(output)
+                    ? output
+                    : Path.Combine(outputRoot, output);
+                if (!File.Exists(sourcePath))
+                {
+                    continue;
+                }
+
+                var sourceDir = Path.GetDirectoryName(sourcePath);
+                if (string.IsNullOrWhiteSpace(sourceDir) || !IsPathUnderDirectory(sourceDir, outputRoot))
+                {
+                    continue;
+                }
+
+                var relativeSource = Path.GetRelativePath(outputRoot, sourcePath).Replace('\\', '/');
+                try
+                {
+                    // 这些 glTF 只是组装 prefab 时的中间件。默认素材库保留 Unity 关系证据，
+                    // 但不把已覆盖零件作为额外素材文件保存，避免污染 Models 和浪费空间。
+                    Directory.Delete(sourceDir, recursive: true);
+                    row["originalOutputBeforeCleanup"] = relativeSource;
+                    row["output"] = null;
+                    row["diagnosticFileStatus"] = "deletedCoveredByPrefabPart";
+                    row["diagnosticStorage"] = "catalogOnly";
+                    row["formalModelDirectory"] = false;
+                    row["deletedAfterPrefabAssembly"] = true;
+                    deleted++;
+                    DeleteEmptyModelParents(outputRoot, sourceDir);
+                }
+                catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                {
+                    Logger.Warning($"Unable to delete covered prefab renderer part after assembly: {relativeSource}. {e.GetType().Name}: {e.Message}");
+                }
+            }
+
+            if (deleted > 0)
+            {
+                Logger.Info($"Deleted {deleted} PrefabRendererPart/CoveredByPrefab intermediate output folder(s) after prefab assembly.");
+                ProfileLogger.Event("prefab_renderer_parts_deleted", new Dictionary<string, object>
+                {
+                    ["container"] = container,
+                    ["deletedCount"] = deleted,
+                    ["rule"] = "CoveredByPrefab renderer parts stay in catalog/SQLite as source evidence, but their intermediate glTF files are deleted by default after prefab assembly.",
+                });
+            }
+
+            return deleted;
+        }
+
+        private static void RewriteCatalogDeletedPrefabRendererPartOutputs(string catalogPath, JArray assemblies)
+        {
+            if (string.IsNullOrWhiteSpace(catalogPath) || !File.Exists(catalogPath) || assemblies == null)
+            {
+                return;
+            }
+
+            var outputRoot = Path.GetDirectoryName(Path.GetFullPath(catalogPath)) ?? string.Empty;
+            var movedOutputs = new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            foreach (var assembly in assemblies.OfType<JObject>())
+            {
+                foreach (var part in assembly["parts"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var original = (string)part["originalOutputBeforeCleanup"];
+                    if (string.IsNullOrWhiteSpace(original))
+                    {
+                        continue;
+                    }
+
+                    var originalKey = NormalizeCatalogOutputLookupKey(outputRoot, original);
+                    movedOutputs[originalKey] = part;
+                    if (!Path.IsPathRooted(original))
+                    {
+                        var rootedOriginal = Path.Combine(outputRoot, original.Replace('/', Path.DirectorySeparatorChar));
+                        movedOutputs[NormalizeCatalogOutputLookupKey(outputRoot, rootedOriginal)] = part;
+                    }
+                }
+            }
+
+            if (movedOutputs.Count == 0)
+            {
+                return;
+            }
+
+            var changed = 0;
+            var tempPath = catalogPath + ".prefab_parts.tmp";
+            using (var writer = new StreamWriter(tempPath, false, new UTF8Encoding(false)))
+            {
+                foreach (var line in File.ReadLines(catalogPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        writer.WriteLine(line);
+                        continue;
+                    }
+
+                    JObject row;
+                    try
+                    {
+                        row = JObject.Parse(line);
+                    }
+                    catch
+                    {
+                        writer.WriteLine(line);
+                        continue;
+                    }
+
+                    var output = (string)row["output"];
+                    var outputKey = NormalizeCatalogOutputLookupKey(outputRoot, output);
+                    if (!string.IsNullOrWhiteSpace(outputKey)
+                        && IsPrefabRendererPartRow(row)
+                        && movedOutputs.TryGetValue(outputKey, out var movedPart))
+                    {
+                        row["output"] = null;
+                        row["originalOutputBeforeCleanup"] = outputKey;
+                        row["diagnosticFileStatus"] = movedPart["diagnosticFileStatus"] ?? "deletedCoveredByPrefabPart";
+                        row["diagnosticStorage"] = "catalogOnly";
+                        row["formalModelDirectory"] = false;
+                        row["deletedAfterPrefabAssembly"] = true;
+                        changed++;
+                    }
+
+                    writer.WriteLine(row.ToString(Newtonsoft.Json.Formatting.None));
+                }
+            }
+
+            if (changed == 0)
+            {
+                File.Delete(tempPath);
+                return;
+            }
+
+            File.Replace(tempPath, catalogPath, null);
+            Logger.Info($"Updated {changed} PrefabRendererPart catalog row(s) as catalog-only after deleting covered prefab part files.");
+        }
+
+        private static void RewriteExportManifestDeletedPrefabRendererParts(string manifestPath, JArray assemblies)
+        {
+            if (string.IsNullOrWhiteSpace(manifestPath) || !File.Exists(manifestPath) || assemblies == null)
+            {
+                return;
+            }
+
+            var deletedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var assembly in assemblies.OfType<JObject>())
+            {
+                foreach (var part in assembly["parts"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    if (!string.Equals((string)part["diagnosticFileStatus"], "deletedCoveredByPrefabPart", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var source = (string)part["source"];
+                    var pathId = (long?)part["pathId"] ?? 0;
+                    if (!string.IsNullOrWhiteSpace(source) && pathId != 0)
+                    {
+                        deletedKeys.Add(source + "|" + pathId.ToString(CultureInfo.InvariantCulture));
+                    }
+                }
+            }
+
+            if (deletedKeys.Count == 0)
+            {
+                return;
+            }
+
+            var removed = 0;
+            var tempPath = manifestPath + ".prefab_parts.tmp";
+            using (var writer = new StreamWriter(tempPath, false, new UTF8Encoding(false)))
+            {
+                foreach (var line in File.ReadLines(manifestPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        writer.WriteLine(line);
+                        continue;
+                    }
+
+                    try
+                    {
+                        var row = JObject.Parse(line);
+                        var source = (string)row["source"];
+                        var pathId = (long?)row["pathId"] ?? 0;
+                        if (!string.IsNullOrWhiteSpace(source)
+                            && pathId != 0
+                            && deletedKeys.Contains(source + "|" + pathId.ToString(CultureInfo.InvariantCulture)))
+                        {
+                            removed++;
+                            continue;
+                        }
+
+                        writer.WriteLine(row.ToString(Newtonsoft.Json.Formatting.None));
+                    }
+                    catch (JsonException)
+                    {
+                        writer.WriteLine(line);
+                    }
+                }
+            }
+
+            if (removed == 0)
+            {
+                File.Delete(tempPath);
+                return;
+            }
+
+            File.Replace(tempPath, manifestPath, null);
+            Logger.Info($"Removed {removed} deleted PrefabRendererPart intermediate row(s) from export_manifest.jsonl.");
+        }
+
+        private static string NormalizeCatalogOutputLookupKey(string outputRoot, string output)
+        {
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                if (Path.IsPathRooted(output))
+                {
+                    var fullRoot = Path.GetFullPath(outputRoot);
+                    var fullOutput = Path.GetFullPath(output);
+                    if (IsPathUnderDirectory(fullOutput, fullRoot))
+                    {
+                        return Path.GetRelativePath(fullRoot, fullOutput).Replace('\\', '/');
+                    }
+                }
+            }
+            catch
+            {
+                // 如果路径字符串异常，保留原值做普通字符串匹配，避免影响导出主流程。
+            }
+
+            return output.Replace('\\', '/').TrimStart('/');
+        }
+
+        private static bool IsPrefabRendererPartRow(JObject row)
+        {
+            if (row == null)
+            {
+                return false;
+            }
+
+            return string.Equals((string)row["libraryRole"], "PrefabRendererPart", StringComparison.OrdinalIgnoreCase)
+                && string.Equals((string)row["sourcePartRole"], "CoveredByPrefab", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsPathUnderDirectory(string path, string root)
+        {
+            var fullPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(fullPath, fullRoot, StringComparison.OrdinalIgnoreCase)
+                || fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void DeleteEmptyModelParents(string outputRoot, string sourceDir)
+        {
+            var modelsRoot = Path.Combine(Path.GetFullPath(outputRoot), "Models");
+            var current = Directory.GetParent(sourceDir);
+            while (current != null && IsPathUnderDirectory(current.FullName, modelsRoot))
+            {
+                if (string.Equals(current.FullName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                        modelsRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                try
+                {
+                    if (Directory.EnumerateFileSystemEntries(current.FullName).Any())
+                    {
+                        break;
+                    }
+                    Directory.Delete(current.FullName);
+                }
+                catch
+                {
+                    break;
+                }
+
+                current = current.Parent;
+            }
+        }
+
+        private static PrefabAssemblyWriteResult TryWritePrefabAssemblyGltf(
+            string container,
+            List<JObject> rows,
+            Dictionary<string, int> materialStatusCounts,
+            PrefabAssemblyCoverage coverage)
+        {
+            try
+            {
+                var outputRoot = CliExportOptions.OutputRoot;
+                var safeName = BuildPrefabAssemblyShortName(container);
+                var relativeDir = Path.Combine("Models", "PrefabAssemblies", safeName);
+                var assemblyDir = Path.Combine(outputRoot, relativeDir);
+                Directory.CreateDirectory(assemblyDir);
+
+                var merge = new GltfAssemblyMergeState(outputRoot, assemblyDir);
+                foreach (var row in rows)
+                {
+                    if (IsUnverifiedExternalPrefabAssemblyPart(container, row))
+                    {
+                        merge.SkippedParts.Add(new JObject
+                        {
+                            ["output"] = row["output"],
+                            ["container"] = row["container"],
+                            ["source"] = row["source"],
+                            ["pathId"] = row["pathId"],
+                            ["reason"] = "unverified_external_prefab_renderer_part",
+                            ["rule"] = "containerPreload 只能证明同包预载，不能单独证明外部 prefab 的 Renderer 属于当前 prefab 主模型。",
+                        });
+                        continue;
+                    }
+
+                    var output = (string)row["output"];
+                    if (string.IsNullOrWhiteSpace(output))
+                    {
+                        continue;
+                    }
+
+                    var gltfPath = Path.IsPathRooted(output)
+                        ? output
+                        : Path.Combine(outputRoot, output);
+                    if (!File.Exists(gltfPath) || !gltfPath.EndsWith(".gltf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        merge.SkippedParts.Add(new JObject
+                        {
+                            ["output"] = output,
+                            ["reason"] = "missing_or_not_gltf",
+                        });
+                        continue;
+                    }
+
+                    MergePrefabAssemblyPart(merge, gltfPath);
+                }
+
+                if (merge.SceneNodes.Count == 0)
+                {
+                    return null;
+                }
+
+                var gltf = new JObject
+                {
+                    ["asset"] = new JObject
+                    {
+                        ["version"] = "2.0",
+                        ["generator"] = "AnimeStudio prefab assembly merge",
+                    },
+                    ["scene"] = 0,
+                    ["scenes"] = new JArray(new JObject
+                    {
+                        ["name"] = Path.GetFileNameWithoutExtension(safeName),
+                        ["nodes"] = new JArray(merge.SceneNodes),
+                    }),
+                };
+                merge.CopyArrayTo(gltf, "buffers");
+                merge.CopyArrayTo(gltf, "bufferViews");
+                merge.CopyArrayTo(gltf, "accessors");
+                merge.CopyArrayTo(gltf, "images");
+                merge.CopyArrayTo(gltf, "samplers");
+                merge.CopyArrayTo(gltf, "textures");
+                merge.CopyArrayTo(gltf, "materials");
+                merge.CopyArrayTo(gltf, "meshes");
+                merge.CopyArrayTo(gltf, "skins");
+                merge.CopyArrayTo(gltf, "nodes");
+                merge.CopyArrayTo(gltf, "extensionsUsed");
+                merge.CopyArrayTo(gltf, "extensionsRequired");
+
+                var assemblyFileName = safeName + ".gltf";
+                var assemblyFile = Path.Combine(assemblyDir, assemblyFileName);
+                File.WriteAllText(assemblyFile, gltf.ToString(Newtonsoft.Json.Formatting.Indented));
+                var relativeOutput = Path.Combine(relativeDir, assemblyFileName).Replace('\\', '/');
+                return new PrefabAssemblyWriteResult(relativeOutput, merge);
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to write prefab assembly glTF for {container}: {e.GetType().Name}: {e.Message}");
+                return null;
+            }
+        }
+
+        private sealed record PrefabAssemblyWriteResult(string Output, GltfAssemblyMergeState Merge);
+
+        private static void MergePrefabAssemblyPart(GltfAssemblyMergeState merge, string gltfPath)
+        {
+            var source = JObject.Parse(File.ReadAllText(gltfPath));
+            var partDir = Path.GetDirectoryName(gltfPath);
+            var prefix = SanitizePrefabAssemblyName(Path.GetFileNameWithoutExtension(gltfPath));
+
+            var offsets = new Dictionary<string, int>(StringComparer.Ordinal);
+            offsets["buffers"] = merge.Buffers.Count;
+            offsets["bufferViews"] = merge.BufferViews.Count;
+            offsets["accessors"] = merge.Accessors.Count;
+            offsets["images"] = merge.Images.Count;
+            offsets["samplers"] = merge.Samplers.Count;
+            offsets["textures"] = merge.Textures.Count;
+            offsets["materials"] = merge.Materials.Count;
+            offsets["meshes"] = merge.Meshes.Count;
+            offsets["nodes"] = merge.Nodes.Count;
+            offsets["skins"] = merge.Skins.Count;
+
+            foreach (var buffer in CloneArray(source, "buffers").OfType<JObject>())
+            {
+                var uri = (string)buffer["uri"];
+                if (!string.IsNullOrWhiteSpace(uri) && !uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    buffer["uri"] = CopyAssemblyDependency(partDir, uri, merge.PartsDir, prefix);
+                }
+                merge.Buffers.Add(buffer);
+            }
+
+            foreach (var bufferView in CloneArray(source, "bufferViews").OfType<JObject>())
+            {
+                OffsetInt(bufferView, "buffer", offsets["buffers"]);
+                merge.BufferViews.Add(bufferView);
+            }
+
+            foreach (var accessor in CloneArray(source, "accessors").OfType<JObject>())
+            {
+                OffsetInt(accessor, "bufferView", offsets["bufferViews"]);
+                if (accessor["sparse"] is JObject sparse)
+                {
+                    if (sparse["indices"] is JObject indices)
+                    {
+                        OffsetInt(indices, "bufferView", offsets["bufferViews"]);
+                    }
+                    if (sparse["values"] is JObject values)
+                    {
+                        OffsetInt(values, "bufferView", offsets["bufferViews"]);
+                    }
+                }
+                merge.Accessors.Add(accessor);
+            }
+
+            foreach (var image in CloneArray(source, "images").OfType<JObject>())
+            {
+                OffsetInt(image, "bufferView", offsets["bufferViews"]);
+                var uri = (string)image["uri"];
+                if (!string.IsNullOrWhiteSpace(uri) && !uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    image["uri"] = CopyAssemblyDependency(partDir, uri, merge.PartsDir, prefix);
+                }
+                merge.Images.Add(image);
+            }
+
+            foreach (var sampler in CloneArray(source, "samplers"))
+            {
+                merge.Samplers.Add(sampler);
+            }
+
+            foreach (var texture in CloneArray(source, "textures").OfType<JObject>())
+            {
+                OffsetInt(texture, "sampler", offsets["samplers"]);
+                OffsetInt(texture, "source", offsets["images"]);
+                merge.Textures.Add(texture);
+            }
+
+            foreach (var material in CloneArray(source, "materials"))
+            {
+                OffsetMaterialTextureRefs(material, offsets["textures"]);
+                merge.Materials.Add(material);
+            }
+
+            foreach (var mesh in CloneArray(source, "meshes").OfType<JObject>())
+            {
+                var suppressedVertexColorRgb = false;
+                if (mesh["primitives"] is JArray primitives)
+                {
+                    foreach (var primitive in primitives.OfType<JObject>())
+                    {
+                        OffsetInt(primitive, "indices", offsets["accessors"]);
+                        OffsetInt(primitive, "material", offsets["materials"]);
+                        if (primitive["attributes"] is JObject attributes)
+                        {
+                            foreach (var property in attributes.Properties().ToList())
+                            {
+                                if (property.Value.Type == JTokenType.Integer)
+                                {
+                                    property.Value = (int)property.Value + offsets["accessors"];
+                                }
+                            }
+                            if (attributes["COLOR_0"] != null
+                                && (int?)primitive["material"] is int materialIndex
+                                && materialIndex >= 0
+                                && materialIndex < merge.Materials.Count
+                                && merge.Materials[materialIndex] is JObject material
+                                && MaterialNeedsCustomShaderLayer(material))
+                            {
+                                // prefab assembly 是最终可浏览主模型；自定义 shader 材质里的顶点色常是 mask/参数，
+                                // 不能让 glTF 标准 PBR 预览把它当可见颜色相乘。
+                                attributes.Remove("COLOR_0");
+                                suppressedVertexColorRgb = true;
+                            }
+                        }
+                        if (primitive["targets"] is JArray targets)
+                        {
+                            foreach (var target in targets.OfType<JObject>())
+                            {
+                                foreach (var property in target.Properties().ToList())
+                                {
+                                    if (property.Value.Type == JTokenType.Integer)
+                                    {
+                                        property.Value = (int)property.Value + offsets["accessors"];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (suppressedVertexColorRgb)
+                {
+                    AddPrefabAssemblyVertexColorSuppressionNote(mesh);
+                }
+                merge.Meshes.Add(mesh);
+            }
+
+            foreach (var skin in CloneArray(source, "skins").OfType<JObject>())
+            {
+                OffsetInt(skin, "inverseBindMatrices", offsets["accessors"]);
+                OffsetInt(skin, "skeleton", offsets["nodes"]);
+                if (skin["joints"] is JArray joints)
+                {
+                    for (var i = 0; i < joints.Count; i++)
+                    {
+                        joints[i] = (int)joints[i] + offsets["nodes"];
+                    }
+                }
+                merge.Skins.Add(skin);
+            }
+
+            foreach (var node in CloneArray(source, "nodes").OfType<JObject>())
+            {
+                OffsetInt(node, "mesh", offsets["meshes"]);
+                OffsetInt(node, "skin", offsets["skins"]);
+                if (node["children"] is JArray children)
+                {
+                    for (var i = 0; i < children.Count; i++)
+                    {
+                        children[i] = (int)children[i] + offsets["nodes"];
+                    }
+                }
+                merge.Nodes.Add(node);
+            }
+
+            foreach (var scene in CloneArray(source, "scenes"))
+            {
+                if (scene["nodes"] is not JArray nodes)
+                {
+                    continue;
+                }
+                foreach (var nodeIndex in nodes)
+                {
+                    merge.SceneNodes.Add((int)nodeIndex + offsets["nodes"]);
+                }
+            }
+
+            MergeStringArray(source, "extensionsUsed", merge.ExtensionsUsed);
+            MergeStringArray(source, "extensionsRequired", merge.ExtensionsRequired);
+        }
+
+        private static PrefabAssemblyCoverage LoadPrefabAssemblyCoverage(
+            SqliteConnection sourceIndexConnection,
+            string container,
+            List<JObject> parts)
+        {
+            var exportedOwnerKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var part in parts)
+            {
+                var key = (string)part["coveredByPrefabSourceObjectKey"];
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    key = BuildCatalogRowSourceObjectKey(part);
+                }
+
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    exportedOwnerKeys.Add(key);
+                }
+            }
+
+            var expectedCount = QuerySourceIndexPrefabRendererOwnerCount(sourceIndexConnection, container);
+            var exportedCount = exportedOwnerKeys.Count > 0 ? exportedOwnerKeys.Count : parts.Count;
+            if (expectedCount <= 0)
+            {
+                return new PrefabAssemblyCoverage(expectedCount, exportedCount, null, "source_renderer_coverage_unknown", false);
+            }
+
+            var ratio = expectedCount == 0 ? 0 : Math.Round((double)exportedCount / expectedCount, 4);
+            if (ratio < 0.6)
+            {
+                return new PrefabAssemblyCoverage(expectedCount, exportedCount, ratio, "partial_source_renderer_coverage", true);
+            }
+
+            if (exportedCount < expectedCount)
+            {
+                return new PrefabAssemblyCoverage(expectedCount, exportedCount, ratio, "acceptable_partial_source_renderer_coverage", false);
+            }
+
+            return new PrefabAssemblyCoverage(expectedCount, exportedCount, ratio, "complete_source_renderer_coverage", false);
+        }
+
+        private static long QuerySourceIndexPrefabRendererOwnerCount(SqliteConnection connection, string container)
+        {
+            if (connection == null || string.IsNullOrWhiteSpace(container))
+            {
+                return 0;
+            }
+
+            try
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+WITH container_renderers AS (
+    SELECT preload.to_file AS renderer_file,
+           preload.to_path_id AS renderer_path_id,
+           goRel.from_type AS renderer_type,
+           goRel.to_file AS game_object_file,
+           goRel.to_path_id AS game_object_path_id
+    FROM source_relations preload INDEXED BY idx_source_relations_container_relation
+    JOIN source_relations goRel INDEXED BY idx_source_relations_from
+      ON goRel.from_file=preload.to_file
+     AND goRel.from_path_id=preload.to_path_id
+     AND goRel.relation='component.gameObject'
+     AND goRel.from_type IN ('SkinnedMeshRenderer','MeshRenderer')
+    WHERE preload.relation='assetBundle.containerPreload'
+      AND json_extract(preload.raw_json, '$.details.container')=$container
+)
+SELECT COUNT(DISTINCT r.game_object_file || ':' || r.game_object_path_id)
+FROM container_renderers r
+LEFT JOIN source_relations smrMesh INDEXED BY idx_source_relations_from
+  ON r.renderer_type='SkinnedMeshRenderer'
+ AND smrMesh.relation='skinnedMeshRenderer.mesh'
+ AND smrMesh.from_file=r.renderer_file COLLATE NOCASE
+ AND smrMesh.from_path_id=r.renderer_path_id
+LEFT JOIN source_relations mfGo INDEXED BY idx_source_relations_to
+  ON r.renderer_type='MeshRenderer'
+ AND mfGo.relation='component.gameObject'
+ AND mfGo.from_type='MeshFilter'
+ AND mfGo.to_file=r.game_object_file COLLATE NOCASE
+ AND mfGo.to_path_id=r.game_object_path_id
+LEFT JOIN source_relations mfMesh INDEXED BY idx_source_relations_from
+  ON mfMesh.relation='meshFilter.mesh'
+ AND mfMesh.from_file=mfGo.from_file COLLATE NOCASE
+ AND mfMesh.from_path_id=mfGo.from_path_id
+WHERE COALESCE(smrMesh.to_path_id, mfMesh.to_path_id) IS NOT NULL;";
+                command.Parameters.AddWithValue("$container", container.Replace('\\', '/'));
+                return Convert.ToInt64(command.ExecuteScalar() ?? 0);
+            }
+            catch (Exception e) when (e is SqliteException || e is InvalidOperationException)
+            {
+                Logger.Verbose($"Unable to count source-index prefab renderer owners for {container}: {e.Message}");
+                return 0;
+            }
+        }
+
+        private static string BuildCatalogRowSourceObjectKey(JObject row)
+        {
+            var source = ((string)row["source"])?.Replace('\\', '/');
+            var pathId = (long?)row["pathId"] ?? 0;
+            if (string.IsNullOrWhiteSpace(source) || pathId == 0)
+            {
+                return null;
+            }
+
+            var pipe = source.LastIndexOf('|');
+            var file = pipe >= 0 && pipe + 1 < source.Length
+                ? source[(pipe + 1)..]
+                : Path.GetFileName(source);
+            file = NormalizeSourceObjectKeyFile(file);
+            return string.IsNullOrWhiteSpace(file) ? null : BuildSourceObjectKey(file, pathId);
+        }
+
+        private static bool IsUnverifiedExternalPrefabAssemblyPart(string container, JObject row)
+        {
+            var normalizedContainer = NormalizePrefabContainerKey(container);
+            var partContainer = NormalizePrefabContainerKey((string)row?["container"]);
+            if (string.IsNullOrWhiteSpace(normalizedContainer)
+                || string.IsNullOrWhiteSpace(partContainer)
+                || !partContainer.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return !string.Equals(partContainer, normalizedContainer, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private sealed record PrefabAssemblyVisualGate(bool Eligible, string Blocker, JObject Evidence);
+
+        private static PrefabAssemblyVisualGate EvaluatePrefabAssemblyVisualGate(
+            string container,
+            List<JObject> parts,
+            Dictionary<string, int> materialStatusCounts,
+            PrefabAssemblyCoverage coverage,
+            long? primitiveCount = null,
+            long? primitivesWithMaterial = null,
+            long? primitivesWithBaseColorTexture = null)
+        {
+            var normalizedContainer = NormalizePrefabContainerKey(container);
+            var partCount = parts?.Count ?? 0;
+            var missingMaterialPartCount = materialStatusCounts?
+                .Where(x => IsMissingPrefabAssemblyMaterialStatus(x.Key))
+                .Sum(x => x.Value) ?? 0;
+            var externalPrefabContainers = parts?
+                .Select(x => NormalizePrefabContainerKey((string)x["container"]))
+                .Where(x => !string.IsNullOrWhiteSpace(x)
+                    && x.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(x, normalizedContainer, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? Array.Empty<string>();
+
+            var materialCoverageRatio = primitiveCount.GetValueOrDefault() > 0
+                ? Math.Round((double)(primitivesWithMaterial ?? 0) / primitiveCount.Value, 4)
+                : (double?)null;
+            var baseColorCoverageRatio = primitiveCount.GetValueOrDefault() > 0
+                ? Math.Round((double)(primitivesWithBaseColorTexture ?? 0) / primitiveCount.Value, 4)
+                : (double?)null;
+            var missingMaterialPartRatio = partCount > 0
+                ? Math.Round((double)missingMaterialPartCount / partCount, 4)
+                : 0;
+
+            string blocker = null;
+            if (coverage?.IsLowCoverage == true)
+            {
+                blocker = "partial_prefab_renderer_coverage";
+            }
+            else if (externalPrefabContainers.Length > 0)
+            {
+                // 这里只拦视觉验收，不拦导出。containerPreload 能证明同包预载，
+                // 但不能单独证明外部 prefab 的 Renderer 一定属于当前主 prefab 层级。
+                blocker = "unverified_external_prefab_renderer_parts";
+            }
+            else if (primitiveCount.GetValueOrDefault() > 0
+                && materialCoverageRatio < 0.8)
+            {
+                blocker = "insufficient_prefab_assembly_material_coverage";
+            }
+            else if (primitiveCount.GetValueOrDefault() > 0
+                && baseColorCoverageRatio < 0.5)
+            {
+                blocker = "insufficient_prefab_assembly_base_color_coverage";
+            }
+            else if (partCount > 0
+                && missingMaterialPartCount > 0
+                && missingMaterialPartRatio >= 0.25)
+            {
+                blocker = "insufficient_prefab_assembly_material_coverage";
+            }
+
+            return new PrefabAssemblyVisualGate(
+                string.IsNullOrWhiteSpace(blocker),
+                blocker,
+                new JObject
+                {
+                    ["rule"] = "PrefabAssembly 只有在 Renderer 覆盖、材质覆盖和来源一致性都可信时，才允许计入默认视觉验收。导出本身仍保留为诊断证据。",
+                    ["coverageStatus"] = coverage?.Status,
+                    ["rendererOwnerCoverageRatio"] = coverage?.CoverageRatio,
+                    ["partCount"] = partCount,
+                    ["missingMaterialPartCount"] = missingMaterialPartCount,
+                    ["missingMaterialPartRatio"] = missingMaterialPartRatio,
+                    ["primitiveCount"] = primitiveCount,
+                    ["primitivesWithMaterial"] = primitivesWithMaterial,
+                    ["materialCoverageRatio"] = materialCoverageRatio,
+                    ["primitivesWithBaseColorTexture"] = primitivesWithBaseColorTexture,
+                    ["baseColorCoverageRatio"] = baseColorCoverageRatio,
+                    ["externalPrefabContainerCount"] = externalPrefabContainers.Length,
+                    ["externalPrefabContainers"] = new JArray(externalPrefabContainers),
+                    ["blocker"] = blocker,
+                });
+        }
+
+        private static bool IsMissingPrefabAssemblyMaterialStatus(string status)
+        {
+            return string.Equals(status, "noMaterial", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "missingRendererMaterial", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "needsRendererBinding", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "rendererMaterialUnresolved", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AppendPrefabAssemblyCatalogRow(
+            string container,
+            List<JObject> parts,
+            Dictionary<string, int> materialStatusCounts,
+            string relativeOutput,
+            GltfAssemblyMergeState merge,
+            PrefabAssemblyCoverage coverage)
+        {
+            var catalogPath = Path.Combine(CliExportOptions.OutputRoot, "asset_catalog.jsonl");
+            if (File.Exists(catalogPath))
+            {
+                foreach (var line in File.ReadLines(catalogPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+                    var row = JObject.Parse(line);
+                    if ((string.Equals((string)row["libraryRole"], "PrefabAssemblyPrimary", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals((string)row["libraryRole"], "PrefabAssemblyPartial", StringComparison.OrdinalIgnoreCase))
+                        && string.Equals((string)row["coveredByPrefabContainer"], container, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            var partOutputs = parts
+                .Select(x => (string)x["output"])
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            var needsCustomShaderLayer = parts.Any(x => (bool?)x["materialNeedsCustomShaderLayer"] == true)
+                || merge.Materials.OfType<JObject>().Any(MaterialNeedsCustomShaderLayer);
+            var previewDegraded = needsCustomShaderLayer
+                || parts.Any(x => (bool?)x["materialPreviewDegraded"] == true);
+            var isPartial = coverage?.IsLowCoverage == true;
+            var visualGate = EvaluatePrefabAssemblyVisualGate(container, parts, materialStatusCounts, coverage);
+            var entry = new JObject
+            {
+                ["kind"] = "Model",
+                ["libraryRole"] = isPartial ? "PrefabAssemblyPartial" : "PrefabAssemblyPrimary",
+                ["diagnosticOnly"] = !visualGate.Eligible,
+                ["sourcePartRole"] = isPartial ? "AssemblyPartial" : "AssembledPrefab",
+                ["libraryRoleReason"] = isPartial
+                    ? "merged_prefab_renderer_parts_with_low_source_renderer_coverage"
+                    : "merged_prefab_renderer_parts",
+                ["coveredByPrefabContainer"] = container,
+                ["resourceKind"] = InferLibraryResourceKind(container, container, null),
+                ["exportedAt"] = DateTime.UtcNow.ToString("O"),
+                ["name"] = Path.GetFileNameWithoutExtension(container.Replace('\\', '/')),
+                ["sourceType"] = "PrefabAssembly",
+                ["container"] = container,
+                ["source"] = "prefab_assemblies.json",
+                ["pathId"] = 0,
+                ["output"] = relativeOutput,
+                ["format"] = CliExportOptions.ModelFormat.ToString(),
+                ["modelSource"] = CliExportOptions.ModelSource.ToString(),
+                ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                ["animationPackage"] = CliExportOptions.AnimationPackage.ToString(),
+                ["nodeCount"] = merge.Nodes.Count,
+                ["meshCount"] = merge.Meshes.Count,
+                ["materialCount"] = merge.Materials.Count,
+                ["textureCount"] = merge.Textures.Count,
+                ["materialStatus"] = materialStatusCounts.Count == 1 && materialStatusCounts.ContainsKey("boundRendererMaterial")
+                    ? needsCustomShaderLayer ? "needsCustomShaderLayer" : "boundRendererMaterial"
+                    : "mixedAssemblyMaterialStatus",
+                ["materialStatusCounts"] = JObject.FromObject(materialStatusCounts),
+                ["materialNeedsCustomShaderLayer"] = needsCustomShaderLayer,
+                ["materialPreviewStatus"] = needsCustomShaderLayer ? "bestEffortDegradedPreview" : "bestEffortPbrPreview",
+                ["materialPreviewConfidence"] = needsCustomShaderLayer ? "partial" : "standard",
+                ["materialPreviewDegraded"] = previewDegraded,
+                ["visualAcceptanceEligible"] = visualGate.Eligible,
+                ["visualAcceptanceScope"] = isPartial ? "PrefabAssemblyPartialDiagnostic" : "PrefabAssemblyMainModel",
+                ["visualAcceptanceBlocker"] = visualGate.Blocker,
+                ["visualAcceptanceGate"] = visualGate.Evidence,
+                ["modelValidationStatus"] = isPartial ? "prefabAssemblyPartial" : "pendingVisualValidation",
+                ["animationCount"] = 0,
+                ["embeddedAnimationCount"] = 0,
+                ["importedAnimationListCount"] = 0,
+                ["expectedRendererOwnerCount"] = coverage?.ExpectedRendererOwnerCount ?? 0,
+                ["exportedRendererOwnerCount"] = coverage?.ExportedRendererOwnerCount ?? parts.Count,
+                ["rendererOwnerCoverageRatio"] = coverage?.CoverageRatio,
+                ["assemblyCompletenessStatus"] = coverage?.Status,
+                ["assemblyPartCount"] = parts.Count,
+                ["assemblyPartOutputs"] = JArray.FromObject(partOutputs),
+                ["assemblySkippedPartCount"] = merge.SkippedParts.Count,
+                ["assemblySkippedParts"] = merge.SkippedParts,
+                ["assemblyRule"] = isPartial
+                    ? "Merged glTF JSON from PrefabRendererPart outputs, but source-index renderer coverage is too low. This is a browsable diagnostic assembly, not default main-model acceptance."
+                    : "Merged glTF JSON from PrefabRendererPart outputs. This is the browsable prefab main-model candidate; part rows remain diagnostic source evidence.",
+            };
+            File.AppendAllText(catalogPath, entry.ToString(Newtonsoft.Json.Formatting.None) + Environment.NewLine);
+            AppendPrefabAssemblyExportManifestRow(container, relativeOutput, entry);
+        }
+
+        private static void AppendPrefabAssemblyExportManifestRow(string container, string relativeOutput, JObject catalogEntry)
+        {
+            if (string.IsNullOrWhiteSpace(CliExportOptions.OutputRoot) || string.IsNullOrWhiteSpace(relativeOutput))
+            {
+                return;
+            }
+
+            var manifestPath = Path.Combine(CliExportOptions.OutputRoot, "export_manifest.jsonl");
+            if (File.Exists(manifestPath))
+            {
+                try
+                {
+                    foreach (var line in File.ReadLines(manifestPath))
+                    {
+                        if (string.IsNullOrWhiteSpace(line))
+                        {
+                            continue;
+                        }
+
+                        var row = JObject.Parse(line);
+                        if (string.Equals((string)row["type"], "PrefabAssembly", StringComparison.OrdinalIgnoreCase)
+                            && string.Equals((string)row["output"], relativeOutput, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return;
+                        }
+                    }
+                }
+                catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+                {
+                    Logger.Warning($"Unable to scan export manifest before appending prefab assembly row: {manifestPath}. {e.GetType().Name}: {e.Message}");
+                }
+            }
+
+            var rowToWrite = new JObject
+            {
+                ["exportedAt"] = DateTime.UtcNow.ToString("O"),
+                ["mode"] = WorkMode.ToString(),
+                ["type"] = "PrefabAssembly",
+                ["name"] = catalogEntry?["name"],
+                ["container"] = container,
+                ["source"] = "prefab_assemblies.json",
+                ["pathId"] = 0,
+                ["output"] = relativeOutput,
+                ["libraryRole"] = catalogEntry?["libraryRole"],
+                ["diagnosticOnly"] = catalogEntry?["diagnosticOnly"],
+            };
+            File.AppendAllText(manifestPath, rowToWrite.ToString(Newtonsoft.Json.Formatting.None) + Environment.NewLine);
+        }
+
+        private static void AppendPrefabAssemblyMissingCatalogRow(
+            string container,
+            List<JObject> parts,
+            Dictionary<string, int> materialStatusCounts)
+        {
+            var catalogPath = Path.Combine(CliExportOptions.OutputRoot, "asset_catalog.jsonl");
+            if (File.Exists(catalogPath))
+            {
+                foreach (var line in File.ReadLines(catalogPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    var row = JObject.Parse(line);
+                    var role = (string)row["libraryRole"];
+                    if (string.Equals(role, "PrefabAssemblyMissing", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals((string)row["coveredByPrefabContainer"], container, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            var partOutputs = parts
+                .Select(x => (string)x["output"])
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray();
+            var firstPart = parts.FirstOrDefault();
+            var entry = new JObject
+            {
+                ["kind"] = "ModelAssemblyDiagnostic",
+                ["libraryRole"] = "PrefabAssemblyMissing",
+                ["diagnosticOnly"] = true,
+                ["sourcePartRole"] = "AssemblyMissing",
+                ["libraryRoleReason"] = "prefab_renderer_parts_without_prefab_assembly_primary",
+                ["coveredByPrefabContainer"] = container,
+                ["coveredByPrefabSourceObjectKey"] = firstPart?["coveredByPrefabSourceObjectKey"],
+                ["resourceKind"] = InferLibraryResourceKind(container, container, null),
+                ["exportedAt"] = DateTime.UtcNow.ToString("O"),
+                ["name"] = Path.GetFileNameWithoutExtension(container.Replace('\\', '/')),
+                ["sourceType"] = "PrefabAssembly",
+                ["container"] = container,
+                ["source"] = "prefab_assemblies.json",
+                ["pathId"] = 0,
+                ["output"] = null,
+                ["format"] = CliExportOptions.ModelFormat.ToString(),
+                ["modelSource"] = CliExportOptions.ModelSource.ToString(),
+                ["textureMode"] = CliExportOptions.TextureMode.ToString(),
+                ["animationPackage"] = CliExportOptions.AnimationPackage.ToString(),
+                ["materialStatus"] = "prefabAssemblyMissing",
+                ["materialStatusCounts"] = JObject.FromObject(materialStatusCounts),
+                ["visualAcceptanceEligible"] = false,
+                ["visualAcceptanceScope"] = "PrefabAssemblyMainModelMissing",
+                ["visualAcceptanceBlocker"] = "missing_prefab_main_model_or_assembly",
+                ["modelValidationStatus"] = "prefabAssemblyMissing",
+                ["animationCount"] = 0,
+                ["embeddedAnimationCount"] = 0,
+                ["importedAnimationListCount"] = 0,
+                ["assemblyStatus"] = "needsPrefabAssemblyGltf",
+                ["assemblyPartCount"] = parts.Count,
+                ["assemblyPartOutputs"] = JArray.FromObject(partOutputs),
+                ["assemblyRule"] = "PrefabRendererPart/CoveredByPrefab rows are diagnostic source evidence only. Without a PrefabAssemblyPrimary or original prefab main model, this prefab cannot count as default visual acceptance.",
+            };
+            File.AppendAllText(catalogPath, entry.ToString(Newtonsoft.Json.Formatting.None) + Environment.NewLine);
+        }
+
+        private sealed record PrefabAssemblyCoverage(
+            long ExpectedRendererOwnerCount,
+            long ExportedRendererOwnerCount,
+            double? CoverageRatio,
+            string Status,
+            bool IsLowCoverage);
+
+        private sealed record PrefabMainModelInfo(
+            string Container,
+            string LibraryRole,
+            string Name,
+            string Output,
+            string ModelValidationStatus,
+            bool VisualAcceptanceEligible,
+            string VisualAcceptanceBlocker);
+
+        private static bool TryReadExistingPrefabMainModel(JObject row, out PrefabMainModelInfo info)
+        {
+            info = null;
+            var role = (string)row["libraryRole"];
+            if (!IsBrowsablePrefabMainModelRole(role))
+            {
+                return false;
+            }
+
+            if ((bool?)row["diagnosticOnly"] == true
+                || string.Equals((string)row["sourcePartRole"], "CoveredByPrefab", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var container = ((string)row["container"])?.Replace('\\', '/');
+            var output = (string)row["output"];
+            if (string.IsNullOrWhiteSpace(container) || string.IsNullOrWhiteSpace(output))
+            {
+                return false;
+            }
+
+            info = new PrefabMainModelInfo(
+                container,
+                role,
+                (string)row["name"],
+                output,
+                (string)row["modelValidationStatus"],
+                (bool?)row["visualAcceptanceEligible"] == true,
+                (string)row["visualAcceptanceBlocker"]);
+            return true;
+        }
+
+        private static bool IsBrowsablePrefabMainModelRole(string role)
+        {
+            return string.Equals(role, "PrefabPrimary", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "ModularCharacterBase", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizePrefabContainerKey(string container)
+        {
+            return string.IsNullOrWhiteSpace(container)
+                ? string.Empty
+                : container.Replace('\\', '/').Trim();
+        }
+
+        private static bool MaterialNeedsCustomShaderLayer(JObject material)
+        {
+            var anime = material?["extras"]?["animeStudioMaterial"] as JObject;
+            if (anime == null)
+            {
+                return false;
+            }
+
+            return (bool?)anime["needsCustomShaderLayer"] == true
+                || (bool?)anime["customShaderRequired"] == true
+                || (bool?)anime["layeredMaterialUnresolved"] == true
+                || string.Equals((string)anime["pbrPreviewStatus"], "bestEffortDegradedPreview", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddPrefabAssemblyVertexColorSuppressionNote(JObject mesh)
+        {
+            var extras = mesh["extras"] as JObject;
+            if (extras == null)
+            {
+                extras = new JObject();
+                mesh["extras"] = extras;
+            }
+
+            var anime = extras["animeStudio"] as JObject;
+            if (anime == null)
+            {
+                anime = new JObject();
+                extras["animeStudio"] = anime;
+            }
+
+            anime["previewVertexColorRgbSuppressed"] = true;
+            anime["previewVertexColorRgbReason"] = "当前材质包含非标准 Unity shader 分层槽，顶点色 RGB 很可能是 shader mask/参数；prefab assembly 预览不写 COLOR_0，避免通用 glTF 查看器把它误乘到 base color。";
+        }
+
+        private static JArray CloneArray(JObject source, string propertyName)
+        {
+            return source[propertyName] is JArray array
+                ? new JArray(array.Select(x => x.DeepClone()))
+                : new JArray();
+        }
+
+        private static void OffsetInt(JObject obj, string propertyName, int offset)
+        {
+            if (obj[propertyName]?.Type == JTokenType.Integer)
+            {
+                obj[propertyName] = (int)obj[propertyName] + offset;
+            }
+        }
+
+        private static void OffsetMaterialTextureRefs(JToken token, int textureOffset)
+        {
+            if (token is JObject obj)
+            {
+                foreach (var property in obj.Properties().ToList())
+                {
+                    if (property.Name == "index"
+                        && property.Value.Type == JTokenType.Integer
+                        && property.Parent is JObject parent
+                        && LooksLikeGltfTextureInfo(parent))
+                    {
+                        property.Value = (int)property.Value + textureOffset;
+                        continue;
+                    }
+                    OffsetMaterialTextureRefs(property.Value, textureOffset);
+                }
+            }
+            else if (token is JArray array)
+            {
+                foreach (var item in array)
+                {
+                    OffsetMaterialTextureRefs(item, textureOffset);
+                }
+            }
+        }
+
+        private static bool LooksLikeGltfTextureInfo(JObject obj)
+        {
+            return obj["texCoord"] != null
+                || obj["scale"] != null
+                || obj["strength"] != null
+                || obj.Parent is JProperty property && property.Name.EndsWith("Texture", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void MergeStringArray(JObject source, string propertyName, HashSet<string> target)
+        {
+            if (source[propertyName] is not JArray array)
+            {
+                return;
+            }
+            foreach (var item in array.Values<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(item))
+                {
+                    target.Add(item);
+                }
+            }
+        }
+
+        private static string CopyAssemblyDependency(string sourceDir, string uri, string targetDir, string prefix)
+        {
+            Directory.CreateDirectory(targetDir);
+            var normalized = Uri.UnescapeDataString(uri).Replace('/', Path.DirectorySeparatorChar);
+            var sourcePath = Path.Combine(sourceDir, normalized);
+            var fileName = $"{prefix}_{Path.GetFileName(normalized)}";
+            var targetPath = Path.Combine(targetDir, fileName);
+            if (File.Exists(sourcePath) && !File.Exists(targetPath))
+            {
+                File.Copy(sourcePath, targetPath);
+            }
+            return $"parts/{fileName}";
+        }
+
+        private static string BuildPrefabAssemblyShortName(string container)
+        {
+            var normalized = (container ?? string.Empty).Replace('\\', '/').Trim('/');
+            var baseName = Path.GetFileNameWithoutExtension(normalized);
+            if (string.IsNullOrWhiteSpace(baseName))
+            {
+                baseName = "prefab_assembly";
+            }
+
+            baseName = Regex.Replace(baseName, @"[^A-Za-z0-9_.-]+", "_").Trim('_', '.');
+            if (string.IsNullOrWhiteSpace(baseName))
+            {
+                baseName = "prefab_assembly";
+            }
+
+            if (baseName.Length > 64)
+            {
+                baseName = baseName[..64].Trim('_', '.');
+            }
+
+            return $"{baseName}_{BuildStableShortHash(normalized)}";
+        }
+
+        private static string BuildStableShortHash(string value)
+        {
+            using var sha1 = System.Security.Cryptography.SHA1.Create();
+            var bytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty));
+            return string.Concat(bytes.Take(4).Select(x => x.ToString("x2")));
+        }
+
+        private static string SanitizePrefabAssemblyName(string value)
+        {
+            value = (value ?? "prefab_assembly").Replace('\\', '/').Trim('/');
+            var name = Regex.Replace(value, @"[^A-Za-z0-9_.-]+", "_").Trim('_', '.');
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                name = "prefab_assembly";
+            }
+            return name.Length <= 120 ? name : name[^120..];
+        }
+
+        private sealed class GltfAssemblyMergeState
+        {
+            public GltfAssemblyMergeState(string outputRoot, string assemblyDir)
+            {
+                OutputRoot = outputRoot;
+                AssemblyDir = assemblyDir;
+                PartsDir = Path.Combine(assemblyDir, "parts");
+            }
+
+            public string OutputRoot { get; }
+            public string AssemblyDir { get; }
+            public string PartsDir { get; }
+            public JArray Buffers { get; } = new JArray();
+            public JArray BufferViews { get; } = new JArray();
+            public JArray Accessors { get; } = new JArray();
+            public JArray Images { get; } = new JArray();
+            public JArray Samplers { get; } = new JArray();
+            public JArray Textures { get; } = new JArray();
+            public JArray Materials { get; } = new JArray();
+            public JArray Meshes { get; } = new JArray();
+            public JArray Skins { get; } = new JArray();
+            public JArray Nodes { get; } = new JArray();
+            public List<int> SceneNodes { get; } = new List<int>();
+            public HashSet<string> ExtensionsUsed { get; } = new HashSet<string>(StringComparer.Ordinal);
+            public HashSet<string> ExtensionsRequired { get; } = new HashSet<string>(StringComparer.Ordinal);
+            public JArray SkippedParts { get; } = new JArray();
+
+            public void CopyArrayTo(JObject target, string propertyName)
+            {
+                var array = propertyName switch
+                {
+                    "buffers" => Buffers,
+                    "bufferViews" => BufferViews,
+                    "accessors" => Accessors,
+                    "images" => Images,
+                    "samplers" => Samplers,
+                    "textures" => Textures,
+                    "materials" => Materials,
+                    "meshes" => Meshes,
+                    "skins" => Skins,
+                    "nodes" => Nodes,
+                    "extensionsUsed" => new JArray(ExtensionsUsed.OrderBy(x => x, StringComparer.Ordinal)),
+                    "extensionsRequired" => new JArray(ExtensionsRequired.OrderBy(x => x, StringComparer.Ordinal)),
+                    _ => new JArray(),
+                };
+                if (array.Count > 0)
+                {
+                    target[propertyName] = array;
+                }
+            }
+        }
+
+        private static List<AssetItem> CollectLibraryStaticMeshModels(string savePath, List<AssetItem> sourcePartModels)
         {
             var meshes = exportableAssets.Where(x => x.Asset is Mesh).ToList();
             if (meshes.Count == 0)
@@ -1566,9 +3688,26 @@ namespace AnimeStudio.CLI
 
             var selected = new List<AssetItem>();
             var downgraded = 0;
+            var prefabCovered = 0;
             var rendererBoundMeshKeys = GetRendererBoundStaticMeshKeys();
+            var prefabCoveredMeshMap = LoadTargetedPrefabCoveredStaticMeshMap(savePath);
             foreach (var item in meshes)
             {
+                if (prefabCoveredMeshMap.TryGetValue(GetSourceObjectKey(item), out var coveredInfo))
+                {
+                    EnsureStaticMeshDisplayName(item);
+                    item.LibraryRole = "StaticMeshSource";
+                    item.SourcePartRole = "CoveredByPrefab";
+                    item.DiagnosticOnly = true;
+                    item.VisualAcceptanceScope = "PrefabCoveredStaticMeshSource";
+                    item.CoveredByPrefabContainer = coveredInfo.Container;
+                    item.CoveredByPrefabSourceObjectKey = coveredInfo.SourceObjectKey;
+                    item.LibraryRoleReason = "prefab_container_renderer_mesh";
+                    sourcePartModels.Add(item);
+                    prefabCovered++;
+                    continue;
+                }
+
                 if (IsLibraryStaticMeshPrimary(item, rendererBoundMeshKeys, out var reason))
                 {
                     EnsureStaticMeshDisplayName(item);
@@ -1587,20 +3726,78 @@ namespace AnimeStudio.CLI
 
             EnsureStaticMeshDuplicateNamesAreStable(selected);
 
-            if (selected.Count > 0 || downgraded > 0)
+            if (selected.Count > 0 || downgraded > 0 || prefabCovered > 0)
             {
-                Logger.Info($"Library static Mesh pipeline selected {selected.Count} container-backed static mesh asset(s) and indexed {downgraded} non-browsable mesh source part(s).");
+                Logger.Info($"Library static Mesh pipeline selected {selected.Count} container-backed static mesh asset(s), indexed {downgraded} non-browsable mesh source part(s), and kept {prefabCovered} prefab-covered mesh part(s) diagnostic-only.");
                 ProfileLogger.Event("library_static_mesh_filter", new Dictionary<string, object>
                 {
                     ["inputCount"] = meshes.Count,
                     ["selectedCount"] = selected.Count,
                     ["sourcePartCount"] = downgraded,
+                    ["prefabCoveredSourcePartCount"] = prefabCovered,
                     ["rendererBoundMeshCount"] = rendererBoundMeshKeys.Count,
-                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. Signals include explicit container/preload paths, semantic source bundle paths, and SQLite-proven MeshFilter/SkinnedMeshRenderer -> Renderer usage. Renderer material binding improves quality, but missing materials are exported as tagged gray models instead of being dropped.",
+                    ["rule"] = "Promote Mesh assets with enough triangle data and strong Unity static-library signals. If targeted dependency expansion proves the Mesh is used by a prefab/container Renderer, keep it as CoveredByPrefab diagnostic source data instead of a duplicate StaticMeshPrimary entry.",
                 });
             }
 
             return selected;
+        }
+
+        private static Dictionary<string, TargetedPrefabCoveredStaticMeshInfo> LoadTargetedPrefabCoveredStaticMeshMap(string savePath)
+        {
+            var result = new Dictionary<string, TargetedPrefabCoveredStaticMeshInfo>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(savePath))
+            {
+                return result;
+            }
+
+            var reportPath = Path.Combine(savePath, "path_id_dependency_expansion.json");
+            if (!File.Exists(reportPath))
+            {
+                return result;
+            }
+
+            try
+            {
+                var report = JObject.Parse(File.ReadAllText(reportPath));
+                var sources = report["sources"] as JArray;
+                if (sources == null)
+                {
+                    return result;
+                }
+
+                foreach (var source in sources.OfType<JObject>())
+                {
+                    var sourceKind = (string)source["source"] ?? string.Empty;
+                    if (!sourceKind.Contains("assetBundle.containerPreload.component.gameObject", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var meshFile = (string)source["meshFile"] ?? string.Empty;
+                    var meshPathId = (long?)source["meshPathId"] ?? 0;
+                    if (string.IsNullOrWhiteSpace(meshFile) || meshPathId == 0)
+                    {
+                        continue;
+                    }
+
+                    var meshKey = GetSourceObjectKey(meshFile, meshPathId);
+                    var gameObjectFile = (string)source["gameObjectFile"] ?? string.Empty;
+                    var gameObjectPathId = (long?)source["gameObjectPathId"] ?? 0;
+                    var ownerKey = gameObjectPathId == 0
+                        ? string.Empty
+                        : BuildSourceObjectKey(gameObjectFile, gameObjectPathId);
+                    result[meshKey] = new TargetedPrefabCoveredStaticMeshInfo(
+                        (string)source["container"] ?? string.Empty,
+                        ownerKey);
+                }
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Unable to read prefab-covered static mesh expansion report: {reportPath}. {e.GetType().Name}: {e.Message}");
+            }
+
+            return result;
         }
 
         private static bool ShouldIndexStaticMeshSourcePart(string reason)
@@ -1932,7 +4129,7 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             }
             else if (animations.Count > 0)
             {
-                Logger.Info("Animation clips were parsed but not written because --animation_package is Embedded.");
+                Logger.Info("Animation clips were parsed but not written because animation export is out of scope unless explicitly requested.");
             }
         }
 
@@ -3526,33 +5723,29 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     Logger.Info("Updated asset_catalog.jsonl with modular character completeness markers.");
                 }
                 var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-                ExplicitAnimationLinks structuralLinks;
-                using (ProfileLogger.Measure("library_index_build_animation_links", new Dictionary<string, object>
+                using (ProfileLogger.Measure("library_index_write_model_skeleton_index", new Dictionary<string, object>
                 {
                     ["modelCount"] = models.Count,
-                    ["animationCount"] = animations.Count,
-                    ["pairCount"] = (long)models.Count * animations.Count,
-                    ["pairLimit"] = FullStructuralAnimationPairLimit,
+                    ["skippedAnimationAssetRows"] = animations.Count,
                 }))
                 {
-                    structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
+                    GenerateSkeletonLibraryIndex(savePath, models, new ExplicitAnimationLinks());
+                    WriteAnimationOutOfScopeIndex(savePath, catalogPath, animations);
                 }
-
-                using (ProfileLogger.Measure("library_index_write_animation_indexes", new Dictionary<string, object>
-                {
-                    ["modelCount"] = models.Count,
-                    ["animationCount"] = animations.Count,
-                }))
-                {
-                    WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
-                }
-                EnsureUnityRelationIndexFiles(savePath, models.Count, animations.Count);
+                EnsureUnityRelationIndexFiles(savePath, models.Count, 0);
                 using (ProfileLogger.Measure("library_index_normalize_relative_paths", new Dictionary<string, object>
                 {
                     ["savePath"] = savePath,
                 }))
                 {
                     LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
+                }
+                using (ProfileLogger.Measure("library_index_write_asset_readmes", new Dictionary<string, object>
+                {
+                    ["modelCount"] = models.Count,
+                }))
+                {
+                    AssetReadmeGenerator.Generate(savePath);
                 }
                 if (skipSqliteIndex)
                 {
@@ -3562,7 +5755,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 {
                     BuildDefaultLibrarySqliteIndex(savePath, sourceGame, sourceIndexPath);
                 }
-                Logger.Info($"Generated library indexes once after export: {models.Count} model(s), {animations.Count} animation(s).");
+                Logger.Info($"Generated library indexes once after export: {models.Count} model(s), animation export out of scope by default.");
             }
         }
 
@@ -3598,11 +5791,43 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 Logger.Info("Updated asset_catalog.jsonl with modular character completeness markers.");
             }
             var animations = entries.Where(x => (string)x["kind"] == "Animation").ToList();
-            var structuralLinks = BuildStructuralUnityAnimationLinksForLibrary(models, animations);
-            WriteAnimationIndexes(savePath, catalogPath, models, animations, structuralLinks);
+            GenerateSkeletonLibraryIndex(savePath, models, new ExplicitAnimationLinks());
+            WriteAnimationOutOfScopeIndex(savePath, catalogPath, animations);
             LibraryRelativePathMigrator.NormalizeIndexesBeforeSqlite(savePath);
+            AssetReadmeGenerator.Generate(savePath);
             BuildDefaultLibrarySqliteIndex(savePath, sourceGame, sourceIndexPath);
-            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s), {animations.Count} animation(s). If --source_index is supplied or unity_source_index.db exists beside the Library, SQLite rebuild restores deterministic Animator/Animation/Controller/PPtr candidates without full re-export.");
+            Logger.Info($"Rebuilt library indexes from catalog: {models.Count} model(s). Animation assets remain out of scope for default Library indexes.");
+        }
+
+        private static void WriteAnimationOutOfScopeIndex(string savePath, string catalogPath, List<JObject> animations)
+        {
+            foreach (var staleFile in new[]
+            {
+                "model_animations.json",
+                "model_animations.compact.json",
+                "animation_bindings.jsonl",
+            })
+            {
+                var path = Path.Combine(savePath, staleFile);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+
+            var report = new JObject
+            {
+                ["generatedAt"] = DateTime.UtcNow.ToString("O"),
+                ["catalog"] = catalogPath,
+                ["status"] = "outOfScopeAnimation",
+                ["animationAssetRowsInCatalog"] = animations?.Count ?? 0,
+                ["defaultAnimationExport"] = false,
+                ["defaultModelAnimationCandidates"] = false,
+                ["rule"] = "默认素材库不导出、不转换、不验证动画；AnimationClip、AnimatorController、Timeline 和其他动作资源只作为源索引诊断线索或显式诊断命令处理。",
+            };
+            File.WriteAllText(
+                Path.Combine(savePath, "animation_out_of_scope.json"),
+                report.ToString(Newtonsoft.Json.Formatting.Indented));
         }
 
         private static void NormalizePathPollutedModelResourceKinds(string savePath)
@@ -3723,7 +5948,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                     ["generatedAt"] = DateTime.UtcNow.ToString("O"),
                     ["relationGraph"] = relationGraphPath,
                     ["status"] = "empty",
-                    ["rule"] = "当前 Library 没有写出旧式 unity_relations.jsonl 行。确定性的 Unity/source-index 关系仍保留在 library_index.db、model_animations.json、source_index_usage.json 和 smoke 报告中。",
+                    ["rule"] = "当前 Library 没有写出旧式 unity_relations.jsonl 行。确定性的 Unity/source-index 关系仍保留在 library_index.db、source_index_usage.json、animation_out_of_scope.json 和 smoke 报告中；默认不生成模型-动画候选。",
                     ["models"] = modelCount,
                     ["animations"] = animationCount,
                     ["assets"] = new JObject
@@ -4149,7 +6374,12 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
                 ? missingPrimitives.Length
                 : Math.Max(0, primitiveCount - primitivesWithMaterial);
 
-            changed |= SetCatalogValue(model, "modelValidationStatus", JsonText(validation, "Status"));
+            var gltfValidationStatus = JsonText(validation, "Status");
+            changed |= SetCatalogValue(model, "gltfValidationStatus", gltfValidationStatus);
+            if (!ShouldKeepPrefabAssemblyCompletenessStatus(model))
+            {
+                changed |= SetCatalogValue(model, "modelValidationStatus", gltfValidationStatus);
+            }
             changed |= SetCatalogValue(model, "modelBodyStatus", JsonText(body, "ModelBodyStatus"));
             changed |= SetCatalogValue(model, "materialPrimitiveCount", primitiveCount);
             changed |= SetCatalogValue(model, "materialPrimitivesWithMaterial", primitivesWithMaterial);
@@ -4162,8 +6392,68 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             {
                 changed |= SetCatalogValue(model, "materialImageCount", imageCount);
             }
+            changed |= ApplyPrefabAssemblyValidationVisualGate(
+                model,
+                primitiveCount,
+                primitivesWithMaterial,
+                primitivesWithBaseColorTexture);
 
             return changed;
+        }
+
+        private static bool ApplyPrefabAssemblyValidationVisualGate(
+            JObject model,
+            long primitiveCount,
+            long primitivesWithMaterial,
+            long primitivesWithBaseColorTexture)
+        {
+            var role = JsonText(model, "libraryRole");
+            if (!string.Equals(role, "PrefabAssemblyPrimary", StringComparison.OrdinalIgnoreCase)
+                || primitiveCount <= 0)
+            {
+                return false;
+            }
+
+            var materialCoverageRatio = Math.Round((double)primitivesWithMaterial / primitiveCount, 4);
+            var baseColorCoverageRatio = Math.Round((double)primitivesWithBaseColorTexture / primitiveCount, 4);
+            string blocker = null;
+            if (materialCoverageRatio < 0.8)
+            {
+                blocker = "insufficient_prefab_assembly_material_coverage";
+            }
+            else if (baseColorCoverageRatio < 0.5)
+            {
+                blocker = "insufficient_prefab_assembly_base_color_coverage";
+            }
+
+            if (string.IsNullOrWhiteSpace(blocker))
+            {
+                return false;
+            }
+
+            var changed = false;
+            changed |= SetCatalogValue(model, "visualAcceptanceEligible", false);
+            changed |= SetCatalogValue(model, "visualAcceptanceBlocker", blocker);
+            changed |= SetCatalogValue(model, "diagnosticOnly", true);
+            changed |= SetCatalogValue(model, "visualAcceptanceGate", new JObject
+            {
+                ["rule"] = "PrefabAssembly 通过 glTF 结构验证后仍要检查材质覆盖；明显白模/大面积缺材质不能计入默认视觉验收。",
+                ["primitiveCount"] = primitiveCount,
+                ["primitivesWithMaterial"] = primitivesWithMaterial,
+                ["materialCoverageRatio"] = materialCoverageRatio,
+                ["primitivesWithBaseColorTexture"] = primitivesWithBaseColorTexture,
+                ["baseColorCoverageRatio"] = baseColorCoverageRatio,
+                ["blocker"] = blocker,
+            });
+            return changed;
+        }
+
+        private static bool ShouldKeepPrefabAssemblyCompletenessStatus(JObject model)
+        {
+            // Prefab 组装行的 modelValidationStatus 表达“主模型是否完整”，不能被 glTF 文件结构校验覆盖。
+            var role = JsonText(model, "libraryRole");
+            return string.Equals(role, "PrefabAssemblyPartial", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "PrefabAssemblyMissing", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool CatalogMaterialStatusImpliesMissingRendererBinding(JObject model)
@@ -6146,6 +8436,7 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             List<AssetItem> animations
         )
         {
+            const int staticMeshMaterialBindingPreloadThreshold = 64;
             var reuseLibraryStats = WorkMode == WorkMode.Library && _exportRunStats?.StartedAtUtc != null;
             if (!reuseLibraryStats)
             {
@@ -6174,9 +8465,20 @@ WHERE r.relation IN ('material.texture', 'vfx.texture')
             var skippedCount = 0;
             var toExportCount = models.Count;
             Logger.Info($"Export mode {WorkMode} using max export tasks {MaxExportTasks}.");
-            if (models.Any(IsParallelStaticMeshAsset))
+            var staticMeshPrimaryCount = models.Count(IsParallelStaticMeshAsset);
+            if (staticMeshPrimaryCount >= staticMeshMaterialBindingPreloadThreshold)
             {
                 PreloadStaticMeshMaterialBindingCache();
+            }
+            else if (staticMeshPrimaryCount > 0)
+            {
+                Logger.Info($"StaticMesh material binding cache preload skipped for {staticMeshPrimaryCount} candidate(s); per-mesh source-index queries will be used.");
+                ProfileLogger.Event("static_mesh_material_binding_cache_preload_skipped", new Dictionary<string, object>
+                {
+                    ["staticMeshPrimaryCount"] = staticMeshPrimaryCount,
+                    ["threshold"] = staticMeshMaterialBindingPreloadThreshold,
+                    ["reason"] = "Small targeted exports are faster with per-mesh queries than a full source_relations material binding cache.",
+                });
             }
 
             for (var modelIndex = 0; modelIndex < models.Count;)

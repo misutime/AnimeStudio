@@ -210,12 +210,17 @@ namespace AnimeStudio
             }
 
             var protectVertexColorAlpha = false;
+            var suppressVertexColorRgb = false;
             if (mesh.hasColor)
             {
                 // 有些 Unity 自定义 shader 会把顶点色 alpha 当业务遮罩，不是真透明。
                 // glTF 查看器会直接乘 alpha；仅当所有子材质都确认是不透明预览时，保护可见性。
                 protectVertexColorAlpha = ShouldProtectVertexColorAlpha(mesh);
-                attributes["COLOR_0"] = WriteColorAccessor(mesh.VertexList.Select(x => x.Color), protectVertexColorAlpha, ArrayBufferTarget);
+                suppressVertexColorRgb = ShouldSuppressVertexColorRgb(mesh);
+                if (!suppressVertexColorRgb)
+                {
+                    attributes["COLOR_0"] = WriteColorAccessor(mesh.VertexList.Select(x => x.Color), protectVertexColorAlpha, ArrayBufferTarget);
+                }
             }
 
             if (mesh.BoneList?.Count > 0 && mesh.VertexList.Any(x => x.BoneIndices != null && x.Weights != null))
@@ -225,6 +230,7 @@ namespace AnimeStudio
             }
 
             var primitives = new List<Dictionary<string, object>>();
+            var suppressedVertexColorRgbForPrimitive = suppressVertexColorRgb;
             foreach (var submesh in mesh.SubmeshList)
             {
                 var indices = new List<uint>();
@@ -244,15 +250,28 @@ namespace AnimeStudio
                     continue;
                 }
 
+                var material = GetMaterialIndex(submesh.Material);
+                var primitiveAttributes = attributes;
+                if (!suppressVertexColorRgb
+                    && mesh.hasColor
+                    && material >= 0
+                    && GltfMaterialNeedsCustomShaderLayer(material))
+                {
+                    // 部分游戏把顶点色 RGB 当 shader mask/参数。最终材质 extras 已经确认需要自定义 shader 时，
+                    // 不把 COLOR_0 交给标准 glTF PBR 预览，避免脸部/皮肤被错误染色。
+                    primitiveAttributes = new Dictionary<string, object>(attributes);
+                    primitiveAttributes.Remove("COLOR_0");
+                    suppressedVertexColorRgbForPrimitive = true;
+                }
+
                 var primitive = new Dictionary<string, object>
                 {
-                    ["attributes"] = attributes,
+                    ["attributes"] = primitiveAttributes,
                     ["indices"] = WriteUIntAccessor(indices, ElementArrayBufferTarget),
                     ["mode"] = 4,
                 };
                 AddMorphTargets(mesh, primitive);
 
-                var material = GetMaterialIndex(submesh.Material);
                 if (material >= 0)
                 {
                     primitive["material"] = material;
@@ -265,15 +284,22 @@ namespace AnimeStudio
                 ["name"] = Path.GetFileName(mesh.Path),
                 ["primitives"] = primitives,
             };
-            if (protectVertexColorAlpha)
+            if (protectVertexColorAlpha || suppressedVertexColorRgbForPrimitive)
             {
+                var animeStudio = new Dictionary<string, object>();
+                if (protectVertexColorAlpha)
+                {
+                    animeStudio["previewVertexColorAlphaProtected"] = true;
+                    animeStudio["previewVertexColorAlphaReason"] = "Unity 不透明材质的顶点色 alpha 可能是 shader 遮罩；glTF 预览写为 1 以避免通用查看器误判透明。";
+                }
+                if (suppressedVertexColorRgbForPrimitive)
+                {
+                    animeStudio["previewVertexColorRgbSuppressed"] = true;
+                    animeStudio["previewVertexColorRgbReason"] = "当前材质包含非标准 Unity shader 分层槽，顶点色 RGB 很可能是 shader mask/参数，不应作为 glTF 标准 COLOR_0 参与 PBR 预览。";
+                }
                 gltfMesh["extras"] = new Dictionary<string, object>
                 {
-                    ["animeStudio"] = new Dictionary<string, object>
-                    {
-                        ["previewVertexColorAlphaProtected"] = true,
-                        ["previewVertexColorAlphaReason"] = "Unity 不透明材质的顶点色 alpha 可能是 shader 遮罩；glTF 预览写为 1 以避免通用查看器误判透明。",
-                    },
+                    ["animeStudio"] = animeStudio,
                 };
             }
             AddMorphTargetNames(mesh, gltfMesh);
@@ -820,6 +846,7 @@ namespace AnimeStudio
                 colorMaskTextureIndex,
                 maskTextureIndex,
                 maskTextureSlot);
+            ApplyCustomShaderLayerBoundary(material, gltfMaterial);
             ProtectOpaquePreviewBaseColorTextureAlpha(material, pbr, gltfMaterial);
             if (skippedNormalTextures.Count > 0)
             {
@@ -942,6 +969,25 @@ namespace AnimeStudio
             return false;
         }
 
+        private bool ShouldSuppressVertexColorRgb(ImportedMesh mesh)
+        {
+            if (mesh?.SubmeshList == null || mesh.SubmeshList.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (var submesh in mesh.SubmeshList)
+            {
+                var material = ImportedHelpers.FindMaterial(submesh.Material, _imported.MaterialList);
+                if (MaterialHasCustomShaderLayerSlots(material))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private bool ShouldProtectVertexColorAlpha(ImportedMesh mesh)
         {
             if (mesh?.SubmeshList == null || mesh.SubmeshList.Count == 0)
@@ -965,6 +1011,119 @@ namespace AnimeStudio
             }
 
             return hasMaterial;
+        }
+
+        private bool GltfMaterialNeedsCustomShaderLayer(int materialIndex)
+        {
+            if (materialIndex < 0 || materialIndex >= _materials.Count)
+            {
+                return false;
+            }
+
+            if (!_materials[materialIndex].TryGetValue("extras", out var extrasValue)
+                || extrasValue is not Dictionary<string, object> extras
+                || !extras.TryGetValue("animeStudioMaterial", out var animeValue)
+                || animeValue is not Dictionary<string, object> anime)
+            {
+                return false;
+            }
+
+            return (TryGetBool(anime, "needsCustomShaderLayer", out var needsCustomShaderLayer) && needsCustomShaderLayer)
+                || (TryGetBool(anime, "layeredMaterialUnresolved", out var layeredMaterialUnresolved) && layeredMaterialUnresolved)
+                || string.Equals(anime.TryGetValue("pbrPreviewStatus", out var status) ? status?.ToString() : null,
+                    "bestEffortDegradedPreview",
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void ApplyCustomShaderLayerBoundary(ImportedMaterial material, Dictionary<string, object> gltfMaterial)
+        {
+            var slots = GetCustomShaderLayerSlots(material)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (slots.Length == 0)
+            {
+                return;
+            }
+
+            var extras = EnsureMaterialExtras(gltfMaterial);
+            if (!extras.TryGetValue("animeStudioMaterial", out var animeValue)
+                || animeValue is not Dictionary<string, object> anime)
+            {
+                anime = new Dictionary<string, object>();
+                extras["animeStudioMaterial"] = anime;
+            }
+
+            anime["status"] = "needsCustomShaderLayer";
+            anime["needsCustomShaderLayer"] = true;
+            anime["customShaderRequired"] = true;
+            anime["layeredMaterialUnresolved"] = true;
+            anime["unsupportedShader"] = true;
+            anime["customShaderLayerSlots"] = slots;
+            anime["pbrPreviewStatus"] = "bestEffortDegradedPreview";
+            anime["pbrPreviewConfidence"] = "partial";
+            anime["previewMaterialDegraded"] = true;
+            anime["previewMaterialDegradedReason"] = "Unity 材质包含非标准 shader 分层槽。当前 glTF 只保留贴图关系并做降级预览，不能代表游戏最终材质。";
+            anime["unresolvedShaderSteps"] = new[]
+            {
+                "privateLayeredTextureComposite",
+                "privateMaskBlend",
+                "runtimeShaderParameterEvaluation",
+                "vertexColorMaskInterpretation",
+            };
+            AddAnimeStudioMaterialNote(
+                gltfMaterial,
+                "customShaderLayerRequired",
+                "检测到非标准 Unity shader 分层槽；顶点色和 mask 贴图只作为原始关系保留，不能硬当标准 PBR 最终颜色。");
+        }
+
+        private static bool MaterialHasCustomShaderLayerSlots(ImportedMaterial material)
+        {
+            return GetCustomShaderLayerSlots(material).Any();
+        }
+
+        private static IEnumerable<string> GetCustomShaderLayerSlots(ImportedMaterial material)
+        {
+            if (material?.Textures == null)
+            {
+                yield break;
+            }
+
+            foreach (var texture in material.Textures)
+            {
+                if (IsCustomShaderLayerTextureSlot(texture?.Slot))
+                {
+                    yield return texture.Slot;
+                }
+            }
+        }
+
+        private static bool IsCustomShaderLayerTextureSlot(string slot)
+        {
+            if (string.IsNullOrWhiteSpace(slot))
+            {
+                return false;
+            }
+
+            var normalized = slot.Trim();
+            if (normalized.Equals("_Offset", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_ReflectionTex", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_specular", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_BloodMask", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_BloodNormal", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_EffectMask", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_GibMask", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_GibTex", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_IceNormal", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_IceTex", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return normalized.IndexOf("Iris", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Wrinkle", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Decal", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Layer", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void ApplyColorMaskTintPipeline(

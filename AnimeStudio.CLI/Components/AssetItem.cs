@@ -13,6 +13,12 @@
         public string InfoText;
         public string UniqueID;
         public string LibraryRole;
+        public bool DiagnosticOnly;
+        public string SourcePartRole;
+        public string VisualAcceptanceScope;
+        public string CoveredByPrefabContainer;
+        public string CoveredByPrefabSourceObjectKey;
+        public string LibraryRoleReason;
 
         public AssetItem(Object asset)
         {

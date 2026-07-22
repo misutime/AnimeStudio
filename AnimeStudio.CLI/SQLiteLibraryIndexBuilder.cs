@@ -204,6 +204,11 @@ CREATE TABLE assets (
     validation_status TEXT,
     library_role TEXT,
     diagnostic_only INTEGER,
+    source_part_role TEXT,
+    covered_by_prefab_container TEXT,
+    visual_acceptance_eligible INTEGER,
+    visual_acceptance_scope TEXT,
+    visual_acceptance_blocker TEXT,
     character_assembly_role TEXT,
     character_assembly_family TEXT,
     character_assembly_candidate_only INTEGER,
@@ -468,6 +473,9 @@ CREATE TABLE library_reports (
                 "CREATE INDEX idx_assets_output ON assets(output);",
                 "CREATE INDEX idx_assets_kind_output ON assets(kind, output);",
                 "CREATE INDEX idx_assets_library_role ON assets(library_role);",
+                "CREATE INDEX idx_assets_source_part_role ON assets(source_part_role);",
+                "CREATE INDEX idx_assets_covered_by_prefab ON assets(covered_by_prefab_container);",
+                "CREATE INDEX idx_assets_visual_acceptance ON assets(visual_acceptance_eligible, visual_acceptance_scope);",
                 "CREATE INDEX idx_assets_character_assembly ON assets(character_assembly_family, character_assembly_role);",
                 "CREATE INDEX idx_assets_material_status ON assets(material_status);",
                 "CREATE INDEX idx_assets_material_shader_layer ON assets(material_needs_custom_shader_layer);",
@@ -616,8 +624,8 @@ VALUES ($modelOutput, $animationOutput, $status, $requestPath, $resultPath, $bak
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = @"
-INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, library_role, diagnostic_only, character_assembly_role, character_assembly_family, character_assembly_candidate_only, material_status, material_needs_customization_tint, material_needs_custom_shader_layer, material_has_base_color_texture, material_has_normal_texture, material_image_count, source_skin_mapping_status, selected_visual_cell_transform_node_status, external_skeleton_context_status, external_skeleton_context_serialized_file, external_skeleton_context_container, external_skeleton_context_name, external_skeleton_context_path_id, raw_json)
-VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $libraryRole, $diagnosticOnly, $characterAssemblyRole, $characterAssemblyFamily, $characterAssemblyCandidateOnly, $materialStatus, $materialNeedsCustomizationTint, $materialNeedsCustomShaderLayer, $materialHasBaseColorTexture, $materialHasNormalTexture, $materialImageCount, $sourceSkinMappingStatus, $selectedVisualCellTransformNodeStatus, $externalSkeletonContextStatus, $externalSkeletonContextSerializedFile, $externalSkeletonContextContainer, $externalSkeletonContextName, $externalSkeletonContextPathId, $rawJson);";
+INSERT INTO assets(kind, resource_kind, name, source_type, container, source, path_id, output, audio_kind, animation_type, skeleton_hash, validation_status, library_role, diagnostic_only, source_part_role, covered_by_prefab_container, visual_acceptance_eligible, visual_acceptance_scope, visual_acceptance_blocker, character_assembly_role, character_assembly_family, character_assembly_candidate_only, material_status, material_needs_customization_tint, material_needs_custom_shader_layer, material_has_base_color_texture, material_has_normal_texture, material_image_count, source_skin_mapping_status, selected_visual_cell_transform_node_status, external_skeleton_context_status, external_skeleton_context_serialized_file, external_skeleton_context_container, external_skeleton_context_name, external_skeleton_context_path_id, raw_json)
+VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, $output, $audioKind, $animationType, $skeletonHash, $validationStatus, $libraryRole, $diagnosticOnly, $sourcePartRole, $coveredByPrefabContainer, $visualAcceptanceEligible, $visualAcceptanceScope, $visualAcceptanceBlocker, $characterAssemblyRole, $characterAssemblyFamily, $characterAssemblyCandidateOnly, $materialStatus, $materialNeedsCustomizationTint, $materialNeedsCustomShaderLayer, $materialHasBaseColorTexture, $materialHasNormalTexture, $materialImageCount, $sourceSkinMappingStatus, $selectedVisualCellTransformNodeStatus, $externalSkeletonContextStatus, $externalSkeletonContextSerializedFile, $externalSkeletonContextContainer, $externalSkeletonContextName, $externalSkeletonContextPathId, $rawJson);";
             var p = AddParameters(
                 command,
                 "$kind",
@@ -634,6 +642,11 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 "$validationStatus",
                 "$libraryRole",
                 "$diagnosticOnly",
+                "$sourcePartRole",
+                "$coveredByPrefabContainer",
+                "$visualAcceptanceEligible",
+                "$visualAcceptanceScope",
+                "$visualAcceptanceBlocker",
                 "$characterAssemblyRole",
                 "$characterAssemblyFamily",
                 "$characterAssemblyCandidateOnly",
@@ -658,6 +671,10 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
             long count = 0;
             foreach (var obj in rows)
             {
+                if (string.Equals(S(obj, "kind"), "Animation", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
                 EnrichAnimationCatalogFromSidecar(root, obj);
                 Set(p, "$kind", S(obj, "kind"));
                 Set(p, "$resourceKind", S(obj, "resourceKind"));
@@ -674,6 +691,11 @@ VALUES ($kind, $resourceKind, $name, $sourceType, $container, $source, $pathId, 
                 // 这些字段是浏览器和 SQL 筛选常用入口；关系判断仍以 raw_json 里的 Unity 证据为准。
                 Set(p, "$libraryRole", S(obj, "libraryRole"));
                 Set(p, "$diagnosticOnly", B(obj, "diagnosticOnly"));
+                Set(p, "$sourcePartRole", S(obj, "sourcePartRole"));
+                Set(p, "$coveredByPrefabContainer", S(obj, "coveredByPrefabContainer"));
+                Set(p, "$visualAcceptanceEligible", B(obj, "visualAcceptanceEligible"));
+                Set(p, "$visualAcceptanceScope", S(obj, "visualAcceptanceScope"));
+                Set(p, "$visualAcceptanceBlocker", S(obj, "visualAcceptanceBlocker"));
                 Set(p, "$characterAssemblyRole", S(obj, "characterAssemblyRole"));
                 Set(p, "$characterAssemblyFamily", S(obj, "characterAssemblyFamily"));
                 Set(p, "$characterAssemblyCandidateOnly", B(obj, "characterAssemblyCandidateOnly"));
@@ -4014,20 +4036,15 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
         private static JObject BuildAssetLibraryCapabilities(SqliteConnection connection)
         {
             var modelAssets = ScalarLong(connection, "SELECT COUNT(*) FROM assets WHERE kind='Model';");
-            var animationAssets = ScalarLong(connection, "SELECT COUNT(*) FROM assets WHERE kind='Animation';");
-            var usableRelationAnimations = ScalarLong(connection, "SELECT COUNT(*) FROM relation_animations WHERE is_usable_candidate=1;");
             var capabilities = new JObject
             {
                 ["models"] = modelAssets > 0,
-                ["animations"] = animationAssets > 0 && usableRelationAnimations > 0,
+                ["animations"] = false,
+                ["animationsUnsupported"] = true,
                 // AssetLibrary v1 要求这个字段始终存在。
                 // 没有可用动画时明确写 null，避免浏览器或验收脚本靠缺字段猜语义。
                 ["animationPreviewComposer"] = null,
             };
-            if (capabilities.Value<bool>("animations"))
-            {
-                capabilities["animationPreviewComposer"] = "AnimeStudio.CLI compose-preview";
-            }
             return capabilities;
         }
 
@@ -4057,55 +4074,14 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
 
         private static JObject BuildAnimationSupportSummary(string root, JObject capabilities)
         {
-            var compactPath = Path.Combine(root, "model_animations.compact.json");
-            JObject compact = null;
-            if (File.Exists(compactPath))
-            {
-                try
-                {
-                    compact = JObject.Parse(File.ReadAllText(compactPath));
-                }
-                catch (JsonException e)
-                {
-                    Logger.Warning($"Unable to read compact animation support summary: {e.Message}");
-                }
-            }
-
-            var animationAssetCount = (compact?["animations"] as JArray)?.Count ?? 0;
-            var defaultCandidateCount = CountCompactAnimationCandidates(compact);
-            var compactModels = (compact?["models"] as JArray)?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
-            var gates = compactModels
-                .Select(x => x["modelAnimationGate"] as JObject)
-                .Where(x => x != null)
-                .ToArray();
-            var readyGateCount = gates.Count(x => string.Equals(S(x, "status"), "ready", StringComparison.OrdinalIgnoreCase));
-            var blockedGateCount = gates.Count(x => string.Equals(S(x, "status"), "blocked", StringComparison.OrdinalIgnoreCase));
-            var modelReadyCount = compactModels.Count(x => x.Value<bool?>("modelReadyForAnimation") == true);
-            var reasonCounts = gates
-                .SelectMany(x => (x["reasons"] as JArray)?.Values<string>() ?? Enumerable.Empty<string>())
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
-                .Select(x => new JObject
-                {
-                    ["reason"] = x.Key,
-                    ["count"] = x.Count()
-                })
-                .OrderByDescending(x => x.Value<int>("count"))
-                .ThenBy(x => x.Value<string>("reason"), StringComparer.OrdinalIgnoreCase)
-                .Take(12);
-
-            var productionReady = capabilities?.Value<bool>("animations") == true;
             return new JObject
             {
-                ["status"] = productionReady ? "productionReady" : "notProductionReady",
-                ["productionReady"] = productionReady,
-                ["animationAssetCount"] = animationAssetCount,
-                ["defaultModelAnimationCandidateCount"] = defaultCandidateCount,
-                ["modelGateReadyCount"] = readyGateCount,
-                ["modelGateBlockedCount"] = blockedGateCount,
-                ["modelReadyForAnimationCount"] = modelReadyCount,
-                ["blockedReasonCounts"] = new JArray(reasonCounts),
-                ["rule"] = "This summarizes production animation readiness for AssetLibrary readers. Empty animation assets/candidates with capabilities.animations=false means animation is diagnostic or pending, not that model/texture/material export failed."
+                ["status"] = "outOfScopeAnimation",
+                ["productionReady"] = false,
+                ["animationAssetCount"] = 0,
+                ["defaultModelAnimationCandidateCount"] = 0,
+                ["skippedByDefault"] = true,
+                ["rule"] = "当前 AssetLibrary v1 主线不导出、不转换、不验证动画。动画资源只应进入源索引诊断或显式诊断命令，不能作为默认素材库能力。"
             };
         }
 
@@ -4223,8 +4199,8 @@ VALUES ('asset_library_unified_projection', 'ok', $createdUtc, $summaryJson);";
                 "# SQLite Library Index\n\n" +
                 "这是 AnimeStudio 的素材库索引数据库。当前 v1 从已经导出的 Library/AudioLibrary 文件构建，目标是让后续浏览、筛选、调试、二次打包不用反复扫描大量 JSONL。\n\n" +
                 "核心规则：索引要全，导出要精。进入索引不代表默认导出或推荐使用；导出仍按 Unity 显式关系、结构兼容和严格匹配规则执行。\n\n" +
-                "桌面工具默认优先读取 SQLite。高频查询，例如模型列表、动画 binding path 定向匹配、缩略图状态、筛选统计，应尽量走 SQLite 索引；JSON/JSONL 保留给人工排查、兼容旧流程和重新建库。\n\n" +
-                "主要表：`assets`、`unity_assets`、`unity_relations`、`animation_bindings`、`animation_binding_paths`、`export_manifest`、`json_documents`、`files`。每条结构化记录都尽量保留 `raw_json`，方便后续无损迁移。\n\n" +
+                "桌面工具默认优先读取 SQLite。高频查询，例如模型列表、材质贴图关系、缩略图状态、筛选统计，应尽量走 SQLite 索引；JSON/JSONL 保留给人工排查、兼容旧流程和重新建库。\n\n" +
+                "主要表：`assets`、`unity_assets`、`unity_relations`、`export_manifest`、`json_documents`、`files`。动画相关表只保留为旧库/显式诊断兼容，不代表默认素材库支持动画。\n\n" +
                 "`assets` 会把常用筛选字段展开成显式列。永劫 ActorBodyVisualCell 自定义网格的 `library_role`、`diagnostic_only`、`character_assembly_role`、`character_assembly_family`、`material_status`、`source_skin_mapping_status`、`selected_visual_cell_transform_node_status` 和 `external_skeleton_context_*` 只服务浏览、筛选和诊断，不等于 glTF skin/joint 或正式角色装配已经可用。\n\n" +
                 "音频说明：当前 AudioLibrary 可以导出原始 `.fsb` 等文件；FMOD/native 转 WAV 作为后续批量转换阶段，不阻塞索引与素材库建设。\n");
         }

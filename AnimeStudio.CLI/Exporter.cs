@@ -22,7 +22,7 @@ namespace AnimeStudio.CLI
         public static FbxAnimationMode FbxAnimationMode { get; set; } = FbxAnimationMode.Skip;
         public static string HumanoidBakeSolver { get; set; } = "AvatarPreEulerPost";
         public static ModelExportFormat ModelFormat { get; set; } = ModelExportFormat.Gltf;
-        public static AnimationPackageMode AnimationPackage { get; set; } = AnimationPackageMode.Separate;
+        public static AnimationPackageMode AnimationPackage { get; set; } = AnimationPackageMode.Skip;
         public static ModelSourceMode ModelSource { get; set; } = ModelSourceMode.PrefabPrimary;
         public static bool IncludeVfx { get; set; }
         public static AnimeStudio.TextureExportMode TextureMode { get; set; } = AnimeStudio.TextureExportMode.Raw;
@@ -31,10 +31,12 @@ namespace AnimeStudio.CLI
 
         public static bool ExportEmbeddedAnimations =>
             FbxAnimationMode != FbxAnimationMode.Skip
-            && AnimationPackage != AnimationPackageMode.Separate;
+            && (AnimationPackage == AnimationPackageMode.Embedded
+                || AnimationPackage == AnimationPackageMode.Both);
         public static bool CollectAnimations =>
             FbxAnimationMode == FbxAnimationMode.Auto
-            && AnimationPackage != AnimationPackageMode.Separate;
+            && (AnimationPackage == AnimationPackageMode.Embedded
+                || AnimationPackage == AnimationPackageMode.Both);
         public static bool ExportSeparateAnimations =>
             AnimationPackage == AnimationPackageMode.Separate
             || AnimationPackage == AnimationPackageMode.Both;
@@ -1193,12 +1195,22 @@ namespace AnimeStudio.CLI
 
         private static List<StaticMeshMaterialReference> GetStaticMeshMaterialReferences(string indexPath, string meshFile, long meshPathId)
         {
-            var cache = EnsureStaticMeshMaterialBindingCache(indexPath);
+            Dictionary<string, List<StaticMeshMaterialReference>> cache = null;
+            lock (StaticMeshMaterialBindingCacheLock)
+            {
+                if (StaticMeshMaterialBindingCache != null
+                    && string.Equals(StaticMeshMaterialBindingCacheIndexPath, indexPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    cache = StaticMeshMaterialBindingCache;
+                }
+            }
+
             if (cache != null && cache.TryGetValue(BuildStaticMeshMaterialCacheKey(meshFile, meshPathId), out var refs))
             {
                 return refs;
             }
 
+            // 小样本/定向导出只查当前 Mesh，避免为几个静态 Mesh 全表预热 Renderer->Material 缓存。
             return QueryStaticMeshMaterialReferences(indexPath, meshFile, meshPathId);
         }
 
@@ -1236,6 +1248,731 @@ namespace AnimeStudio.CLI
         private static string BuildStaticMeshMaterialCacheKey(string meshFile, long meshPathId)
         {
             return $"{meshFile ?? string.Empty}#{meshPathId}";
+        }
+
+        private static StaticMeshMaterialBinding ApplySourceIndexModelMaterialBinding(IImported imported, string outputPath, object source)
+        {
+            if (imported == null
+                || string.IsNullOrWhiteSpace(outputPath)
+                || !string.Equals(Path.GetExtension(outputPath), ".gltf", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(outputPath))
+            {
+                return null;
+            }
+
+            var missingLabels = CollectMissingMaterialPrimitiveLabels(outputPath);
+            var materiallessProbe = ProbeMateriallessGltfPrimitives(outputPath);
+            if (missingLabels.Length == 0 && materiallessProbe.materialCount == 0 && materiallessProbe.primitiveCount > 0)
+            {
+                missingLabels = materiallessProbe.labels;
+            }
+            ProfileLogger.Event("model_source_material_binding_check", new Dictionary<string, object>
+            {
+                ["output"] = outputPath,
+                ["missingPrimitiveCount"] = missingLabels.Length,
+                ["probeMaterialCount"] = materiallessProbe.materialCount,
+                ["probePrimitiveCount"] = materiallessProbe.primitiveCount,
+                ["probeFileLength"] = materiallessProbe.fileLength,
+                ["sourceType"] = source?.GetType().Name,
+            });
+            if (missingLabels.Length == 0)
+            {
+                return new StaticMeshMaterialBinding
+                {
+                    Workflow = "ModelRendererSourceIndex",
+                    Status = "noMissingMaterialPrimitive",
+                };
+            }
+
+            var binding = ResolveModelSourceMaterialBinding(source, missingLabels.Length);
+            if (binding == null || binding.Materials.Count == 0)
+            {
+                return binding;
+            }
+
+            try
+            {
+                var gltf = JObject.Parse(File.ReadAllText(outputPath));
+                var meshes = gltf["meshes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                if (meshes.Length == 0)
+                {
+                    return binding;
+                }
+
+                var images = gltf["images"] as JArray;
+                if (images == null)
+                {
+                    images = new JArray();
+                    gltf["images"] = images;
+                }
+
+                var textures = gltf["textures"] as JArray;
+                if (textures == null)
+                {
+                    textures = new JArray();
+                    gltf["textures"] = textures;
+                }
+
+                var materials = gltf["materials"] as JArray;
+                if (materials == null)
+                {
+                    materials = new JArray();
+                    gltf["materials"] = materials;
+                }
+
+                var sourceItem = BuildMaterialExportSourceItem(source);
+                var baseMaterialIndex = materials.Count;
+                foreach (var material in BuildStaticMeshGltfMaterials(sourceItem, outputPath, binding, images, textures))
+                {
+                    materials.Add(material);
+                }
+
+                var changedCount = 0;
+                foreach (var mesh in meshes)
+                {
+                    var subMeshIndex = 0;
+                    foreach (var primitive in mesh["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                    {
+                        if ((int?)primitive["material"] != null)
+                        {
+                            subMeshIndex++;
+                            continue;
+                        }
+
+                        primitive["material"] = baseMaterialIndex + binding.GetMaterialIndexForSubMesh(subMeshIndex);
+                        var extras = primitive["extras"] as JObject ?? new JObject();
+                        primitive["extras"] = extras;
+                        extras["animeStudioPrimitive"] = JObject.FromObject(new
+                        {
+                            status = "materialBoundFromUnitySourceIndex",
+                            workflow = binding.Workflow,
+                            selectedRenderer = binding.SelectedRenderer,
+                            rule = "材质来自 Unity 源索引的 Renderer->Material 显式关系；未使用游戏私有命名猜测。"
+                        });
+                        subMeshIndex++;
+                        changedCount++;
+                    }
+                }
+
+                SuppressCustomShaderVertexColorPreview(gltf);
+
+                if (images.Count == 0)
+                {
+                    gltf.Remove("images");
+                }
+                if (textures.Count == 0)
+                {
+                    gltf.Remove("textures");
+                }
+
+                File.WriteAllText(outputPath, gltf.ToString(Formatting.Indented));
+                ExportResolvedMaterialJsonSidecars(binding, outputPath);
+                Logger.Info($"Bound {changedCount} missing glTF material primitive(s) from Unity source index: {outputPath}");
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                binding.Status = "modelSourceMaterialWriteFailed";
+                binding.Notes.Add($"写回 glTF 材质失败: {ex.GetType().Name}: {ex.Message}");
+                Logger.Warning($"Unable to bind model materials from SQLite source index: {outputPath}. {ex.GetType().Name}: {ex.Message}");
+            }
+
+            return binding;
+        }
+
+        private static void SuppressCustomShaderVertexColorPreview(JObject gltf)
+        {
+            var materials = gltf?["materials"] as JArray;
+            var meshes = gltf?["meshes"] as JArray;
+            if (materials == null || meshes == null)
+            {
+                return;
+            }
+
+            foreach (var mesh in meshes.OfType<JObject>())
+            {
+                var suppressed = false;
+                foreach (var primitive in mesh["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    var materialIndex = (int?)primitive["material"];
+                    if (materialIndex == null
+                        || materialIndex < 0
+                        || materialIndex >= materials.Count
+                        || materials[materialIndex.Value] is not JObject material
+                        || !GltfMaterialNeedsCustomShaderLayer(material)
+                        || primitive["attributes"] is not JObject attributes
+                        || attributes["COLOR_0"] == null)
+                    {
+                        continue;
+                    }
+
+                    // 源索引补材质后才能知道它是不是自定义 shader；这里按最终材质状态保护预览。
+                    attributes.Remove("COLOR_0");
+                    suppressed = true;
+                }
+
+                if (suppressed)
+                {
+                    AddVertexColorSuppressionNote(mesh);
+                }
+            }
+        }
+
+        private static bool GltfMaterialNeedsCustomShaderLayer(JObject material)
+        {
+            var anime = material?["extras"]?["animeStudioMaterial"] as JObject;
+            if (anime == null)
+            {
+                return false;
+            }
+
+            return (bool?)anime["needsCustomShaderLayer"] == true
+                || (bool?)anime["customShaderRequired"] == true
+                || (bool?)anime["layeredMaterialUnresolved"] == true
+                || string.Equals((string)anime["pbrPreviewStatus"], "bestEffortDegradedPreview", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddVertexColorSuppressionNote(JObject mesh)
+        {
+            var extras = mesh["extras"] as JObject;
+            if (extras == null)
+            {
+                extras = new JObject();
+                mesh["extras"] = extras;
+            }
+
+            var anime = extras["animeStudio"] as JObject;
+            if (anime == null)
+            {
+                anime = new JObject();
+                extras["animeStudio"] = anime;
+            }
+
+            anime["previewVertexColorRgbSuppressed"] = true;
+            anime["previewVertexColorRgbReason"] = "当前材质包含非标准 Unity shader 分层槽，顶点色 RGB 很可能是 shader mask/参数；预览不写 COLOR_0，避免通用 glTF 查看器把它误乘到 base color。";
+        }
+
+        private static StaticMeshMaterialBinding ResolveModelSourceMaterialBinding(object source, int missingPrimitiveCount)
+        {
+            var binding = new StaticMeshMaterialBinding
+            {
+                Workflow = "ModelRendererSourceIndex",
+            };
+
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                binding.Status = "sourceIndexNotAvailable";
+                binding.Notes.Add("默认模型导出发现 glTF primitive 缺材质，但当前没有可用 SQLite 源索引，无法按 Unity Renderer 关系补写材质。");
+                return binding;
+            }
+
+            var sourceObject = GetSourceObject(source);
+            var sourceFile = sourceObject?.assetsFile?.fileName ?? ExtractSourceIndexSerializedFile(GetSourceInfo(source).source);
+            var sourcePathId = sourceObject?.m_PathID ?? GetSourceInfo(source).pathId;
+            if (string.IsNullOrWhiteSpace(sourceFile) || sourcePathId == 0)
+            {
+                binding.Status = "modelSourceIdentityMissing";
+                binding.Notes.Add("默认模型导出无法定位源对象的 SerializedFile/PathID，跳过材质补写。");
+                return binding;
+            }
+
+            var refs = QueryModelSourceMaterialReferences(indexPath, sourceFile, sourcePathId);
+            binding.RendererBindings = refs
+                .GroupBy(x => $"{x.RendererFile}:{x.RendererPathId}", StringComparer.OrdinalIgnoreCase)
+                .Select(x => new StaticMeshRendererBindingInfo
+                {
+                    RendererFile = x.First().RendererFile,
+                    RendererPathId = x.First().RendererPathId,
+                    RendererType = x.First().RendererType,
+                    GameObjectPath = x.First().GameObjectPath,
+                    MaterialCount = x.Count(),
+                    Materials = x.Select(y => new StaticMeshMaterialRefInfo
+                    {
+                        Name = y.MaterialName,
+                        File = y.MaterialFile,
+                        PathId = y.MaterialPathId,
+                    }).ToList(),
+                })
+                .ToList();
+
+            if (refs.Count == 0)
+            {
+                binding.Status = "missingRendererMaterial";
+                var components = QueryGameObjectComponentSummary(indexPath, sourceFile, sourcePathId);
+                if (components.RendererCount > 0 && components.RendererMaterialRelationCount == 0)
+                {
+                    binding.Notes.Add($"SQLite 源索引确认该 GameObject 有 `{components.RendererCount}` 个 Renderer，但这些 Renderer 没有 `renderer.material` 关系；这通常表示 Unity 原始材质槽为空、运行时/脚本再赋材质，或仍缺少可解释的材质配置映射。保持 glTF 缺材质状态，不按名称猜材质。");
+                    binding.Notes.Add($"组件摘要: `{string.Join(", ", components.ComponentTypes)}`。");
+                    var scriptMaterials = QueryContainerScriptMaterialPropertySummary(indexPath, sourceFile, sourcePathId);
+                    if (scriptMaterials.MaterialPropertyRefCount > 0)
+                    {
+                        binding.Notes.Add($"同一 Unity container 中还存在 `{scriptMaterials.MaterialPropertyRefCount}` 条脚本材质配置 `MaterialsProperties.data.Material`，涉及 `{scriptMaterials.DistinctMaterialCount}` 个 Material；当前源索引没有把这些配置确定映射到该 Renderer/primitive，因此只记录为 NoRest 风格脚本材质线索，不自动套用。");
+                        if (scriptMaterials.SampleMaterialKeys.Length > 0)
+                        {
+                            binding.Notes.Add($"脚本材质配置样例: `{string.Join(", ", scriptMaterials.SampleMaterialKeys)}`。");
+                        }
+                    }
+                }
+                else
+                {
+                    binding.Notes.Add("SQLite 源索引没有找到该 Animator/GameObject 可追溯的 Renderer->Material 关系，保持 glTF 缺材质状态。");
+                }
+                return binding;
+            }
+
+            var grouped = refs
+                .GroupBy(x => $"{x.RendererFile}:{x.RendererPathId}", StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
+                {
+                    RendererFile = x.First().RendererFile,
+                    RendererPathId = x.First().RendererPathId,
+                    RendererType = x.First().RendererType,
+                    GameObjectPath = x.First().GameObjectPath,
+                    Materials = x.OrderBy(y => y.RelationId).ToList(),
+                    ResolvedCount = x.Count(y => TryGetLoadedObject(source, y.MaterialFile, y.MaterialPathId, out Material _)),
+                })
+                .Where(x => x.ResolvedCount > 0)
+                .OrderByDescending(x => x.ResolvedCount)
+                .ThenByDescending(x => x.Materials.Count)
+                .ToList();
+            if (grouped.Count == 0)
+            {
+                binding.Status = "rendererMaterialUnresolved";
+                binding.Notes.Add("SQLite 源索引找到了 Renderer->Material 关系，但当前加载依赖闭包没有解析到可导出的 Material 对象。");
+                return binding;
+            }
+
+            if (grouped.Count > 1)
+            {
+                binding.Status = "multiRendererBindingNeedsPrimitiveMapping";
+                binding.Notes.Add("源模型下有多个可解析 Renderer 材质集合，但当前 glTF primitive 缺少足够稳定的 Renderer 映射；为避免错绑材质，本次只记录候选，不自动套用。");
+                binding.Notes.Add($"缺材质 primitive 数: {missingPrimitiveCount}；可解析 Renderer 数: {grouped.Count}。");
+                return binding;
+            }
+
+            var selected = grouped[0];
+            binding.SelectedRenderer = new StaticMeshRendererBindingInfo
+            {
+                RendererFile = selected.RendererFile,
+                RendererPathId = selected.RendererPathId,
+                RendererType = selected.RendererType,
+                GameObjectPath = selected.GameObjectPath,
+                MaterialCount = selected.Materials.Count,
+                Materials = selected.Materials.Select(y => new StaticMeshMaterialRefInfo
+                {
+                    Name = y.MaterialName,
+                    File = y.MaterialFile,
+                    PathId = y.MaterialPathId,
+                }).ToList(),
+            };
+            foreach (var materialRef in selected.Materials)
+            {
+                if (!TryGetLoadedObject(source, materialRef.MaterialFile, materialRef.MaterialPathId, out Material material))
+                {
+                    continue;
+                }
+
+                binding.Materials.Add(new StaticMeshResolvedMaterial
+                {
+                    Material = material,
+                    Name = string.IsNullOrWhiteSpace(material.m_Name) ? materialRef.MaterialName : material.m_Name,
+                    File = materialRef.MaterialFile,
+                    PathId = materialRef.MaterialPathId,
+                });
+            }
+
+            binding.Status = binding.Materials.Count > 0 ? "boundRendererMaterial" : "rendererMaterialUnresolved";
+            binding.Notes.Add("材质绑定来自 Unity 源索引关系链: Animator/GameObject -> GameObject -> Renderer -> Material。");
+            return binding;
+        }
+
+        private static GameObjectComponentSummary QueryGameObjectComponentSummary(
+            string indexPath,
+            string gameObjectFile,
+            long gameObjectPathId)
+        {
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                return new GameObjectComponentSummary();
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                return QueryGameObjectComponentSummary(connection, gameObjectFile, gameObjectPathId);
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Verbose($"Unable to summarize GameObject components from source index: {gameObjectFile}:{gameObjectPathId}. {e.Message}");
+                return new GameObjectComponentSummary();
+            }
+        }
+
+        private static ContainerScriptMaterialPropertySummary QueryContainerScriptMaterialPropertySummary(
+            string indexPath,
+            string gameObjectFile,
+            long gameObjectPathId)
+        {
+            if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+            {
+                return new ContainerScriptMaterialPropertySummary();
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                return QueryContainerScriptMaterialPropertySummary(connection, gameObjectFile, gameObjectPathId);
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Verbose($"Unable to query container script material property summary: {e.Message}");
+                return new ContainerScriptMaterialPropertySummary();
+            }
+        }
+
+        private static (int materialCount, int primitiveCount, long fileLength, string[] labels) ProbeMateriallessGltfPrimitives(string outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath) || !File.Exists(outputPath))
+            {
+                return (0, 0, 0, Array.Empty<string>());
+            }
+
+            try
+            {
+                var info = new FileInfo(outputPath);
+                var gltf = JObject.Parse(File.ReadAllText(outputPath));
+                var materialCount = gltf["materials"] is JArray materials ? materials.Count : 0;
+                var meshArray = gltf["meshes"] as JArray;
+                var labels = new List<string>();
+                var primitiveCount = 0;
+                for (var meshIndex = 0; meshArray != null && meshIndex < meshArray.Count; meshIndex++)
+                {
+                    var primitives = (meshArray[meshIndex] as JObject)?["primitives"] as JArray;
+                    for (var primitiveIndex = 0; primitives != null && primitiveIndex < primitives.Count; primitiveIndex++)
+                    {
+                        primitiveCount++;
+                        labels.Add($"mesh[{meshIndex}]" + (primitiveIndex == 0 ? string.Empty : $"#{primitiveIndex}"));
+                    }
+                }
+
+                return (materialCount, primitiveCount, info.Length, labels.ToArray());
+            }
+            catch (Exception e) when (e is IOException || e is JsonException || e is UnauthorizedAccessException)
+            {
+                Logger.Verbose($"Unable to probe materialless glTF primitives: {outputPath}. {e.Message}");
+                return (0, 0, 0, Array.Empty<string>());
+            }
+        }
+
+        private static List<StaticMeshMaterialReference> QueryModelSourceMaterialReferences(string indexPath, string sourceFile, long sourcePathId)
+        {
+            var refs = new List<StaticMeshMaterialReference>();
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                var queue = new Queue<SourceTransformPathMatch>(QueryModelSourceRootTransformCandidates(connection, sourceFile, sourcePathId));
+                var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                while (queue.Count > 0 && visited.Count < 512)
+                {
+                    var node = queue.Dequeue();
+                    var key = $"{node.GameObjectFile}:{node.GameObjectPathId}";
+                    if (!visited.Add(key))
+                    {
+                        continue;
+                    }
+
+                    refs.AddRange(QueryGameObjectRendererMaterialReferences(connection, node));
+                    foreach (var child in QueryAllChildTransformCandidates(connection, node).Take(256))
+                    {
+                        queue.Enqueue(child);
+                    }
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException)
+            {
+                Logger.Warning($"Unable to query model source material bindings from SQLite source index: {e.Message}");
+            }
+
+            return refs;
+        }
+
+        private static List<SourceTransformPathMatch> QueryModelSourceRootTransformCandidates(
+            SqliteConnection connection,
+            string sourceFile,
+            long sourcePathId)
+        {
+            var sourceGameObjects = QueryDirectSourceGameObjects(connection, sourceFile, sourcePathId);
+            if (sourceGameObjects.Count == 0)
+            {
+                return new List<SourceTransformPathMatch>();
+            }
+
+            var result = new List<SourceTransformPathMatch>();
+            foreach (var sourceGameObject in sourceGameObjects.Take(16))
+            {
+                result.AddRange(QueryGameObjectTransformCandidates(
+                    connection,
+                    sourceGameObject.File,
+                    sourceGameObject.PathId,
+                    sourceGameObject.Name));
+            }
+
+            return result
+                .OrderBy(x => x.GameObjectFile, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.GameObjectPathId)
+                .Take(16)
+                .ToList();
+        }
+
+        private static List<SourceObjectIdentity> QueryDirectSourceGameObjects(
+            SqliteConnection connection,
+            string sourceFile,
+            long sourcePathId)
+        {
+            var result = new List<SourceObjectIdentity>();
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT serialized_file, path_id, COALESCE(name, '') AS name
+FROM source_objects INDEXED BY idx_source_objects_file_path_nocase
+WHERE serialized_file=$sourceFile COLLATE NOCASE
+  AND path_id=$sourcePathId
+  AND type='GameObject'
+LIMIT 1;";
+            command.Parameters.AddWithValue("$sourceFile", sourceFile ?? string.Empty);
+            command.Parameters.AddWithValue("$sourcePathId", sourcePathId);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new SourceObjectIdentity
+                {
+                    File = reader.GetString(0),
+                    PathId = reader.GetInt64(1),
+                    Name = reader.GetString(2),
+                });
+            }
+
+            if (result.Count > 0)
+            {
+                return result;
+            }
+
+            using var ownerCommand = connection.CreateCommand();
+            ownerCommand.CommandText = @"
+SELECT rel.to_file, rel.to_path_id, COALESCE(go.name, '') AS name
+FROM source_relations INDEXED BY idx_source_relations_from
+LEFT JOIN source_objects go
+  ON go.serialized_file=rel.to_file COLLATE NOCASE
+ AND go.path_id=rel.to_path_id
+WHERE rel.from_path_id=$sourcePathId
+  AND rel.relation='component.gameObject'
+  AND rel.from_file=$sourceFile COLLATE NOCASE
+LIMIT 16;";
+            ownerCommand.Parameters.AddWithValue("$sourceFile", sourceFile ?? string.Empty);
+            ownerCommand.Parameters.AddWithValue("$sourcePathId", sourcePathId);
+            using var ownerReader = ownerCommand.ExecuteReader();
+            while (ownerReader.Read())
+            {
+                result.Add(new SourceObjectIdentity
+                {
+                    File = ownerReader.GetString(0),
+                    PathId = ownerReader.GetInt64(1),
+                    Name = ownerReader.GetString(2),
+                });
+            }
+
+            return result;
+        }
+
+        private static List<SourceTransformPathMatch> QueryGameObjectTransformCandidates(
+            SqliteConnection connection,
+            string gameObjectFile,
+            long gameObjectPathId,
+            string gameObjectName)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT tr.serialized_file, tr.path_id
+FROM source_relations comp
+JOIN source_objects tr
+  ON tr.serialized_file=comp.from_file COLLATE NOCASE
+ AND tr.path_id=comp.from_path_id
+ AND tr.type='Transform'
+WHERE comp.to_path_id=$gameObjectPathId
+  AND comp.relation='component.gameObject'
+  AND comp.to_file=$gameObjectFile COLLATE NOCASE
+LIMIT 4;";
+            command.Parameters.AddWithValue("$gameObjectFile", gameObjectFile ?? string.Empty);
+            command.Parameters.AddWithValue("$gameObjectPathId", gameObjectPathId);
+
+            var result = new List<SourceTransformPathMatch>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new SourceTransformPathMatch
+                {
+                    Path = gameObjectName ?? string.Empty,
+                    TransformFile = reader.GetString(0),
+                    TransformPathId = reader.GetInt64(1),
+                    GameObjectFile = gameObjectFile,
+                    GameObjectPathId = gameObjectPathId,
+                });
+            }
+
+            return result;
+        }
+
+        private static List<SourceTransformPathMatch> QueryAllChildTransformCandidates(
+            SqliteConnection connection,
+            SourceTransformPathMatch parent)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT go.name,
+       child.to_file,
+       child.to_path_id,
+       go.serialized_file,
+       go.path_id
+FROM source_relations child
+JOIN source_relations goRel
+  ON goRel.from_file = child.to_file
+ AND goRel.from_path_id = child.to_path_id
+ AND goRel.relation = 'component.gameObject'
+JOIN source_objects go
+  ON go.serialized_file = goRel.to_file
+ AND go.path_id = goRel.to_path_id
+ AND go.type = 'GameObject'
+WHERE child.relation = 'transform.child'
+  AND child.from_file = $parentFile
+  AND child.from_path_id = $parentPathId
+ORDER BY go.serialized_file, go.path_id
+LIMIT 256;";
+            command.Parameters.AddWithValue("$parentFile", parent.TransformFile ?? string.Empty);
+            command.Parameters.AddWithValue("$parentPathId", parent.TransformPathId);
+
+            var result = new List<SourceTransformPathMatch>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.GetString(0);
+                result.Add(new SourceTransformPathMatch
+                {
+                    Path = string.IsNullOrWhiteSpace(parent.Path) ? name : $"{parent.Path}/{name}",
+                    TransformFile = reader.GetString(1),
+                    TransformPathId = reader.GetInt64(2),
+                    GameObjectFile = reader.GetString(3),
+                    GameObjectPathId = reader.GetInt64(4),
+                });
+            }
+            return result;
+        }
+
+        private static List<StaticMeshMaterialReference> QueryGameObjectRendererMaterialReferences(
+            SqliteConnection connection,
+            SourceTransformPathMatch node)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+WITH components AS (
+    SELECT comp.serialized_file,
+           comp.path_id,
+           comp.type
+    FROM source_relations compRel
+    JOIN source_objects comp
+      ON comp.serialized_file = compRel.from_file
+     AND comp.path_id = compRel.from_path_id
+    WHERE compRel.relation = 'component.gameObject'
+      AND compRel.to_file = $goFile
+      AND compRel.to_path_id = $goPathId
+)
+SELECT mat.id,
+       comp.serialized_file,
+       comp.path_id,
+       comp.type,
+       mat.to_file,
+       mat.to_path_id,
+       COALESCE(mo.name, '') AS material_name
+FROM components comp
+JOIN source_relations mat
+  ON mat.from_file = comp.serialized_file
+ AND mat.from_path_id = comp.path_id
+LEFT JOIN source_objects mo
+  ON mo.serialized_file = mat.to_file
+ AND mo.path_id = mat.to_path_id
+WHERE comp.type IN ('MeshRenderer', 'SkinnedMeshRenderer')
+  AND mat.relation = 'renderer.material'
+ORDER BY comp.serialized_file, comp.path_id, mat.id;";
+            command.Parameters.AddWithValue("$goFile", node.GameObjectFile ?? string.Empty);
+            command.Parameters.AddWithValue("$goPathId", node.GameObjectPathId);
+
+            var refs = new List<StaticMeshMaterialReference>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                refs.Add(new StaticMeshMaterialReference
+                {
+                    RelationId = reader.GetInt64(0),
+                    MeshFile = string.Empty,
+                    MeshPathId = 0,
+                    RendererFile = reader.GetString(1),
+                    RendererPathId = reader.GetInt64(2),
+                    RendererType = reader.GetString(3),
+                    MaterialFile = reader.GetString(4),
+                    MaterialPathId = reader.GetInt64(5),
+                    MaterialName = reader.GetString(6),
+                    GameObjectPath = node.Path,
+                });
+            }
+            return refs;
+        }
+
+        private static AnimeStudio.Object GetSourceObject(object source)
+        {
+            return source switch
+            {
+                AssetItem item => item.Asset as AnimeStudio.Object,
+                AnimeStudio.Object obj => obj,
+                _ => null,
+            };
+        }
+
+        private static AssetItem BuildMaterialExportSourceItem(object source)
+        {
+            return source is AssetItem item
+                ? item
+                : GetSourceObject(source) is AnimeStudio.Object obj
+                    ? new AssetItem(obj)
+                    : null;
+        }
+
+        private static void ExportResolvedMaterialJsonSidecars(StaticMeshMaterialBinding binding, string outputPath)
+        {
+            if (binding?.Materials == null || binding.Materials.Count == 0)
+            {
+                return;
+            }
+
+            var directory = Path.GetDirectoryName(outputPath);
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(directory);
+            foreach (var material in binding.Materials)
+            {
+                if (material.Material == null)
+                {
+                    continue;
+                }
+
+                ExportJSONFile(new AssetItem(material.Material), directory);
+            }
         }
 
         private static List<StaticMeshMaterialReference> QueryStaticMeshMaterialReferences(string indexPath, string meshFile, long meshPathId)
@@ -1410,11 +2147,12 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             return refs;
         }
 
-        private static bool TryGetLoadedObject<T>(AssetItem sourceItem, string serializedFile, long pathId, out T result)
+        private static bool TryGetLoadedObject<T>(object source, string serializedFile, long pathId, out T result)
             where T : AnimeStudio.Object
         {
             result = null;
-            if (pathId == 0 || sourceItem?.Asset is not AnimeStudio.Object sourceObject)
+            var sourceObject = GetSourceObject(source);
+            if (pathId == 0 || sourceObject == null)
             {
                 return false;
             }
@@ -1500,6 +2238,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             JObject normalTexture = null;
             var textureExtras = new JArray();
             var customShaderLayerSlots = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            var recordedTextureRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var texEnv in material.m_SavedProperties?.m_TexEnvs ?? new List<KeyValuePair<string, UnityTexEnv>>())
             {
@@ -1507,6 +2246,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 {
                     continue;
                 }
+                recordedTextureRefs.Add($"{texEnv.Key}|{texture.assetsFile?.fileName}|{texture.m_PathID}");
 
                 var isCustomShaderLayerSlot = IsCustomShaderLayerTextureSlot(texEnv.Key);
                 if (isCustomShaderLayerSlot)
@@ -1572,18 +2312,116 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 textureExtras.Add(textureInfo);
             }
 
+            var sourceIndexTextureRefs = QuerySourceIndexMaterialTextureReferences(materialInfo.File, materialInfo.PathId);
+            foreach (var sourceTexture in sourceIndexTextureRefs)
+            {
+                var key = $"{sourceTexture.Slot}|{sourceTexture.TextureFile}|{sourceTexture.TexturePathId}";
+                if (!recordedTextureRefs.Add(key))
+                {
+                    continue;
+                }
+
+                var isCustomShaderLayerSlot = IsCustomShaderLayerTextureSlot(sourceTexture.Slot);
+                if (isCustomShaderLayerSlot)
+                {
+                    customShaderLayerSlots.Add(sourceTexture.Slot);
+                }
+                var destination = isCustomShaderLayerSlot ? -1 : GetStaticMeshTextureDestination(sourceTexture.Slot);
+                var textureInfo = new JObject
+                {
+                    ["slot"] = sourceTexture.Slot,
+                    ["dest"] = destination,
+                    ["texture"] = sourceTexture.TextureName,
+                    ["source"] = sourceTexture.TextureFile,
+                    ["pathId"] = sourceTexture.TexturePathId,
+                    ["sourceIndexRelationId"] = sourceTexture.RelationId,
+                    ["sourceIndexFallback"] = true,
+                };
+
+                if (!TryGetLoadedObject(item, sourceTexture.TextureFile, sourceTexture.TexturePathId, out Texture2D texture))
+                {
+                    textureInfo["status"] = "sourceIndexTextureObjectUnresolved";
+                    textureInfo["previewUsage"] = "preservedOnly";
+                    textureExtras.Add(textureInfo);
+                    continue;
+                }
+
+                textureInfo["texture"] = string.IsNullOrWhiteSpace(texture.m_Name) ? sourceTexture.TextureName : texture.m_Name;
+                textureInfo["source"] = texture.assetsFile?.originalPath ?? texture.assetsFile?.fileName ?? sourceTexture.TextureFile;
+                if (TryExportStaticMeshTexture(gltfPath, texture, out var textureUri, out var exportName))
+                {
+                    var imageIndex = images.Count;
+                    images.Add(new JObject
+                    {
+                        ["uri"] = textureUri,
+                        ["name"] = texture.m_Name,
+                    });
+                    var textureIndex = textures.Count;
+                    textures.Add(new JObject
+                    {
+                        ["source"] = imageIndex,
+                        ["name"] = texture.m_Name,
+                    });
+                    textureInfo["uri"] = textureUri;
+                    textureInfo["exportName"] = exportName;
+                    textureInfo["gltfTextureIndex"] = textureIndex;
+
+                    if (isCustomShaderLayerSlot)
+                    {
+                        textureInfo["previewUsage"] = "preservedOnly";
+                    }
+                    else if (destination == 0 && pbr["baseColorTexture"] == null)
+                    {
+                        pbr["baseColorTexture"] = new JObject { ["index"] = textureIndex };
+                        hasBaseColorTexture = true;
+                        textureInfo["previewUsage"] = "baseColorTexture";
+                    }
+                    else if ((destination == 1 || destination == 3) && normalTexture == null)
+                    {
+                        normalTexture = new JObject { ["index"] = textureIndex };
+                        textureInfo["previewUsage"] = "normalTexture";
+                    }
+                    else
+                    {
+                        textureInfo["previewUsage"] = "preservedOnly";
+                    }
+                }
+                else
+                {
+                    textureInfo["status"] = "textureExportUnavailable";
+                }
+                textureExtras.Add(textureInfo);
+            }
+
             var needsCustomShaderLayer = customShaderLayerSlots.Count > 0;
             var animeMaterial = binding.ToJson(materialInfo, textureExtras);
+            animeMaterial["sourceIndexTextureFallback"] = sourceIndexTextureRefs.Count > 0;
             animeMaterial["needsCustomShaderLayer"] = needsCustomShaderLayer;
             animeMaterial["customShaderLayerSlots"] = new JArray(customShaderLayerSlots.Select(x => new JValue(x)));
             animeMaterial["unsupportedShader"] = needsCustomShaderLayer;
             animeMaterial["customShaderRequired"] = needsCustomShaderLayer;
             animeMaterial["layeredMaterialUnresolved"] = needsCustomShaderLayer;
-            animeMaterial["pbrPreviewStatus"] = needsCustomShaderLayer ? "bestEffortDegradedPreview" : "bestEffortPbrPreview";
-            animeMaterial["pbrPreviewConfidence"] = needsCustomShaderLayer ? "partial" : "standard";
-            animeMaterial["unresolvedShaderSteps"] = needsCustomShaderLayer
-                ? new JArray("privateLayeredTextureComposite", "privateMaskBlend", "runtimeShaderParameterEvaluation")
-                : new JArray();
+            var hasPreviewBaseColor = hasBaseColorTexture || HasExplicitMaterialColor(material, diffuse);
+            animeMaterial["pbrPreviewStatus"] = needsCustomShaderLayer || !hasPreviewBaseColor
+                ? "bestEffortDegradedPreview"
+                : "bestEffortPbrPreview";
+            animeMaterial["pbrPreviewConfidence"] = needsCustomShaderLayer
+                ? "partial"
+                : hasPreviewBaseColor ? "standard" : "degraded";
+            var unresolvedSteps = new JArray();
+            if (needsCustomShaderLayer)
+            {
+                unresolvedSteps.Add("privateLayeredTextureComposite");
+                unresolvedSteps.Add("privateMaskBlend");
+                unresolvedSteps.Add("runtimeShaderParameterEvaluation");
+            }
+            if (!hasPreviewBaseColor)
+            {
+                unresolvedSteps.Add("missingBaseColorTextureOrTint");
+                animeMaterial["previewMaterialDegraded"] = true;
+                animeMaterial["previewMaterialDegradedReason"] = "Unity Renderer->Material 关系已绑定，但没有可用于 glTF 预览的 baseColor 贴图或有效颜色；当前只能灰模/默认色预览。";
+            }
+            animeMaterial["unresolvedShaderSteps"] = unresolvedSteps;
             if (needsCustomShaderLayer)
             {
                 animeMaterial["customShaderLayerRule"] = "这些 Unity 材质槽需要游戏 shader 分层合成。当前 glTF 只做保守 PBR 预览并保留原始贴图引用，不能把它当作完整 shader 复刻。";
@@ -1619,10 +2457,25 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 return false;
             }
 
-            return key.IndexOf("Iris", StringComparison.OrdinalIgnoreCase) >= 0
-                || key.IndexOf("Wrinkle", StringComparison.OrdinalIgnoreCase) >= 0
-                || key.IndexOf("Decal", StringComparison.OrdinalIgnoreCase) >= 0
-                || key.IndexOf("Layer", StringComparison.OrdinalIgnoreCase) >= 0;
+            var normalized = key.Trim();
+            if (normalized.Equals("_Offset", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_ReflectionTex", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_specular", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_BloodMask", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_BloodNormal", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_EffectMask", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_GibMask", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_GibTex", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_IceNormal", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("_IceTex", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return normalized.IndexOf("Iris", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Wrinkle", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Decal", StringComparison.OrdinalIgnoreCase) >= 0
+                || normalized.IndexOf("Layer", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool TryExportStaticMeshTexture(string gltfPath, Texture2D texture, out string textureUri, out string exportName)
@@ -1836,6 +2689,27 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             return result;
         }
 
+        private static bool HasExplicitMaterialColor(Material material, Color diffuse)
+        {
+            if (material?.m_SavedProperties?.m_Colors == null)
+            {
+                return false;
+            }
+
+            foreach (var color in material.m_SavedProperties.m_Colors)
+            {
+                if (!string.Equals(color.Key, "_Color", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(color.Key, "_BaseColor", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return diffuse.A > 0.001f;
+            }
+
+            return false;
+        }
+
         private static float GetUnityFloat(Material material, string name, float fallback)
         {
             foreach (var value in material.m_SavedProperties?.m_Floats ?? new List<KeyValuePair<string, float>>())
@@ -1858,6 +2732,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 key == "_MainTex"
                 || key == "_MainTexture"
                 || key == "_BaseTexture"
+                || key == "_Color"
                 || key.Contains("Diffuse")
                 || key.Contains("Albedo")
                 || key.Contains("BaseMap")
@@ -1883,6 +2758,80 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 return 6;
             }
             return -1;
+        }
+
+        private static List<SourceIndexMaterialTextureReference> QuerySourceIndexMaterialTextureReferences(string materialFile, long materialPathId)
+        {
+            var result = new List<SourceIndexMaterialTextureReference>();
+            var indexPath = SQLiteSourceIndexRuntime.CurrentLoadResult?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(indexPath)
+                || !File.Exists(indexPath)
+                || string.IsNullOrWhiteSpace(materialFile)
+                || materialPathId == 0)
+            {
+                return result;
+            }
+
+            try
+            {
+                SQLitePCL.Batteries_V2.Init();
+                using var connection = new SqliteConnection($"Data Source={indexPath};Mode=ReadOnly");
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+SELECT rel.id,
+       rel.to_file,
+       rel.to_path_id,
+       COALESCE(tex.name, '') AS texture_name,
+       rel.raw_json
+FROM source_relations rel
+LEFT JOIN source_objects tex
+  ON tex.serialized_file = rel.to_file
+ AND tex.path_id = rel.to_path_id
+WHERE rel.relation = 'material.texture'
+  AND rel.from_file = $materialFile
+  AND rel.from_path_id = $materialPathId
+ORDER BY rel.id;";
+                command.Parameters.AddWithValue("$materialFile", materialFile ?? string.Empty);
+                command.Parameters.AddWithValue("$materialPathId", materialPathId);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var rawJson = reader.IsDBNull(4) ? null : reader.GetString(4);
+                    result.Add(new SourceIndexMaterialTextureReference
+                    {
+                        RelationId = reader.GetInt64(0),
+                        TextureFile = reader.GetString(1),
+                        TexturePathId = reader.GetInt64(2),
+                        TextureName = reader.GetString(3),
+                        Slot = ReadSourceIndexMaterialTextureSlot(rawJson),
+                    });
+                }
+            }
+            catch (Exception e) when (e is IOException || e is SqliteException || e is InvalidDataException || e is JsonException)
+            {
+                Logger.Warning($"Unable to query Material->Texture relations from SQLite source index: {e.Message}");
+            }
+
+            return result;
+        }
+
+        private static string ReadSourceIndexMaterialTextureSlot(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+            {
+                return "sourceIndexTexture";
+            }
+
+            try
+            {
+                var json = JObject.Parse(rawJson);
+                return (string)json["details"]?["slot"] ?? "sourceIndexTexture";
+            }
+            catch (JsonException)
+            {
+                return "sourceIndexTexture";
+            }
         }
 
         private static IEnumerable<object> FindSameContainerMaterials(AssetItem item)
@@ -1993,6 +2942,14 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialNeedsCustomShaderLayer = materialSummary?.needsCustomShaderLayer ?? false,
                 materialMissingRendererBinding = materialSummary?.missingRendererBinding
                     ?? !string.Equals(materialBinding.Status, "boundRendererMaterial", StringComparison.OrdinalIgnoreCase),
+                materialPreviewStatus = materialSummary?.previewStatus,
+                materialPreviewConfidence = materialSummary?.previewConfidence,
+                materialPreviewDegraded = materialSummary?.previewDegraded ?? false,
+                visualAcceptanceEligible = false,
+                visualAcceptanceScope = "StaticMeshExtensionOnly",
+                staticPreviewEligible = materialSummary != null
+                    && !materialSummary.previewDegraded
+                    && materialSummary.hasBaseColorTexture,
                 materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture ?? false,
                 materialHasNormalTexture = materialSummary?.hasNormalTexture ?? false,
                 materialImageCount = materialSummary?.imageCount ?? 0,
@@ -2005,6 +2962,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
 
         private sealed class StaticMeshMaterialBinding
         {
+            public string Workflow { get; set; } = "StaticMeshContainer";
             public string Status { get; set; } = "missingRendererMaterial";
             public List<string> Notes { get; } = new List<string>();
             public object[] SameContainerMaterials { get; set; } = Array.Empty<object>();
@@ -2025,7 +2983,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             {
                 var json = new JObject
                 {
-                    ["workflow"] = "StaticMeshContainer",
+                    ["workflow"] = Workflow,
                     ["status"] = Status,
                     ["notes"] = new JArray(Notes),
                     ["selectedRenderer"] = SelectedRenderer != null ? JObject.FromObject(SelectedRenderer) : null,
@@ -2068,6 +3026,16 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             public string MaterialFile { get; init; }
             public long MaterialPathId { get; init; }
             public string MaterialName { get; init; }
+            public string GameObjectPath { get; init; }
+        }
+
+        private sealed class SourceIndexMaterialTextureReference
+        {
+            public long RelationId { get; init; }
+            public string TextureFile { get; init; }
+            public long TexturePathId { get; init; }
+            public string TextureName { get; init; }
+            public string Slot { get; init; }
         }
 
         private sealed class StaticMeshRendererBindingInfo
@@ -2075,6 +3043,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             public string RendererFile { get; init; }
             public long RendererPathId { get; init; }
             public string RendererType { get; init; }
+            public string GameObjectPath { get; init; }
             public int MaterialCount { get; init; }
             public List<StaticMeshMaterialRefInfo> Materials { get; init; } = new List<StaticMeshMaterialRefInfo>();
         }
@@ -2180,7 +3149,7 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
 
         private static bool TryExportFolder(string dir, AssetItem item, out string fullPath)
         {
-            var fileName = FixFileName(item.Text);
+            var fileName = BuildStableAssetFolderName(item);
             fullPath = Path.Combine(dir, fileName);
             if (!Directory.Exists(fullPath))
             {
@@ -2316,17 +3285,19 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             return ExportGameObject(
                 m_GameObject,
                 exportFullPath + Path.DirectorySeparatorChar,
-                animationList
+                animationList,
+                item
             );
         }
 
         public static bool ExportGameObject(
             GameObject gameObject,
             string exportPath,
-            List<AssetItem> animationList = null
+            List<AssetItem> animationList = null,
+            object sourceForCatalog = null
         )
         {
-            var exportFullPath = exportPath + FixFileName(gameObject.m_Name) + GetModelExtension();
+            var exportFullPath = exportPath + BuildStableGameObjectFileName(gameObject) + GetModelExtension();
             var options = new ModelConverter.Options()
             {
                 imageFormat = Properties.Settings.Default.convertType,
@@ -2377,8 +3348,8 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             }
             if (options.exportMaterials && convert.MaterialList.Count == 0)
             {
-                Logger.Warning($"GameObject {gameObject.m_Name} has no resolved materials, skipping FBX export.");
-                return false;
+                Logger.Warning($"GameObject {gameObject.m_Name} has mesh but no resolved materials; exporting degraded white/material-unresolved model instead of dropping the mesh.");
+                ProfileLogger.Event("model_material_unresolved_export_degraded", GetGameObjectProfileData(gameObject, exportFullPath));
             }
             if (options.exportMaterials)
             {
@@ -2391,8 +3362,36 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                     }
                 }
             }
-            ExportFbx(convert, exportFullPath, gameObject);
+            ExportFbx(convert, exportFullPath, sourceForCatalog ?? gameObject);
             return true;
+        }
+
+        private static string BuildStableGameObjectFileName(GameObject gameObject)
+        {
+            var fixedName = FixFileName(gameObject?.m_Name ?? string.Empty);
+            if (IsWeakModelFileName(gameObject?.m_Name, fixedName))
+            {
+                return $"GameObject_{gameObject?.m_PathID.ToString(CultureInfo.InvariantCulture).Replace("-", "n")}";
+            }
+
+            return fixedName;
+        }
+
+        private static bool IsWeakModelFileName(string rawName, string fixedName)
+        {
+            if (string.IsNullOrWhiteSpace(fixedName))
+            {
+                return true;
+            }
+
+            var hasReadableChar = !string.IsNullOrEmpty(rawName)
+                && rawName.Any(ch => char.IsLetterOrDigit(ch));
+            if (!hasReadableChar)
+            {
+                return true;
+            }
+
+            return fixedName.All(ch => ch == '_' || ch == '-' || ch == '.');
         }
 
         private static void ExportFbx(IImported convert, string exportPath, object source)
@@ -2415,6 +3414,8 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                         break;
                 }
             }
+            var materialBinding = ApplySourceIndexModelMaterialBinding(convert, outputPath, source);
+            WriteGltfMaterialReport(outputPath, source, materialBinding);
             AppendModelAssetCatalog(convert, outputPath, source);
         }
 
@@ -2861,6 +3862,22 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             var materialSummary = BuildExportedModelMaterialSummary(outputPath);
             var embeddedAnimationCount = CountWrittenGltfAnimations(outputPath);
             var importedAnimationListCount = imported.AnimationList?.Count ?? 0;
+            var sourceItem = source as AssetItem;
+            var libraryRole = sourceItem?.LibraryRole ?? "PrefabPrimary";
+            var diagnosticOnly = sourceItem?.DiagnosticOnly == true
+                || string.Equals(libraryRole, "PrefabRendererPart", StringComparison.OrdinalIgnoreCase)
+                || libraryRole.Contains("Diagnostic", StringComparison.OrdinalIgnoreCase);
+            var materialReadyForVisualAcceptance = materialSummary != null
+                && materialSummary.hasBaseColorTexture
+                && !materialSummary.previewDegraded
+                && !materialSummary.missingRendererBinding;
+            var visualAcceptanceScope = !string.IsNullOrWhiteSpace(sourceItem?.VisualAcceptanceScope)
+                ? sourceItem.VisualAcceptanceScope
+                : materialReadyForVisualAcceptance && IsDefaultModelVisualAcceptanceRole(libraryRole)
+                    ? "DefaultModel"
+                    : string.Equals(libraryRole, "PrefabRendererPart", StringComparison.OrdinalIgnoreCase)
+                        ? "PrefabRendererPartDiagnostic"
+                        : "NeedsReview";
             var conversionIssues = imported is ModelConverter modelConverter
                 ? modelConverter.ConversionIssues ?? new List<ModelConversionIssue>()
                 : new List<ModelConversionIssue>();
@@ -2880,7 +3897,12 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             var entry = new
             {
                 kind = "Model",
-                libraryRole = source is AssetItem sourceItem ? sourceItem.LibraryRole ?? "PrefabPrimary" : "PrefabPrimary",
+                libraryRole,
+                diagnosticOnly,
+                sourcePartRole = sourceItem?.SourcePartRole,
+                libraryRoleReason = sourceItem?.LibraryRoleReason,
+                coveredByPrefabContainer = sourceItem?.CoveredByPrefabContainer,
+                coveredByPrefabSourceObjectKey = sourceItem?.CoveredByPrefabSourceObjectKey,
                 resourceKind = InferResourceKind(sourceInfo.name, sourceInfo.container, sourceInfo.source),
                 exportedAt = DateTime.UtcNow.ToString("O"),
                 name = sourceInfo.name,
@@ -2903,6 +3925,13 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 materialNeedsCustomizationTint = materialSummary?.needsCustomizationTint,
                 materialNeedsCustomShaderLayer = materialSummary?.needsCustomShaderLayer,
                 materialMissingRendererBinding = materialSummary?.missingRendererBinding,
+                materialPreviewStatus = materialSummary?.previewStatus,
+                materialPreviewConfidence = materialSummary?.previewConfidence,
+                materialPreviewDegraded = materialSummary?.previewDegraded,
+                visualAcceptanceEligible = materialReadyForVisualAcceptance
+                    && !diagnosticOnly
+                    && IsDefaultModelVisualAcceptanceRole(libraryRole),
+                visualAcceptanceScope,
                 materialHasBaseColorTexture = materialSummary?.hasBaseColorTexture,
                 materialHasNormalTexture = materialSummary?.hasNormalTexture,
                 materialImageCount = materialSummary?.imageCount,
@@ -2935,6 +3964,12 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
                 avatar = avatarInfo,
             };
             AppendCatalogEntry(entry);
+        }
+
+        private static bool IsDefaultModelVisualAcceptanceRole(string libraryRole)
+        {
+            return string.Equals(libraryRole, "PrefabPrimary", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(libraryRole, "ModularCharacterBase", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsUnresolvedModelDependencyIssue(ModelConversionIssue issue)
@@ -2997,20 +4032,52 @@ ORDER BY r.mesh_file, r.mesh_path_id, r.from_file, r.from_path_id, mat.id;";
             try
             {
                 var gltf = JObject.Parse(File.ReadAllText(outputPath));
-                var nodes = gltf["nodes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
-                var meshes = gltf["meshes"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var nodes = gltf["nodes"] is JArray nodeArray
+                    ? nodeArray.OfType<JObject>().ToArray()
+                    : Array.Empty<JObject>();
+                var meshArray = gltf["meshes"] as JArray;
+                var meshes = meshArray?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var materialCount = gltf["materials"] is JArray materials ? materials.Count : 0;
                 var labels = BuildGltfMeshLabels(nodes, meshes);
                 var missing = new List<string>();
 
-                for (var meshIndex = 0; meshIndex < meshes.Length; meshIndex++)
+                for (var meshIndex = 0; meshArray != null && meshIndex < meshArray.Count; meshIndex++)
                 {
-                    var primitiveIndex = -1;
-                    foreach (var primitive in meshes[meshIndex]["primitives"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                    if (meshArray[meshIndex] is not JObject mesh)
                     {
-                        primitiveIndex++;
-                        if ((int?)primitive["material"] == null)
+                        continue;
+                    }
+
+                    var primitives = mesh["primitives"] as JArray;
+                    for (var primitiveIndex = 0; primitives != null && primitiveIndex < primitives.Count; primitiveIndex++)
+                    {
+                        if (primitives[primitiveIndex] is not JObject primitive)
+                        {
+                            continue;
+                        }
+
+                        var materialIndex = (int?)primitive["material"];
+                        if (!materialIndex.HasValue || materialIndex.Value < 0 || materialIndex.Value >= materialCount)
                         {
                             missing.Add(BuildGltfPrimitiveLabel(labels, meshIndex, primitiveIndex));
+                        }
+                    }
+                }
+
+                if (missing.Count == 0 && materialCount == 0)
+                {
+                    var primitiveCount = gltf.SelectTokens("$.meshes[*].primitives[*]").Count();
+                    if (primitiveCount > 0)
+                    {
+                        // 有可渲染 primitive 但没有任何 materials，是明确白模状态。
+                        // 部分导出器会在早期写无效 material 占位，后续又被规范化清掉；这里以最终 glTF 可用性为准。
+                        for (var meshIndex = 0; meshArray != null && meshIndex < meshArray.Count; meshIndex++)
+                        {
+                            var primitiveArray = (meshArray[meshIndex] as JObject)?["primitives"] as JArray;
+                            for (var primitiveIndex = 0; primitiveArray != null && primitiveIndex < primitiveArray.Count; primitiveIndex++)
+                            {
+                                missing.Add(BuildGltfPrimitiveLabel(labels, meshIndex, primitiveIndex));
+                            }
                         }
                     }
                 }
@@ -3518,6 +4585,74 @@ ORDER BY components.type, components.path_id;";
             };
         }
 
+        private static ContainerScriptMaterialPropertySummary QueryContainerScriptMaterialPropertySummary(
+            SqliteConnection connection,
+            string gameObjectFile,
+            long gameObjectPathId)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+WITH containers AS (
+    SELECT DISTINCT json_extract(raw_json, '$.details.container') AS container
+    FROM source_relations
+    WHERE relation='assetBundle.containerPreload'
+      AND to_file=$goFile COLLATE NOCASE
+      AND to_path_id=$goPathId
+      AND json_extract(raw_json, '$.details.container') IS NOT NULL
+),
+container_objects AS (
+    SELECT preload.to_file AS file,
+           preload.to_path_id AS path_id
+    FROM source_relations preload
+    JOIN containers c
+      ON c.container = json_extract(preload.raw_json, '$.details.container')
+    WHERE preload.relation='assetBundle.containerPreload'
+),
+script_materials AS (
+    SELECT rel.from_file,
+           rel.from_path_id,
+           rel.to_file,
+           rel.to_path_id
+    FROM source_relations rel
+    JOIN container_objects co
+      ON co.file=rel.from_file COLLATE NOCASE
+     AND co.path_id=rel.from_path_id
+    JOIN source_objects material
+      ON material.serialized_file=rel.to_file COLLATE NOCASE
+     AND material.path_id=rel.to_path_id
+     AND material.type='Material'
+    WHERE rel.from_type='MonoBehaviour'
+      AND rel.relation='monoBehaviour.pptr'
+      AND json_extract(rel.raw_json, '$.details.path')='MaterialsProperties.data.Material'
+)
+SELECT COUNT(*) AS ref_count,
+       COUNT(DISTINCT to_file || ':' || to_path_id) AS material_count,
+       GROUP_CONCAT(DISTINCT to_file || ':' || to_path_id) AS material_keys
+FROM script_materials;";
+            command.Parameters.AddWithValue("$goFile", gameObjectFile ?? string.Empty);
+            command.Parameters.AddWithValue("$goPathId", gameObjectPathId);
+
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                return new ContainerScriptMaterialPropertySummary();
+            }
+
+            var keys = reader.IsDBNull(2)
+                ? Array.Empty<string>()
+                : reader.GetString(2)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .Take(8)
+                    .ToArray();
+            return new ContainerScriptMaterialPropertySummary
+            {
+                MaterialPropertyRefCount = reader.IsDBNull(0) ? 0 : reader.GetInt64(0),
+                DistinctMaterialCount = reader.IsDBNull(1) ? 0 : reader.GetInt64(1),
+                SampleMaterialKeys = keys,
+            };
+        }
+
         private static MissingMaterialUnityEvidence BuildMissingMaterialUnityEvidence(
             MissingMaterialPrimitiveTarget target,
             long sourcePathMatchCount,
@@ -3561,6 +4696,121 @@ ORDER BY components.type, components.path_id;";
                 ProbableSimulationHelper = probableSimulationHelper,
                 Status = status,
             };
+        }
+
+        private static void WriteGltfMaterialReport(
+            string outputPath,
+            object source,
+            StaticMeshMaterialBinding sourceIndexBinding,
+            bool useModelSpecificFileName = false)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)
+                || !string.Equals(Path.GetExtension(outputPath), ".gltf", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(outputPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var gltf = JObject.Parse(File.ReadAllText(outputPath));
+                var materials = gltf["materials"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var images = gltf["images"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+                var summary = BuildExportedModelMaterialSummary(outputPath);
+                var sourceInfo = GetSourceInfo(source);
+                var reportFileName = useModelSpecificFileName
+                    ? $"{Path.GetFileNameWithoutExtension(outputPath)}.MATERIAL_REPORT.md"
+                    : "MATERIAL_REPORT.md";
+                var reportPath = Path.Combine(Path.GetDirectoryName(outputPath), reportFileName);
+                var sb = new StringBuilder();
+
+                sb.AppendLine("# Material Report");
+                sb.AppendLine();
+                sb.AppendLine("这份报告说明当前 glTF 里的预览材质、Unity 原始材质线索和降级状态。");
+                sb.AppendLine();
+                sb.AppendLine($"- 模型: `{sourceInfo.name}`");
+                sb.AppendLine($"- 来源类型: `{sourceInfo.type}`");
+                sb.AppendLine($"- Source: `{sourceInfo.source}`");
+                sb.AppendLine($"- PathID: `{sourceInfo.pathId}`");
+                sb.AppendLine($"- glTF: `{Path.GetFileName(outputPath)}`");
+                sb.AppendLine($"- 材质状态: `{summary?.status ?? "noMaterial"}`");
+                sb.AppendLine($"- 材质数量: `{materials.Length}`");
+                sb.AppendLine($"- 图片数量: `{images.Length}`");
+                sb.AppendLine($"- 有 baseColorTexture: `{summary?.hasBaseColorTexture ?? false}`");
+                sb.AppendLine($"- 有 normalTexture: `{summary?.hasNormalTexture ?? false}`");
+                sb.AppendLine();
+
+                if (sourceIndexBinding != null)
+                {
+                    sb.AppendLine("## Unity Source Binding");
+                    sb.AppendLine();
+                    sb.AppendLine($"- Workflow: `{sourceIndexBinding.Workflow}`");
+                    sb.AppendLine($"- Status: `{sourceIndexBinding.Status}`");
+                    if (sourceIndexBinding.SelectedRenderer != null)
+                    {
+                        sb.AppendLine($"- Selected Renderer: `{sourceIndexBinding.SelectedRenderer.RendererType}` `{sourceIndexBinding.SelectedRenderer.RendererFile}:{sourceIndexBinding.SelectedRenderer.RendererPathId}`");
+                        if (!string.IsNullOrWhiteSpace(sourceIndexBinding.SelectedRenderer.GameObjectPath))
+                        {
+                            sb.AppendLine($"- GameObject Path: `{sourceIndexBinding.SelectedRenderer.GameObjectPath}`");
+                        }
+                    }
+                    foreach (var note in sourceIndexBinding.Notes)
+                    {
+                        sb.AppendLine($"- {note}");
+                    }
+                    if (sourceIndexBinding.RendererBindings.Count > 0)
+                    {
+                        sb.AppendLine($"- Renderer 候选数: `{sourceIndexBinding.RendererBindings.Count}`");
+                    }
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine("## glTF Materials");
+                sb.AppendLine();
+                if (materials.Length == 0)
+                {
+                    sb.AppendLine("- 当前 glTF 没有材质。若源索引也没有 Renderer->Material 关系，这会被当作明确的缺材质状态。");
+                }
+                for (var i = 0; i < materials.Length; i++)
+                {
+                    var material = materials[i];
+                    var pbr = material["pbrMetallicRoughness"] as JObject;
+                    var anime = material["extras"]?["animeStudioMaterial"] as JObject;
+                    sb.AppendLine($"### {i}. `{(string)material["name"] ?? "Material"}`");
+                    sb.AppendLine();
+                    sb.AppendLine($"- Status: `{anime?["status"]?.ToString() ?? "standardGltfMaterial"}`");
+                    sb.AppendLine($"- baseColorFactor: `{FormatJsonOneLine(pbr?["baseColorFactor"])}`");
+                    sb.AppendLine($"- metallicFactor: `{pbr?["metallicFactor"]?.ToString() ?? ""}`");
+                    sb.AppendLine($"- roughnessFactor: `{pbr?["roughnessFactor"]?.ToString() ?? ""}`");
+                    sb.AppendLine($"- baseColorTexture: `{FormatJsonOneLine(pbr?["baseColorTexture"])}`");
+                    sb.AppendLine($"- normalTexture: `{FormatJsonOneLine(material["normalTexture"])}`");
+                    if (anime?["material"] is JObject unityMaterial)
+                    {
+                        sb.AppendLine($"- Unity Material: `{unityMaterial["name"]}` `{unityMaterial["file"]}:{unityMaterial["pathId"]}`");
+                    }
+                    var unityTextures = anime?["unityTextures"] as JArray;
+                    if (unityTextures != null && unityTextures.Count > 0)
+                    {
+                        sb.AppendLine("- Unity texture slots:");
+                        foreach (var texture in unityTextures.OfType<JObject>().Take(32))
+                        {
+                            sb.AppendLine($"  - `{texture["slot"]}` -> `{texture["texture"]}` / `{texture["previewUsage"] ?? texture["status"]}`");
+                        }
+                    }
+                    sb.AppendLine();
+                }
+
+                File.WriteAllText(reportPath, sb.ToString());
+            }
+            catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+            {
+                Logger.Warning($"Unable to write material report: {outputPath}. {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        private static string FormatJsonOneLine(JToken token)
+        {
+            return token == null ? string.Empty : token.ToString(Formatting.None);
         }
 
         private static string ExtractSourceIndexSerializedFile(string source)
@@ -3618,6 +4868,9 @@ ORDER BY components.type, components.path_id;";
                 var needsCustomizationTint = false;
                 var needsCustomShaderLayer = false;
                 var missingRendererBinding = false;
+                var previewDegraded = false;
+                string previewStatus = null;
+                string previewConfidence = null;
 
                 foreach (var materialToken in materials.OfType<JObject>())
                 {
@@ -3646,6 +4899,18 @@ ORDER BY components.type, components.path_id;";
                     missingRendererBinding |= string.Equals(status, "missingRendererMaterial", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(status, "needsRendererBinding", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(status, "rendererMaterialUnresolved", StringComparison.OrdinalIgnoreCase);
+                    var materialPreviewStatus = anime?["pbrPreviewStatus"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(materialPreviewStatus) && string.IsNullOrWhiteSpace(previewStatus))
+                    {
+                        previewStatus = materialPreviewStatus;
+                    }
+                    var materialPreviewConfidence = anime?["pbrPreviewConfidence"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(materialPreviewConfidence) && string.IsNullOrWhiteSpace(previewConfidence))
+                    {
+                        previewConfidence = materialPreviewConfidence;
+                    }
+                    previewDegraded |= string.Equals(materialPreviewStatus, "bestEffortDegradedPreview", StringComparison.OrdinalIgnoreCase)
+                        || (bool?)anime?["previewMaterialDegraded"] == true;
                 }
 
                 var statusSummary = statusCounts.Count == 0
@@ -3660,6 +4925,9 @@ ORDER BY components.type, components.path_id;";
                     needsCustomizationTint = needsCustomizationTint,
                     needsCustomShaderLayer = needsCustomShaderLayer,
                     missingRendererBinding = missingRendererBinding,
+                    previewStatus = previewStatus,
+                    previewConfidence = previewConfidence,
+                    previewDegraded = previewDegraded,
                     hasBaseColorTexture = hasBaseColorTexture,
                     hasNormalTexture = hasNormalTexture,
                     imageCount = gltf["images"] is JArray images ? images.Count : 0,
@@ -3686,6 +4954,9 @@ ORDER BY components.type, components.path_id;";
             public bool needsCustomizationTint { get; init; }
             public bool needsCustomShaderLayer { get; init; }
             public bool missingRendererBinding { get; init; }
+            public string previewStatus { get; init; }
+            public string previewConfidence { get; init; }
+            public bool previewDegraded { get; init; }
             public bool hasBaseColorTexture { get; init; }
             public bool hasNormalTexture { get; init; }
             public int imageCount { get; init; }
@@ -3698,6 +4969,13 @@ ORDER BY components.type, components.path_id;";
         }
 
         private sealed record MissingMaterialPrimitiveTarget(string Primitive, string SourcePath, int MeshPathMatchCount);
+
+        private sealed class SourceObjectIdentity
+        {
+            public string File { get; init; }
+            public long PathId { get; init; }
+            public string Name { get; init; }
+        }
 
         private sealed class SourceTransformPathMatch
         {
@@ -3713,6 +4991,13 @@ ORDER BY components.type, components.path_id;";
             public string[] ComponentTypes { get; init; } = Array.Empty<string>();
             public long RendererCount { get; init; }
             public long RendererMaterialRelationCount { get; init; }
+        }
+
+        private sealed class ContainerScriptMaterialPropertySummary
+        {
+            public long MaterialPropertyRefCount { get; init; }
+            public long DistinctMaterialCount { get; init; }
+            public string[] SampleMaterialKeys { get; init; } = Array.Empty<string>();
         }
 
         private sealed class MissingMaterialUnityEvidence
@@ -6307,6 +7592,24 @@ ORDER BY components.type, components.path_id;";
             return false;
         }
 
+        private static string BuildStableAssetFolderName(AssetItem item)
+        {
+            var fixedName = FixFileName(item?.Text ?? string.Empty);
+            if (!IsWeakModelFileName(item?.Text, fixedName))
+            {
+                return fixedName;
+            }
+
+            // Unity 里有些 GameObject 名是控制字符。目录名不能都折叠成 "_"，否则同容器子件会互相挡住。
+            var type = item?.TypeString;
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                type = item?.Type.ToString() ?? "Asset";
+            }
+            var pathId = item?.m_PathID.ToString(CultureInfo.InvariantCulture).Replace("-", "n") ?? "0";
+            return $"{FixFileName(type)}_{pathId}";
+        }
+
         private static bool IsAuxiliaryAnimationPath(string path)
         {
             var text = NormalizeAnimationPathLeaf(path);
@@ -6474,7 +7777,7 @@ ORDER BY components.type, components.path_id;";
             }
 
             if (CliExportOptions.IncludeVfx
-                && Regex.IsMatch(signalText, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
+                && Regex.IsMatch(signalText, @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|cloudeffect|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])"))
             {
                 return "VFX";
             }

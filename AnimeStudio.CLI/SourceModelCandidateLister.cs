@@ -33,6 +33,7 @@ namespace AnimeStudio.CLI
             var outputRoot = string.IsNullOrWhiteSpace(outputDirectory)
                 ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sourceIndexPath)) ?? Environment.CurrentDirectory, "SourceModelCandidates")
                 : Path.GetFullPath(outputDirectory);
+            SQLiteSourceIndexBuilder.GuardSourceIndexReadableForHeavyQueries(sourceIndexPath, "--list_source_model_candidates");
             Directory.CreateDirectory(outputRoot);
             var exportSourceRoot = string.IsNullOrWhiteSpace(previewSourceRoot)
                 ? string.Empty
@@ -43,6 +44,13 @@ namespace AnimeStudio.CLI
             SQLitePCL.Batteries_V2.Init();
             using var connection = new SqliteConnection($"Data Source={Path.GetFullPath(sourceIndexPath)};Mode=ReadOnly");
             connection.Open();
+            using (var pragma = connection.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA query_only = ON;";
+                pragma.ExecuteNonQuery();
+                pragma.CommandText = "PRAGMA busy_timeout = 5000;";
+                pragma.ExecuteNonQuery();
+            }
             var availableIndexes = LoadAvailableIndexNames(connection);
             WarnMissingPerformanceIndexes(availableIndexes);
 
@@ -109,6 +117,7 @@ namespace AnimeStudio.CLI
                 .Take(limit)
                 .ToList();
             var usableForModelSmokeCount = filtered.Count(x => string.IsNullOrWhiteSpace(x.ExcludeHint));
+            var defaultLibrarySmokeCandidateCount = filtered.Count(x => IsDefaultLibrarySmokeEligible(x) && string.IsNullOrWhiteSpace(x.ExcludeHint));
             var excludeSummary = new JArray(filtered
                 .GroupBy(x => string.IsNullOrWhiteSpace(x.ExcludeHint) ? "none" : x.ExcludeHint, StringComparer.OrdinalIgnoreCase)
                 .OrderByDescending(x => x.Count())
@@ -133,10 +142,16 @@ namespace AnimeStudio.CLI
                 ["limit"] = limit,
                 ["includeStaticRendererCandidates"] = includeStaticRendererCandidates,
                 ["candidateCount"] = filtered.Count,
+                ["diagnosticLeadCount"] = usableForModelSmokeCount,
                 ["usableForModelSmokeCount"] = usableForModelSmokeCount,
-                ["animationGateDecision"] = usableForModelSmokeCount > 0
-                    ? "Some candidates have no source-index excludeHint, but they still require actual model export and validation before animation."
-                    : "No candidate in this report is ready for model smoke. Do not enter animation smoke from these samples; pick a different source scope or fix model/material/texture recovery first.",
+                ["defaultLibrarySmokeCandidateCount"] = defaultLibrarySmokeCandidateCount,
+                ["defaultLibrarySmokeStatus"] = defaultLibrarySmokeCandidateCount >= 10
+                    ? "enough_default_main_model_candidates"
+                    : "insufficient_default_main_model_candidates",
+                ["visualAcceptanceRule"] = "Default visual acceptance may use prefab/container primary, Animator, or complete hierarchy main entries only. Renderer child leads, raw parts, VFX and StaticRendererModel rows are diagnostics/extension leads and must not be counted as default Library support.",
+                ["animationGateDecision"] = defaultLibrarySmokeCandidateCount > 0
+                    ? "Default main-model candidates exist, but they still require actual model export and validation before any diagnostic animation work."
+                    : "No default main-model candidate in this report is ready for model smoke. Do not enter animation smoke from these samples; pick a different source scope or fix model/material/texture recovery first.",
                 ["excludeSummary"] = excludeSummary,
                 ["rule"] = "This report lists source-index model candidates from deterministic Unity Animator/Renderer/Mesh/Material relations. It is for selecting model-first smoke samples and does not create model-animation bindings.",
                 ["modelFirstRule"] = "Only candidates whose exported model later passes mesh/material/texture/skin validation may enter animation work.",
@@ -148,8 +163,8 @@ namespace AnimeStudio.CLI
                 ["rawContainerModelNote"] = "RawContainerModel candidates are deterministic AssetBundle container groups such as imported .fbx files with Mesh/Avatar but no prefab Renderer/Material chain. They are source parts or diagnostics, not model-smoke passes until a prefab/renderer/material binding is found.",
                 ["previewSourceRoot"] = exportSourceRoot,
                 ["targetedExportCommandNote"] = hasExportSourceRoot
-                    ? "Each candidate includes targetedLibraryExport for model-first smoke. The command keeps the full Unity source root and full source index, then narrows the load with --source_files and --path_ids. It still requires model_validation, glTF validation and screenshots before animation work."
-                    : "Pass --preview_source_root with the full Unity source root to make targetedLibraryExport commands directly runnable. Placeholder commands still show the required --source_files and --path_ids shape.",
+                    ? "Each candidate includes targetedLibraryExport for model-first smoke. The command keeps the full Unity source root and full source index, then narrows the load with --source_files and --source_object_keys. It still requires model_validation, glTF validation and screenshots before animation work."
+                    : "Pass --preview_source_root with the full Unity source root to make targetedLibraryExport commands directly runnable. Placeholder commands still show the required --source_files and --source_object_keys shape.",
                 ["candidates"] = new JArray(filtered.Select(row => ToJson(row, sourceIndexPath, outputRoot, exportSourceRoot, gameName))),
             };
 
@@ -160,11 +175,12 @@ namespace AnimeStudio.CLI
 
             Logger.Info($"Source model candidate report: {jsonPath}");
             Logger.Info($"Source model candidate CSV: {csvPath}");
-            Logger.Info($"Usable model-smoke candidates without source excludeHint: {usableForModelSmokeCount}/{filtered.Count}");
+            Logger.Info($"Diagnostic model leads without source excludeHint: {usableForModelSmokeCount}/{filtered.Count}");
+            Logger.Info($"Default Library main-model smoke candidates: {defaultLibrarySmokeCandidateCount}/{filtered.Count}");
             Logger.Info($"Source model candidate listing finished in {totalStopwatch.Elapsed.TotalSeconds:F2}s.");
-            if (usableForModelSmokeCount == 0)
+            if (defaultLibrarySmokeCandidateCount < 10)
             {
-                Logger.Warning("No listed source candidate is ready for model smoke. Keep these samples as diagnostics; do not use them as animation smoke evidence.");
+                Logger.Warning("Default Library main-model candidate coverage is below 10. Renderer child/source-part/static leads may remain useful diagnostics, but they must not be counted as default visual acceptance evidence.");
             }
             foreach (var row in filtered.Take(12))
             {
@@ -427,7 +443,9 @@ LIMIT $limit;";
         private static List<CandidateRow> LoadContainerPrimaryCandidates(SqliteConnection connection, int limit, HashSet<string> availableIndexes)
         {
             var result = new List<CandidateRow>();
-            foreach (var containerPath in LoadContainerPrimaryCandidateContainers(connection, limit, availableIndexes))
+            // broad 报告只是帮烟测挑样本，不做全库排行榜；否则大源索引会在 container 聚合上耗太久。
+            var containerProbeLimit = Math.Clamp(limit / 10, 40, 200);
+            foreach (var containerPath in LoadContainerPrimaryCandidateContainers(connection, containerProbeLimit, availableIndexes))
             {
                 var counts = LoadContainerObjectCounts(connection, containerPath, availableIndexes);
                 if (counts.RendererCount <= 0 && counts.AnimatorCount <= 0 && counts.MeshCount <= 0)
@@ -2150,6 +2168,8 @@ WHERE to_file = $file
                 ["pathId"] = row.PathId,
                 ["score"] = row.Score,
                 ["excludeHint"] = row.ExcludeHint,
+                ["defaultLibrarySmokeEligible"] = IsDefaultLibrarySmokeEligible(row) && string.IsNullOrWhiteSpace(row.ExcludeHint),
+                ["diagnosticLeadReady"] = string.IsNullOrWhiteSpace(row.ExcludeHint),
                 ["animatorCount"] = row.AnimatorCount,
                 ["rendererCount"] = row.RendererCount,
                 ["meshCount"] = row.MeshCount,
@@ -2205,7 +2225,8 @@ WHERE to_file = $file
         private static JObject BuildTargetedLibraryExport(CandidateRow row, string sourceIndexPath, string outputRoot, string exportSourceRoot, string gameName)
         {
             var sourceFile = BuildSourceFileArgument(row.SourcePath, exportSourceRoot);
-            var canBuildCommand = !string.IsNullOrWhiteSpace(sourceFile) && row.PathId != 0;
+            var sourceObjectKey = BuildSourceObjectKey(row);
+            var canBuildCommand = !string.IsNullOrWhiteSpace(sourceFile) && !string.IsNullOrWhiteSpace(sourceObjectKey);
             var hasRunnableRoot = !string.IsNullOrWhiteSpace(exportSourceRoot) && Directory.Exists(exportSourceRoot);
             var candidateName = BuildSafeFileName(string.IsNullOrWhiteSpace(row.Name) ? row.Kind : row.Name);
             var candidateOutput = Path.Combine(outputRoot, $"Smoke_{candidateName}_{row.PathId.ToString(CultureInfo.InvariantCulture)}");
@@ -2213,12 +2234,14 @@ WHERE to_file = $file
             var result = new JObject
             {
                 ["isRunnable"] = canBuildCommand && hasRunnableRoot,
-                ["readyForModelSmoke"] = canBuildCommand && string.IsNullOrWhiteSpace(row.ExcludeHint),
+                ["readyForModelSmoke"] = canBuildCommand && IsDefaultLibrarySmokeEligible(row) && string.IsNullOrWhiteSpace(row.ExcludeHint),
+                ["readyForDiagnosticModelSmoke"] = canBuildCommand && string.IsNullOrWhiteSpace(row.ExcludeHint),
                 ["sourceRoot"] = hasRunnableRoot ? exportSourceRoot : "<SOURCE_ROOT>",
                 ["outputRoot"] = candidateOutput,
                 ["sourceFile"] = sourceFile,
                 ["pathId"] = row.PathId,
-                ["rule"] = "模型第一阶段定向导出：输入仍指向完整 Unity 源目录，并使用完整 unity_source_index.db；--source_files 和 --path_ids 只缩小本次加载对象，不能替代导出后的验证。",
+                ["sourceObjectKey"] = sourceObjectKey,
+                ["rule"] = "模型第一阶段定向导出：输入仍指向完整 Unity 源目录，并使用完整 unity_source_index.db；--source_files 缩小加载文件，--source_object_keys 用 SerializedFile:PathID 精确选对象，不能替代导出后的验证。",
             };
 
             if (!string.IsNullOrWhiteSpace(row.ExcludeHint))
@@ -2263,8 +2286,8 @@ WHERE to_file = $file
                 Path.GetFullPath(sourceIndexPath),
                 "--source_files",
                 sourceFile,
-                "--path_ids",
-                row.PathId.ToString(CultureInfo.InvariantCulture),
+                "--source_object_keys",
+                sourceObjectKey,
             });
 
             var executableCommand = BuildCliExecutableCommand();
@@ -2272,6 +2295,28 @@ WHERE to_file = $file
             result["arguments"] = new JArray(arguments);
             result["powershellCommand"] = executableCommand + " " + string.Join(" ", arguments.Select(QuotePowerShellArgument));
             return result;
+        }
+
+        private static bool IsDefaultLibrarySmokeEligible(CandidateRow row)
+        {
+            if (row == null)
+            {
+                return false;
+            }
+
+            return string.Equals(row.Kind, "ContainerPrimaryModel", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(row.Kind, "AnimatorModel", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(row.Kind, "SkinnedRendererHierarchyModel", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string BuildSourceObjectKey(CandidateRow row)
+        {
+            if (row == null || string.IsNullOrWhiteSpace(row.SerializedFile) || row.PathId == 0)
+            {
+                return string.Empty;
+            }
+
+            return $"{row.SerializedFile.Trim().Replace('\\', '/')}:{row.PathId.ToString(CultureInfo.InvariantCulture)}";
         }
 
         private static string BuildSourceFileArgument(string sourcePath, string exportSourceRoot)

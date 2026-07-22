@@ -47,6 +47,7 @@ namespace AnimeStudio.CLI
 
     public enum AnimationPackageMode
     {
+        Skip,
         Separate,
         Embedded,
         Both
@@ -76,6 +77,7 @@ namespace AnimeStudio.CLI
                 optionsBinder.TypeFilter,
                 optionsBinder.SourceFileFilter,
                 optionsBinder.PathIdFilter,
+                optionsBinder.SourceObjectKeyFilter,
                 optionsBinder.IncludeAnimatorControllerClipClosure,
                 optionsBinder.EndfieldVfsFileFilter,
                 optionsBinder.EndfieldVfsFileLimit,
@@ -245,6 +247,7 @@ namespace AnimeStudio.CLI
         public string[] TypeFilter { get; set; }
         public string[] SourceFileFilter { get; set; }
         public long[] PathIdFilter { get; set; }
+        public string[] SourceObjectKeyFilter { get; set; }
         public bool IncludeAnimatorControllerClipClosure { get; set; }
         public Regex[] EndfieldVfsFileFilter { get; set; }
         public int EndfieldVfsFileLimit { get; set; }
@@ -409,6 +412,7 @@ namespace AnimeStudio.CLI
         public readonly Option<string[]> TypeFilter;
         public readonly Option<string[]> SourceFileFilter;
         public readonly Option<long[]> PathIdFilter;
+        public readonly Option<string[]> SourceObjectKeyFilter;
         public readonly Option<bool> IncludeAnimatorControllerClipClosure;
         public readonly Option<Regex[]> EndfieldVfsFileFilter;
         public readonly Option<int> EndfieldVfsFileLimit;
@@ -572,6 +576,7 @@ namespace AnimeStudio.CLI
             TypeFilter = new Option<string[]>("--types", "Specify unity class type(s)") { AllowMultipleArgumentsPerToken = true, ArgumentHelpName = "Texture2D|Shader:Parse|Sprite:Both|etc.." };
             SourceFileFilter = new Option<string[]>("--source_files", "Explicit source file paths, relative to the input root, to load for targeted refresh/debug exports. Default Library exports should leave this unset.") { AllowMultipleArgumentsPerToken = true };
             PathIdFilter = new Option<long[]>("--path_ids", "Explicit Unity object PathID values to export for targeted refresh/debug exports. Default Library exports should leave this unset.") { AllowMultipleArgumentsPerToken = true };
+            SourceObjectKeyFilter = new Option<string[]>("--source_object_keys", "Explicit Unity object keys as SerializedFile:PathID for targeted Library smoke. Prefer this over bare --path_ids when multiple CAB files may reuse the same PathID.") { AllowMultipleArgumentsPerToken = true };
             IncludeAnimatorControllerClipClosure = new Option<bool>("--include_animator_controller_clip_closure", "Diagnostic only: when --path_ids selects AnimationClip assets, also export every AnimationClip referenced by the same AnimatorController(s). This repairs controller recovery clip closure but may export many clips.");
             EndfieldVfsFileFilter = new Option<Regex[]>("--endfield_vfs_files", ParseRegexOption, false, "Diagnostic only: regex filter for UnityFS files inside Arknights Endfield .blc VFS groups. Leave unset for full Library source indexing.") { AllowMultipleArgumentsPerToken = true };
             EndfieldVfsFileLimit = new Option<int>("--endfield_vfs_file_limit", "Diagnostic only: maximum number of UnityFS files to expose from each Arknights Endfield .blc VFS group. 0 means no limit.");
@@ -601,7 +606,7 @@ namespace AnimeStudio.CLI
             FbxAnimationMode = new Option<FbxAnimationMode>("--fbx_animation", "Specify FBX animation export mode: Skip, Auto, or All.");
             HumanoidBakeSolver = new Option<string>("--humanoid_bake_solver", "Experimental Humanoid bake solver variant used for glTF preview/animation bake.");
             ModelFormat = new Option<ModelExportFormat>("--model_format", "Specify model export format: Gltf, Glb, or Fbx.");
-            AnimationPackage = new Option<AnimationPackageMode>("--animation_package", "Specify animation packaging: Separate exports clips into the animation library; Embedded writes clips into each model; Both does both.");
+            AnimationPackage = new Option<AnimationPackageMode>("--animation_package", "Specify explicit diagnostic animation packaging: Skip ignores AnimationClip assets; Separate exports clips into a diagnostic animation library; Embedded writes clips into each model; Both does both.");
             ExportFullDecodedAnimationCurves = new Option<bool>("--export_full_decoded_animation_curves", "Export full decoded AnimationClip keyframes into animation sidecar JSON. Disabled by default for full Library performance; enable for targeted direct glTF preview and internal solver validation.");
             TextureMode = new Option<AnimeStudio.TextureExportMode>("--texture_mode", "Specify model texture export mode: Raw, Png, or Reference.");
             Profile3D = new Option<Model3DProfile>("--profile_3d", "Specify 3D export profile: Core filters non-core models; All keeps all model candidates except basic hygiene filters.");
@@ -618,7 +623,7 @@ namespace AnimeStudio.CLI
             ConvertTextureOutput = new Option<DirectoryInfo>("--texture_output", "Output folder for converted model textures. Defaults to a Textures folder next to the glTF.").LegalFilePathsOnly();
             ConvertTextureFormat = new Option<AnimeStudio.ImageFormat>("--texture_output_format", "Output image format for --convert_model_textures.");
             UpdateGltfTextureRefs = new Option<bool>("--update_gltf_texture_refs", "Patch the glTF to reference converted standard image textures where possible.");
-            GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Generate a playable preview glTF from model_animations.json by re-exporting one model with one selected animation.").LegalFilePathsOnly();
+            GeneratePreviewGltf = new Option<FileInfo>("--generate_preview_gltf", "Deprecated diagnostic only: generate a model+animation preview glTF from a legacy model_animations.json.").LegalFilePathsOnly();
             GeneratePreviewFromLibrary = new Option<DirectoryInfo>("--generate_preview_from_library", "Generate a playable preview glTF by selecting model and animation from library_index.db in a Library root.").LegalFilePathsOnly();
             ListModelAnimationsFromLibrary = new Option<DirectoryInfo>("--list_model_animations_from_library", "List deterministic relation_source=explicit animation candidates for one selected Library model. Use --preview_model and optional --preview_animation.").LegalFilePathsOnly();
             ExportAnimationGltfFromLibrary = new Option<DirectoryInfo>("--export_animation_gltf_from_library", "Export a skinless standalone glTF animation asset from a deterministic library_index.db model-animation candidate.").LegalFilePathsOnly();
@@ -636,7 +641,7 @@ namespace AnimeStudio.CLI
             PreviewForceInternalHumanoidSolve = new Option<bool>("--preview_force_internal_humanoid_solve", "Force file-based preview/standalone animation export to use AnimeStudio's internal Humanoid/Muscle solver. Diagnostic validation only; it does not create model-animation recommendations.");
             PreviewAvatar = new Option<string>("--preview_avatar", "Explicit Avatar selector for diagnostic manual preview. With --source_index it can inject Avatar.m_TOS for hash-only TRS path mapping, or Avatar oracle for --preview_force_internal_humanoid_solve; it does not create default model-animation relations.");
             AssemblyModules = new Option<string>("--assembly_modules", "Comma-separated module roles or selectors for --generate_assembled_preview_gltf. Defaults to Face,Hair,Accessory.");
-            PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Generate a reusable animation asset pack from model_animations.json by exporting one model with multiple selected animations.").LegalFilePathsOnly();
+            PackModelAnimations = new Option<FileInfo>("--pack_model_animations", "Deprecated diagnostic only: generate a model+animation pack from a legacy model_animations.json.").LegalFilePathsOnly();
             PackModelAnimationsFromLibrary = new Option<DirectoryInfo>("--pack_model_animations_from_library", "Generate a reusable animation asset pack directly from library_index.db in a Library root.").LegalFilePathsOnly();
             PackAnimations = new Option<string>("--pack_animations", "Comma-separated animation names or regexes used with animation-pack commands. If omitted, top candidates are used.");
             PackOutput = new Option<DirectoryInfo>("--pack_output", "Output folder for animation-pack commands.");
@@ -763,7 +768,7 @@ namespace AnimeStudio.CLI
             FbxAnimationMode.SetDefaultValue(AnimeStudio.CLI.FbxAnimationMode.Skip);
             HumanoidBakeSolver.SetDefaultValue("AvatarPreEulerPost");
             ModelFormat.SetDefaultValue(AnimeStudio.CLI.ModelExportFormat.Gltf);
-            AnimationPackage.SetDefaultValue(AnimeStudio.CLI.AnimationPackageMode.Separate);
+            AnimationPackage.SetDefaultValue(AnimeStudio.CLI.AnimationPackageMode.Skip);
             TextureMode.SetDefaultValue(AnimeStudio.TextureExportMode.Png);
             Profile3D.SetDefaultValue(AnimeStudio.CLI.Model3DProfile.All);
             ModelSource.SetDefaultValue(AnimeStudio.CLI.ModelSourceMode.PrefabPrimary);
@@ -826,6 +831,7 @@ namespace AnimeStudio.CLI
             TypeFilter = bindingContext.ParseResult.GetValueForOption(TypeFilter),
             SourceFileFilter = bindingContext.ParseResult.GetValueForOption(SourceFileFilter),
             PathIdFilter = bindingContext.ParseResult.GetValueForOption(PathIdFilter),
+            SourceObjectKeyFilter = bindingContext.ParseResult.GetValueForOption(SourceObjectKeyFilter),
             IncludeAnimatorControllerClipClosure = bindingContext.ParseResult.GetValueForOption(IncludeAnimatorControllerClipClosure),
             EndfieldVfsFileFilter = bindingContext.ParseResult.GetValueForOption(EndfieldVfsFileFilter),
             EndfieldVfsFileLimit = bindingContext.ParseResult.GetValueForOption(EndfieldVfsFileLimit),

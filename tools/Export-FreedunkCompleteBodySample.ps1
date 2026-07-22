@@ -19,7 +19,7 @@ if (!(Test-Path $GameData)) {
 
 $assets = Join-Path $GameData "StreamingAssets\assets"
 $miniInput = Join-Path $OutputRoot "CompleteMiniInput"
-$output = Join-Path $OutputRoot "CompleteBodyAnimSample"
+$output = Join-Path $OutputRoot "CompleteBodyStaticSample"
 
 if (!$KeepMiniInput -and (Test-Path $miniInput)) {
     Remove-Item -LiteralPath $miniInput -Recurse -Force
@@ -33,8 +33,7 @@ $files = @(
     "graphics\character\pc\bill_01_00\fbx.ab",
     "graphics\character\pc\bill_01_00\material_ingame.ab",
     "graphics\character\pc\bill_01_00\material.ab",
-    "graphics\character\pc\bill_01_00\texture.ab",
-    "graphics\character\animations\ingame\public\01_normal.ab"
+    "graphics\character\pc\bill_01_00\texture.ab"
 )
 
 foreach ($rel in $files) {
@@ -56,15 +55,15 @@ foreach ($rel in $files) {
     --profile_3d Core `
     --model_format Gltf `
     --texture_mode Png `
-    --animation_package Both `
-    --fbx_animation All `
-    --names "^Bill_01_00_ingame$|^Bill_01_00_outgame$|^NORMALMOVE_STAND_01$" `
+    --animation_package Skip `
+    --fbx_animation Skip `
+    --names "^Bill_01_00_ingame$|^Bill_01_00_outgame$" `
     --batch_files 64 `
     --profile_log off `
     --silent
 
 if ($LASTEXITCODE -ne 0) {
-    throw "Complete body animation sample export failed."
+    throw "Complete body static sample export failed."
 }
 
 $gltf = Get-ChildItem $output -Recurse -Filter "Bill_01_00_ingame.gltf" | Select-Object -First 1
@@ -74,13 +73,13 @@ if ($gltf) {
         Path = $gltf.FullName
         Meshes = $json.meshes.Count
         Skins = $json.skins.Count
-        Animations = $json.animations.Count
+        Animations = 0
         Images = $json.images.Count
         Textures = $json.textures.Count
         Materials = $json.materials.Count
-        AnimationNames = ($json.animations | ForEach-Object name) -join ", "
+        AnimationPolicy = "Skipped by default"
     } | Format-List
 }
 
 Write-Host ""
-Write-Host "Complete sample exported to $output"
+Write-Host "Complete static sample exported to $output"
