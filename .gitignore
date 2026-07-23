@@ -352,3 +352,6 @@ healthchecksdb
 
 UE_Acceptance_Preview/
 Temp/
+
+# CodeGraph local index cache
+.codegraph/
