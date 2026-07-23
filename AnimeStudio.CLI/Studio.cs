@@ -123,7 +123,10 @@ namespace AnimeStudio.CLI
             @"(^|[/_.\-\s])(?:vfx|fx|effect|effects|cloudeffect|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|skill)(?:$|[/_.\-\s0-9])",
             RegexOptions.IgnoreCase | RegexOptions.Compiled
         );
-
+        private static readonly Regex NonCharacterAnimationPattern = new Regex(
+            @"(^|[/_.\-\s])(?:vfx|vfxui|fx|effect|effects|cloudeffect|particle|particles|trail|trails|slash|impact|hitfx|explosion|smoke|fire|flame|spark|sparks|beam|laser|aura|buff|debuff|projectile|spell|uiface|ui|btn|button|dropdown|slider|mousecursor|progressbar|joystick|selector|pressed|highlighted|disabled|selected|hover|transitionanim|dimanim|canvas|dialog|popup|toast|panel|payplat|webshow|loading|fade|trackeditor|timeline|cutscene|cinematic|preview|device|prop|decor|decoration|camera|light|audio|materialanim)(?:$|[/_.\-\s0-9])",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        );
         public static Dictionary<ulong, string> Paths { get; set; } =
             new Dictionary<ulong, string>();
         public static List<string> PathStrings { get; set; } = new List<string>();
@@ -1344,6 +1347,10 @@ ORDER BY id;";
                 });
                 animations.Clear();
             }
+            else if (animations.Count > 0)
+            {
+                animations = FilterNonCharacterAnimations(animations);
+            }
 
             Logger.Info(
                 $"Exporting asset library: {models.Count} model candidate(s), {sourcePartModels.Count} indexed source part(s), {animations.Count} explicit diagnostic animation clip(s), {libraryTextures.Count} material/terrain texture asset(s), {shaders.Count} shader(s)."
@@ -1470,6 +1477,48 @@ ORDER BY id;";
         {
             return GetDeprecatedFilterTexts(asset)
                 .Any(x => DeprecatedLibraryPathPattern.IsMatch(x));
+        }
+
+        private static List<AssetItem> FilterNonCharacterAnimations(List<AssetItem> animations)
+        {
+            var kept = new List<AssetItem>(animations.Count);
+            var skipped = 0;
+            foreach (var clip in animations)
+            {
+                if (IsNonCharacterAnimation(clip))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                kept.Add(clip);
+            }
+
+            if (skipped > 0)
+            {
+                Logger.Info($"Library filtered {skipped} non-character animation clip(s) (VFX/UI/Timeline/scene). Use targeted export to include these.");
+                ProfileLogger.Event("library_non_character_animation_filter", new Dictionary<string, object>
+                {
+                    ["inputCount"] = animations.Count,
+                    ["skippedCount"] = skipped,
+                    ["keptCount"] = kept.Count,
+                    ["rule"] = "AnimationClip name/container/source matches VFX, UI, Timeline, cutscene, preview, scene, prop, camera, light, or audio signal. Only character/body/creature animations are kept for default Library export.",
+                });
+            }
+
+            return kept;
+        }
+
+        private static bool IsNonCharacterAnimation(AssetItem asset)
+        {
+            var sourceName = asset.SourceFile?.originalPath ?? asset.SourceFile?.fileName;
+            var signalText = string.Join(
+                "/",
+                new[] { asset.Container, sourceName, asset.Text }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+            ).Replace('\\', '/').ToLowerInvariant();
+
+            return NonCharacterAnimationPattern.IsMatch(signalText);
         }
 
         private static List<AssetItem> FilterLowValueBrowsableModels(List<AssetItem> models, List<AssetItem> sourcePartModels)
@@ -4125,6 +4174,7 @@ SELECT DISTINCT mesh_file, mesh_path_id FROM static_meshes;";
             var animations = exportableAssets.Where(x => x.Asset is AnimationClip).ToList();
             if (CliExportOptions.ExportSeparateAnimations && animations.Count > 0)
             {
+                animations = FilterNonCharacterAnimations(animations);
                 ExportAssets(savePath, animations, AssetGroupOption.ByLibrary, ExportType.Convert);
             }
             else if (animations.Count > 0)
